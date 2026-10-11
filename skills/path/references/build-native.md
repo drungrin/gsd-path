@@ -518,8 +518,9 @@ dispatch contract and perform steps 1–5 by hand.
      Write each fix task to `.project/tasks/` with `wave`
      set to the current wave or a newly appended `## Wave N` heading in
      PLAN.md before dispatch. Its dependencies include every source task of
-     the batch that is in the same repo, and its Verify runs the Verify of
-     those tasks; its files are the batch files or a subset of them, never
+     the batch that is in the same repo, and every landed fix task of the
+     same source wave and repo that carried one of its findings; its Verify
+     runs the Verify of those source tasks; its files are the batch files or a subset of them, never
      none. When a finding names a fix site outside the batch files, follow
      [build recovery](build-recovery.md) to plan, which adds a repair task
      with those files, the batch's `## Review findings` and the same
@@ -536,16 +537,24 @@ dispatch contract and perform steps 1–5 by hand.
      unchanged source reports and reusable Verify. For a member repair it
      checks the product in the member repository, against the member commits
      and the member Verify record, and the receipt adds `member`,
-     `member_base` and `member_commit`. On success, brief the next
+     `member_base` and `member_commit`. Another change to the checked files
+     is accepted only when it is the landing of a linked repair: a `done`
+     task of the same repo that carries one of the repair's criteria in
+     `## Review findings` and is joined to the repair by `deps`. Linked
+     repairs in the repair base are in `earlier_repairs`. Linked repairs
+     after the repair are in `later_repairs`; then the landing and the
+     recorded Verify of the last one are the evidence. On success, brief the next
      original-wave review with this receipt and the reviewer role's
      **Re-review after a proven repair** contract. Reuse command evidence;
      the new review judges the repaired product against the original criteria.
      Preserve prior verdicts and source tasks. On helper rejection, resolve
      the evidence blocker rather than redispatching an already proven fix.
      When the blocker cannot be resolved, for example `repair base contains
-     unlinked changes to original product` because a later wave changed the
+     unlinked changes to original product` or `product changed after the
+     repair landing` because a task that is not a linked repair changed the
      same files, run the next review cycle of the source wave in full at the
-     current HEAD, without the receipt.
+     current HEAD, without the receipt. This is the supported fallback: it
+     needs no ruling and no plan change.
    At the cap, record all attempts in the STATE.md log and ask the user —
    through an interactive user-input tool when available — after linking
    the resolved absolute blocking wave review, every deep lens file for the

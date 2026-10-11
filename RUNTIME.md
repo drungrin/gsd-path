@@ -176,7 +176,9 @@ through its receipt only when the canonical file matches the saved hash.
 checkpointing. It creates missing batches in an appended repair wave and
 reports new tasks in `created`, reused tasks in `existing`, and batches that
 other repair tasks not yet `done` cover in the same repo in `carried`. A member
-batch and its task carry `repo`. Status `created` includes restored
+batch and its task carry `repo`. A fix task for a finding that repeats after
+its fix landed also depends on that landed fix task, so
+`review_findings.py repair-evidence` can link the two. Status `created` includes restored
 PLAN rows or pending project bookkeeping; `exists` means nothing was written
 and no project changes needed a checkpoint. Status `none` means no batches
 need work; `escalate` leaves the named decisions with build step 7 and the user.

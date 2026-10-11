@@ -16,6 +16,7 @@ cap is reached. It never decides the wave verdict.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import sys
@@ -662,20 +663,73 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
             raise ReviewFindingsError("repair dependencies/files do not match its source batch")
         repair = {"task_file": repair_path.relative_to(repo).as_posix(), **entry(proof, repair_path, files),
                   **({"member": member} if member else {})}
+
+        def differ(start: str, end: List[str], paths: List[str]) -> bool:
+            return bool(isolation.run_git(where, "diff", "--quiet", start, *end, "--", *paths).returncode)
+
+        def before(start: str, end: str) -> bool:
+            return not isolation.run_git(where, "merge-base", "--is-ancestor", start, end).returncode
+
+        @functools.lru_cache(maxsize=None)
+        def linked() -> tuple:
+            """Landed repairs of the same findings that `deps` join to this repair, in landing order.
+
+            A linked task is done, is in the same repo, carries a criterion of this repair in its
+            `## Review findings`, and depends on this repair or on a linked task, or the reverse.
+            """
+            carried = {_normalize(group["criterion"]) for group in groups}
+            repairs = {task_id: (repair_path, fields)}
+            for path in (project / "tasks").glob("T*-*.md"):
+                other = _read(path, "task")
+                other_fields = isolation.task_frontmatter(other)[0] or {}
+                if (other_fields.get("status") == "done" and other_fields.get("repo") == member
+                        and carried & {_normalize(line) for line in re.findall(
+                            r"(?m)^Criterion:(.*)$", _section(other, "Review findings") or "")}):
+                    repairs[str(other_fields.get("id"))] = (path, other_fields)
+            joined, more = set(), {task_id}
+            while more:
+                joined |= more
+                more = {other for other, (_, other_fields) in repairs.items() if other not in joined and (
+                    joined & set(other_fields.get("deps") or [])
+                    or any(other in (repairs[item][1].get("deps") or []) for item in joined))}
+            others = sorted(joined - {task_id})
+            proofs = isolation.verify_landed_task_files(
+                repo, [repairs[other][0] for other in others], f"{project_dir}/tasks", head)["tasks"] if others else []
+            links = []
+            for landing in proofs:
+                path, other_fields = repairs[landing["task_id"]]
+                if landing["verdict"] == "recovered":
+                    links.append({"task_file": path.relative_to(repo).as_posix(),
+                                  **entry(landing, path, list(other_fields.get("files") or []))})
+            return tuple(sorted(links, key=lambda link: int(isolation.git_output(where, "rev-list", "--count", at(link)))))
+
+        def linked_changes(start: str, end: List[str], paths: List[str]) -> Optional[List[dict]]:
+            """The linked repairs whose landings are every change to `paths` from `start` to `end`, else None."""
+            if not differ(start, end, paths):
+                return []
+            links = [link for link in linked()
+                     if before(start, f"{at(link)}^") and (not end or before(at(link), end[0]))]
+            for link in links:
+                if differ(start, [f"{at(link)}^"], paths):
+                    return None
+                start = at(link)
+            return None if differ(start, end, paths) else links
+
         original_paths = [Path(sources[task]["path"]) for task in originals]
         original_proofs = isolation.verify_landed_task_files(
             repo, original_paths, f"{project_dir}/tasks", head
         )["tasks"]
-        landed = []
+        landed, earlier = [], set()
         for landing in original_proofs:
-            original = landing["verdict"] == "recovered" and entry(
-                landing, Path(sources[landing["task_id"]]["path"]), sources[landing["task_id"]]["files"])
-            if (not original
-                    or isolation.run_git(where, "merge-base", "--is-ancestor", at(original), at(repair, "base")).returncode
-                    or isolation.run_git(where, "diff", "--quiet", at(original), at(repair, "base"),
-                                         "--", *original["files"]).returncode):
+            links = None
+            if landing["verdict"] == "recovered":
+                original = entry(landing, Path(sources[landing["task_id"]]["path"]), sources[landing["task_id"]]["files"])
+                if before(at(original), at(repair, "base")):
+                    links = linked_changes(at(original), [at(repair, "base")], original["files"])
+            if links is None:
                 raise ReviewFindingsError("repair base contains unlinked changes to original product")
             landed.append(original)
+            earlier.update(link["task"] for link in links)
         source_paths = list(review_paths(project, wave, cycle, source["depth"]).values())
         source_paths.extend(Path(group["skeptic"]["path"]) for group in groups if group["skeptic"])
         for path in set(source_paths):
@@ -683,15 +737,22 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
             at_base = isolation.run_git(repo, "show", f"{base}:{relative}")
             if at_base.returncode or at_base.stdout != _read(path, "source review"):
                 raise ReviewFindingsError("source review must be unchanged and precede the repair")
-        verification = build_state.verify_lookup(str(repo), _common.task_verify_command(text), at(repair), member)
+        # A later linked repair supersedes this one: the last one is the product at the tip, and its
+        # landing and its Verify are the evidence.
+        later = linked_changes(at(repair), tip, files)
+        last = later[-1] if later else repair
+        verification = build_state.verify_lookup(
+            str(repo), _common.task_verify_command(_read(repo / last["task_file"], "repair task")), at(last), member)
         if not verification["reuse"]:
             raise ReviewFindingsError("repair has no reusable passing Verify at its landing")
-        if isolation.run_git(where, "diff", "--quiet", at(repair), *tip, "--", *files).returncode:
+        if later is None or (later and differ(at(last), tip, last["files"])):
             raise ReviewFindingsError("product changed after the repair landing")
         return {
             "status": "ok", "command": "repair-evidence", "head": head,
             "source": {"wave": wave, "cycle": cycle}, "groups": groups,
             "originals": landed, "repair": repair,
+            **({"earlier_repairs": [link for link in linked() if link["task"] in earlier]} if earlier else {}),
+            **({"later_repairs": later} if later else {}),
             "verification": verification,
             "verdict": "evidence-ready; reviewer judges the original unchanged criteria",
         }

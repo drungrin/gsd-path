@@ -193,6 +193,104 @@ Prints good — found: prints bad, count.py:1 fix: print good
                 self.assertEqual(result.returncode, 2, evidence)
                 self.assertIn(error, evidence["error"])
 
+    def test_change_to_another_file_does_not_block_the_receipt(self):
+        (self.repo / "other.py").write_bytes("print('before the repair base')\n".encode("utf-8"))
+        repair = self.finish_repair()
+        (self.repo / "other.py").write_bytes("print('after the repair landing')\n".encode("utf-8"))
+        self.commit("later work in another file")
+        result, evidence = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr or evidence)
+        self.assertEqual(evidence["repair"]["commit"], repair)
+
+    CYCLE_2 = """# Review — wave 1, cycle 2
+Wave verdict: blocked
+Cycle: 2
+Depth: full
+Tasks reviewed: 1
+## T001 — Original: fail
+- ❌ Prints good — found: prints good too late, count.py:1
+  fix: print better
+"""
+    REPEAT = """## Review findings
+
+### t001_ac1
+Criterion: Prints good
+- Prints good — found: prints good too late, count.py:1 fix: print better
+
+"""
+    OTHER = "## Review findings\n\n### {task}_ac2\nCriterion: Exits successfully\n- Exits successfully — found: exit 1\n\n"
+
+    def repeat_repair(self, deps="T001, T002"):
+        """The cycle 2 review repeats the finding; T003 repairs it on top of the landed T002."""
+        (self.project / "review/wave-1.cycle2.md").write_bytes(self.CYCLE_2.encode("utf-8"))
+        return self.repair("T003", deps, "better", findings=self.REPEAT)
+
+    def test_repeat_repair_gets_a_receipt_on_top_of_the_earlier_repair_it_depends_on(self):
+        first = self.finish_repair()
+        second = self.repeat_repair()
+        result, evidence = self.cli("T003", cycle=2)
+        self.assertEqual(result.returncode, 0, result.stderr or evidence)
+        self.assertEqual(evidence["repair"]["commit"], second)
+        self.assertEqual(evidence["originals"][0]["commit"], self.original)
+        self.assertEqual(evidence["earlier_repairs"],
+                         [{"task": "T002", "task_file": self.repair_file, "commit": first, "files": ["count.py"],
+                           "base": run_git(self.repo, "rev-parse", f"{first}^")}])
+        self.assertNotIn("later_repairs", evidence)
+        self.assertEqual((evidence["verification"]["entry"]["commit"],
+                          evidence["verification"]["entry"]["execution"]["stdout"]), (second, "better\n"))
+
+    def test_repeat_repair_gets_no_receipt_when_its_base_has_other_changes(self):
+        for fault in ("no dependency", "other finding", "change before", "change after"):
+            with self.subTest(fault=fault):
+                self.setUp()
+                if fault == "other finding":  # T002 is a repair of another criterion
+                    self.repair_file = self.task("T002", "Repair", 2, "T001", self.OTHER.format(task="t001"))
+                elif fault == "change before":  # before the linked repair T002; not the landing of a linked repair
+                    (self.repo / "count.py").write_bytes("print('unrelated')\n".encode("utf-8"))
+                self.finish_repair()
+                if fault == "change after":  # after the linked repair T002
+                    (self.repo / "count.py").write_bytes("print('unrelated')\n".encode("utf-8"))
+                self.repeat_repair(deps="T001" if fault == "no dependency" else "T001, T002")
+                result, evidence = self.cli("T003", cycle=2)
+                self.assertEqual(result.returncode, 2, evidence)
+                self.assertIn("unlinked changes", evidence["error"])
+
+    def test_superseded_repair_gets_a_receipt_from_the_later_repairs_that_depend_on_it(self):
+        first = self.finish_repair()
+        second = self.repair("T003", "T002", "better")
+        third = self.repair("T004", "T003", "best")
+        result, evidence = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr or evidence)
+        self.assertEqual(evidence["repair"]["commit"], first)
+        self.assertEqual([(item["task"], item["commit"], item["files"]) for item in evidence["later_repairs"]],
+                         [("T003", second, ["count.py"]), ("T004", third, ["count.py"])])
+        self.assertNotIn("earlier_repairs", evidence)
+        self.assertEqual((evidence["verification"]["entry"]["commit"],
+                          evidence["verification"]["entry"]["execution"]["stdout"]), (third, "best\n"))
+
+    def test_superseded_repair_gets_no_receipt_from_an_unlinked_or_unverified_later_change(self):
+        expected_errors = {"no dependency": "product changed after", "other finding": "product changed after",
+                           "no findings": "product changed after", "other change": "product changed after",
+                           "other file": "product changed after", "no verify": "passing Verify"}
+        for fault, error in expected_errors.items():
+            with self.subTest(fault=fault):
+                self.setUp()
+                self.finish_repair()
+                ledger = (self.repo / _common.VERIFY_LEDGER_PATH).read_bytes()
+                self.repair("T003", "T001" if fault == "no dependency" else "T002", "better",
+                            findings={"other finding": self.OTHER.format(task="t002"), "no findings": ""}.get(fault),
+                            files="  - count.py\n  - late.py" if fault == "other file" else "  - count.py")
+                if fault == "other change":  # after the last linked repair
+                    (self.repo / "count.py").write_bytes("print('unrelated')\n".encode("utf-8"))
+                elif fault == "other file":  # the last linked repair's own file changes after its Verify
+                    (self.repo / "late.py").write_bytes("print('unrelated')\n".encode("utf-8"))
+                    self.commit("later work")
+                elif fault == "no verify":  # the Verify of the last linked repair is not in the ledger
+                    (self.repo / _common.VERIFY_LEDGER_PATH).write_bytes(ledger)
+                result, evidence = self.cli()
+                self.assertEqual(result.returncode, 2, evidence)
+                self.assertIn(error, evidence["error"])
+
     def test_repair_of_a_finding_in_two_repos_binds_to_the_batch_of_its_own_repo(self):
         self.original_task = {"owned": "SC1"}
         self.setUp()
