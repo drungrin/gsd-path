@@ -1898,6 +1898,67 @@ class GuardHookTests(unittest.TestCase):
             )
             self.assert_allowed(self.bash_in(repo, "git 2>/dev/null status"))
 
+    def test_redirection_joined_to_a_separator_or_word_does_not_hide_git(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            joins = (
+                "true;>/dev/null {}",
+                "true &&>/dev/null {}",
+                "true ||>/dev/null {}",
+                "true|>/dev/null {}",
+                "(>/dev/null {})",
+                "true\n>/dev/null {}",
+                "true;</dev/null {}",
+                "(true)>/dev/null;>/dev/null {}",
+            )
+            for join in joins:
+                for command, rule in (
+                    ("git branch -D gsd-path/M001", "branch"),
+                    ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                    ("git push --force origin feature/x", "push"),
+                    ("git reset --hard", "reset"),
+                    ("git clean -fd", "clean"),
+                    ("git stash drop", "stash"),
+                    ("git checkout -- .", "checkout"),
+                    ("git branch -m old new", "branch-move"),
+                ):
+                    with self.subTest(join=join, command=command):
+                        self.assert_denied(self.bash_in(repo, join.format(command)))
+                with self.subTest(join=join):
+                    self.assert_denied(
+                        self.bash_in(
+                            repo,
+                            join.format("git worktree remove --force ../task-worktree"),
+                        )
+                    )
+                    self.assert_allowed(self.bash_in(repo, join.format("git status")))
+            for join in ("true;>/dev/null {}", "true\n>/dev/null {}"):
+                with self.subTest(join=join):
+                    self.assert_denied_with(
+                        self.bash_in(repo, join.format("git branch -D gsd-path/M001")),
+                        guard_hook.GIT_REASONS["branch"],
+                    )
+                    self.assert_allowed(
+                        self.bash_in(repo, join.format("git branch -D feature/x"))
+                    )
+            for command in (
+                "git 10>/dev/null branch -D gsd-path/M001",
+                "git {fd}>/dev/null branch -D gsd-path/M001",
+                "git 10>/dev/null push --force origin feature/x",
+                "git update-ref refs/heads/gsd-path/M001 00>/dev/null",
+                "command git 10>/dev/null reset --hard",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied(self.bash_in(repo, command))
+            for command in (
+                "git log -n 10 >/dev/null",
+                "git branch -D feature/x &>/dev/null",
+                "git status 2>&1 | tail -1",
+                "exec 3>/dev/null",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+
     def test_git_alias_words_are_arguments_and_never_redirections(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
@@ -1939,6 +2000,7 @@ class GuardHookTests(unittest.TestCase):
                 "echo read HOME; git lg",
                 "git lg -- read HOME",
                 "printf -v x HOME; git lg",
+                "printf -vx HOME; git lg",
             ):
                 with self.subTest(command=command):
                     self.assert_allowed(self.bash_in(repo, command))
@@ -1950,6 +2012,8 @@ class GuardHookTests(unittest.TestCase):
                 "for GIT_DIR in .git; do git lg; done",
                 "getopts a HOME; git lg",
                 "print -v HOME /tmp; git lg",
+                "printf -vHOME %s /tmp; git lg",
+                "printf -vGIT_DIR %s .git; git lg",
                 "select GIT_DIR in .git; do git lg; done",
                 "read -r x HOME < README.md; git lg",
                 "< README.md read HOME; git lg",

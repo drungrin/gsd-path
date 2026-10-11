@@ -2255,6 +2255,10 @@ def decode_patch_path(raw_path, strip_prefix):
 
 
 PARAMETER_MARKERS = frozenset("$%!")
+SHELL_DESCRIPTOR_WORD = re.compile(r"[0-9]{2,}|\{\w+\}", re.ASCII)
+SHELL_OPERATOR_PARTS = re.compile(
+    r"[<>]\(|&>>?|<<<|<<|>>|>&|<&|<>|>\||[<>]|&&|\|\||\|&|[\s\S]"
+)
 
 
 class ShellToken(str):
@@ -2263,6 +2267,9 @@ class ShellToken(str):
     `redirection` is true for an unquoted redirection operator and for one
     ASCII file descriptor digit written against one (the 2 of 2>file, not of
     2 >file). zsh passes a longer or non-ASCII digit word on as an argument.
+    `descriptor` is true for a longer digit word or a {name} word written
+    against a redirection operator: bash reads it as a file descriptor, zsh
+    as an argument.
     `literal` is "bare" for a word written with no quote or escape, "quoted"
     for a word inside one pair of plain quotes, "mixed" for plain quoted and
     unquoted parts where no unquoted part can expand, and None when the shell
@@ -2272,6 +2279,7 @@ class ShellToken(str):
 
     double_quoted = ()
     redirection = False
+    descriptor = False
     literal = None
 
 
@@ -2466,10 +2474,38 @@ def shell_tokens(command, direct=True):
                     and (not before or before in " \t|;&()<>\n\r")
                 )
             )
-            token = ShellToken(token)
-            token.redirection = redirection
-            token.literal = literal
-            tokens.append(token)
+            descriptor = (
+                command[start:end] == token
+                and SHELL_DESCRIPTOR_WORD.fullmatch(token) is not None
+                and command[end:end + 1] in ("<", ">")
+                and (not before or before in " \t|;&()<>\n\r")
+            )
+            # The shell reads a control operator and a redirection operator
+            # written against each other as two operators.
+            parts = [token]
+            if (
+                command[start:end] == token
+                and set(token) <= set("|;&()<>\n\r")
+                and ("<" in token or ">" in token)
+                and before != "\\"
+            ):
+                parts = []
+                for part in SHELL_OPERATOR_PARTS.findall(token):
+                    if "<" in part or ">" in part or not parts or (
+                        "<" in parts[-1] or ">" in parts[-1]
+                    ):
+                        parts.append(part)
+                    else:
+                        parts[-1] += part
+            for part in parts:
+                part = ShellToken(part)
+                part.redirection = redirection if len(parts) == 1 else (
+                    ("<" in part or ">" in part)
+                    and set(part) <= SHELL_WRITE_REDIRECTION_CHARS
+                )
+                part.descriptor = descriptor
+                part.literal = literal
+                tokens.append(part)
     except ValueError as error:
         raise ValueError(
             f"shell command cannot be tokenized ({error}); balance the quotes "
@@ -2485,9 +2521,13 @@ def shell_tokens(command, direct=True):
     marked = []
     for token in tokens:
         count = sum(character in PARAMETER_MARKERS for character in token)
-        redirection, literal = token.redirection, token.literal
+        redirection, descriptor, literal = (
+            token.redirection, token.descriptor, token.literal
+        )
         token = ShellToken(token)
-        token.redirection, token.literal = redirection, literal
+        token.redirection, token.descriptor, token.literal = (
+            redirection, descriptor, literal
+        )
         token.double_quoted, flags = tuple(flags[:count]), flags[count:]
         marked.append(token)
     return marked
@@ -3375,8 +3415,8 @@ PLAIN_REDIRECTION_OPERATORS = frozenset({">", ">>", "<", ">&", "&>", "&>>"})
 def _without_redirections(words):
     """The words of a simple command without the redirections the shell parsed.
 
-    Each redirection operator goes with the word after it and one file
-    descriptor digit written against it. The second result is false when one
+    Each redirection operator goes with the word after it and the file
+    descriptor word written against it. The second result is false when one
     of them is not plain: an operator outside PLAIN_REDIRECTION_OPERATORS or
     a target that is not one literal word.
     """
@@ -3385,6 +3425,9 @@ def _without_redirections(words):
     index = 0
     while index < len(words):
         word = words[index]
+        if getattr(word, "descriptor", False):
+            index += 1
+            continue
         if not getattr(word, "redirection", False):
             kept.append(word)
             index += 1
@@ -3852,7 +3895,7 @@ def command_sets_git_context_name(tokens):
         elif command in {"printf", "print"}:
             operands = [
                 name for option, name in zip(operands, operands[1:]) if option == "-v"
-            ]
+            ] + [option[2:] for option in operands if option.startswith("-v")]
         elif command not in VARIABLE_SETTING_COMMANDS:
             continue
         if any(GIT_CONTEXT_NAME.fullmatch(operand) for operand in operands):
@@ -3896,7 +3939,15 @@ def destructive_git_reason(
             and not env_wrapper_changes_git_context(words)
             and not assignments_change_git_context(assignments)
         )
-        wrapped = wrapped_command_tokens(words)
+        wrapped = wrapped_command_tokens(words if len(words) > 1 else segment)
+        invocation = git_command(words, assignments)
+        if (wrapped is not None or invocation is not None) and any(
+            getattr(token, "descriptor", False) for token in segment
+        ):
+            raise ValueError(
+                "a file descriptor word such as 10> or {fd}> is read "
+                "differently by bash and zsh; use a one-digit file descriptor"
+            )
         if wrapped is not None:
             reason = destructive_git_reason(
                 wrapped,
@@ -3909,7 +3960,6 @@ def destructive_git_reason(
             )
             if reason is not None:
                 return reason
-        invocation = git_command(words, assignments)
         this_git = wrapped is not None or invocation is not None
         if invocation is None:
             continue
