@@ -120,14 +120,23 @@ class NativeMemberDispatchTests(unittest.TestCase):
         self.assertIn("contains modified or untracked files", json.loads(call(*finish).stdout)["reason"])
         (sidecar / "unknown.txt").unlink()
 
-        # The removal also deleted the Git link, and Git no longer lists the sidecar.
+        # The removal also deleted the Git link, and Git no longer lists the sidecar. The live task copy
+        # is not in the landing commit, so the path is not named for removal and nothing deletes it.
         (sidecar / ".git").unlink()
         git(self.member, "worktree", "prune")
+        again = run(*finish)
+        self.assertEqual(again["status"], "landed", again)
+        self.assertNotIn("remove", json.dumps(again))
+        self.assertTrue((sidecar / ".gsd-path-coordinator" / landing.TASK_FILE).is_file())
+        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
+
+        # With only landed files left, the stop names the path.
+        shutil.rmtree(sidecar / ".gsd-path-coordinator")
+        (sidecar / "app.py").write_bytes(b"v2\n")
         self.assertEqual(json.loads(call(*finish).stdout)["reason"], leftover)
 
         shutil.rmtree(sidecar)
         self.assertEqual(run(*finish)["status"], "landed")
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
 
     def attempt(self, content: str) -> dict:
         head = git(self.coordinator, "rev-parse", "HEAD")

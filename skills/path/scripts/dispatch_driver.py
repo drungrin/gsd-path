@@ -927,7 +927,7 @@ class Round:
             self.receipt["steps"].append({"script": "isolation.recover_member_landing", "task": journal.stem,
                                           "result": result})
             if result["state"] == "landed":
-                self.retire_member(str(result["member"]), journal.stem)
+                self.retire_member(str(result["member"]), journal.stem, str(result["landing"]))
                 retired_members.add(journal.stem)
         report = recover_report(self.primary, self.project_dir, self.receipt)
         for task in report["tasks"]:
@@ -956,7 +956,7 @@ class Round:
                     recover=task,
                 )
             if verdict == "recovered" and task.get("member") and task.get("task_id") not in retired_members:
-                self.retire_member(str(task["member"]), str(task["task_id"]))
+                self.retire_member(str(task["member"]), str(task["task_id"]), str(task["landing"]))
             if verdict == "recovered" and worktree and worktree["clean"] and task.get("task_branch"):
                 isolation.retire(self.primary, Path(str(worktree["path"])),
                                  str(task["task_branch"]), False)
@@ -968,22 +968,23 @@ class Round:
                 # procedure; failed/blocked reconciliation surfaces through ready's typed error.
                 raise DriverStop(f"task {task.get('task_id')} needs recovery: {verdict}", recover=task)
 
-    def retire_member(self, member: str, task_id: str) -> None:
-        """Retire a landed member task's sidecar; what is left of it is a stop that names only its path."""
+    def retire_member(self, member: str, task_id: str, landing: str) -> None:
+        """Retire a landed member task's sidecar; a proven leftover of it is a stop that names only its path."""
         checkout, project, _ = isolation._member_context(self.primary, member)
         sidecar = isolation.sidecar_root(checkout, "task", f"{project}-{task_id}")
-        details = {}
+        branch = f"refs/heads/{isolation.TASK_BRANCH_PREFIX}{project}-{task_id}"
+        tip = isolation.run_git(checkout, "rev-parse", "--verify", "--quiet", branch)
+        commits = [landing, *tip.stdout.split()]
         try:
             isolation.retire_member_task(self.primary, member, task_id)
-        except isolation.IsolationError as error:
-            status = isolation.run_git(sidecar, "status", "--porcelain", "--untracked-files=all")
-            # Content that Git does not have keeps the refusal; missing files are a removal that stopped part way.
-            if not os.path.lexists(sidecar) or (status.returncode == 0 and any(
-                    not line.startswith(" D") for line in status.stdout.splitlines())):
+        except isolation.RemovalError as error:
+            # Missing files are a removal that stopped part way; every other state keeps the refusal.
+            if not (isolation.only_missing_files(sidecar)
+                    or isolation.holds_only_landed_files(checkout, sidecar, commits)):
                 raise
-            details["cleanup_error"] = str(error)
-        if os.path.lexists(sidecar):
-            raise DriverStop(LEFTOVER_ISOLATE.format(task_id, sidecar), **details)
+            raise DriverStop(LEFTOVER_ISOLATE.format(task_id, sidecar), cleanup_error=str(error))
+        if isolation.holds_only_landed_files(checkout, sidecar, commits):
+            raise DriverStop(LEFTOVER_ISOLATE.format(task_id, sidecar))
 
     # settle exited children ---------------------------------------------
 

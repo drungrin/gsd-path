@@ -103,6 +103,10 @@ class IsolationError(RuntimeError):
     """Raised when isolation, landing, or retirement cannot proceed."""
 
 
+class RemovalError(IsolationError):
+    """Raised when the removal of a sidecar worktree fails."""
+
+
 run_git = _common.run_git
 
 
@@ -836,7 +840,10 @@ def retire_member_task(
     if destination.resolve() in registered:
         if registered[destination.resolve()] != ref:
             raise IsolationError(f"member task sidecar is on another branch: {destination}")
-        _remove_worktree(checkout, destination, force)
+        try:
+            _remove_worktree(checkout, destination, force)
+        except IsolationError as error:
+            raise RemovalError(str(error)) from error
     authorization = run_git(checkout, "update-ref", "-d", member_task_authorization_ref(project, task_id))
     if authorization.returncode != 0:
         raise IsolationError((authorization.stderr or authorization.stdout).strip() or "git update-ref failed")
@@ -2714,6 +2721,53 @@ def _task_branch_proof_error(
     return None
 
 
+def only_missing_files(worktree: Path) -> bool:
+    """True when the only difference of a worktree from its HEAD is tracked files that are missing."""
+    status = run_git(worktree, "status", "--porcelain", "--untracked-files=all")
+    lines = status.stdout.splitlines()
+    return status.returncode == 0 and bool(lines) and all(line.startswith(" D") for line in lines)
+
+
+def holds_only_landed_files(repo: Path, path: Path, commits: Sequence[str]) -> bool:
+    """True when `path` is a directory, not a usable worktree, that holds only files of `commits`.
+
+    Each file must be the same blob at the same path in one of the commits, so the removal of
+    the directory loses nothing that Git does not have. A check that cannot be done is False.
+    """
+
+    def unreadable(error: OSError) -> None:
+        raise error
+
+    try:
+        if path.is_symlink() or not path.is_dir() or path.resolve() != path:
+            return False
+        root = run_git(path, "rev-parse", "--show-toplevel")
+        if root.returncode == 0 and Path(root.stdout.strip()).resolve() == path:
+            return False
+        files = []
+        for folder, folders, names in os.walk(path, onerror=unreadable):
+            if any(os.path.islink(os.path.join(folder, name)) for name in folders):
+                return False
+            files += [os.path.join(folder, name) for name in names]
+        # What a removal left of the worktree link is not content.
+        files = [name for name in files if name != str(path / ".git")]
+        if not all(stat.S_ISREG(os.lstat(name).st_mode) for name in files):
+            return False
+        known = {
+            entry.split(" ", 2)[2]
+            for commit in commits
+            for entry in git_text(repo, "ls-tree", "-r", "-z", commit).split("\0")
+            if entry
+        }
+        hashed = run_git(repo, "hash-object", "--stdin-paths", input="".join(f"{name}\n" for name in files))
+    except (OSError, IsolationError):
+        return False
+    hashes = hashed.stdout.split()
+    return hashed.returncode == 0 and len(hashes) == len(files) and all(
+        f"{sha}\t{Path(name).relative_to(path).as_posix()}" in known for sha, name in zip(hashes, files)
+    )
+
+
 def _worktree_report(
     primary: Path, path: Path, expected_branch: str
 ) -> tuple[Optional[Dict[str, object]], Optional[str]]:
@@ -2998,7 +3052,9 @@ def _recover_task(
         landed = _recover_task(
             primary, path, history, branches, head, bound, canonical_task_file, False
         ) if status == "done" else {}
-        if landed.get("verdict") == "recovered":
+        if landed.get("verdict") == "recovered" and holds_only_landed_files(
+            primary, sidecar, [str(landed["commit"]), *([task_branch] if branch_exists else [])]
+        ):
             return leftover(landed["commit"], landed["base"])
         return result("block", reason=worktree_error)
 
@@ -3253,8 +3309,7 @@ def _recover_task(
             if branch_error:
                 return result("block", reason=branch_error)
         if worktree is not None and not bool(worktree["clean"]):
-            dirt = run_git(sidecar, "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
-            if all(line.startswith(" D") for line in dirt):
+            if only_missing_files(sidecar):
                 # Only landed files are missing: a removal stopped part way, and nothing unknown is there.
                 return leftover(commit, base)
             return result(
