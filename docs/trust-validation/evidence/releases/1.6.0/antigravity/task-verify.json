@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "antigravity",
+  "run_id": "ed3e9b9d-97af-4425-be8e-82ad396443f7",
+  "result": "pass",
+  "step": "task-verify",
+  "command": "python3 -m unittest tests/test_count.py",
+  "output": "{\"command\": \"python3 -m unittest tests/test_count.py\", \"commit\": \"d0a7d0e545f45e2778139a1cae282f7b4bcc8d1e\", \"execution\": {\"evidence\": \"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/antigravity/quick/repo/.git/gsd-path/dispatch/gsd-path-M001/T001/manual-2026-10-11T223217+0000/verify.json\", \"exit_code\": 0, \"location\": \"sidecar gsd-path-verify/task-t001-verify\", \"stderr\": \"..........\\n----------------------------------------------------------------------\\nRan 10 tests in 8.218s\\n\\nOK\\n\", \"stdout\": \"\", \"worktree\": \"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/antigravity/quick/repo\"}, \"recorded_at\": \"2026-10-11T22:32:23+00:00\", \"result\": \"pass\", \"schema\": \"gsd-path/verify-ledger/v2\"}\n{\"command\": \"python3 -m unittest discover -s tests -p 'test_*.py'\", \"commit\": \"6259996a991ca63248667b81f3a8b195fab636c0\", \"execution\": {\"branch\": \"gsd-path-verify/project-verify\", \"exit_code\": 0, \"stderr\": \"..........\\n----------------------------------------------------------------------\\nRan 10 tests in 4.791s\\n\\nOK\\n\", \"stdout\": \"\", \"worktree\": \"/Users/jeremymcspadden/.gsd-path/projects/939102b84db91b3a80c82724309056dd69c3a3548454c47d16fa54ce2ec73d7e/5b4a4dde97261b9ddf52904980fd7faaf39b58c27b8b2c88b77b9256ce056d6f/verify/project-verify\"}, \"recorded_at\": \"2026-10-11T22:36:30+00:00\", \"result\": \"pass\", \"schema\": \"gsd-path/verify-ledger/v2\"}\n",
+  "verify_artifact": ".project/archive/001-extend-count/build/verify-ledger.jsonl",
+  "verify_exit_code": 0
+}

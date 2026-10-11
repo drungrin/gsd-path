@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "codex",
+  "run_id": "01a12d09-5513-7283-b04f-0bef54354528",
+  "result": "pass",
+  "step": "task-verify",
+  "command": "python3 -B tests/test_count_cli.py",
+  "output": "{\"command\": \"python3 -B tests/test_count_cli.py\", \"commit\": \"99caf8f7bc18a05e3bbdebeff6498dcb97793e38\", \"execution\": {\"evidence\": \"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/codex/quick/repo/.git/gsd-path/dispatch/gsd-path-M001/T001/manual-2026-10-11T223726+0000/verify.json\", \"exit_code\": 0, \"location\": \"sidecar gsd-path-verify/task-t001-verify\", \"stderr\": \".....\\n----------------------------------------------------------------------\\nRan 5 tests in 6.696s\\n\\nOK\\n\", \"stdout\": \"\", \"worktree\": \"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/codex/quick/repo\"}, \"recorded_at\": \"2026-10-11T22:37:32+00:00\", \"result\": \"pass\", \"schema\": \"gsd-path/verify-ledger/v2\"}\n{\"command\": \"python3 -B -m unittest discover -s tests -p 'test_*.py' -v\", \"commit\": \"bbf9eee34e3eb007ac8df96416b296e3ef432870\", \"execution\": {\"branch\": \"gsd-path-verify/project-verify\", \"exit_code\": 0, \"stderr\": \"test_default_count (test_count_cli.CountCliTests.test_default_count) ... ok\\ntest_extra_counts (test_count_cli.CountCliTests.test_extra_counts) ... ok\\ntest_integer_forms_in_both_modes (test_count_cli.CountCliTests.test_integer_forms_in_both_modes) ... ok\\ntest_invalid_counts_and_unknown_flags (test_count_cli.CountCliTests.test_invalid_counts_and_unknown_flags) ... ok\\ntest_line_breaks_in_errors (test_count_cli.CountCliTests.test_line_breaks_in_errors) ... ok\\n\\n----------------------------------------------------------------------\\nRan 5 tests in 10.236s\\n\\nOK\\n\", \"stdout\": \"\", \"worktree\": \"/Users/jeremymcspadden/.gsd-path/projects/b829c6cb968afd0f086d320affdb0e4dd13d526fee82b4b76f9c573484b2184c/c0833601dc6de7a55ec53c1ce9f87c435b827587ca23949cd1024bdf42e587a8/verify/project-verify\"}, \"recorded_at\": \"2026-10-11T22:42:22+00:00\", \"result\": \"pass\", \"schema\": \"gsd-path/verify-ledger/v2\"}\n",
+  "verify_artifact": ".project/archive/001-widget-counter-cli/build/verify-ledger.jsonl",
+  "verify_exit_code": 0
+}

@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "codex",
+  "run_id": "01a12d09-5513-7283-b04f-0bef54354528",
+  "result": "pass",
+  "step": "task-landing",
+  "command": "/bin/zsh -lc 'python3 -B .agents/skills/gsd-path/scripts/dispatch_driver.py finish --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/codex/quick/repo --task-id T001 > /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/codex/quick/repo/.git/gsd-path/t001-finish.json'",
+  "output": "commit 99caf8f7bc18a05e3bbdebeff6498dcb97793e38\nAuthor:     Feature Evaluation <evaluation@example.invalid>\nAuthorDate: Sun Oct 11 17:37:30 2026 -0500\nCommit:     Feature Evaluation <evaluation@example.invalid>\nCommitDate: Sun Oct 11 17:37:30 2026 -0500\n\n    T001: Extend the widget counter CLI with compatible JSON output\n    \n    Task: .project/tasks/T001-widget-counter-cli.md\n    Base: 0e98769528799d4b93cdfe38efc04855b17605ab\n    Files:\n    - .project/tasks/T001-widget-counter-cli.md\n    - count.py\n    - tests/test_count_cli.py\n\n .project/tasks/T001-widget-counter-cli.md | 16 ++++--\n count.py                                  | 20 +++++++-\n tests/test_count_cli.py                   | 85 +++++++++++++++++++++++++++++++\n 3 files changed, 116 insertions(+), 5 deletions(-)",
+  "fixture_bundle": "codex/fixture.bundle",
+  "run_manifest": ".project/archive/001-widget-counter-cli/trust-run-manifest.json",
+  "fixture_base_commit": "0e98769528799d4b93cdfe38efc04855b17605ab",
+  "task_branch": "gsd-path-verify/task-t001-verify",
+  "task_worktree": "/Users/jeremymcspadden/.gsd-path/projects/b829c6cb968afd0f086d320affdb0e4dd13d526fee82b4b76f9c573484b2184c/c0833601dc6de7a55ec53c1ce9f87c435b827587ca23949cd1024bdf42e587a8/verify/task-t001-verify",
+  "landing_commit": "99caf8f7bc18a05e3bbdebeff6498dcb97793e38",
+  "isolation_mode": "serial",
+  "isolation_note": "A one-task wave uses the helper's serial mode: the coder worked on the bound branch in the primary worktree at the recorded base, and the named branch and worktree are the isolated Task Verify sidecar created for this task and retired after landing."
+}

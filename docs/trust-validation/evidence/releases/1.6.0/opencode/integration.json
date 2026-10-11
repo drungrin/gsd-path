@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "opencode",
+  "run_id": "ses_ed2f6c019ffeVfXlsKsW2HIAnC",
+  "result": "pass",
+  "step": "integration",
+  "command": "python3 -B /Users/jeremymcspadden/.gsd-path/runtimes/422149915eaa779af7d78bdc37475d61a05bea09a92c443c3e38f63f2f77d199/archive_milestone.py integrate --repo \"$PWD\" --slug count-cli",
+  "output": "{\"archive\": \".project/archive/001-count-cli\", \"base\": \"ce844d68de1dac7b230eee1fad7d65bc47b7ebed\", \"commit\": \"1cfff79f30b8aed3337bae6a95301adc7eab35a1\", \"integrate\": \"ce844d68de1dac7b230eee1fad7d65bc47b7ebed\", \"landing\": \"ce844d68de1dac7b230eee1fad7d65bc47b7ebed\", \"mode\": \"direct\", \"tag\": \"milestone/001-count-cli\"}\n",
+  "fixture_bundle": "opencode/fixture.bundle",
+  "run_manifest": ".project/archive/001-count-cli/trust-run-manifest.json",
+  "ship_commit": "1cfff79f30b8aed3337bae6a95301adc7eab35a1",
+  "bound_branch": "gsd-path/M001",
+  "default_branch": "main",
+  "pre_integration_default_commit": "32328392e83df09d1990b410c67d0108cfbd869e",
+  "integration_commit": "ce844d68de1dac7b230eee1fad7d65bc47b7ebed",
+  "milestone_tag": "milestone/001-count-cli"
+}
