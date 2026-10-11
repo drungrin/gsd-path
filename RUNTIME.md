@@ -23,7 +23,7 @@ inputs, receipt handling, and entry conditions are owned by the
 | `gate-plan` | Git HEAD; optional lookahead project directory | Pending discussion, intent coverage, brief paths, and panel configuration checked in order. |
 | `approve-plan` | Owner approval and `--expected-head <reviewed full SHA>` | Plan gates followed by the existing journaled approval checkpoint. |
 | `lint-round` | Git HEAD; optional `--project-dir .project/next` | Task brief checks against HEAD, then plan handoff checks. |
-| `prepare-task` | `--expected-head <clean base> --task-id <id> --round-size <ready task count>` | Canonical task isolation; serial work also gets a verification sidecar before the primary becomes dirty. A clean verification sidecar that an earlier `prepare-task` left for the task is retired first; a dirty one stops the command. |
+| `prepare-task` | `--expected-head <clean base> --task-id <id> --round-size <ready task count>` | Canonical task isolation; serial work also gets a verification sidecar before the primary becomes dirty. A verification sidecar that an earlier `prepare-task` left for the task is retired first only when it is proven untouched: its branch did not move from its creation base on the bound branch, and it has no tracked change and no untracked or gitignored file. Any other sidecar stays, and the command stops with its path and what was found. |
 | `build-evidence` | `--expected-head <full SHA>` | Canonical landing proof written to `<project-dir>/build/evidence.json` (default: `.project/build/evidence.json`). |
 
 Plan approval recovery remains `pipeline_state.py resume-checkpoint`. Pre-Git

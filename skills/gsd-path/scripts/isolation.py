@@ -4785,6 +4785,23 @@ def retire_unused_verify(
     return retire(primary, expected, branch, False)
 
 
+def retire_stale_verify(primary: Path, worktree: Path, branch: str) -> Dict[str, object]:
+    """Retire the Verify sidecar of an earlier prepare-task only when it is proven untouched.
+
+    The reflog of its branch is the record of its creation base. It must hold only the
+    creation, at a commit of the bound branch; `retire_unused_verify` then proves the checkout.
+    """
+    try:
+        created = git_output(primary, "reflog", "show", "--format=%H", f"refs/heads/{branch}").split()
+        if len(created) != 1:
+            raise IsolationError("its branch moved after its creation, or has no record of its creation")
+        if run_git(primary, "merge-base", "--is-ancestor", created[0], "HEAD").returncode != 0:
+            raise IsolationError("its branch is not at a commit of the bound branch")
+        return retire_unused_verify(primary, worktree, created[0], branch)
+    except IsolationError as error:
+        raise IsolationError(f"Verify sidecar {worktree} is kept: {error}") from error
+
+
 def parser() -> argparse.ArgumentParser:
     argument_parser = argparse.ArgumentParser(description=__doc__)
     subparsers = argument_parser.add_subparsers(dest="command", required=True)

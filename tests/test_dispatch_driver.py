@@ -917,18 +917,73 @@ class DispatchDriverTests(unittest.TestCase):
                  "--repo", str(root), "--expected-head", self.head(root), "--task-id", "T001",
                  "--round-size", "1"], capture_output=True, encoding="utf-8", errors="replace")
 
+        (root / ".gitignore").write_bytes(b"*.log\n")
+        run_git(root, "add", ".gitignore")
         self.assertEqual(prepare_after_checkpoint().returncode, 0)
         retry = prepare_after_checkpoint()
-        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(retry.returncode, 0, retry.stdout)
         self.assertEqual(self.head(sidecar), self.head(root))
 
-        # A sidecar that holds files is evidence of an attempt: it stays, and prepare-task stops.
-        (sidecar / "unexpected.txt").write_bytes(b"preserve this Verify output\n")
-        refused = prepare_after_checkpoint()
-        self.assertEqual(refused.returncode, 1)
-        self.assertIn("worktree is dirty", refused.stderr)
-        self.assertTrue((sidecar / "unexpected.txt").is_file())
-        self.assertNotEqual(self.head(sidecar), self.head(root))
+        # Only a sidecar that is proven untouched is replaced. Each state below holds something
+        # that the bound branch does not have: prepare-task stops and keeps all of it.
+        def write(name: str) -> None:
+            (sidecar / name).write_bytes(b"work in the Verify sidecar\n")
+
+        def commit_work() -> None:
+            write("work.py")
+            run_git(sidecar, "add", "work.py")
+            run_git(sidecar, "commit", "-q", "-m", "work in the Verify sidecar")
+
+        def reflog() -> str:
+            return run_git(root, "reflog", "show", "--format=%H", "gsd-path-verify/task-t001-verify").stdout
+
+        states = (
+            ("gitignored file", lambda: write("build.log"), "build.log", "uncommitted files"),
+            ("untracked file", lambda: write("unexpected.txt"), "unexpected.txt", "uncommitted files"),
+            ("tracked change", lambda: write("fake_coder.py"), "fake_coder.py", "uncommitted files"),
+            ("creation base left the bound branch", lambda: run_git(root, "reset", "-q", "--hard", "HEAD^"),
+             None, "not at a commit of the bound branch"),
+            ("committed work", commit_work, "work.py", "moved after its creation"),
+            ("committed work that a reset removed", lambda: run_git(sidecar, "reset", "-q", "--hard", "HEAD^"),
+             None, "moved after its creation"),
+        )
+        for state, change, name, found in states:
+            with self.subTest(state=state):
+                bound = self.head(root)
+                change()
+                kept = (sidecar / name).read_bytes() if name else None
+                history = reflog()
+                refused = prepare_after_checkpoint()
+                try:
+                    self.assertEqual(refused.returncode, 1, refused.stdout[:300])
+                    reason = json.loads(refused.stdout)["reason"]
+                    self.assertIn(f"Verify sidecar {sidecar} is kept: ", reason)
+                    self.assertIn(found, reason)
+                    self.assertEqual(reflog(), history)
+                    if name:
+                        self.assertEqual((sidecar / name).read_bytes(), kept)
+                finally:  # back to an untouched checkout and the same bound head for the next state
+                    run_git(sidecar, "checkout", "--", ".")
+                    run_git(sidecar, "clean", "-fdxq")
+                    run_git(root, "reset", "-q", "--hard", bound)
+
+    def test_round_records_the_new_verify_sidecar_after_it_replaced_a_stale_one(self) -> None:
+        root = self.root
+        self.fixture(root, wave_t002=2)
+        subprocess.run([sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"), "prepare-task",
+                        "--repo", str(root), "--expected-head", self.head(root), "--task-id", "T001",
+                        "--round-size", "1"], check=True, capture_output=True)
+        dispatch_driver.append_log(root / ".project/tasks/T001-demo.md",
+                                   "- 2026-10-11 — orchestrator: repaired the Verify command")
+        run_git(root, "commit", "-qam", "build: repair T001 Verify")
+        base = self.head(root)
+
+        receipt = self.round(root, "--wait", "60")
+
+        self.assertEqual(receipt["status"], "done", receipt)
+        record = json.loads((dispatch_driver.records_root(root) / "T001/attempt-1/state.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual((record["sidecar"]["kind"], record["sidecar"]["base"]), ("verify", base))
 
     def test_finish_lands_natively_dispatched_parallel_tasks_from_their_isolates(self) -> None:
         root = self.root

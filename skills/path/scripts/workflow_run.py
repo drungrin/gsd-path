@@ -213,9 +213,9 @@ def run_workflow(repo: Path, action: str, project_dir: str, expected_head: str =
                 name = f"task-{task_id.lower()}-verify"
                 stale = isolation.sidecar_root(repo, "verify", name)
                 if os.path.lexists(stale / ".git"):
-                    # An earlier prepare-task left this sidecar. A clean one holds nothing; retire keeps a dirty one.
-                    step("isolation.py", "retire", "--repo", str(repo), "--worktree", str(stale),
-                         "--branch", isolation.verify_branch_name(name))
+                    # An earlier prepare-task left this sidecar. Only one that is proven untouched is replaced.
+                    steps.append({"script": "isolation.py", "result": isolation.retire_stale_verify(
+                        repo, stale, isolation.verify_branch_name(name))})
                 step("isolation.py", "isolate-verify", "--repo", str(repo),
                      "--base", expected_head, "--name", name)
         elif action == "build-evidence":

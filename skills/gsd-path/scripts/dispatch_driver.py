@@ -1271,7 +1271,7 @@ class Round:
                 continue
             prepared = self.runner("prepare-task", head, task["id"], round_size)
             isolate = prepared[0]["result"]
-            sidecar = prepared[1]["result"] if len(prepared) > 1 else None
+            sidecar = prepared[-1]["result"] if len(prepared) > 1 else None  # the isolate-verify step is last
             worktree = Path(str(isolate["worktree"]))
             isolation.activate_task(worktree, head, task["id"], f"build_{task['id'].lower()}",
                                     task["task_file"], isolate["task_branch"])
