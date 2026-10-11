@@ -146,7 +146,9 @@ dispatch contract and perform steps 1–5 by hand.
    wave never run together: `ready` returns one and holds the other until the
    first is `done`. The second then starts from a base that has the first
    landing, and the step 5 rerun of the earlier Verify checks both edits. A
-   task with a retained isolate keeps its turn.
+   task with a retained isolate keeps its turn. A task that a `supersedes`
+   field retires still counts: the superseding task never runs together
+   with a task that shares a file with the superseded task.
    A `NEEDS-ORCHESTRATOR` block stays unselectable until its `Orchestrator
    answer` is recorded in the task Log and the task is back to `pending`.
    An all-done wave whose latest canonical review cycle has any blocked lens
@@ -310,7 +312,12 @@ dispatch contract and perform steps 1–5 by hand.
      task that it names: `finish` does not run that Verify for the task, or
      for a task that lands after the task is `done`. The receipt (`retired`)
      and the task Log entry `orchestrator regression Verify of <task id>
-     retired: superseded by <task id>` name both tasks.
+     retired: superseded by <task id>` name both tasks. The superseding
+     task inherits the role of each task that it names, also through a
+     chain: after it is `done`, its Verify runs in the place of the retired
+     Verify for each later landing that shares a file with a superseded
+     task, also in its own wave. The Log entry is `orchestrator regression
+     Verify of <task id> (supersedes <task id>)`.
      A `landed` receipt proves those steps; do not run them again
      or author another implementation narrative. A blocked receipt preserves
      its failure evidence and follows the recovery rule, never a manual bypass.

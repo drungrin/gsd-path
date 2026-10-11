@@ -765,9 +765,59 @@ archive: null
         ))
         self.write_verify_task("T003", 2, ("shared.py",), "check own", supersedes=("T001",))  # T003 landed
         self.assertEqual(landing("T004", "check later"), (
-            [{"tasks": ["T002"], "command": "check two"}, {"tasks": ["T003"], "command": "check own"}],
+            [{"tasks": ["T002"], "command": "check two"},
+             {"tasks": ["T003"], "command": "check own", "supersedes": ["T001"]}],
             [{"task": "T001", "superseded_by": "T003"}],
         ))
+
+    def landing(self, task_id: str) -> tuple:
+        return (build_state.regression_verifies(self.repo, task_id, "own"),
+                build_state.retired_verifies(self.repo, task_id))
+
+    def test_superseding_task_verify_replaces_the_retired_verify_for_the_files_of_the_superseded_task(self) -> None:
+        # T001 owns a.py and b.py. T003 edits a.py and new.py and supersedes T001.
+        self.write_verify_task("T001", 1, ("a.py", "b.py"), "check one")
+        self.write_verify_task("T003", 2, ("a.py", "new.py"), "check three", status="in-progress",
+                               supersedes=("T001",))
+        self.write_verify_task("T004", 2, ("b.py",), "check four", status="pending")  # the wave of T003
+        self.write_verify_task("T005", 3, ("b.py",), "check five", status="pending")  # a later wave
+        self.write_verify_task("T006", 2, ("new.py",), "check six", status="pending")  # not a file of T001
+        old = ([{"tasks": ["T001"], "command": "check one"}], [])
+        self.assertEqual((self.landing("T004"), self.landing("T005"), self.landing("T006")), (old, old, ([], [])))
+
+        self.write_verify_task("T003", 2, ("a.py", "new.py"), "check three", supersedes=("T001",))  # T003 landed
+
+        replaced = ([{"tasks": ["T003"], "command": "check three", "supersedes": ["T001"]}],
+                    [{"task": "T001", "superseded_by": "T003"}])
+        # b.py is a file of T001 only: T003 holds the role of T001 for it, also for a task of its own wave.
+        self.assertEqual((self.landing("T004"), self.landing("T005")), (replaced, replaced))
+        # T006 is in the wave of T003 and shares no file with T001: nothing protects new.py for it.
+        self.assertEqual(self.landing("T006"), ([], []))
+
+    def test_chain_of_superseding_tasks_passes_the_role_to_the_last_done_task(self) -> None:
+        self.write_verify_task("T001", 1, ("a.py", "b.py"), "check one")
+        self.write_verify_task("T003", 2, ("a.py", "c.py"), "check three", supersedes=("T001",))
+        self.write_verify_task("T007", 3, ("a.py",), "check seven", status="in-progress", supersedes=("T003",))
+        self.write_verify_task("T008", 4, ("b.py",), "check eight", status="pending")  # a file of T001 only
+        self.write_verify_task("T009", 4, ("c.py",), "check nine", status="pending")  # a file of T003 only
+
+        # T007 is not done: T003 still holds the role of T001.
+        self.assertEqual(self.landing("T008"), (
+            [{"tasks": ["T003"], "command": "check three", "supersedes": ["T001"]}],
+            [{"task": "T001", "superseded_by": "T003"}],
+        ))
+        self.write_verify_task("T007", 3, ("a.py",), "check seven", supersedes=("T003",))  # T007 landed
+        self.assertEqual(self.landing("T008"), (
+            [{"tasks": ["T007"], "command": "check seven", "supersedes": ["T001"]}],
+            [{"task": "T001", "superseded_by": "T003"}, {"task": "T003", "superseded_by": "T007"}],
+        ))
+        self.assertEqual(self.landing("T009"), (
+            [{"tasks": ["T007"], "command": "check seven", "supersedes": ["T003"]}],
+            [{"task": "T003", "superseded_by": "T007"}],
+        ))
+        # A malformed project with a cycle (the plan gate rejects it) must not loop.
+        self.write_verify_task("T001", 1, ("a.py", "b.py"), "check one", supersedes=("T007",))
+        self.assertEqual(self.landing("T008")[0], [])
 
     def test_supersedes_must_be_a_list_of_task_ids(self) -> None:
         self.write_verify_task("T001", 1, ("shared.py",), "check one")
@@ -812,23 +862,39 @@ archive: null
             {task["id"]: task["verify_heavy"] for task in payload["ready"]},
             {"T002": True, "T003": False},
         )
+        # A retired Verify does not run, so it does not make the superseding task heavy.
+        self.write_task("T002", self.supersede_t001(
+            with_verify(task_text("T002", "Edits the heavy file", 2, (), ("one.py",)), "no")))
+        self.commit_all("plan: T002 supersedes T001")
+        _, payload = self.cli("ready")
+        self.assertEqual({task["id"]: task["verify_heavy"] for task in payload["ready"]},
+                         {"T002": False, "T003": False})
 
-    def shared_source_plan(self, *wave_two: tuple) -> None:
-        """Wave 1 is landed: T001 owns one.py and two.py, T002 owns three.py. Wave 2 is pending."""
+    def shared_source_plan(self, *wave_two: tuple, superseding: str = "") -> None:
+        """Wave 1 is landed: T001 owns one.py and two.py, T002 owns three.py. Wave 2 is pending.
+
+        `superseding` names the wave 2 task that has `supersedes: [T001]`.
+        """
         wave_one = (("T001", "Source", (), ("one.py", "two.py")), ("T002", "Other source", (), ("three.py",)))
         self.write_plan((wave_one, wave_two))
         for wave, rows in ((1, wave_one), (2, wave_two)):
             for task_id, title, deps, files in rows:
-                self.write_task(task_id, task_text(task_id, title, wave, deps, files))
+                text = task_text(task_id, title, wave, deps, files)
+                self.write_task(task_id, self.supersede_t001(text) if task_id == superseding else text)
         self.commit_all("plan")
         for task_id, title, _, files in wave_one:
             self.land_serial(task_id, title, 1, (), files)
 
-    def land_serial(self, task_id: str, title: str, wave: int, deps: tuple, files: tuple) -> None:
+    @staticmethod
+    def supersede_t001(text: str) -> str:
+        return text.replace("files: [", "supersedes: [T001]\nfiles: [")
+
+    def land_serial(self, task_id: str, title: str, wave: int, deps: tuple, files: tuple, *,
+                    superseding: bool = False) -> None:
         base = run_git(self.repo, "rev-parse", "HEAD")
-        self.write_task(task_id, task_text(task_id, title, wave, deps, files, status="in-progress",
-                                           agent="builder", base=base, worktree=str(self.repo),
-                                           log=("created", "implementation complete")))
+        text = task_text(task_id, title, wave, deps, files, status="in-progress", agent="builder", base=base,
+                         worktree=str(self.repo), log=("created", "implementation complete"))
+        self.write_task(task_id, self.supersede_t001(text) if superseding else text)
         (self.repo / files[0]).write_bytes(f"owner = '{task_id}'\n".encode("utf-8"))
         isolation.land(self.repo, self.repo, base, task_id, title, f".project/tasks/{task_id}-task.md", list(files))
 
@@ -862,18 +928,31 @@ archive: null
 
         self.assertEqual(self.ready_ids(), ["T003", "T004"])
 
-    def test_ready_returns_a_superseding_task_together_with_a_task_that_shares_the_retired_source(self) -> None:
-        # T003 replaces T001, so T001's Verify is not a regression source for T003 and the two never share one.
+    def test_ready_never_returns_a_superseding_task_with_a_task_that_shares_a_file_of_the_superseded_task(
+            self) -> None:
+        # T003 supersedes T001 and holds its role: T004 and T006 each share a file with T001.
         self.shared_source_plan(
             ("T003", "Replaces one", (), ("one.py",)),
             ("T004", "Edits two", (), ("two.py",)),
+            ("T005", "Unrelated", (), ("four.py",)),
+            ("T006", "Edits one again", ("T003",), ("one.py",)),
+            superseding="T003",
         )
-        self.assertEqual(self.ready_ids(), ["T003"])  # without the field T004 waits for T003
-        self.write_task("T003", task_text("T003", "Replaces one", 2, (), ("one.py",)).replace(
-            "files: [", "supersedes: [T001]\nfiles: ["))
-        self.commit_all("plan: T003 supersedes T001")
+        self.assertEqual(self.ready_ids(), ["T003", "T005"])  # T003 is pending: T004 waits
+        base = run_git(self.repo, "rev-parse", "HEAD")
+        pending = (self.repo / ".project/tasks/T003-task.md").read_bytes()
+        self.write_task("T003", self.supersede_t001(task_text(
+            "T003", "Replaces one", 2, (), ("one.py",), status="in-progress", agent="builder", base=base,
+            worktree=str(self.repo))))
+        self.assertEqual(self.ready_ids(), ["T005"])  # T003 is in progress: T004 waits
+        (self.repo / ".project/tasks/T003-task.md").write_bytes(pending)
 
-        self.assertEqual(self.ready_ids(), ["T003", "T004"])
+        self.land_serial("T003", "Replaces one", 2, (), ("one.py",), superseding=True)
+
+        # T003 is done: its Verify replaces T001's for T004 and T006, so they still land one at a time.
+        self.assertEqual(self.ready_ids(), ["T004", "T005"])
+        self.land_serial("T004", "Edits two", 2, (), ("two.py",))
+        self.assertEqual(self.ready_ids(), ["T005", "T006"])
 
     def test_ready_holds_a_task_while_a_dispatched_task_shares_its_regression_source(self) -> None:
         # T003 becomes ready after T004 was dispatched: T003 has the lower id but T004 goes first.

@@ -104,7 +104,10 @@ plan order above, which still keeps plan-invalidating risk in wave 1.
   cannot pass after the change. The named task must be in an earlier wave,
   in the same repo, and share a file with this task. Its Verify is then
   retired: it does not run at this landing or at a later landing. State the
-  replacement in this task's acceptance criteria.
+  replacement in this task's acceptance criteria. This task's Verify then
+  runs in its place for each later task that shares a file with the named
+  task, so it must check the replacement behavior for all files of that
+  task.
 - In a multi-repo milestone (`.project/MEMBERS.md` lists members), each task
   changes exactly one repo. Give a member task `repo: <member>`; its `files`
   and Verify are relative to that member's root, and its Verify runs there.

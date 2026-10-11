@@ -741,8 +741,11 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
                          json.dumps({**execution, "regressions": reruns, **superseded},
                                     indent=2, sort_keys=True) + "\n")
     execution["evidence"] = str(evidence_dir / "verify.json")
+    # The Verify of a superseding task runs in the place of the retired Verify: the label names both.
     for label, run in [("Verify", execution),
-                       *((f"regression Verify of {', '.join(item['tasks'])}", item) for item in reruns)]:
+                       *((f"regression Verify of {', '.join(item['tasks'])}"
+                          + (f" (supersedes {', '.join(item['supersedes'])})" if item.get("supersedes") else ""),
+                          item) for item in reruns)]:
         output = "\n".join(f"  {line}" for line in tail(run["stdout"] + run["stderr"]).splitlines())
         append_log(task_path, f"- {now()[:10]} — orchestrator {label} ({location}): "
                               f"{'fail' if run['exit_code'] else 'pass'}, exit {run['exit_code']}"
