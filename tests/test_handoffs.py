@@ -2565,7 +2565,8 @@ Tasks reviewed: 2
                 "literal HTML outside backticks",
                 [("— ran hello.py", "— the output has <b>hello</b>")],
                 "task T001 pass evidence still contains the placeholder <b>; replace it with the "
-                "real value, or put literal text such as an HTML tag in backticks",
+                "real value. A value cannot be only a placeholder; literal text such as an HTML "
+                "tag must be inside a sentence, in backticks",
             ),
         )
         for label, edits, message in cases:

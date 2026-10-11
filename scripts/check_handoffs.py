@@ -161,7 +161,8 @@ def _reject_placeholder(value: str, label: str) -> None:
     if placeholder is not None:
         raise HandoffError(
             f"{label} still contains the placeholder {placeholder.group(0)}; "
-            "replace it with the real value, or put literal text such as an HTML tag in backticks"
+            "replace it with the real value. A value cannot be only a placeholder; "
+            "literal text such as an HTML tag must be inside a sentence, in backticks"
         )
 
 
@@ -1305,10 +1306,10 @@ def task_review_observation(item: str, task_text: str) -> str:
             quoted = _normalize_ws(criterion)
             # Issue #392: a quote with or without the `- ` markers of the
             # criterion's sub-bullets is the same quote.
+            end = _common.criterion_quote_end(item, quoted)
+            if end is not None:
+                return item[end + len(" — ") :]
             key = _common.criterion_key(quoted)
-            for separator in re.finditer("(?= — )", item):
-                if _common.criterion_key(item[: separator.start()]) == key:
-                    return item[separator.start() + len(" — ") :]
             if _common.criterion_key(item) in {key, key + " —"}:
                 return ""
     return item

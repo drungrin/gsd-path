@@ -235,7 +235,11 @@ def _fail_items(lines: Sequence[str]) -> List[str]:
     return [_normalize(item) for item in items]
 
 
-def _criterion_of(observation: str) -> str:
+def _criterion_of(observation: str, criteria: Sequence[str] = ()) -> str:
+    for criterion in criteria:
+        end = _common.criterion_quote_end(observation, criterion)
+        if end is not None:
+            return _normalize(observation[:end])
     return _normalize(observation.split(" — ", 1)[0])
 
 
@@ -275,7 +279,7 @@ def parse_lens(text: str, lens: str, tasks: Dict[str, dict]) -> dict:
                 continue
             zones[zone].append(line)
         for observation in _fail_items(zones["criteria"]):
-            criterion = _criterion_of(observation)
+            criterion = _criterion_of(observation, task["acceptance"] + task["interface"])
             locator = None
             # Issue #392: match as the wave gate does, then report the task's own text.
             quoted = _common.criterion_key(criterion)

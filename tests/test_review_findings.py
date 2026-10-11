@@ -267,6 +267,31 @@ class GroupingTest(unittest.TestCase):
                 self.assertEqual(result["groups"], [])
                 self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
 
+    def test_quote_of_a_criterion_that_contains_an_em_dash(self):
+        # The wave gate tries each ` — ` as the end of the quote; this reader
+        # must find the same criterion.
+        fixture = Fixture(self, skeptics="off")
+        stored = "Rejects malformed rows — and keeps the earlier rows"
+        write(
+            fixture.project / "tasks" / "T001-parse-input.md",
+            TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                        interface="None", owned="SC1", ac1="Parses CSV rows", ac2=stored),
+        )
+        fixture.lens("contract", t001_fails=[f"{stored} — found: drops them, parser.py:9"])
+        fixture.lens("adversarial", verdict="pass")
+        _, result = fixture.run()
+        self.assertEqual(result["structural_blockers"], [])
+        (group,) = result["groups"]
+        self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", stored))
+
+        fixture.lens(
+            "contract",
+            t001_fails=["Rejects malformed rows — and keeps the later rows — found: drops them, parser.py:9"],
+        )
+        _, result = fixture.run()
+        self.assertEqual(result["groups"], [])
+        self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
+
 
 class SkepticSelectionTest(unittest.TestCase):
     def test_skeptics_off_sends_groups_to_fix(self):

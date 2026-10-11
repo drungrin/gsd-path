@@ -192,6 +192,18 @@ def criterion_key(text: str) -> str:
     return " ".join(word for word in text.split() if word != "-")
 
 
+def criterion_quote_end(item: str, criterion: str) -> Optional[int]:
+    """Offset of the ` — ` that ends a quote of `criterion` at the start of `item`.
+
+    A criterion can contain ` — ` itself, so every separator is a candidate.
+    """
+    key = criterion_key(criterion)
+    for separator in re.finditer("(?= — )", item):
+        if criterion_key(item[: separator.start()]) == key:
+            return separator.start()
+    return None
+
+
 def task_verify_command(task_text: str) -> str:
     """The Verify shell text, excluding the closing fence's separator newline."""
     body = section_body(task_text, "Verify")
