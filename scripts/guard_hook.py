@@ -3066,16 +3066,28 @@ PATH_OWNED_REF_PREFIXES = (
 # Deprecated commands stay out: newer Git lets an alias replace them
 # (whatchanged, pack-redundant). A name that is absent only fails closed.
 GIT_BUILT_IN_COMMANDS = frozenset({
-    "add", "am", "apply", "archive", "bisect", "blame", "branch", "bundle",
-    "cat-file", "check-ignore", "checkout", "cherry", "cherry-pick", "clean",
-    "clone", "commit", "config", "describe", "diff", "diff-tree", "fetch",
-    "for-each-ref", "format-patch", "fsck", "gc", "grep", "hash-object", "init",
-    "log", "ls-files", "ls-remote", "ls-tree", "maintenance", "merge",
-    "merge-base", "mv", "name-rev", "notes", "prune", "pull", "push",
-    "range-diff", "rebase", "reflog", "remote", "reset", "restore", "rev-list",
-    "rev-parse", "revert", "rm", "shortlog", "show", "show-ref",
-    "sparse-checkout", "stash", "status", "switch", "symbolic-ref", "tag",
-    "update-index", "update-ref", "worktree", "write-tree",
+    "add", "am", "annotate", "apply", "archive", "bisect", "blame", "branch",
+    "bugreport", "bundle", "cat-file", "check-attr", "check-ignore",
+    "check-mailmap", "check-ref-format", "checkout", "checkout-index", "cherry",
+    "cherry-pick", "clean", "clone", "column", "commit", "commit-graph",
+    "commit-tree", "config", "count-objects", "credential", "credential-store",
+    "describe", "diff", "diff-files", "diff-index", "diff-tree", "difftool",
+    "fast-export", "fast-import", "fetch", "fetch-pack", "fmt-merge-msg",
+    "for-each-ref", "for-each-repo", "format-patch", "fsck", "gc",
+    "get-tar-commit-id", "grep", "hash-object", "help", "index-pack", "init",
+    "interpret-trailers", "log", "ls-files", "ls-remote", "ls-tree", "mailinfo",
+    "mailsplit", "maintenance", "merge", "merge-base", "merge-file",
+    "merge-index", "merge-tree", "mergetool", "mktag", "mktree",
+    "multi-pack-index", "mv", "name-rev", "notes", "pack-objects", "pack-refs",
+    "patch-id", "prune", "prune-packed", "pull", "push", "range-diff",
+    "read-tree", "rebase", "receive-pack", "reflog", "remote", "repack",
+    "replace", "rerere", "reset", "restore", "rev-list", "rev-parse", "revert",
+    "rm", "send-pack", "shortlog", "show", "show-branch", "show-index",
+    "show-ref", "sparse-checkout", "stage", "stash", "status", "stripspace",
+    "submodule", "switch", "symbolic-ref", "tag", "unpack-file",
+    "unpack-objects", "update-index", "update-ref", "update-server-info",
+    "upload-archive", "upload-pack", "var", "verify-commit", "verify-pack",
+    "verify-tag", "version", "worktree", "write-tree",
 })
 
 
@@ -3551,13 +3563,17 @@ def owned_target_reason(command, arguments, git_options, working_directories):
         if not resolved_target.is_dir():
             return unresolved
         branch = registered[resolved_target]
+        primary = next(iter(registered))
         if (
-            "gsd-path" in str(resolved_target).casefold()
-            or resolved_target in recorded_paths
+            resolved_target in recorded_paths
             or (branch is not None and ref_is_path_owned(branch, branches))
             or any(
                 resolved_target == root or resolved_target.is_relative_to(root)
-                for root in managed_roots
+                for root in (*managed_roots, primary.parent / f"{primary.name}.gsd-path")
+            )
+            or (
+                resolved_target.parent == primary.parent
+                and resolved_target.name.startswith(f".{primary.name}-gsd-path-integrate-")
             )
         ):
             return GIT_REASONS["worktree"]
@@ -3769,8 +3785,8 @@ def destructive_git_reason(
             continue
         command, arguments, git_options = invocation
         # Git matches its own commands by exact case, but alias names in any case.
-        built_in = command in GIT_BUILT_IN_COMMANDS and not any(
-            token != command and token.casefold() == command for token in segment
+        built_in = (
+            command_invocation(segment)[1][-len(arguments) - 1] in GIT_BUILT_IN_COMMANDS
         )
         if not segment_git_context_reliable and not built_in:
             return GIT_REASONS["git-environment"]

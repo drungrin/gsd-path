@@ -1817,6 +1817,59 @@ class GuardHookTests(unittest.TestCase):
                         ),
                     )
 
+    def test_ordinary_git_commands_are_not_possible_aliases(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            clone = "git clone https://example.invalid/r.git r && cd r && "
+            for command in (
+                clone + "git submodule update --init",
+                clone + "env -u HOME git submodule update --init",
+                "env -u HOME git submodule update --init",
+                "mkdir new && cd new && git mergetool",
+                "env -i git count-objects -v",
+                "mkdir n && cd n && git init && git commit -m Commit",
+                "env -i git commit -m Commit",
+                "env -i git log STATUS",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+
+    def test_gsd_path_text_in_a_path_does_not_make_a_worktree_path_owned(self):
+        for label, state in (
+            ("no-state", None),
+            ("active", "---\nphase: build\nbranch: gsd-path/M001\n---\n"),
+            ("shipped", "---\nphase: shipped\nbranch: gsd-path/M001\n---\n"),
+        ):
+            with self.subTest(state=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve() / "gsd-path"
+                repo = self.scoped_cleanup_fixture(root, state)
+                inside = repo / "worktrees" / "feature"
+                inside.parent.mkdir()
+                self.git(repo, "worktree", "add", "-q", str(inside), "feature/x")
+                recorded = root / "recorded-task"
+                self.git(repo, "worktree", "add", "-q", "-b", "recorded", str(recorded))
+                tasks = repo / ".project" / "tasks"
+                tasks.mkdir(parents=True)
+                (tasks / "T001.md").write_text(
+                    f"---\ntask_branch: null\nworktree: {recorded}\n---\n",
+                    encoding="utf-8",
+                )
+                legacy = root / "repo.gsd-path" / "verify" / "T001"
+                self.git(repo, "worktree", "add", "-q", "--detach", str(legacy))
+                integrate = root / ".repo-gsd-path-integrate-T001"
+                self.git(repo, "worktree", "add", "-q", "--detach", str(integrate))
+                for target in (inside, root / "plain-worktree"):
+                    with self.subTest(target=target.name):
+                        self.assert_allowed(
+                            self.bash_in(repo, f"git worktree remove --force {target}")
+                        )
+                for target in (recorded, root / "task-worktree", legacy, integrate):
+                    with self.subTest(target=target.name):
+                        self.assert_denied_with(
+                            self.bash_in(repo, f"git worktree remove --force {target}"),
+                            guard_hook.GIT_REASONS["worktree"],
+                        )
+
     def test_alias_inspection_runs_in_the_native_form_of_the_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = self.scoped_cleanup_fixture(Path(temporary).resolve())

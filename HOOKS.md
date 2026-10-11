@@ -136,8 +136,10 @@ See [UPDATE.md](UPDATE.md).
   `refs/gsd-path/` ref, the bound `STATE.branch`, a task branch or worktree
   that task frontmatter records, a worktree on one of these branches, and a
   worktree below a managed worktree root (`~/.gsd-path`,
-  `GSD_PATH_WORKTREE_ROOT`, a pinned workspace root) or with `gsd-path` in its
-  path. Other branches, refs, and registered worktrees are allowed in each
+  `GSD_PATH_WORKTREE_ROOT`, a pinned workspace root, or the earlier
+  `<repo>.gsd-path/` and `.<repo>-gsd-path-integrate-*` locations beside the
+  repository). The text `gsd-path` in a path does not make a worktree
+  Path-owned. Other branches, refs, and registered worktrees are allowed in each
   pipeline state. These three commands are also denied when the guard cannot
   resolve the target: a missing, non-literal, or unregistered target,
   `update-ref --stdin`, ownership metadata it cannot read, a working directory
