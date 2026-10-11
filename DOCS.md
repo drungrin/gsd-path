@@ -36,6 +36,7 @@ DOCS.md (here)     four journeys in one place
 | **Team** — pin skills in repo | `--local` install; see [Installing](#installing) |
 | **Shipping broke** — archive commit blocked | [HOOKS.md](HOOKS.md) (expected with hooks) |
 | **Several repos** — one milestone changes them all | [Multi-repo milestones](README.md#multi-repo-milestones) |
+| **Several people** — one project | [Working with more than one person](FULL.md#working-with-more-than-one-person) |
 
 ---
 
@@ -101,9 +102,9 @@ README's Windows notes). **Always** restart the agent session after install.
 
 Full roots and invocation table: [README.md](README.md#install-summary).
 
-**Python installer:** `scripts/install.py` supports global and `--local`
-installs plus `--update`. The Node CLI remains the interactive wizard and npm
-entry point.
+**Python installer:** `scripts/install.py`; see
+[README.md](README.md#install-summary) for what it supports. The Node CLI
+remains the interactive wizard and npm entry point.
 Help: `node scripts/install.mjs --help`
 
 ---

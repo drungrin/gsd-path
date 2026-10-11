@@ -220,30 +220,52 @@ def _cursor_guard_entry(interpreter: str) -> dict:
     }
 
 
-def pre_commit_hook(interpreter: str) -> str:
-    return (
-        "#!/bin/sh\n"
-        "# gsd-path guard: archive immutability before commit.\n"
-        f"exec {interpreter} \"$(git rev-parse --show-toplevel)/"
-        f"{HOOKS_DIRECTORY}/git_guard.py\" pre-commit\n"
+CHAINED_HOOK_SUFFIX = ".gsd-path-chained"
+
+
+def _chained_hook_lines(name: str, guard: str) -> List[str]:
+    """Shell lines that run the guard, then the hook that was there before it."""
+    lines = [f'chained="$(dirname "$0")/{name}{CHAINED_HOOK_SUFFIX}"']
+    if name == "pre-push":
+        # Git gives pre-push its ref updates on stdin; both hooks need them.
+        return lines + [
+            "input=$(cat)",
+            '[ -n "$input" ] && input="$input\n"',
+            f'printf %s "$input" | {guard} || exit 1',
+            'if [ -x "$chained" ]; then printf %s "$input" | exec "$chained" "$@"; fi',
+        ]
+    return lines + [f"{guard} || exit 1", 'if [ -x "$chained" ]; then exec "$chained" "$@"; fi']
+
+
+def _git_hook(name: str, purpose: str, arguments: str, interpreter: str, chained: bool) -> str:
+    """chained=True also runs `<hook>.gsd-path-chained`, the user's own hook."""
+    guard = (
+        f"{interpreter} \"$(git rev-parse --show-toplevel)/"
+        f"{HOOKS_DIRECTORY}/git_guard.py\" {name}{arguments}"
+    )
+    head = f"#!/bin/sh\n# gsd-path guard: {purpose}\n"
+    if not chained:
+        return f"{head}exec {guard}\n"
+    return head + "\n".join(_chained_hook_lines(name, guard)) + "\n"
+
+
+def pre_commit_hook(interpreter: str, chained: bool = False) -> str:
+    return _git_hook(
+        "pre-commit", "archive immutability before commit.", "", interpreter, chained
     )
 
 
-def commit_msg_hook(interpreter: str) -> str:
-    return (
-        "#!/bin/sh\n"
-        "# gsd-path guard: archive immutability and ship-commit purity.\n"
-        f"exec {interpreter} \"$(git rev-parse --show-toplevel)/"
-        f"{HOOKS_DIRECTORY}/git_guard.py\" commit-msg \"$1\"\n"
+def commit_msg_hook(interpreter: str, chained: bool = False) -> str:
+    return _git_hook(
+        "commit-msg", "archive immutability and ship-commit purity.", ' "$1"',
+        interpreter, chained,
     )
 
 
-def pre_push_hook(interpreter: str) -> str:
-    return (
-        "#!/bin/sh\n"
-        "# gsd-path guard: bound branches publish only as ship commits.\n"
-        f"exec {interpreter} \"$(git rev-parse --show-toplevel)/"
-        f"{HOOKS_DIRECTORY}/git_guard.py\" pre-push \"$@\"\n"
+def pre_push_hook(interpreter: str, chained: bool = False) -> str:
+    return _git_hook(
+        "pre-push", "bound branches publish only as ship commits.", ' "$@"',
+        interpreter, chained,
     )
 
 
@@ -254,7 +276,6 @@ GIT_HOOKS = (
 )
 GIT_HOOK_NAMES = tuple(name for name, _ in GIT_HOOKS)
 MEMBER_HOOK_MARKER = "gsd-path member guard"
-CHAINED_HOOK_SUFFIX = ".gsd-path-chained"
 
 
 def member_hook(interpreter: str, name: str) -> str:
@@ -271,19 +292,8 @@ def member_hook(interpreter: str, name: str) -> str:
         '  echo "gsd-path guard: member marker is unreadable; run members.py repair --repo <coordinator>" >&2',
         "  exit 1",
         "}",
-        f'chained="$(dirname "$0")/{name}{CHAINED_HOOK_SUFFIX}"',
     ]
-    if name == "pre-push":
-        # Git gives pre-push its ref updates on stdin; both hooks need them.
-        lines += [
-            "input=$(cat)",
-            '[ -n "$input" ] && input="$input\n"',
-            f'printf %s "$input" | {guard} || exit 1',
-            'if [ -x "$chained" ]; then printf %s "$input" | exec "$chained" "$@"; fi',
-        ]
-    else:
-        lines += [f"{guard} || exit 1", 'if [ -x "$chained" ]; then exec "$chained" "$@"; fi']
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines + _chained_hook_lines(name, guard)) + "\n"
 
 
 def install_member_hooks(coordinator: Path, member: Path, dry_run: bool = False) -> List[str]:
@@ -1207,6 +1217,35 @@ def _rollback_target(transaction: TargetTransaction) -> None:
     _remove_empty_directories(transaction.created_directories)
 
 
+def _chained_hook_path(hook: Path) -> Path:
+    return hook.with_name(f"{hook.name}{CHAINED_HOOK_SUFFIX}")
+
+
+def _foreign_git_hook(hook: Path) -> bool:
+    """A regular hook file that no GSD Path installer wrote."""
+    if hook.is_symlink() or not hook.is_file():
+        return False
+    text = hook.read_text(encoding="utf-8", errors="replace")
+    return MEMBER_HOOK_MARKER not in text and not _is_managed_git_hook_content(text)
+
+
+def _require_chainable_git_hook(project: Path, hook: Path) -> None:
+    """A foreign hook is kept as `<hook>.gsd-path-chained` and runs after the guard."""
+    chained = _chained_hook_path(hook)
+    if _lexists(chained):
+        raise InstallerError(f"cannot chain {hook}: {chained} already exists")
+    # ponytail: only the repository's own .git/hooks. A core.hooksPath directory
+    # can be tracked (Husky) or shared by other repositories, so a rename there
+    # reaches other people; chain it when a design for tracked hooks exists.
+    if not _same_path(hook.parent, project / ".git" / "hooks"):
+        raise InstallerError(
+            f"cannot chain {hook}: its hooks directory is not this repository's "
+            ".git/hooks (core.hooksPath or a linked worktree). Rename it to "
+            f"{chained.name} yourself, then rerun: the guard runs it after its own "
+            "check. See HOOKS.md."
+        )
+
+
 def _project_destinations(
     project: Path,
     selected: Sequence[str],
@@ -1268,9 +1307,9 @@ def _project_destinations(
             )
         if hooks_dir is not None:
             for hook_name, generator in GIT_HOOKS:
-                destinations.append(
-                    (hooks_dir / hook_name, None, generator(interpreter), True)
-                )
+                hook = hooks_dir / hook_name
+                chained = _lexists(_chained_hook_path(hook)) or _foreign_git_hook(hook)
+                destinations.append((hook, None, generator(interpreter, chained), True))
     return destinations
 
 
@@ -1672,6 +1711,13 @@ def _validate_project(
             managed = (
                 _update_replacement(project, destination, hooks_dir) if update else None
             )
+            if (
+                hooks_dir is not None
+                and _same_path(destination.parent, hooks_dir)
+                and _foreign_git_hook(destination)
+            ):
+                _require_chainable_git_hook(project, destination)
+                continue
             if destination.is_symlink() or (merge is None and not update):
                 raise _existing_contract_error(destination)
             if merge is not None:
@@ -1718,6 +1764,21 @@ def _apply_project(
             _apply_agents(source_root, destination, transaction)
             continue
         merge = mergers.get(destination)
+        if (
+            hooks_dir is not None
+            and _same_path(destination.parent, hooks_dir)
+            and _foreign_git_hook(destination)
+        ):
+            original = destination.read_bytes()
+            mode = destination.stat().st_mode & 0o777
+            chained = _chained_hook_path(destination)
+            with chained.open("xb") as output:
+                transaction.copied.append(chained)
+                output.write(original)
+            chained.chmod(mode)
+            _atomic_write(destination, (content or "").encode("utf-8"), 0o755)
+            transaction.replaced.append((destination, original, mode))
+            continue
         if _lexists(destination) and not destination.is_symlink():
             replaceable = (
                 update
@@ -2159,7 +2220,9 @@ def _validate_hooks_refresh(
                     raise InstallerError(
                         f"refusing to refresh a symlink: {hook_path}"
                     )
-                if _lexists(hook_path) and not _is_managed_git_hook(hook_path):
+                if _foreign_git_hook(hook_path):
+                    _require_chainable_git_hook(project, hook_path)
+                elif _lexists(hook_path) and not _is_managed_git_hook(hook_path):
                     raise InstallerError(
                         f"not a managed GSD Path git hook: {hook_path}"
                     )
@@ -3005,7 +3068,9 @@ def doctor(
                         if not _is_managed_git_hook_content(hook_text):
                             push("warn", f"hooks: {label} is not a managed GSD Path git hook")
                         elif not any(
-                            hook_text == generator(candidate)
+                            hook_text == generator(
+                                candidate, _lexists(_chained_hook_path(hook_path))
+                            )
                             for candidate in INTERPRETER_CANDIDATES
                         ):
                             push("warn", f"hooks: {label} is stale — run --hooks-refresh-full")
@@ -3285,6 +3350,56 @@ def install(
     return results
 
 
+def _is_installed_skill(skill_dir: Path) -> bool:
+    """The desktop app's rule: a VERSION stamp or a SKILL.md that names gsd-path."""
+    if (skill_dir / "VERSION").is_file():
+        return True
+    try:
+        return "gsd-path" in (skill_dir / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def uninstall(plans: Sequence[TargetPlan], dry_run: bool = False) -> List[str]:
+    """Remove installed skills only. Project contracts and hooks stay."""
+    found = []
+    for plan in _deployment_plans(plans):
+        owned, kept = [], []
+        names = sorted(entry.name for entry in plan.root.iterdir()) if plan.root.is_dir() else []
+        for name in names:
+            if not _is_managed_name(name):
+                continue
+            entry = plan.root / name
+            if _is_managed_install_entry(plan.root, name) and _is_installed_skill(entry):
+                owned.append(entry)
+            else:
+                kept.append(entry)
+        agent = plan.root.parent / "agents" / CURSOR_AGENT_FILENAME
+        if plan.profile == "cursor" and agent.is_file():
+            owned.append(agent)
+        found.append(("+".join(plan.targets), plan.root, owned, kept))
+    results = []
+    locks, created = _acquire_install_locks(
+        [] if dry_run else [root for _, root, owned, _ in found if owned]
+    )
+    try:
+        for label, root, owned, kept in found:
+            results.extend(f"{label}: kept {entry} (not owned by GSD Path)" for entry in kept)
+            for entry in owned:
+                if not dry_run:
+                    _remove_path(entry)
+                results.append(f"{label}: {'would remove' if dry_run else 'removed'} {entry}")
+            if not owned:
+                results.append(f"{label}: nothing to remove ({root})")
+    except OSError as error:
+        raise InstallerError(
+            f"uninstall stopped: {error}; fix the cause and run it again"
+        ) from error
+    finally:
+        _release_install_locks(locks, created)
+    return results
+
+
 def _runtime_provenance(arguments, source_root: Path):
     """Owner-recorded provenance from --runtime-provenance-* upgrade flags.
 
@@ -3310,6 +3425,12 @@ def _runtime_provenance(arguments, source_root: Path):
     return recorded
 
 
+UNINSTALL_CONFLICTS = (
+    "update", "hooks", "hooks-init", "hooks-refresh", "hooks-refresh-full",
+    "runtime-restore", "runtime-upgrade", "runtime-migrate", "doctor", "member-of",
+)
+
+
 def parser() -> argparse.ArgumentParser:
     argument_parser = argparse.ArgumentParser(description=__doc__)
     for target in TARGETS:
@@ -3318,6 +3439,12 @@ def parser() -> argparse.ArgumentParser:
     argument_parser.add_argument("--adapter-request", action="store_true", help=argparse.SUPPRESS)
     argument_parser.add_argument("--all", action="store_true", dest="all_targets")
     argument_parser.add_argument("--update", action="store_true")
+    argument_parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="remove installed GSD Path skills from the selected targets; "
+        "keeps other skills, host settings, project contracts, and hooks",
+    )
     argument_parser.add_argument("--local", action="store_true")
     argument_parser.add_argument("--dry-run", action="store_true")
     argument_parser.add_argument("--project", type=Path)
@@ -3372,6 +3499,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     project = (
         absolute_path(arguments.project) if arguments.project is not None else None
     )
+    if arguments.uninstall:
+        conflicts = [
+            f"--{name}" for name in UNINSTALL_CONFLICTS
+            if getattr(arguments, name.replace("-", "_"))
+        ]
+        if conflicts:
+            print(f"error: --uninstall cannot be combined with {', '.join(conflicts)}", file=sys.stderr)
+            return 2
+        if project is not None:
+            print(
+                "error: --uninstall removes installed skills only; project contracts and hooks "
+                "are not removed (.project/, .gsd-path/, the AGENTS.md block, guard hooks). "
+                "Run it without --project.",
+                file=sys.stderr,
+            )
+            return 2
     runtime_action = next((action for action in ("restore", "upgrade", "migrate")
                            if getattr(arguments, "runtime_" + action)), None)
     provenance = _runtime_provenance(arguments, source_root)
@@ -3519,7 +3662,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 1
     try:
-        for result in install(
+        for result in uninstall(plans, arguments.dry_run) if arguments.uninstall else install(
             source_root,
             plans,
             project,

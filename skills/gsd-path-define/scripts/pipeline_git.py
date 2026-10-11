@@ -2,8 +2,9 @@
 # gsd-path project runtime
 """Deterministic GSD Path branch names and pipeline commit messages.
 
-Bound work lives on `gsd-path/M00N` for that milestone. The required remote
-default `main` stays a separate trunk. Ship merges the bound branch onto main;
+Bound work lives on `gsd-path/M00N` for that milestone. The remote default
+that STATE.md records (`main` when unrecorded) stays a separate trunk. Ship
+merges the bound branch onto it;
 the next milestone binds a new unused `gsd-path/M00N` and retires the
 integrated previous branch, locally and on origin.
 """
@@ -98,7 +99,8 @@ def ship_subject(archive_name: str) -> str:
 
 
 def integrate_subject(archive_name: str, default_branch: str) -> str:
-    if not default_branch or default_branch.startswith("origin/"):
+    # The bare name, under the rule that records it; `origin/trunk` is a legal bare name.
+    if not _common.valid_default_branch(default_branch):
         raise PipelineGitError(f"default branch is invalid: {default_branch}")
     number = milestone_number(archive_name)
     return (
@@ -487,7 +489,7 @@ def _require_tag_integration_proof(
     first_parent = _run_git(repo, "rev-list", "--first-parent", base).stdout.splitlines()
     if landing not in first_parent:
         raise PipelineGitError(
-            f"{mode} integration landing is not on main first-parent history"
+            f"{mode} integration landing is not on the default branch first-parent history"
         )
     return landing
 
@@ -543,6 +545,34 @@ def _write_bind_next_journal(path: Path, value: dict[str, object]) -> None:
             temporary.unlink()
 
 
+def _require_state_remote_default(repo: Path, remote_default: str) -> str:
+    """Return the default branch STATE.md records; `remote_default` must name it.
+
+    No STATE.md yet (bind-initial before initialize) or no field means main.
+    An unreadable STATE.md also means main, as before the field existed: the
+    callers that need a valid state check it themselves.
+    """
+    if __package__:
+        from . import pipeline_state
+    else:
+        try:
+            import pipeline_state
+        except ImportError:  # pragma: no cover - package import used by tests
+            from scripts import pipeline_state
+
+    default_name, unreadable = "main", ""
+    if (repo / ".project" / "STATE.md").exists():
+        try:
+            default_name = pipeline_state.load_state(repo)[0].default_branch
+        except (OSError, pipeline_state.PipelineStateError) as error:
+            unreadable = f" (STATE.md is unreadable: {error})"
+    if remote_default != f"origin/{default_name}":
+        raise PipelineGitError(
+            f"remote default must be origin/{default_name}, got {remote_default}{unreadable}"
+        )
+    return default_name
+
+
 def _initial_binding_snapshot(repo: Path) -> Optional[tuple]:
     """Admit only clean work or the validated, untracked initializer state."""
     dirty = _run_git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
@@ -589,8 +619,7 @@ def bind_initial_milestone_branch(
     resolved = _require_worktree_root(repo)
     if not is_bound_branch(branch):
         raise PipelineGitError(f"invalid bound branch: {branch}")
-    if remote_default != "origin/main":
-        raise PipelineGitError(f"remote default must be origin/main, got {remote_default}")
+    default_name = _require_state_remote_default(resolved, remote_default)
 
     default_sha = _run_git(
         resolved,
@@ -610,7 +639,7 @@ def bind_initial_milestone_branch(
         raise PipelineGitError(
             f"validated base is stale: {base_sha} != {remote_default} {default_sha}"
         )
-    remote_sha = _remote_ref_sha(resolved, "refs/heads/main")
+    remote_sha = _remote_ref_sha(resolved, f"refs/heads/{default_name}")
     if remote_sha != default_sha:
         raise PipelineGitError(
             f"fetched {remote_default} is stale relative to origin"
@@ -752,8 +781,7 @@ def bind_next_milestone_branch(
         raise PipelineGitError(f"invalid previous bound branch: {previous_branch}")
     if milestone_number(branch) <= milestone_number(previous_branch):
         raise PipelineGitError(f"next branch {branch} must follow {previous_branch}")
-    if remote_default != "origin/main":
-        raise PipelineGitError(f"remote default must be origin/main, got {remote_default}")
+    default_name = _require_state_remote_default(repo, remote_default)
 
     default_sha = _run_git(
         repo,
@@ -773,7 +801,7 @@ def bind_next_milestone_branch(
         raise PipelineGitError(
             f"validated base is stale: {base_sha} != {remote_default} {default_sha}"
         )
-    live_default_sha = _remote_ref_sha(repo, "refs/heads/main")
+    live_default_sha = _remote_ref_sha(repo, f"refs/heads/{default_name}")
     if live_default_sha != default_sha:
         raise PipelineGitError(f"fetched {remote_default} is stale relative to origin")
     ship_sha = _run_git(
