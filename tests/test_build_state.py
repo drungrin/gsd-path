@@ -840,7 +840,27 @@ archive: null
             [{"tasks": ["T002"], "command": "check new", "supersedes": ["T001"]},
              {"tasks": ["T003"], "command": _common.fix_verify(["check kept"])},
              {"tasks": ["T005"], "command": "check kept"}],
-            [{"task": "T001", "superseded_by": "T002"}],
+            [{"task": "T001", "superseded_by": "T002"},
+             {"task": "T003", "part": "T001", "superseded_by": "T002"}],
+        ))
+
+    def test_each_copy_that_a_fix_task_verify_loses_is_listed_as_a_retired_part(self) -> None:
+        # T004 shares b.py with the fix task T003 and no file with T001: T001 is not a source of T004.
+        self.write_verify_task("T001", 1, ("a.py",), "check old")
+        self.write_verify_task("T005", 1, ("b.py",), "check kept")
+        generated = _common.fix_verify(["check old", "check kept"])
+        self.write_verify_task("T003", 4, ("a.py", "b.py"), generated, deps=("T001", "T005"))
+        # A fix task of the fix task carries the copy one level deeper.
+        self.write_verify_task("T006", 6, ("b.py",), _common.fix_verify([generated]), deps=("T003",))
+        self.write_verify_task("T002", 2, ("a.py",), "check new", supersedes=("T001",))
+        self.write_verify_task("T004", 7, ("b.py",), "own", status="pending")
+
+        kept = _common.fix_verify(["check kept"])
+        self.assertEqual(self.landing("T004"), (
+            [{"tasks": ["T003"], "command": kept}, {"tasks": ["T005"], "command": "check kept"},
+             {"tasks": ["T006"], "command": _common.fix_verify([kept])}],
+            [{"task": "T003", "part": "T001", "superseded_by": "T002"},
+             {"task": "T006", "part": "T001", "superseded_by": "T002"}],
         ))
 
     def test_fix_task_verify_is_retired_when_every_copy_in_it_is_retired(self) -> None:

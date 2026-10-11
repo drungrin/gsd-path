@@ -751,7 +751,8 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
                               f"{'fail' if run['exit_code'] else 'pass'}, exit {run['exit_code']}"
                               + (f"; output tail:\n  ```\n{output}\n  ```" if output else ""))
     for item in retired:
-        append_log(task_path, f"- {now()[:10]} — orchestrator regression Verify of {item['task']} retired: "
+        part = f": part of {item['part']}" if item.get("part") else ""
+        append_log(task_path, f"- {now()[:10]} — orchestrator regression Verify of {item['task']}{part} retired: "
                               f"superseded by {item['superseded_by']}")
     if not passed or broken:
         if state["mode"] == "parallel":
