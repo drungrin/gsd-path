@@ -533,7 +533,10 @@ dispatch contract and perform steps 1–5 by hand.
      its JSON as the repair evidence for the next review. The helper selects
      the batch by the repair's locators and repo, then validates
      the carried batch, original and repair landings, isolated product scope,
-     unchanged source reports and reusable Verify. On success, brief the next
+     unchanged source reports and reusable Verify. For a member repair it
+     checks the product in the member repository, against the member commits
+     and the member Verify record, and the receipt adds `member`,
+     `member_base` and `member_commit`. On success, brief the next
      original-wave review with this receipt and the reviewer role's
      **Re-review after a proven repair** contract. Reuse command evidence;
      the new review judges the repaired product against the original criteria.
@@ -541,10 +544,8 @@ dispatch contract and perform steps 1–5 by hand.
      the evidence blocker rather than redispatching an already proven fix.
      When the blocker cannot be resolved, for example `repair base contains
      unlinked changes to original product` because a later wave changed the
-     same files, or `repair has no reusable passing Verify at its landing`
-     for a member repair, which the helper does not prove, run the next
-     review cycle of the source wave in full at the current HEAD, without the
-     receipt.
+     same files, run the next review cycle of the source wave in full at the
+     current HEAD, without the receipt.
    At the cap, record all attempts in the STATE.md log and ask the user —
    through an interactive user-input tool when available — after linking
    the resolved absolute blocking wave review, every deep lens file for the

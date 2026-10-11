@@ -55,7 +55,9 @@ its isolated repair product for the linked original criteria, including owned
 INTENT criteria. The original faulty landing and earlier verdicts remain
 historical evidence; they do not force the later verdict to remain failed.
 Reconstruct the receipt's repair `base` plus only its `commit^..commit` patch
-for `files` inside the supplied sidecar. Read the repair task's recorded
+for `files` inside the supplied sidecar. For a member repair (the receipt
+names `member`), use `member_base` and `member_commit` in that member's
+repository. Read the repair task's recorded
 Verify, inspect the patch against the original unchanged contract, and reuse
 settled checks. Check unaffected criteria from their prior evidence plus the
 repair diff for regressions. Cite the receipt, repair landing and task Log in
