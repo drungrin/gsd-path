@@ -1831,6 +1831,97 @@ class GuardHookTests(unittest.TestCase):
                     self.assert_denied_with(self.bash_in(repo, command), unresolved)
             self.assert_denied(self.bash_in(repo, 'git branch -D feature/x > "$OUT"'))
 
+    def test_redirection_at_each_position_does_not_hide_a_destructive_git_command(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            for owned, plain, rule in (
+                (
+                    "git 2>/dev/null branch -D gsd-path/M001",
+                    "git 2>/dev/null branch -D feature/x",
+                    "branch",
+                ),
+                (
+                    "2>/dev/null git branch -D gsd-path/M001",
+                    "2>/dev/null git branch -D feature/x",
+                    "branch",
+                ),
+                (
+                    ">/dev/null command git branch -D gsd-path/M001",
+                    ">/dev/null command git branch -D feature/x",
+                    "branch",
+                ),
+                (
+                    "git worktree 2>/dev/null remove --force ../task-worktree",
+                    "git worktree 2>/dev/null remove --force ../plain-worktree",
+                    "worktree",
+                ),
+                (
+                    "git update-ref >/dev/null -d refs/heads/gsd-path/M001",
+                    "git update-ref >/dev/null -d refs/heads/feature/x",
+                    "update-ref",
+                ),
+                (
+                    "git update-ref >/dev/null refs/heads/gsd-path/M001 " + "0" * 40,
+                    "git update-ref >/dev/null refs/heads/feature/x " + "0" * 40,
+                    "update-ref",
+                ),
+            ):
+                with self.subTest(command=owned):
+                    self.assert_denied_with(
+                        self.bash_in(repo, owned), guard_hook.GIT_REASONS[rule]
+                    )
+                    self.assert_allowed(self.bash_in(repo, plain))
+            for command, rule in (
+                ("git push --force 2>/dev/null origin feature/x", "push"),
+                ("git 2>/dev/null push --force origin feature/x", "push"),
+                ("git reset 2>/dev/null --hard", "reset"),
+                ("2>/dev/null git reset --hard", "reset"),
+                ("git clean >/dev/null -fd", "clean"),
+                ("git stash 2>/dev/null drop", "stash"),
+                ("git checkout >/dev/null -- .", "checkout"),
+                ("git branch 2>/dev/null -m old new", "branch-move"),
+                ("git reset <<< text --hard", "reset"),
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(
+                        self.bash_in(repo, command), guard_hook.GIT_REASONS[rule]
+                    )
+            self.assert_denied_with(
+                self.bash_in(repo, "git <<< text branch -D feature/x"),
+                guard_hook.GIT_REASONS["unresolved-target"].format(
+                    action="git branch -D"
+                ),
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "2>/dev/null env -i git branch -D feature/x"),
+                guard_hook.GIT_REASONS["git-environment"],
+            )
+            self.assert_allowed(self.bash_in(repo, "git 2>/dev/null status"))
+
+    def test_git_alias_words_are_arguments_and_never_redirections(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            self.git(repo, "config", "alias.del", "branch -D > gsd-path/M001")
+            self.git(repo, "config", "alias.unref", "update-ref -d > refs/heads/gsd-path/M001")
+            self.git(repo, "config", "alias.retire", "branch -D")
+            for command in (
+                "git del feature/x",
+                "git del feature/x 2>/dev/null",
+                "git unref refs/heads/feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied(self.bash_in(repo, command))
+            self.assert_allowed(self.bash_in(repo, "git retire feature/x"))
+            self.assert_allowed(self.bash_in(repo, "git retire feature/x 2>/dev/null"))
+            self.assert_denied_with(
+                self.bash_in(repo, "git retire gsd-path/M001 2>/dev/null"),
+                guard_hook.GIT_REASONS["branch"],
+            )
+            # What the guard denies: Git gives the alias words to branch -D.
+            subprocess.run(["git", "del", "feature/x"], cwd=repo, capture_output=True)
+            branches = self.git(repo, "branch", "--format=%(refname:short)").stdout.split()
+            self.assertNotIn("gsd-path/M001", branches)
+
     def test_git_context_name_counts_only_where_a_command_sets_it(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
@@ -1842,6 +1933,12 @@ class GuardHookTests(unittest.TestCase):
                 "grep GIT_DIR README.md; git lg",
                 "printf HOME; git lg",
                 "echo HOME && git branch -D feature/x",
+                "for d in HOME GIT_DIR; do git lg; done",
+                "read x <<< HOME; git lg",
+                "read -r line < HOME; git lg",
+                "echo read HOME; git lg",
+                "git lg -- read HOME",
+                "printf -v x HOME; git lg",
             ):
                 with self.subTest(command=command):
                     self.assert_allowed(self.bash_in(repo, command))
@@ -1852,6 +1949,12 @@ class GuardHookTests(unittest.TestCase):
                 "printf -v HOME %s /tmp; git lg",
                 "for GIT_DIR in .git; do git lg; done",
                 "getopts a HOME; git lg",
+                "print -v HOME /tmp; git lg",
+                "select GIT_DIR in .git; do git lg; done",
+                "read -r x HOME < README.md; git lg",
+                "< README.md read HOME; git lg",
+                "command read HOME; git lg",
+                "IFS= read -r GIT_DIR; git lg",
                 "true && read HOME; git branch -D feature/x",
             ):
                 with self.subTest(command=command):

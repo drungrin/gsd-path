@@ -3372,34 +3372,36 @@ def _positional_targets(arguments):
 PLAIN_REDIRECTION_OPERATORS = frozenset({">", ">>", "<", ">&", "&>", "&>>"})
 
 
-def _without_redirections(arguments):
-    """The arguments Git receives, or None when a redirection is not plain.
+def _without_redirections(words):
+    """The words of a simple command without the redirections the shell parsed.
 
-    A plain redirection is one of PLAIN_REDIRECTION_OPERATORS with a literal
-    target word, and optionally one file descriptor digit written against it.
+    Each redirection operator goes with the word after it and one file
+    descriptor digit written against it. The second result is false when one
+    of them is not plain: an operator outside PLAIN_REDIRECTION_OPERATORS or
+    a target that is not one literal word.
     """
     kept = []
+    exact = True
     index = 0
-    while index < len(arguments):
-        argument = arguments[index]
-        if not getattr(argument, "redirection", False):
-            kept.append(argument)
+    while index < len(words):
+        word = words[index]
+        if not getattr(word, "redirection", False):
+            kept.append(word)
             index += 1
             continue
-        if argument.isdigit():
+        if word.isdigit():
             index += 1
-            argument = arguments[index] if index < len(arguments) else ""
-        target = arguments[index + 1] if index + 1 < len(arguments) else ""
-        if (
-            argument not in PLAIN_REDIRECTION_OPERATORS
+            word = words[index] if index < len(words) else ""
+        target = words[index + 1] if index + 1 < len(words) else ""
+        exact = exact and not (
+            word not in PLAIN_REDIRECTION_OPERATORS
             or getattr(target, "redirection", False)
             or getattr(target, "literal", None) not in ("bare", "quoted")
             or not _literal_target(target)
             or any(character in target for character in "$`<>()&|#")
-        ):
-            return None
+        )
         index += 2
-    return kept
+    return kept, exact
 
 
 def _frontmatter_roots(contexts):
@@ -3515,9 +3517,6 @@ def owned_target_reason(command, arguments, git_options, working_directories):
         "worktree": "git worktree remove --force",
     }[command]
     unresolved = GIT_REASONS["unresolved-target"].format(action=action)
-    arguments = _without_redirections(arguments)
-    if arguments is None:
-        return unresolved
     # The shell expands a leading ~ and a glob in an option value such as the
     # -C directory; the guard has only the literal text.
     if any(
@@ -3754,6 +3753,11 @@ def ownership_cwd_is_uncertain(tokens, working_directories=None):
         _path_has_symlink_component(directory) for directory in current_directories
     )
     for index, (segment, previous_separator, group_depth) in enumerate(segments):
+        plain, _exact = _without_redirections(segment)
+        redirected = len(plain) != len(segment)
+        segment = plain
+        if not segment:
+            continue
         if env_wrapper_changes_git_context(segment):
             return True
         if segment[0] == "function":
@@ -3781,6 +3785,7 @@ def ownership_cwd_is_uncertain(tokens, working_directories=None):
             if (
                 # Only a plain `cd <directory>` has the same effect in each shell.
                 segment[0] != "cd"
+                or redirected
                 or arguments not in ([target], ["--", target])
                 # A shell with CDPATH looks for a plain relative name in other
                 # directories first; ./name and ../name are not looked up there.
@@ -3822,29 +3827,36 @@ GIT_CONTEXT_NAME = re.compile(r"GIT_\w+|HOME|XDG_CONFIG_HOME")
 # export, declare, typeset, local, readonly and unset of these names are
 # denied where the guard reads assignments.
 VARIABLE_SETTING_COMMANDS = frozenset(
-    {
-        "read", "for", "select", "getopts", "mapfile", "readarray", "integer",
-        "float", "vared",
-    }
+    {"read", "getopts", "mapfile", "readarray", "integer", "float", "vared"}
 )
+LOOP_VARIABLE_WORDS = frozenset({"for", "select"})
 
 
 def command_sets_git_context_name(tokens):
     """Whether a command that the guard does not track sets a Git context variable."""
-    setter = printf = False
-    previous = ""
-    for token in tokens:
-        if token and set(token) <= set("|;&()\n\r"):
-            setter = printf = False
-        elif GIT_CONTEXT_NAME.fullmatch(token) and (
-            setter or (printf and previous == "-v")
+    words = []
+    for token in [*tokens, ";"]:
+        if not (token and set(token) <= set("|;&()\n\r")):
+            words.append(token)
+            continue
+        words, _exact = _without_redirections(words)
+        while words and (
+            words[0].casefold() in SHELL_CONTROL_WORDS - LOOP_VARIABLE_WORDS
+            or words[0] in COMMAND_WRAPPERS
+            or SHELL_ASSIGNMENT_PATTERN.match(words[0])
         ):
+            del words[0]
+        command, operands, words = "".join(words[:1]), words[1:], []
+        if command in LOOP_VARIABLE_WORDS:
+            operands = operands[:1]
+        elif command in {"printf", "print"}:
+            operands = [
+                name for option, name in zip(operands, operands[1:]) if option == "-v"
+            ]
+        elif command not in VARIABLE_SETTING_COMMANDS:
+            continue
+        if any(GIT_CONTEXT_NAME.fullmatch(operand) for operand in operands):
             return True
-        elif token in VARIABLE_SETTING_COMMANDS:
-            setter = True
-        elif token == "printf":
-            printf = True
-        previous = token
     return False
 
 
@@ -3877,38 +3889,40 @@ def destructive_git_reason(
             ))
             for token in segment
         )
+        # A redirection can stand at each position of a simple command.
+        words, exact = _without_redirections(segment)
         segment_git_context_reliable = (
             git_context_reliable
-            and not env_wrapper_changes_git_context(segment)
+            and not env_wrapper_changes_git_context(words)
             and not assignments_change_git_context(assignments)
         )
-        wrapped = wrapped_command_tokens(segment)
+        wrapped = wrapped_command_tokens(words)
         if wrapped is not None:
             reason = destructive_git_reason(
                 wrapped,
                 resolved_aliases,
                 initial_assignments=assignments,
                 working_directories=directories,
-                cwd_reliable=cwd_reliable,
+                cwd_reliable=cwd_reliable and exact,
                 git_context_reliable=segment_git_context_reliable,
                 earlier_git=earlier_git,
             )
             if reason is not None:
                 return reason
-        invocation = git_command(segment, assignments)
+        invocation = git_command(words, assignments)
         this_git = wrapped is not None or invocation is not None
         if invocation is None:
             continue
         command, arguments, git_options = invocation
         # Git matches its own commands by exact case, but alias names in any case.
         built_in = (
-            command_invocation(segment)[1][-len(arguments) - 1] in GIT_BUILT_IN_COMMANDS
+            command_invocation(words)[1][-len(arguments) - 1] in GIT_BUILT_IN_COMMANDS
         )
         if not segment_git_context_reliable and not built_in:
             return GIT_REASONS["git-environment"]
         # A scoped deletion needs literal words: the shell can change a variable
         # in ways the guard does not track (read, +=, for, printf -v).
-        resolvable = cwd_reliable and not any(
+        resolvable = cwd_reliable and exact and not any(
             SHELL_PARAMETER_SYNTAX.search(token) for token in segment
         )
         directories = [native_path_text(directory) for directory in directories]
@@ -3933,8 +3947,12 @@ def destructive_git_reason(
                     f"git alias {command} refers to itself; run the underlying "
                     "git command directly"
                 )
+            # Git passes each word of an alias on as an argument; it runs no shell.
+            alias_words = shell_tokens(alias, direct=False)
+            for word in alias_words:
+                word.redirection = False
             reason = destructive_git_reason(
-                ["git", *git_options, *shell_tokens(alias, direct=False), *arguments],
+                ["git", *git_options, *alias_words, *arguments],
                 resolved_aliases | {command},
                 initial_assignments=assignments,
                 working_directories=directories,
