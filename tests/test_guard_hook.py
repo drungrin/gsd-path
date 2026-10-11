@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import guard_hook
 from install import PROJECT_RUNTIME_SCRIPTS
 import status_runtime
-from tests._platform import requires_symlink
+from tests._platform import posix_only, requires_symlink
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "guard_hook.py"
 
@@ -1867,6 +1867,49 @@ class GuardHookTests(unittest.TestCase):
                 self.bash_in(parent, "unset D; cd $D && git status"),
                 "cd target $D cannot be resolved by the guard",
             )
+
+    @posix_only
+    def test_scoped_cleanup_works_when_git_rejects_nul_worktree_listing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo = self.scoped_cleanup_fixture(root)
+            self.git(repo, "worktree", "add", "-q", "--detach", str(root / "detached-worktree"))
+            # Git before 2.36 has no `worktree list -z`.
+            shim = root / "bin" / "git"
+            shim.parent.mkdir()
+            shim.write_text(
+                "#!/bin/sh\n"
+                'case " $* " in *" worktree list "*" -z "*)\n'
+                '  echo "error: unknown switch z" >&2; exit 129;;\n'
+                "esac\n"
+                f'exec {shlex.quote(shutil.which("git"))} "$@"\n',
+                encoding="utf-8",
+            )
+            shim.chmod(0o755)
+            path = f"{shim.parent}{os.pathsep}{os.environ['PATH']}"
+            with mock.patch.dict(os.environ, {"PATH": path}):
+                rejected = subprocess.run(
+                    ["git", "worktree", "list", "--porcelain", "-z"],
+                    cwd=repo, capture_output=True, check=False,
+                )
+                self.assertEqual(129, rejected.returncode)
+                for command in (
+                    "git branch -D feature/x",
+                    "git update-ref -d refs/heads/feature/x",
+                    "git worktree remove --force ../plain-worktree",
+                    "git worktree remove --force ../detached-worktree",
+                ):
+                    with self.subTest(command=command):
+                        self.assert_allowed(self.bash_in(repo, command))
+                for command, rule in (
+                    ("git branch -D gsd-path/M001", "branch"),
+                    ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                    ("git worktree remove --force ../task-worktree", "worktree"),
+                ):
+                    with self.subTest(command=command):
+                        self.assert_denied_with(
+                            self.bash_in(repo, command), guard_hook.GIT_REASONS[rule]
+                        )
 
     def test_git_ignores_an_alias_for_each_built_in_command_the_guard_skips(self):
         with tempfile.TemporaryDirectory() as temporary:

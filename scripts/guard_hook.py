@@ -3195,10 +3195,10 @@ def _git_output(git_options, directory, *arguments):
     return result.stdout
 
 
-def registered_worktree_records(output):
+def registered_worktree_records(output, separator="\0"):
     records = {}
-    for record in output.split("\0\0"):
-        fields = [field for field in record.split("\0") if field]
+    for record in output.split(separator * 2):
+        fields = [field for field in record.split(separator) if field]
         if not fields:
             continue
         paths = [field[len("worktree "):] for field in fields if field.startswith("worktree ")]
@@ -3226,11 +3226,14 @@ def git_target_contexts(git_options, working_directories):
         root = Path(
             _git_output(git_options, directory, "rev-parse", "--show-toplevel").strip()
         ).resolve()
-        records = registered_worktree_records(
-            _git_output(
-                git_options, directory, "worktree", "list", "--porcelain", "-z"
-            )
-        )
+        listing = ("worktree", "list", "--porcelain")
+        try:
+            output, separator = _git_output(git_options, directory, *listing, "-z"), "\0"
+        except ValueError:
+            # Git before 2.36 has no -z here; pipeline_git.worktree_list_porcelain
+            # retries the same way. A line then ends each field.
+            output, separator = _git_output(git_options, directory, *listing), "\n"
+        records = registered_worktree_records(output, separator)
         if root not in records:
             raise ValueError("git target repository worktree cannot be resolved")
         common = Path(
