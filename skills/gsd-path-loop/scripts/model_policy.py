@@ -202,7 +202,11 @@ def native_record(args):
         identity = {'repo': str(args.repo.resolve()), 'project_dir': args.project_dir,
                     'scope': args.scope, 'assignment': args.assignment, 'role': args.role}
         if data is not None and data.get('identity') != identity:
-            raise PolicyError('record belongs to another assignment or milestone/track/cycle')
+            recorded = data.get('identity')
+            recorded = recorded if isinstance(recorded, dict) else {}
+            differing = ', '.join(f'{field}: {value}, record has {recorded.get(field)}'
+                                  for field, value in identity.items() if recorded.get(field) != value)
+            raise PolicyError(f'record belongs to another assignment or milestone/track/cycle ({differing})')
         if args.action == 'release':
             if data is None or not args.terminal_result:
                 raise PolicyError('release requires an existing record and terminal-result evidence')
