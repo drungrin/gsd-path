@@ -51,8 +51,9 @@ costs the run.
 2. Satisfy every acceptance criterion and every owned INTENT success
    criterion within the Approach constraints, matching conventions in the
    listed files.
-3. Edit only exact paths in `files`, plus the task file's Log. There is no
-   exception for imports, routes, generated files, or wiring.
+3. Edit only paths in `files`, plus the task file's Log. A declared
+   directory covers the files below it; a declared file covers only itself.
+   There is no exception for imports, routes, generated files, or wiring.
 4. Run Verify. Fix failures only within the allowed paths. The orchestrator
    also runs the Verify of each earlier-wave task that shares a file with
    yours. A Log entry `orchestrator regression Verify of <task id>` with

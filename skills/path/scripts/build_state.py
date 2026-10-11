@@ -495,7 +495,7 @@ def _validate_ready_metadata(project: Project) -> Dict[str, Mapping[str, object]
 def _overlap(left: Task, right: Task) -> List[str]:
     if left.repo != right.repo:
         return []
-    return sorted(set(left.files) & set(right.files))
+    return _common.overlapping_paths(left.files, right.files)
 
 
 def _superseded(tasks: Sequence[Task], task: Task) -> Dict[str, str]:
