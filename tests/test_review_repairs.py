@@ -226,7 +226,11 @@ Criterion: Prints good
 - Prints good — found: prints good too late, count.py:1 fix: print better
 
 """
-    OTHER = "## Review findings\n\n### {task}_ac2\nCriterion: Exits successfully\n- Exits successfully — found: exit 1\n\n"
+    FINDING = "## Review findings\n\n### {locator}\nCriterion: {criterion}\n- {criterion} — found: wrong\n\n"
+    # Another criterion; the same criterion text in a finding of another task; a finding on a fix task itself.
+    OTHER = FINDING.format(locator="t002_ac2", criterion="Exits successfully")
+    SAME_TEXT = FINDING.format(locator="t009_ac1", criterion="Prints good")
+    FIX_OF_FIX = FINDING.replace("{criterion}", "Prints good")
 
     def repeat_repair(self, deps="T001, T002"):
         """The cycle 2 review repeats the finding; T003 repairs it on top of the landed T002."""
@@ -248,11 +252,12 @@ Criterion: Prints good
                           evidence["verification"]["entry"]["execution"]["stdout"]), (second, "better\n"))
 
     def test_repeat_repair_gets_no_receipt_when_its_base_has_other_changes(self):
-        for fault in ("no dependency", "other finding", "change before", "change after"):
+        for fault in ("no dependency", "other finding", "same text", "change before", "change after"):
             with self.subTest(fault=fault):
                 self.setUp()
-                if fault == "other finding":  # T002 is a repair of another criterion
-                    self.repair_file = self.task("T002", "Repair", 2, "T001", self.OTHER.format(task="t001"))
+                if fault in ("other finding", "same text"):  # T002 is a repair of another finding
+                    self.repair_file = self.task("T002", "Repair", 2, "T001",
+                                                 self.OTHER if fault == "other finding" else self.SAME_TEXT)
                 elif fault == "change before":  # before the linked repair T002; not the landing of a linked repair
                     (self.repo / "count.py").write_bytes("print('unrelated')\n".encode("utf-8"))
                 self.finish_repair()
@@ -279,6 +284,7 @@ Criterion: Prints good
     def later_chain(self, unrelated=None):
         """T002 changes count.py; the linked T003 changes count.py and late.py; the linked T004 changes count.py.
 
+        As `fix-tasks` writes a fix of a fix, T003 carries a finding on a criterion of T002, and T004 one of T003.
         `unrelated` names the moment when another task changes late.py, the file that only T003 names.
         """
         def other_task(moment):
@@ -288,8 +294,9 @@ Criterion: Prints good
 
         self.finish_repair()
         other_task("before T003")
-        self.repair("T003", "T002", "better", files="  - count.py\n  - late.py", target="count.py,late.py")
-        self.repair("T004", "T003", "best")
+        self.repair("T003", "T002", "better", findings=self.FIX_OF_FIX.format(locator="t002_ac1"),
+                    files="  - count.py\n  - late.py", target="count.py,late.py")
+        self.repair("T004", "T003", "best", findings=self.FIX_OF_FIX.format(locator="t003_ac1"))
         other_task("after T004")
 
     def test_superseded_repair_receipt_names_the_files_of_every_later_linked_repair(self):
@@ -310,6 +317,7 @@ Criterion: Prints good
 
     def test_superseded_repair_gets_no_receipt_from_an_unlinked_or_unverified_later_change(self):
         expected_errors = {"no dependency": "product changed after", "other finding": "product changed after",
+                           "same text": "product changed after",
                            "no findings": "product changed after", "other change": "product changed after",
                            "other file": "product changed after", "no verify": "passing Verify"}
         for fault, error in expected_errors.items():
@@ -318,7 +326,8 @@ Criterion: Prints good
                 self.finish_repair()
                 ledger = (self.repo / _common.VERIFY_LEDGER_PATH).read_bytes()
                 self.repair("T003", "T001" if fault == "no dependency" else "T002", "better",
-                            findings={"other finding": self.OTHER.format(task="t002"), "no findings": ""}.get(fault),
+                            findings={"other finding": self.OTHER, "same text": self.SAME_TEXT,
+                                      "no findings": ""}.get(fault),
                             files="  - count.py\n  - late.py" if fault == "other file" else "  - count.py")
                 if fault == "other change":  # after the last linked repair
                     (self.repo / "count.py").write_bytes("print('unrelated')\n".encode("utf-8"))

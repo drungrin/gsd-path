@@ -539,8 +539,12 @@ dispatch contract and perform steps 1–5 by hand.
      and the member Verify record, and the receipt adds `member`,
      `member_base` and `member_commit`. Another change to the checked files
      is accepted only when it is the landing of a linked repair: a `done`
-     task of the same repo that carries one of the repair's criteria in
-     `## Review findings` and is joined to the repair by `deps`. Linked
+     task of the same repo that carries one of the repair's findings in
+     `## Review findings`, with the same locator and criterion, and is
+     joined to the repair by `deps`. A finding on an acceptance criterion of
+     a fix task counts as the finding that this fix task carries with the
+     same criterion; the same criterion text under another locator is
+     another finding. Linked
      repairs in the repair base are in `earlier_repairs`. Linked repairs
      after the repair are in `later_repairs`; then the landing and the
      recorded Verify of the last one are the evidence, and `chain_files`

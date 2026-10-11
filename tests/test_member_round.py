@@ -69,10 +69,19 @@ class MemberRoundTests(unittest.TestCase):
     def blocked_wave(self) -> None:
         """Both tasks land, then the wave 1 cycle 1 review fails each task on its own criterion."""
         self.assertEqual(self.round()["status"], "done")
-        lines = ["# Review — wave 1, cycle 1", "", "Wave verdict: blocked", "Cycle: 1", "Depth: full", "Tasks reviewed: 2"]
-        for task, criterion in (("T001", "The demo command prints hello."), ("T002", "The demo test suite is green.")):
-            lines += ["", f"## {task} — Demo task {task}: fail", "", f"- ❌ {criterion} — found: wrong output\n  fix: correct it"]
-        review = self.root / ".project/review/wave-1.cycle1.md"
+        self.review(1, 1, "blocked", "T001", "T002")
+
+    def review(self, wave: int, cycle: int, verdict: str, *tasks: str) -> None:
+        """A wave review that gives the coordinator task and the member task the same verdict, each on its criterion."""
+        lines = [f"# Review — wave {wave}, cycle {cycle}", "", f"Wave verdict: {verdict}", f"Cycle: {cycle}",
+                 "Depth: full", "Tasks reviewed: 2"]
+        for task, criterion in zip(tasks, ("The demo command prints hello.", "The demo test suite is green.")):
+            title = isolation.task_frontmatter(next((self.root / ".project/tasks").glob(f"{task}-*.md")).read_text(
+                encoding="utf-8"))[0]["title"]
+            lines += ["", f"## {task} — {title}: {'fail' if verdict == 'blocked' else 'pass'}", "",
+                      f"- ❌ {criterion} — found: wrong output\n  fix: correct it" if verdict == "blocked"
+                      else f"- ✅ {criterion} — recorded Verify pass"]
+        review = self.root / f".project/review/wave-{wave}.cycle{cycle}.md"
         review.parent.mkdir(exist_ok=True)
         review.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
 
@@ -123,14 +132,17 @@ class MemberRoundTests(unittest.TestCase):
         (bound / "tests/test_app.py").write_bytes(text.encode("utf-8"))
         git(bound, "commit", "-q", "-am", "other member work")
 
-    def land_repairs(self) -> dict:
-        """fix-tasks plans T003 and the member repair T004; the wave 2 round lands both with a new product."""
-        completed = subprocess.run([sys.executable, "-B", str(SCRIPT), "fix-tasks", "--wave", "1", "--cycle", "1",
+    def land_repairs(self, wave: int = 1) -> dict:
+        """fix-tasks plans a coordinator repair and a member repair of a wave; the next round lands both with a new product.
+
+        For wave 1 these are T003 and the member repair T004.
+        """
+        completed = subprocess.run([sys.executable, "-B", str(SCRIPT), "fix-tasks", "--wave", str(wave), "--cycle", "1",
                                     "--repo", str(self.root)], capture_output=True, encoding="utf-8", errors="replace")
         self.assertEqual(json.loads(completed.stdout)["status"], "created", completed.stdout + completed.stderr)
         coder = self.workspace.parent / "fix_coder.py"
-        coder.write_bytes(driver_tests.FAKE_CODER.replace("print('hello')", "print('fixed')").encode("utf-8"))
-        receipt = self.round(wave=2, coder=coder)
+        coder.write_bytes(driver_tests.FAKE_CODER.replace("print('hello')", f"print('fix of wave {wave}')").encode("utf-8"))
+        receipt = self.round(wave=wave + 1, coder=coder)
         self.assertEqual(receipt["status"], "done", json.dumps(receipt, indent=1)[:4000])
         return {item["task"]: item for item in receipt["landed"]}
 
@@ -176,6 +188,29 @@ class MemberRoundTests(unittest.TestCase):
         ledger.write_bytes("".join(rows).encode("utf-8"))
         self.assertEqual(self.repair_evidence("T004")[0], 0)
         # The member product must not change after the member landing.
+        self.change_member_product("print('later')\n")
+        self.assertEqual(self.repair_evidence("T004"),
+                         (2, {"status": "error", "error": "product changed after the repair landing"}))
+
+    def test_repair_evidence_links_the_fix_of_a_fix_that_fix_tasks_generates(self) -> None:
+        self.blocked_wave()
+        self.land_repairs()
+        # Wave 1 passes its next review; the review of the repair wave fails both repairs on the carried criteria.
+        self.review(1, 2, "pass", "T001", "T002")
+        self.review(2, 1, "blocked", "T003", "T004")
+        landed = self.land_repairs(wave=2)
+        for task, later, files in (("T003", "T005", ["src/app.py"]), ("T004", "T006", ["tests/test_app.py"])):
+            fix = (self.root / f".project/tasks/{later}-fix-wave-2-cycle-1.md").read_text(encoding="utf-8")
+            self.assertEqual(isolation.task_frontmatter(fix)[0]["deps"], [task])
+            self.assertIn(f"### {task.lower()}_ac1\nCriterion: ", fix)
+            code, evidence = self.repair_evidence(task)
+            self.assertEqual(code, 0, evidence)
+            self.assertEqual(([item["task"] for item in evidence["later_repairs"]], evidence["chain_files"]),
+                             ([later], files))
+        # The member chain is proven in the member: the Verify of T006 at its member landing is the evidence.
+        self.assertEqual(evidence["later_repairs"][0]["member_commit"], landed["T006"]["landing"])
+        self.assertEqual((evidence["verification"]["entry"]["repo"], evidence["verification"]["entry"]["commit"]),
+                         ("web", landed["T006"]["landing"]))
         self.change_member_product("print('later')\n")
         self.assertEqual(self.repair_evidence("T004"),
                          (2, {"status": "error", "error": "product changed after the repair landing"}))

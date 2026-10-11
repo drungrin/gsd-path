@@ -674,18 +674,37 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
         def linked() -> tuple:
             """Landed repairs of the same findings that `deps` join to this repair, in landing order.
 
-            A linked task is done, is in the same repo, carries a criterion of this repair in its
+            A linked task is done, is in the same repo, carries a finding of this repair in its
             `## Review findings`, and depends on this repair or on a linked task, or the reverse.
             """
-            carried = {_normalize(group["criterion"]) for group in groups}
-            repairs = {task_id: (repair_path, fields)}
+            tasks, carried = {task_id: (repair_path, fields)}, {}
             for path in (project / "tasks").glob("T*-*.md"):
                 other = _read(path, "task")
                 other_fields = isolation.task_frontmatter(other)[0] or {}
-                if (other_fields.get("status") == "done" and other_fields.get("repo") == member
-                        and carried & {_normalize(line) for line in re.findall(
-                            r"(?m)^Criterion:(.*)$", _section(other, "Review findings") or "")}):
-                    repairs[str(other_fields.get("id"))] = (path, other_fields)
+                tasks[str(other_fields.get("id"))] = (path, other_fields)
+                blocks = re.split(r"(?m)^### ([a-z0-9_]+)\s*$", _section(other, "Review findings") or "")
+                carried[str(other_fields.get("id"))] = {
+                    (locator, _normalize(line)) for locator, block in zip(blocks[1::2], blocks[2::2])
+                    for line in re.findall(r"(?m)^Criterion:(.*)$", block)}
+
+            def traced(finding: tuple, seen: frozenset = frozenset()) -> set:
+                """The finding as it started: its locator and criterion in the review of the source tasks.
+
+                A finding on an acceptance criterion of a fix task (`fix-tasks` copies the carried criteria
+                there) is the finding with the same criterion that this fix task carries. Two findings with
+                the same criterion text and other locators stay two findings.
+                """
+                owner = re.fullmatch(r"t(\d{3})_ac\d+", finding[0])
+                sources = () if not owner else {
+                    item for item in carried.get(f"T{owner.group(1)}", ()) if item[1] == finding[1]} - seen
+                return {origin for item in sources for origin in traced(item, seen | {finding})} or {finding}
+
+            def origins(other: str) -> set:
+                return {origin for finding in carried.get(other, ()) for origin in traced(finding)}
+
+            repairs = {other: task for other, task in tasks.items() if other == task_id or (
+                task[1].get("status") == "done" and task[1].get("repo") == member
+                and origins(task_id) & origins(other))}
             joined, more = set(), {task_id}
             while more:
                 joined |= more
