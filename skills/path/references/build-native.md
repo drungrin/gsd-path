@@ -152,9 +152,10 @@ dispatch contract and perform steps 1–5 by hand.
    `cycle`, `waiting_waves`); a later passing canonical review cycle releases
    the waiting waves.
    `unreviewed_waves`, when present, lists earlier waves whose tasks are all
-   `done` and that have no canonical review file. `ready` reports them and
-   does not hold the returned tasks: run step 6 for each listed wave before
-   you dispatch.
+   `done` and that have no canonical review file. A repair wave is not
+   listed: the next review cycle of its source wave judges it. `ready` reports
+   the listed waves and does not hold the returned tasks: run step 6 for each
+   listed wave before you dispatch.
    Its typed errors are the recovery rule:
    - `task-recovery-required`: for each listed failed or blocked task run
      `python3 <absolute build_state.py> reconcile --repo <absolute primary>

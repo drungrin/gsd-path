@@ -523,10 +523,16 @@ def _blocked_wave_reviews(project: Project) -> Dict[int, int]:
 
 
 def _unreviewed_waves(project: Project, waves: Sequence[int]) -> List[int]:
-    """Return the given waves that have no canonical review file for any cycle."""
+    """Return the given waves that still need a canonical review file of their own.
+
+    A repair wave is left out: the next review cycle of its source wave judges it.
+    """
 
     review_dir = project.tasks_dir.parent / "review"
-    reviewed = set()
+    reviewed = {
+        wave for wave in waves
+        if all(task.review_findings for task in project.tasks if task.wave == wave)
+    }
     if review_dir.is_dir() and not review_dir.is_symlink():
         for path in review_dir.iterdir():
             named = check_handoffs.WAVE_REVIEW_NAME.fullmatch(path.name)

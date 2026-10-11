@@ -211,7 +211,25 @@ class BlockedWaveRepairReadyTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in payload["ready"]], ["T003"])
         self.assertEqual(payload["unreviewed_waves"], [2])
 
-    def test_repair_marker_uses_an_exact_review_findings_section_heading(self) -> None:
+    def test_landed_repair_wave_without_a_review_file_is_not_reported(self) -> None:
+        source = task("T001", 1, status="done")
+        ordinary = task("T002", 2, deps=("T001",), status="done")
+        first_repair = task("T003", 3, deps=("T001",), status="done", review_findings=True)
+        second_repair = task("T004", 4, deps=("T002",), review_findings=True)
+        self.review(1, 1, None, "blocked")
+        self.review(1, 2, None, "pass")
+        self.review(2, 1, None, "blocked")
+
+        payload = self.ready(source, ordinary, first_repair, second_repair)
+
+        self.assertEqual(payload["repair_for_wave"], 2)
+        self.assertEqual([item["id"] for item in payload["ready"]], ["T004"])
+        self.assertNotIn("unreviewed_waves", payload)
+
+        (self.review_dir / "wave-2.cycle1.md").unlink()
+        payload = self.ready(source, ordinary, first_repair, second_repair)
+        self.assertEqual(payload["unreviewed_waves"], [2])
+
         path = self.tasks_dir / "T003-fix.md"
         frontmatter = """---
 id: T003
