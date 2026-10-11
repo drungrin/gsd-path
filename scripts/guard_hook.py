@@ -3465,6 +3465,25 @@ def _runs_git_or_wrapper(segment, assignments):
     )
 
 
+def _holds_git_command(tokens, assignments):
+    """Whether the tokens run Git or a wrapper, at each process substitution depth."""
+    for segment in command_segments(tokens):
+        words = []
+        for token in [*segment, None]:
+            if token is not None and not _opens_process_substitution(token):
+                if not getattr(token, "descriptor", False):
+                    words.append(token)
+                continue
+            if words and _runs_git_or_wrapper(words, assignments):
+                return True
+            words = []
+            if getattr(token, "body", None) and _holds_git_command(
+                token.body, assignments
+            ):
+                return True
+    return False
+
+
 def _without_descriptor(token):
     word = ShellToken(token)
     word.redirection = getattr(token, "redirection", False)
@@ -3973,8 +3992,25 @@ def destructive_git_reason(
     cwd_reliable=True,
     git_context_reliable=True,
     earlier_git=False,
+    fold=True,
 ):
-    tokens = _fold_process_substitutions(tokens)
+    # A process substitution has two readings: the tokens as they stand, and
+    # the tokens with each substitution body folded onto its operator.
+    folded = _fold_process_substitutions(tokens) if fold else tokens
+    if len(folded) != len(tokens):
+        reason = destructive_git_reason(
+            tokens,
+            resolved_aliases,
+            initial_assignments=initial_assignments,
+            working_directories=working_directories,
+            cwd_reliable=cwd_reliable,
+            git_context_reliable=git_context_reliable,
+            earlier_git=earlier_git,
+            fold=False,
+        )
+        if reason is not None:
+            return reason
+    tokens = folded
     cwd_reliable = cwd_reliable and not ownership_cwd_is_uncertain(
         tokens, working_directories
     )
@@ -4022,11 +4058,9 @@ def destructive_git_reason(
             )
             if reason is not None:
                 return reason
-        nested_git = any(
-            _runs_git_or_wrapper(part, assignments)
-            for reading in readings
-            for part in command_segments(_fold_process_substitutions(reading))
-        )
+        nested_git = (
+            descriptor or any(_opens_process_substitution(token) for token in segment)
+        ) and _holds_git_command(segment, assignments)
         if descriptor:
             this_git = nested_git
             continue

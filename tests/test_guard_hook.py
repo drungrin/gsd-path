@@ -1977,6 +1977,10 @@ class GuardHookTests(unittest.TestCase):
             for command in (
                 "git status 10>/dev/null; git update-ref -d refs/heads/feature/x",
                 "cat <(git status); git update-ref -d refs/heads/feature/x",
+                "cat <(cat <(git status)); git update-ref -d refs/heads/feature/x",
+                "make 10>/dev/null <(git status); git update-ref -d refs/heads/feature/x",
+                "cat <(case x in x) git status;; esac); "
+                "git update-ref -d refs/heads/feature/x",
             ):
                 with self.subTest(command=command):
                     self.assert_denied_with(
@@ -2008,6 +2012,39 @@ class GuardHookTests(unittest.TestCase):
                 "git log <(echo) --oneline -1",
                 "make 10>/dev/null; git update-ref -d refs/heads/feature/x",
                 "diff <(echo a) <(echo b); git update-ref -d refs/heads/feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+
+    def test_destructive_git_in_a_case_body_of_a_process_substitution_is_denied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            for command, rule in (
+                ("git branch -D gsd-path/M001", "branch"),
+                ("git branch -D gsd-path-task/T001", "branch"),
+                ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                ("git worktree remove --force ../task-worktree", "worktree"),
+                ("git reset --hard HEAD", "reset"),
+                ("git push --force origin feature/x", "push"),
+                ("git clean -fd", "clean"),
+                ("git stash drop", "stash"),
+                ("git checkout -- .", "checkout"),
+                ("git branch -m old new", "branch-move"),
+            ):
+                for wrap in (
+                    "cat <(case x in x) {};; esac)",
+                    "cat <(cat <(case x in x) {};; esac))",
+                    "cat <(echo) <(case x in x) {};; esac",
+                ):
+                    with self.subTest(command=command, wrap=wrap):
+                        self.assert_denied_with(
+                            self.bash_in(repo, wrap.format(command)),
+                            guard_hook.GIT_REASONS[rule],
+                        )
+            for command in (
+                "cat <(case x in x) git status;; esac)",
+                "cat <(case x in x) git branch -D feature/x;; esac)",
+                "cat <(case x in x) echo hi;; esac)",
             ):
                 with self.subTest(command=command):
                     self.assert_allowed(self.bash_in(repo, command))
