@@ -146,7 +146,10 @@ def require_commit(repo: Path, value: str) -> str:
 
 def require_full_sha(value: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", value):
-        raise IsolationError(f"base must be a full 40-character SHA: {value}")
+        raise IsolationError(
+            f"base must be a full 40-character SHA: {value}; "
+            "resolve a ref or a short SHA with git rev-parse first"
+        )
     return value
 
 

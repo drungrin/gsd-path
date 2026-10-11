@@ -1775,6 +1775,22 @@ class PipelineStateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("approve requires --expected-head", result.stderr)
 
+    def test_approve_cli_refuses_a_ref_or_short_sha_and_names_git_rev_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, expected_head = self._approval_repo(tmp, "plan")
+            for value in ("HEAD", expected_head[:12]):
+                with self.subTest(value=value):
+                    result = subprocess.run(
+                        [sys.executable, str(PIPELINE_STATE_SCRIPT.resolve()), "approve", "--repo", str(repo),
+                         "--kind", "plan", "--expected-head", value],
+                        capture_output=True, encoding="utf-8", errors="replace", check=False,
+                    )
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("expected-head must be an exact full commit SHA", result.stderr)
+                    self.assertIn("git rev-parse", result.stderr)
+            state = pipeline_state.load_state(repo)[0]
+            self.assertEqual((state.phase, state.status), ("plan", "active"))
+
     def test_post_abandon_selection_moves_roadmap_active_to_inspect(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

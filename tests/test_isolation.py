@@ -97,6 +97,25 @@ class IsolationTests(unittest.TestCase):
             self.assertTrue((project / "archive/001-old/research/.claude/.cc-writes").is_dir())
             self.assertFalse((project / "archive/002-now/research/.claude").exists())
 
+    def test_cli_refuses_a_ref_or_short_sha_and_names_git_rev_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            for value in ("HEAD", base[:12]):
+                for arguments in (
+                    ("isolate-verify", "--base", value, "--name", "probe"),
+                    ("checkpoint", "--expected-head", value, "--subject", "build: probe",
+                     "--body", "Why: probe", "--allow-path", ".project/STATE.md"),
+                ):
+                    with self.subTest(value=value, command=arguments[0]):
+                        result = self.run_cli(arguments[0], "--repo", str(repo), *arguments[1:])
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn(f"must be a full 40-character SHA: {value}", result.stderr)
+                        self.assertIn("git rev-parse", result.stderr)
+            self.assertEqual(git(repo, "rev-parse", "HEAD"), base)
+            self.assertEqual(git(repo, "branch", "--list", "gsd-path-verify/*"), "")
+
     def test_serial_isolate_uses_bound_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "repo"
