@@ -667,22 +667,30 @@ def _strip_comments(text: str) -> str:
     return COMMENT_PATTERN.sub("", text)
 
 
-def _numbered_items(section: str, *, continuations: bool = False) -> Dict[int, str]:
-    items: Dict[int, str] = {}
-    current = None
+def _numbered_entries(section: str, *, continuations: bool = False) -> List[Tuple[int, str]]:
+    """Each numbered item in document order; a repeated number stays a separate entry."""
+    entries: List[Tuple[int, str]] = []
+    open_item = False
     for line in _strip_comments(section).splitlines():
         match = NUMBERED_ITEM_PATTERN.fullmatch(line.strip())
         if not match:
-            if continuations and current is not None and line[:1].isspace() and line.strip():
-                items[current] += " " + line.strip()
+            if continuations and open_item and line[:1].isspace() and line.strip():
+                number, text = entries[-1]
+                entries[-1] = (number, text + " " + line.strip())
             elif line.strip():
-                current = None
+                open_item = False
             continue
-        number = int(match.group(1))
+        entries.append((int(match.group(1)), match.group(2).strip()))
+        open_item = True
+    return entries
+
+
+def _numbered_items(section: str, *, continuations: bool = False) -> Dict[int, str]:
+    items: Dict[int, str] = {}
+    for number, text in _numbered_entries(section, continuations=continuations):
         if number in items:
             raise HandoffError(f"repeated numbered item {number}")
-        items[number] = match.group(2).strip()
-        current = number
+        items[number] = text
     return items
 
 
@@ -1301,7 +1309,10 @@ def task_review_observation(item: str, task_text: str) -> str:
     item = _normalize_ws(item)
     section = _common.section_body(task_text, "Acceptance criteria")
     if section is not None:
-        for criterion in _numbered_items(section, continuations=True).values():
+        # Issue #374: frozen landed bytes may repeat a criterion number. Only the
+        # criterion text matters here, so each repeated entry is still split
+        # from its evidence and the evidence gets the same checks.
+        for _number, criterion in _numbered_entries(section, continuations=True):
             quoted = _normalize_ws(criterion)
             prefix = quoted + " — "
             if item.startswith(prefix):
@@ -1528,11 +1539,30 @@ def _validate_task_graph(
             if _task_wave(tasks[dependency], dependency) > wave:
                 raise HandoffError(f"{task_id} depends on later-wave {dependency}")
 
+    # `supersedes` retires the regression Verify of an earlier task: the same overlap rule selects both.
+    for task_id, text in tasks.items():
+        superseded = _strict_frontmatter(text, task_id).get("supersedes", [])
+        if (
+            not isinstance(superseded, list)
+            or any(not re.fullmatch(r"T\d{3}", item) for item in superseded)
+            or len(superseded) != len(set(superseded))
+        ):
+            raise HandoffError(f"{task_id} supersedes must be a list of different task ids, for example [T001]")
+        for earlier in superseded:
+            if earlier not in tasks:
+                raise HandoffError(f"{task_id} supersedes unknown task {earlier}")
+            if task_waves[earlier] >= task_waves[task_id]:
+                raise HandoffError(f"{task_id} supersedes {earlier}, which is not in an earlier wave")
+            if task_repos[earlier] != task_repos[task_id]:
+                raise HandoffError(f"{task_id} supersedes {earlier}, which is in another repo")
+            if not set(task_files[earlier]) & set(task_files[task_id]):
+                raise HandoffError(f"{task_id} supersedes {earlier}, which shares no declared file with it")
+
     for index, left in enumerate(task_ids):
         for right in task_ids[index + 1 :]:
             if task_waves[left] != task_waves[right] or task_repos[left] != task_repos[right]:
                 continue
-            overlap = sorted(set(task_files[left]) & set(task_files[right]))
+            overlap = _common.overlapping_paths(task_files[left], task_files[right])
             if overlap:
                 if (
                     _task_scalar(tasks[left], left, "status") == "done"
@@ -1746,7 +1776,24 @@ def validate_roadmap(
 ) -> Dict[str, object]:
     """Validate roadmap structure and dependency ordering."""
 
-    _require_state(root, "roadmap", "active", project_dir)
+    # A milestone-boundary re-slice keeps its entering inspect or define state.
+    _require_state_one_of(
+        root,
+        {("roadmap", "active"), ("inspect", "active"), ("define", "active")},
+        project_dir,
+    )
+    if _require_pipeline(root, project_dir)["phase"] == "define":
+        if __package__:
+            from . import build_recovery
+        else:
+            import build_recovery
+        try:
+            # Define entered again after intent approval is not a boundary.
+            reopened = (build_recovery.context(root.resolve()) or {}).get("active")
+        except PipelineStateError as error:
+            raise HandoffError(str(error)) from error
+        if reopened:
+            raise HandoffError("roadmap re-slice is not legal after intent approval")
     relative = f"{project_dir}/ROADMAP.md"
     text = _read(root, relative)
     if re.search(r"(?m)^## Wave |^\|\s*Task\s*\||^Files:\s*", text):

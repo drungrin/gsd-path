@@ -25,7 +25,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import BinaryIO, Iterator, List, Optional, Sequence
+from typing import BinaryIO, Iterable, Iterator, List, Optional, Sequence
 
 # Chosen by what imports, not os.name, so tests can emulate Windows on POSIX.
 try:
@@ -161,17 +161,31 @@ def project_ignore_error(repo: Path) -> Optional[str]:
             + ". Anchor the product rule (for example `/build/`) in a task that owns it.")
 
 
-def remote_default_error(repo: Path) -> Optional[str]:
-    """Why the recorded origin default branch is unsupported, or None."""
-    # ponytail: reads the local origin/HEAD only, so an unset or stale ref
-    # passes here; bind-initial owns the fetched check.
-    result = run_git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-    remote_default = result.stdout.strip()
-    if result.returncode != 0 or remote_default == "origin/main":
-        return None
-    return (f"remote default must be origin/main, got {remote_default}. "
-            "GSD Path supports only `main` as the default branch: rename it, or run "
-            "`git remote set-head origin --auto` when origin already uses `main`.")
+_DEFAULT_BRANCH_RE = re.compile(
+    r"[^\s#\"'\\~^:?*\[\x00-\x1f\x7f-][^\s#\"'\\~^:?*\[\x00-\x1f\x7f]*"
+)
+_RESERVED_BRANCH_PREFIXES = ("gsd-path/", "gsd-path-integrate/", "gsd-path-task/")
+
+
+def valid_default_branch(name: str) -> bool:
+    """A git branch name that STATE frontmatter can hold and Path does not reserve."""
+    return (
+        bool(_DEFAULT_BRANCH_RE.fullmatch(name))
+        and name != "null"
+        and not name.startswith(_RESERVED_BRANCH_PREFIXES)
+        and not name.endswith(("/", ".", ".lock"))
+        and not any(part in name for part in ("..", "//", "/.", "@{"))
+    )
+
+
+def origin_default_branch(repo: Path) -> str:
+    """The origin default branch that initialization records; an unset origin/HEAD means main."""
+    result = run_git(repo, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    prefix = "refs/remotes/origin/"
+    remote_ref = result.stdout.strip()
+    if result.returncode != 0 or not remote_ref.startswith(prefix):
+        return "main"
+    return remote_ref.removeprefix(prefix)
 
 
 def section_body(text: str, heading: str) -> Optional[str]:
@@ -182,11 +196,34 @@ def section_body(text: str, heading: str) -> Optional[str]:
     return match.group("body") if match else None
 
 
+def overlapping_paths(left: Sequence[str], right: Sequence[str]) -> List[str]:
+    """Return the sorted paths that two task `files` lists both cover.
+
+    An entry covers itself and the paths below it. For a declared directory
+    and a path below it, the result names the lower path. The callers have no
+    task base, so this does not ask if an entry is a file: the task-brief
+    lint rejects a path below a file at the base.
+    """
+    return sorted(
+        {
+            max(one, other, key=len)
+            for one in left
+            for other in right
+            if one == other or one.startswith(other + "/") or other.startswith(one + "/")
+        }
+    )
+
+
 def task_verify_command(task_text: str) -> str:
     """The Verify shell text, excluding the closing fence's separator newline."""
     body = section_body(task_text, "Verify")
     block = VERIFY_BLOCK_PATTERN.search(body) if body is not None else None
     return block.group("block").removesuffix("\n") if block else ""
+
+
+def fix_verify(commands: Iterable[str]) -> str:
+    """The Verify of a fix task: each distinct source Verify in its own subshell, under `set -e`."""
+    return "set -e\n" + "\n".join(f"(\n{command}\n)" for command in dict.fromkeys(commands))
 
 
 def latest_verify_entry(entries: list, command: str, commit: str,

@@ -52,13 +52,15 @@ class MemberLandingTests(unittest.TestCase):
         git(self.coordinator, "commit", "-q", "-m", "plan")
         self.member = self.root / "web"
         self.member.mkdir()
-        git(self.member, "init", "-q", "-b", "main")
+        # Classes that borrow this fixture set member_default for another default branch.
+        default = getattr(self, "member_default", "main")
+        git(self.member, "init", "-q", "-b", default)
         (self.member / "app.py").write_bytes("v1\n".encode("utf-8"))
         git(self.member, "add", "-A")
         git(self.member, "commit", "-q", "-m", "init")
         git(self.member, "remote", "add", "origin", "https://github.com/acme/web.git")
-        git(self.member, "update-ref", "refs/remotes/origin/main", "HEAD")
-        git(self.member, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        git(self.member, "update-ref", f"refs/remotes/origin/{default}", "HEAD")
+        git(self.member, "symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/{default}")
         subprocess.run([sys.executable, str(MEMBERS), "add", "--repo", str(self.coordinator),
                         "--name", "web", "--checkout", str(self.member)],
                        encoding="utf-8", errors="replace", capture_output=True, check=True)
@@ -128,7 +130,7 @@ class MemberLandingTests(unittest.TestCase):
         self.assertFalse(self.journal().exists())
         if result is not None:
             self.assertEqual((result["landing"], result["commit"]), (tip, record))
-        self.assertEqual(git(self.member, "branch", "--show-current"), "main")
+        self.assertEqual(git(self.member, "branch", "--show-current"), getattr(self, "member_default", "main"))
 
     def test_member_task_lands_once_with_a_coordinator_record(self) -> None:
         self.edit()
@@ -236,6 +238,38 @@ class MemberLandingTests(unittest.TestCase):
             self.land()
         self.assertEqual(self.bound_tip(), self.member_base)
         self.assertFalse(self.journal().exists())
+
+    def land_directory_task(self, changed: str):
+        """Land T002, which declares the directory `fixtures/set`, with one changed file."""
+        task_file = ".project/tasks/T002-add.md"
+        task = TASK.replace("T001", "T002").replace("Change app", "Add fixtures").replace(
+            "app.py", "fixtures/set")
+        (self.coordinator / task_file).write_bytes(task.encode("utf-8"))
+        git(self.coordinator, "add", task_file)
+        git(self.coordinator, "commit", "-q", "-m", "add directory task")
+        base = git(self.coordinator, "rev-parse", "HEAD")
+        sidecar = Path(isolation.isolate_member_task(self.coordinator, "web", "T002")["worktree"])
+        isolation.activate_member_task(self.coordinator, "web", "T002", "coder", task_file, base)
+        (sidecar / changed).parent.mkdir(parents=True, exist_ok=True)
+        (sidecar / changed).write_bytes(b"{}\n")
+        return task_file, isolation.land_member(
+            self.coordinator, "web", "T002", "Add fixtures", task_file, base, self.member_base)
+
+    def test_member_file_under_a_declared_directory_lands_and_is_proven(self) -> None:
+        task_file, result = self.land_directory_task("fixtures/set/a.json")
+        self.assertEqual(self.bound_tip(), result["landing"])
+        self.assertEqual(
+            git(self.bound, "diff-tree", "--no-commit-id", "--name-only", "-r", result["landing"]),
+            "fixtures/set/a.json")
+        proven = isolation.verify_landed_task_files(
+            self.coordinator, [self.coordinator / task_file], ".project/tasks", result["commit"])
+        self.assertEqual([(task["verdict"], task["landing"]) for task in proven["tasks"]],
+                         [("recovered", result["landing"])])
+
+    def test_member_sibling_of_a_declared_directory_is_refused(self) -> None:
+        with self.assertRaisesRegex(isolation.IsolationError, "undeclared paths: fixtures/setx.json"):
+            self.land_directory_task("fixtures/setx.json")
+        self.assertEqual(self.bound_tip(), self.member_base)
 
     def test_coder_commit_needs_the_member_landing_body(self) -> None:
         self.edit()
@@ -461,6 +495,24 @@ class MemberLandingTests(unittest.TestCase):
         side = subprocess.run([sys.executable, str(GIT_GUARD), "pre-commit"], cwd=self.sidecar,
                               encoding="utf-8", errors="replace", capture_output=True, check=False)
         self.assertEqual(side.returncode, 0, side.stderr)
+
+
+class MasterMemberLandingTests(unittest.TestCase):
+    """A member whose recorded default branch is master builds and lands as a main member does."""
+    member_default = "master"
+    setUp = MemberLandingTests.setUp
+    tearDown = MemberLandingTests.tearDown
+    land = MemberLandingTests.land
+    edit = MemberLandingTests.edit
+    journal = MemberLandingTests.journal
+    bound_tip = MemberLandingTests.bound_tip
+    assert_landed_once = MemberLandingTests.assert_landed_once
+
+    def test_member_task_lands_on_a_bound_branch_cut_from_the_recorded_default_branch(self) -> None:
+        self.assertEqual(self.member_base, git(self.member, "rev-parse", "refs/remotes/origin/master"))
+        self.assertEqual(git(self.member, "for-each-ref", "refs/remotes/origin/main", "refs/heads/main"), "")
+        self.edit()
+        self.assert_landed_once(self.land())
 
 
 if __name__ == "__main__":

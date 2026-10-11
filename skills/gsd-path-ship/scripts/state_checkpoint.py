@@ -164,9 +164,16 @@ def _approval_details(
     raise PipelineStateError(f"unsupported approval kind: {kind}")
 
 
-def _reslice_roadmap(before: str, candidate: str, state: PipelineState, selected: str) -> str:
+def _reslice_roadmap(
+    repo: Path, before: str, candidate: str, state: PipelineState, state_text: str, selected: str,
+) -> str:
+    # Define may amend its active entry until intent approval. A return to
+    # define after that approval always leaves an active recovery record.
+    amend_active = state.phase == "define" and not (
+        pipeline_state._build_recovery().context(repo, state_text) or {}
+    ).get("active")
     try:
-        return roadmap.reslice(before, candidate, state.phase, selected)
+        return roadmap.reslice(before, candidate, state.phase, selected, amend_active)
     except roadmap.RoadmapError as error:
         raise PipelineStateError(str(error)) from error
 
@@ -223,6 +230,10 @@ def _approval_journal(repo: Path, journal: Mapping[str, object]) -> dict[str, ob
         expected_keys.add("baseline_before")
         if not isinstance(journal.get("baseline_before"), str):
             raise PipelineStateError("checkpoint journal has an invalid re-slice baseline")
+    if "recovery_reviews" in journal:
+        expected_keys.add("recovery_reviews")
+        if journal.get("kind") != "plan" or not isinstance(journal["recovery_reviews"], dict):
+            raise PipelineStateError("checkpoint journal has an invalid recovery review report")
     if set(journal) != expected_keys:
         raise PipelineStateError("checkpoint journal has invalid fields")
     if journal.get("schema") != CHECKPOINT_SCHEMA or journal.get("repo") != str(repo):
@@ -307,7 +318,8 @@ def _approval_journal(repo: Path, journal: Mapping[str, object]) -> dict[str, ob
         if journal["roadmap_path"] != ".project/ROADMAP.md":
             raise PipelineStateError("checkpoint journal has an invalid ROADMAP path")
         expected_roadmap = _reslice_roadmap(
-            str(journal["baseline_before"]), str(journal["roadmap_before"]), before, str(selected),
+            repo, str(journal["baseline_before"]), str(journal["roadmap_before"]), before,
+            str(journal["state_before"]), str(selected),
         ) if journal["kind"] == "roadmap-reslice" else _activate_roadmap_milestone(
             str(journal["roadmap_before"]),
             str(selected),
@@ -423,7 +435,7 @@ def _resume_checkpoint_locked(
         raise PipelineStateError("approval checkpoint returned the wrong commit")
     _unlink_checkpoint_journal(journal_path)
     state = pipeline_state._state_from_text(str(transaction["state_after"]))
-    return {
+    approved: dict[str, object] = {
         "schema": CHECKPOINT_SCHEMA,
         "status": "approved",
         "kind": transaction["kind"],
@@ -432,6 +444,9 @@ def _resume_checkpoint_locked(
         "paths": committed.get("paths"),
         "state": state.json(),
     }
+    if "recovery_reviews" in transaction:
+        approved["recovery_reviews"] = transaction["recovery_reviews"]
+    return approved
 
 
 def _validate_plan_briefs(repo: Path, kind: str, project_dir: str) -> None:
@@ -581,8 +596,9 @@ def checkpoint_approval(
         state, state_before, state_path = pipeline_state.load_state(resolved, project_dir)
         changes, event, subject, body = _approval_details(kind, state, selected_milestone)
         _validate_plan_briefs(resolved, kind, project_dir)
+        recovery_reviews = None
         if kind == "plan" and project_dir == ".project":
-            pipeline_state._build_recovery().restore_unchanged_reviews(resolved)
+            recovery_reviews = pipeline_state._build_recovery().restore_unchanged_reviews(resolved)
         expected = {
             "phase": state.phase,
             "status": state.status,
@@ -614,7 +630,7 @@ def checkpoint_approval(
             if kind == "roadmap-reslice":
                 baseline_before = pipeline_state._read_real_file(project / "ROADMAP.before-reslice.md", "re-slice baseline")
             roadmap_after = _reslice_roadmap(
-                baseline_before, roadmap_before, state, selected_milestone,
+                resolved, baseline_before, roadmap_before, state, state_before, selected_milestone,
             ) if kind == "roadmap-reslice" else _activate_roadmap_milestone(
                 roadmap_before,
                 selected_milestone,
@@ -644,6 +660,8 @@ def checkpoint_approval(
         }
         if baseline_before is not None:
             journal["baseline_before"] = baseline_before
+        if recovery_reviews is not None:
+            journal["recovery_reviews"] = recovery_reviews
         pipeline_state._write_json(journal_path, journal)
         return _resume_checkpoint_locked(resolved, project, journal_path, journal)
 
@@ -725,8 +743,8 @@ def defer_approval(
             if kind == "roadmap-reslice":
                 baseline = project / "ROADMAP.before-reslice.md"
                 roadmap_after = _reslice_roadmap(
-                    pipeline_state._read_real_file(baseline, "re-slice baseline"),
-                    roadmap_before, state, selected_milestone,
+                    resolved, pipeline_state._read_real_file(baseline, "re-slice baseline"),
+                    roadmap_before, state, state_before, selected_milestone,
                 )
             else:
                 roadmap_after = _activate_roadmap_milestone(roadmap_before, selected_milestone)

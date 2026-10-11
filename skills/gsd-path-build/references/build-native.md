@@ -146,6 +146,13 @@ dispatch contract and perform steps 1–5 by hand.
    order, or overlap-check tasks in prose. Readiness is continuous, not
    layered: a task becomes selectable the moment its last dependency lands,
    even while unrelated tasks still run, so rerun `ready` after each landing.
+   Two tasks that each share a file with the same `done` task of an earlier
+   wave never run together: `ready` returns one and holds the other until the
+   first is `done`. The second then starts from a base that has the first
+   landing, and the step 5 rerun of the earlier Verify checks both edits. A
+   task with a retained isolate keeps its turn. A task that a `supersedes`
+   field retires still counts: the superseding task never runs together
+   with a task that shares a file with the superseded task.
    A `NEEDS-ORCHESTRATOR` block stays unselectable until its `Orchestrator
    answer` is recorded in the task Log and the task is back to `pending`.
    An all-done wave whose latest canonical review cycle has any blocked lens
@@ -267,7 +274,8 @@ dispatch contract and perform steps 1–5 by hand.
    defective task contract before establishing the round base. Run ready work
    up to capacity. Verify commands marked `Heavy: yes` (`verify_heavy` in the
    ready set) run one at a time across every concurrent task, including the
-   step 5 rerun; light ones are unconstrained. Do not wait for the whole
+   step 5 rerun; light ones are unconstrained. `verify_heavy` is also true
+   when step 5 reruns a heavy Verify of an earlier task. Do not wait for the whole
    round before unlocking dependents: each task landing in step 5 re-opens
    step 2, and a newly ready
    task dispatches in a fresh round at the current clean HEAD while unrelated
@@ -293,7 +301,32 @@ dispatch contract and perform steps 1–5 by hand.
      native child tools; no child command is needed. It reproduces serial work
      in its prepared sidecar, runs authoritative Verify, records exact output,
      lands through `isolation.py`, records eligible ledger evidence, and retires
-     the isolate. A `landed` receipt proves those steps; do not run them again
+     the isolate. Authoritative Verify is the task's own Verify, then the
+     Verify of each `done` task of an earlier wave, in the same repo, that
+     shares a declared file with this task. `finish` selects those commands;
+     never select them by hand. An earlier command does not run again in two
+     cases only: it is identical to the own Verify, or the own Verify is the
+     unchanged Verify that `fix-tasks` wrote from the task's `deps` and the
+     command belongs to one of them. A Verify that only contains the command
+     text does not replace the rerun. A failed earlier-task Verify blocks the landing as a
+     failed own Verify does. The receipt (`regressions`) and the task Log
+     entry `orchestrator regression Verify of <task id>` name the earlier
+     task. The ledger records only the own command.
+     A plan-approved `supersedes` field retires the Verify of each earlier
+     task that it names: `finish` does not run that Verify for the task, or
+     for a task that lands after the task is `done`. The receipt (`retired`)
+     and the task Log entry `orchestrator regression Verify of <task id>
+     retired: superseded by <task id>` name both tasks. When the generated
+     Verify of a fix task loses only the copy of a retired Verify, the
+     `retired` entry has the key `part` and the Log entry is `orchestrator
+     regression Verify of <fix task id>: part of <task id> retired:
+     superseded by <task id>`. The superseding
+     task inherits the role of each task that it names, also through a
+     chain: after it is `done`, its Verify runs in the place of the retired
+     Verify for each later landing that shares a file with a superseded
+     task, also in its own wave. The Log entry is `orchestrator regression
+     Verify of <task id> (supersedes <task id>)`.
+     A `landed` receipt proves those steps; do not run them again
      or author another implementation narrative. A `cleanup_warning` on a
      landing means only that the isolate was not removed: the task is landed,
      and the next `round` or `finish` checks the isolate again. A blocked receipt preserves
@@ -509,26 +542,66 @@ dispatch contract and perform steps 1–5 by hand.
      again.
    - Otherwise batch `fix_batches` into complete fix tasks from the task
      template — one task per batch, never one per finding — each carrying
-     its groups' failed criteria and observed evidence verbatim. A group
+     its groups' failed criteria and observed evidence verbatim. Each batch
+     is in one repo: a batch with `repo` is for that member and its fix task
+     has `repo: <member>`; a batch without `repo` is for the coordinator. A
+     finding whose source tasks are in two repos gives one batch for each
+     repo. A group
      with `repeat` true is evidence its earlier fix failed, never a new
      finding; a re-review never spawns a duplicate fix task for a finding
-     already carried. Write each fix task to `.project/tasks/` with `wave`
+     that a fix task not yet `done` already carries in the same repo. A
+     repeat after its fix
+     landed gets the next fix task. After a build recovery, a changed wave
+     is reviewed again from cycle 1; the fix tasks and PLAN.md repair wave
+     of the review that recovery set aside do not count for the new one.
+     Write each fix task to `.project/tasks/` with `wave`
      set to the current wave or a newly appended `## Wave N` heading in
-     PLAN.md before dispatch. Its dependencies include every source task in
-     the batch; its files match the batch. In `## Review findings`, use one
+     PLAN.md before dispatch. Its dependencies include every source task of
+     the batch that is in the same repo, and every landed fix task of the
+     same source wave and repo that carried one of its findings; its Verify
+     runs the Verify of those source tasks; its files are the batch files or a subset of them, never
+     none. When a finding names a fix site outside the batch files, follow
+     [build recovery](build-recovery.md) to plan, which adds a repair task
+     with those files, the batch's `## Review findings` and the same
+     dependencies; `repair-evidence` accepts that task. In
+     `## Review findings`, use one
      `### <locator>` block per group, `Criterion: <verbatim criterion>`, and
      every observation verbatim. Run the repair through the same isolated
      layer loop, even when its appended wave repairs an earlier blocked wave.
      After landing, call `review_findings.py repair-evidence --repo <primary>
      --wave <source wave> --cycle <source cycle> --task <repair id>` and save
-     its JSON as the repair evidence for the next review. The helper validates
+     its JSON as the repair evidence for the next review. The helper selects
+     the batch by the repair's locators and repo, then validates
      the carried batch, original and repair landings, isolated product scope,
-     unchanged source reports and reusable Verify. On success, brief the next
+     unchanged source reports and reusable Verify. For a member repair it
+     checks the product in the member repository, against the member commits
+     and the member Verify record, and the receipt adds `member`,
+     `member_base` and `member_commit`. Another change to the checked files
+     is accepted only when it is the landing of a linked repair: a `done`
+     task of the same repo that carries one of the repair's findings in
+     `## Review findings`, with the same locator and criterion, and is
+     joined to the repair by `deps`. A finding on an acceptance criterion of
+     a fix task counts as the finding that this fix task carries with the
+     same criterion; the same criterion text under another locator is
+     another finding. Linked
+     repairs in the repair base are in `earlier_repairs`. Linked repairs
+     after the repair are in `later_repairs`; then the landing and the
+     recorded Verify of the last one are the evidence, and `chain_files`
+     lists the files checked from the repair base to the tip: those of the
+     repair and of every later linked repair. From the repair base to the
+     parent of the repair landing, no landing can change these files, also
+     not a linked one. On success, brief the next
      original-wave review with this receipt and the reviewer role's
      **Re-review after a proven repair** contract. Reuse command evidence;
      the new review judges the repaired product against the original criteria.
      Preserve prior verdicts and source tasks. On helper rejection, resolve
      the evidence blocker rather than redispatching an already proven fix.
+     When the blocker cannot be resolved, for example `repair base contains
+     unlinked changes to original product` or `product changed after the
+     repair landing` because a task that is not a linked repair changed the
+     same files, run the next review cycle of the source wave in full at the
+     current HEAD, without the receipt. This is the supported fallback: it
+     needs no ruling and no plan change.
    At the cap, record all attempts in the STATE.md log and ask the user —
    through an interactive user-input tool when available — after linking
    the resolved absolute blocking wave review, every deep lens file for the

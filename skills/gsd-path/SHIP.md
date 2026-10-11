@@ -267,7 +267,11 @@ The persisted `STATE.archive` field is the transaction identity.
    `python3 <absolute archive_milestone.py> close-members --repo <root>`
    after preflight passes and before recording shipment. It closes each
    locked member in lock order in that member's integration mode and
-   journals each one. When it returns `awaiting-merge`, report the member PR
+   journals each one. Each member closes onto the default branch that
+   MEMBERS.md records for it (`main` when its section has no
+   `Default branch`); when the command reports
+   `remote default must be <recorded>`, stop and report it. When it returns
+   `awaiting-merge`, report the member PR
    link, stop, and rerun the same command after the user merges it; never
    merge a member PR yourself. When it returns `integrated`, keep its `body`
    for the ship commit below.
@@ -310,8 +314,10 @@ The persisted `STATE.archive` field is the transaction identity.
    milestone is not shipped until integration below passes.
 7. Integrate only after the postcommit `validate` passes, with the recorded
    ship commit and exact reviewed HEAD unchanged. Run `python3 <absolute archive_milestone.py> integrate --repo <root> --slug <STATE.milestone>`.
-   This helper validates the ship commit, fetches origin, requires remote
-   default `main`, and follows the locked `STATE.integration` mode:
+   This helper validates the ship commit, fetches origin, requires the remote
+   default to equal STATE `default_branch` (`main` when the field is absent),
+   and follows the locked `STATE.integration` mode. `main` and `origin/main`
+   below mean that recorded branch:
 
    - `direct` owns the resumable merge transaction. It creates the canonical
      named integration worktree, performs the hook-verified `--no-ff` merge,

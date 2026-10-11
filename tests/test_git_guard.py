@@ -352,6 +352,36 @@ class GitGuardEndToEndTests(unittest.TestCase):
         result = self.run_guard("ship: M002 — next", body)
         self.assertEqual(0, result.returncode, result.stderr)
 
+    def test_ship_accepts_state_that_records_the_default_branch(self) -> None:
+        self.git("branch", "-m", "gsd-path/M002")
+        archived = self.repo / ".project" / "archive" / "002-next"
+        archived.mkdir()
+        (archived / "MANIFEST.md").write_bytes("manifest\n".encode("utf-8"))
+        state_path = self.repo / ".project" / "STATE.md"
+
+        def stage(default_branch):
+            state_path.write_bytes(
+                "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
+                "phase: shipped\nstatus: done\nbranch: gsd-path/M002\n"
+                "archive: .project/archive/002-next\n"
+                "integration_default: direct\nintegration: direct\n"
+                "integration_source: default\n"
+                f"default_branch: {default_branch}\n---\n".encode("utf-8"),
+            )
+            self.git("add", "-A", ".project")
+
+        body = f"Archive: .project/archive/002-next\nReviewed-HEAD: {self.head()}"
+        for default_branch in ("master", "main", "release/trunk"):
+            with self.subTest(default_branch=default_branch):
+                stage(default_branch)
+                result = self.run_guard("ship: M002 — next", body)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+        stage("gsd-path/M002")
+        result = self.run_guard("ship: M002 — next", body)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("not the strict shipped transaction", result.stderr)
+
     def test_blocks_malformed_or_duplicate_ship_commits(self):
         self.git("branch", "-m", "gsd-path/M002")
         archive = self.repo / ".project/archive/002-next"
@@ -477,27 +507,63 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.git("config", "init.defaultBranch", "main")
         self.assert_integration_merge_allowed("main")
 
-    def test_integration_merge_honors_a_configured_default_branch(self):
+    # A STATE file without default_branch means main. Live configuration does not change it.
+    def test_integration_merge_ignores_a_configured_default_branch(self):
         self.git("config", "init.defaultBranch", "trunk")
-        self.assert_integration_merge_allowed("trunk")
+        self.assert_integration_merge_allowed("main")
 
-    def test_integration_merge_honors_the_origin_default_branch(self):
+    def test_integration_merge_ignores_the_origin_default_branch(self):
         self.git("config", "init.defaultBranch", "main")
-        self.git("branch", "-m", "develop")
         self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
         self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
-        self.assert_integration_merge_allowed("develop")
+        result = self.integration_merge("develop")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("into main", result.stderr)
 
-    def assert_integration_merge_allowed(self, default):
+    def test_default_branch_follows_live_configuration_only_without_a_state_file(self):
+        self.git("config", "init.defaultBranch", "trunk")
+
+        def target():
+            return subprocess.run(
+                [sys.executable, "-c", "import git_guard; print(git_guard.default_branch())"],
+                cwd=self.repo, env={**os.environ, "PYTHONPATH": str(SCRIPT.parent)},
+                capture_output=True, encoding="utf-8", errors="replace", check=True,
+            ).stdout.strip()
+
+        self.assertEqual(target(), "main")
+        (self.repo / ".project" / "STATE.md").unlink()
+        self.assertEqual(target(), "trunk")
+
+    def test_integration_merge_honors_the_default_branch_state_records(self):
+        # STATE wins over a origin/HEAD that moved after initialization.
+        self.git("config", "init.defaultBranch", "main")
+        self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+        self.assert_integration_merge_allowed("master", "default_branch: master\n")
+
+    def test_integration_merge_into_another_branch_than_state_records_is_refused(self):
+        self.git("config", "init.defaultBranch", "main")
+        self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+        result = self.integration_merge("develop", "default_branch: master\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("into master", result.stderr)
+
+    def assert_integration_merge_allowed(self, default, state_extra=""):
+        result = self.integration_merge(default, state_extra)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.repo / ".project/archive/002-next").is_dir())
+
+    def integration_merge(self, default, state_extra=""):
         self.git("branch", "-m", default)
         self.git("checkout", "-q", "-b", "gsd-path/M002")
         archive = self.repo / ".project/archive/002-next"
         archive.mkdir()
         (archive / "MANIFEST.md").write_bytes("manifest\n".encode("utf-8"))
         (self.repo / ".project/STATE.md").write_bytes(
-            "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
+            ("---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
             "phase: shipped\nstatus: done\nbranch: gsd-path/M002\n"
-            "archive: .project/archive/002-next\n---\n".encode("utf-8"),
+            f"archive: .project/archive/002-next\n{state_extra}---\n").encode("utf-8"),
         )
         self.git("add", "-A")
         self.commit("ship: M002 — next")
@@ -505,7 +571,7 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.git("checkout", "-q", "-b", "gsd-path-integrate/M002")
         self.install_hooks()
 
-        result = subprocess.run(
+        return subprocess.run(
             [
                 "git",
                 "-c",
@@ -522,9 +588,6 @@ class GitGuardEndToEndTests(unittest.TestCase):
             capture_output=True,
             encoding="utf-8", errors="replace",
         )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(archive.is_dir())
 
     def test_hooks_allow_a_canonical_milestone_abandon_commit(self):
         self.git("branch", "-m", "gsd-path/M002")
@@ -701,6 +764,30 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.git("add", "-A", "--", ".project/tasks/T001-demo.md", "plan #1.py")
         landing = self.run_guard("T001: Demo task", self.landing_body(head, "plan #1.py"))
         self.assertEqual(0, landing.returncode, landing.stderr)
+
+    def test_landing_accepts_a_file_under_a_declared_directory(self):
+        self.enter_build()
+        task = self.repo / ".project" / "tasks" / "T001-demo.md"
+        task.write_bytes(
+            task.read_text(encoding="utf-8").replace("  - app.py", "  - fixtures/set").encode("utf-8"),
+        )
+        self.git("add", "-A", "--", ".project/tasks/T001-demo.md")
+        self.commit("build: declare a directory")
+        head = self.head()
+        (self.repo / "fixtures" / "set").mkdir(parents=True)
+        (self.repo / "fixtures" / "set" / "a.json").write_bytes(b"{}\n")
+        self.stamp_task(head)
+        self.git("add", "-A", "--", ".project/tasks/T001-demo.md", "fixtures/set")
+        landing = self.run_guard("T001: Demo task", self.landing_body(head, "fixtures/set/a.json"))
+        self.assertEqual(0, landing.returncode, landing.stderr)
+
+        (self.repo / "fixtures" / "setx.json").write_bytes(b"{}\n")
+        self.git("add", "-A", "--", "fixtures/setx.json")
+        sibling = self.run_guard(
+            "T001: Demo task", self.landing_body(head, "fixtures/set/a.json", "fixtures/setx.json")
+        )
+        self.assertEqual(1, sibling.returncode)
+        self.assertIn("undeclared paths: fixtures/setx.json", sibling.stderr)
 
     def test_build_entry_commit_must_stay_project_only(self):
         self.enter_build(phase="plan")

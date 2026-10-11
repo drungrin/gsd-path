@@ -27,7 +27,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Callable, Dict, List, Optional
+from typing import BinaryIO, Callable, Dict, List, Optional, Tuple
 
 try:
     from scripts import (_common, archive_milestone, build_state, discussion_validate, isolation,
@@ -77,6 +77,9 @@ STOP_ERRORS = (DriverStop, isolation.IsolationError, build_state.BuildStateError
                pipeline_state.PipelineStateError, archive_milestone.ArchiveError, model_policy.PolicyError)
 _RUNTIME_ACTIVATION_ORDER = (
     "_common",
+    "roadmap",
+    "review_panel",
+    "loop_run",
     "pipeline_git",
     "worktree_paths",
     "build_recovery",
@@ -87,7 +90,11 @@ _RUNTIME_ACTIVATION_ORDER = (
     "build_state",
     "check_handoffs",
     "task_context",
+    # discussion_validate and archive_milestone import each other: the second
+    # reload binds the reloaded ArchiveError that STOP_ERRORS catches.
+    "discussion_validate",
     "archive_milestone",
+    "discussion_validate",
     "review_findings",
     "model_policy",
 )
@@ -641,6 +648,15 @@ def run_verify(command: str, cwd: Path) -> Dict[str, object]:
     return {"exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
 
 
+def landing_verify(command: str, regressions: List[Dict[str, object]],
+                   cwd: Path) -> Tuple[Dict[str, object], List[Dict[str, object]]]:
+    """The task's own Verify, then every regression Verify when the own one passes."""
+    execution = run_verify(command, cwd)
+    if execution["exit_code"]:
+        return execution, []
+    return execution, [{**item, **run_verify(str(item["command"]), cwd)} for item in regressions]
+
+
 def state_from_task(primary: Path, task_id: str) -> Dict[str, object]:
     """A finish-able state derived from the task frontmatter alone, for coders dispatched by hand."""
     tasks_dir = primary / ".project/tasks"
@@ -718,6 +734,11 @@ def land_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
     command = _common.task_verify_command(task_path.read_text(encoding="utf-8"))
     if not command:
         raise DriverStop("task has no Verify command", task=task_id)
+    # A later task can break an earlier task that shares a file; that task's Verify also decides this landing.
+    regressions = build_state.regression_verifies(primary, task_id, command)
+    # A plan-approved `supersedes` retires an earlier Verify; the receipt and the Log show each one.
+    retired = build_state.retired_verifies(primary, task_id)
+    superseded = {"retired": retired} if retired else {}
     if state["mode"] == "serial":
         sidecar = state["sidecar"]
         ensured = isolation.ensure_verify_sidecar(primary, base, str(sidecar["branch"]))
@@ -727,30 +748,45 @@ def land_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
             isolation.reproduce_verify_sidecar(sidecar_path, tree)
         except isolation.IsolationError as error:
             raise DriverStop(str(error), task=task_id) from error
-        execution = run_verify(command, sidecar_path)
+        execution, reruns = landing_verify(command, regressions, sidecar_path)
         location = f"sidecar {sidecar['branch']}"
         isolation.clean_verify(primary, sidecar_path, base, str(sidecar["branch"]))
         isolation.retire(primary, sidecar_path, str(sidecar["branch"]), False)
     else:
-        execution = run_verify(command, worktree)
+        execution, reruns = landing_verify(command, regressions, worktree)
         location = f"isolate {state['task_branch']}"
     passed = execution["exit_code"] == 0
+    broken = [item for item in reruns if item["exit_code"]]
     execution.update({"worktree": str(worktree), "location": location})
     evidence_dir = (Path(str(state["_path"])).parent if state.get("_path")
                     else records_root(primary) / task_id / f"manual-{now().replace(':', '')}")
     evidence_dir.mkdir(parents=True, exist_ok=True)
     _common.atomic_write(evidence_dir / "verify.json",
-                         json.dumps(execution, indent=2, sort_keys=True) + "\n")
+                         json.dumps({**execution, "regressions": reruns, **superseded},
+                                    indent=2, sort_keys=True) + "\n")
     execution["evidence"] = str(evidence_dir / "verify.json")
-    output = "\n".join(f"  {line}" for line in tail(execution["stdout"] + execution["stderr"]).splitlines())
-    append_log(task_path, f"- {now()[:10]} — orchestrator Verify ({location}): "
-                          f"{'pass' if passed else 'fail'}, exit {execution['exit_code']}"
-                          + (f"; output tail:\n  ```\n{output}\n  ```" if output else ""))
-    if not passed:
+    # The Verify of a superseding task runs in the place of the retired Verify: the label names both.
+    for label, run in [("Verify", execution),
+                       *((f"regression Verify of {', '.join(item['tasks'])}"
+                          + (f" (supersedes {', '.join(item['supersedes'])})" if item.get("supersedes") else ""),
+                          item) for item in reruns)]:
+        output = "\n".join(f"  {line}" for line in tail(run["stdout"] + run["stderr"]).splitlines())
+        append_log(task_path, f"- {now()[:10]} — orchestrator {label} ({location}): "
+                              f"{'fail' if run['exit_code'] else 'pass'}, exit {run['exit_code']}"
+                              + (f"; output tail:\n  ```\n{output}\n  ```" if output else ""))
+    for item in retired:
+        part = f": part of {item['part']}" if item.get("part") else ""
+        append_log(task_path, f"- {now()[:10]} — orchestrator regression Verify of {item['task']}{part} retired: "
+                              f"superseded by {item['superseded_by']}")
+    if not passed or broken:
         if state["mode"] == "parallel":
             isolation.deactivate_task(worktree, task_id, str(state["task_branch"]))
         elif state["mode"] == "member":
             isolation.deactivate_member_task(primary, str(state["member"]), task_id)
+        if passed:
+            names = ", ".join(name for item in broken for name in item["tasks"])
+            raise DriverStop(f"regression Verify of {names} failed in the isolate", task=task_id,
+                             execution=execution, regressions=broken)
         raise DriverStop("Verify failed in the isolate", task=task_id, execution=execution)
     if state["mode"] == "member":
         member = str(state["member"])
@@ -762,7 +798,8 @@ def land_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
         if ledger:
             build_state.verify_record(str(primary), command, landing, "pass", execution=execution, member=member)
         return {"task": task_id, "commit": str(landed["commit"]), "mode": "member",
-                "landing": landing, "verify": execution, "ledger": ledger}
+                "landing": landing, "verify": execution, "regressions": reruns, **superseded,
+                "ledger": ledger}
     landed = isolation.land(primary, worktree, base, task_id, str(state["title"]), task_file,
                             list(state["files"]))
     commit = str(landed["commit"])
@@ -771,7 +808,7 @@ def land_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
     if ledger:
         build_state.verify_record(str(primary), command, commit, "pass", execution=execution)
     return {"task": task_id, "commit": commit, "mode": landed["mode"], "verify": execution,
-            "ledger": ledger}
+            "regressions": reruns, **superseded, "ledger": ledger}
 
 
 # --- shared by round and review --------------------------------------------
@@ -2047,6 +2084,23 @@ def next_task_id(tasks_dir: Path) -> str:
     return f"T{max(numbers, default=0) + 1:03d}"
 
 
+def replaced_review_base(primary: Path, project_dir: str, wave: int, cycle: int) -> Optional[str]:
+    """The recovery base when this cycle's review replaces the one a build recovery set aside, else None."""
+    recovery = pipeline_state._build_recovery().context(primary)
+    if not recovery:
+        return None
+    relative = f"{project_dir}/review/wave-{wave}.cycle{cycle}.md"
+    before = isolation.run_git(primary, "show", f"{recovery['base']}:{relative}")
+    current = primary / relative
+    # Plan approval restores the review of an unchanged wave before its checkpoint, so no commit
+    # since the base touches that file. A set-aside review is deleted by that checkpoint.
+    rewritten = isolation.run_git(primary, "log", "-1", "--format=%H", f"{recovery['base']}..HEAD", "--", relative)
+    if (not rewritten.stdout.strip() and before.returncode == 0 and current.is_file()
+            and current.read_text(encoding="utf-8") == before.stdout):
+        return None  # the restored review keeps its repairs
+    return recovery["base"]
+
+
 def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
     """Step 7: one fix task per findings batch, carrying failed criteria and observations verbatim."""
     receipt: Dict[str, object] = {"status": None, "wave": options.wave, "cycle": options.cycle,
@@ -2055,14 +2109,32 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
         project = primary / options.project_dir
         tasks_dir = project / "tasks"
         repairs = []
+        pending = []
         for path in sorted(tasks_dir.glob("*-fix-wave-*-cycle-*.md")):
             text = path.read_text(encoding="utf-8")
             fields, _ = isolation.task_frontmatter(text)
             repairs.append({"task": fields["id"], "path": path.relative_to(primary).as_posix(),
-                            "wave": int(fields["wave"]), "locators": re.findall(r"(?m)^### (.+)$", _common.section_body(text, "Review findings") or "")})
+                            "wave": int(fields["wave"]), "locators": re.findall(r"(?m)^### (.+)$", _common.section_body(text, "Review findings") or ""),
+                            **({"repo": fields["repo"]} if fields.get("repo") else {})})
+            if fields["status"] != "done":
+                pending.append(repairs[-1])
         suffix = f"-fix-wave-{options.wave}-cycle-{options.cycle}.md"
-        existing = [item for item in repairs if item["path"].endswith(suffix)]
-        carried = {locator for item in repairs if item not in existing for locator in item["locators"]}
+        # A build recovery restarts a changed wave at cycle 1, so the repairs and the PLAN heading
+        # of the review it set aside carry the same names. They belong to that review, not this one.
+        replaced = replaced_review_base(primary, options.project_dir, options.wave, options.cycle)
+
+        def of_replaced_review(relative: str) -> bool:
+            if not replaced or isolation.run_git(primary, "show", f"{replaced}:{relative}").returncode != 0:
+                return False
+            return not isolation.run_git(primary, "log", "--diff-filter=AD", "--format=%H",
+                                         f"{replaced}..HEAD", "--", relative).stdout.strip()
+
+        stale = [item for item in repairs if item["path"].endswith(suffix) and of_replaced_review(item["path"])]
+        existing = [item for item in repairs if item["path"].endswith(suffix) and item not in stale]
+        # A landed repair no longer carries its finding: a repeat proves that fix failed and needs the next one.
+        # Two repos can carry the same locator, so a repair carries a finding only in its own repo.
+        carried = {(item.get("repo"), locator) for item in pending if not item["path"].endswith(suffix)
+                   for locator in item["locators"]}
         findings = review_findings.compute(primary, options.project_dir, options.wave, options.cycle)
         receipt["findings"] = findings
         escalation = [key for key in ("structural_blockers", "skeptic_groups", "cap_reached", "all_refuted")
@@ -2083,8 +2155,10 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
         repair_waves = {item["wave"] for item in existing}
         if len(repair_waves) > 1:
             raise DriverStop("repair tasks for this cycle disagree on their wave")
-        repair_heading = re.search(
+        stale_waves = {item["wave"] for item in stale}
+        repair_heading = next((heading for heading in re.finditer(
             rf"(?m)^## Wave (\d+) — fix wave {options.wave} cycle {options.cycle} review findings$", plan_text)
+            if int(heading.group(1)) not in stale_waves), None)
         if repair_waves:
             fix_wave = next(iter(repair_waves))
         elif repair_heading:
@@ -2095,9 +2169,10 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
             raise DriverStop("repair tasks disagree with the PLAN repair wave")
         receipt["existing"] = existing
         for batch in findings["fix_batches"]:
-            if any(set(batch["locators"]) <= set(item["locators"]) for item in existing):
+            repo = batch.get("repo")  # a member name, or None for the coordinator
+            if any(item.get("repo") == repo and set(batch["locators"]) <= set(item["locators"]) for item in existing):
                 continue
-            if all(locator in carried for locator in batch["locators"]):
+            if all((repo, locator) in carried for locator in batch["locators"]):
                 receipt["carried"].append(batch)
                 continue
             batch_groups = [groups[locator] for locator in batch["locators"]]
@@ -2105,9 +2180,15 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
             for source in sources:
                 if source not in texts:
                     raise DriverStop(f"fix batch names unknown task {source}")
+            # One task changes one repo: the fix depends on, and runs the Verify of, the source tasks of its repo.
+            sources = [source for source in sources if isolation.task_frontmatter(texts[source])[0].get("repo") == repo]
+            # A repeat builds on the landed repairs of its finding: repair-evidence links them by this dependency.
+            deps = sources + [item["task"] for item in repairs
+                              if item not in pending and item.get("repo") == repo
+                              and f"-fix-wave-{options.wave}-cycle-" in item["path"] and not item["path"].endswith(suffix)
+                              and set(item["locators"]) & set(batch["locators"])]
             task_id = next_task_id(tasks_dir)
-            verify = "set -e\n" + "\n".join(  # each source Verify in its own subshell
-                f"(\n{command}\n)" for command in dict.fromkeys(_common.task_verify_command(texts[source]) for source in sources))
+            verify = _common.fix_verify(_common.task_verify_command(texts[source]) for source in sources)
             heavy = any(re.search(r"(?m)^Heavy:\s*yes", texts[source]) for source in sources)
             criteria = "\n".join(f"{index}. {criterion}" for index, criterion in
                                  enumerate(dict.fromkeys(group["criterion"] for group in batch_groups), 1))
@@ -2115,18 +2196,19 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
                 f"### {group['locator']}\nCriterion: {group['criterion']}\n"
                 + "\n".join(f"- {item['text']}" for item in group["observations"]) for group in batch_groups)
             files = "\n".join(f"  - {path}" for path in batch["files"])
+            member = f"repo: {repo}\n" if repo else ""  # the task template puts `repo:` before `files:`
             title = f"Fix wave {options.wave} cycle {options.cycle} review findings in {', '.join(sources)}"
             text = f"""---
 id: {task_id}
 title: {title}
 wave: {fix_wave}
-deps: [{', '.join(sources)}]
+deps: [{', '.join(deps)}]
 status: pending
 agent: null
 base: null
 worktree: null
 task_branch: null
-files:
+{member}files:
 {files}
 ---
 
@@ -2175,8 +2257,8 @@ Heavy: {'yes' if heavy else 'no'}
             path = tasks_dir / f"{task_id}-fix-wave-{options.wave}-cycle-{options.cycle}.md"
             _common.atomic_write(path, text)
             receipt["created"].append({"task": task_id, "path": path.relative_to(primary).as_posix(),
-                                       "wave": fix_wave, "deps": sources, "files": batch["files"],
-                                       "locators": batch["locators"]})
+                                       "wave": fix_wave, "deps": deps, "files": batch["files"],
+                                       "locators": batch["locators"], **({"repo": repo} if repo else {})})
         rows = []
         for item in [*existing, *receipt["created"]]:
             fields, _ = isolation.task_frontmatter((primary / item["path"]).read_text(encoding="utf-8"))

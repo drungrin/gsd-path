@@ -94,6 +94,8 @@ class Task:
     verify_heavy: bool
     repo: str = ""
     review_findings: bool = False
+    verify: str = ""
+    supersedes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -248,6 +250,8 @@ def _parse_task(path: Path, relative_path: str, task_file: Optional[str] = None)
         verify_heavy=_verify_heavy(text, label),
         repo=str(fields.get("repo") or ""),
         review_findings=REVIEW_FINDINGS_HEADING in _sections(text),
+        verify=_common.task_verify_command(text),
+        supersedes=_normalize_list(fields.get("supersedes", []), f"{label} supersedes", task_ids=True),
     )
 
 
@@ -420,7 +424,8 @@ def _recovery_reports(project: Project) -> Dict[str, Mapping[str, object]]:
     return reports
 
 
-def _validate_ready_metadata(project: Project) -> None:
+def _validate_ready_metadata(project: Project) -> Dict[str, Mapping[str, object]]:
+    """Validate every task against its recovery report; return the reports by task id."""
     by_id = {task.task_id: task for task in project.tasks}
     recovery = _recovery_reports(project)
     seen_worktrees: Dict[str, str] = {}
@@ -484,12 +489,155 @@ def _validate_ready_metadata(project: Project) -> None:
             if report.get("verdict") not in LANDED_VERDICTS:
                 reason = report.get("reason", "landing commit is not proven")
                 _invalid_state(task, str(reason))
+    return recovery
 
 
 def _overlap(left: Task, right: Task) -> List[str]:
     if left.repo != right.repo:
         return []
-    return sorted(set(left.files) & set(right.files))
+    return _common.overlapping_paths(left.files, right.files)
+
+
+def _superseded(tasks: Sequence[Task], task: Task) -> Dict[str, str]:
+    """Earlier task id -> the task that replaces its behavior: this task, or a `done` task."""
+
+    return {
+        earlier: other.task_id
+        for other in tasks
+        if other.status == "done" or other.task_id == task.task_id
+        for earlier in other.supersedes
+    }
+
+
+def _held(by_id: Mapping[str, Task], task: Task) -> List[Task]:
+    """The tasks whose protective role this task inherits: each task it supersedes, through a chain."""
+
+    held: Dict[str, Task] = {}
+    pending = list(task.supersedes)
+    while pending:
+        other = by_id.get(pending.pop())
+        if other is not None and other.task_id not in held:  # a cycle ends here
+            held[other.task_id] = other
+            pending.extend(other.supersedes)
+    return [by_id[name] for name in sorted(held)]
+
+
+def _live_verify(
+    by_id: Mapping[str, Task], superseded: Mapping[str, str], source: Task
+) -> Tuple[str, Optional[str], List[Tuple[str, str]]]:
+    """The Verify of a source that still runs, or the task that retired all of it, and the drops.
+
+    The Verify of a fix task is exactly the composition that fix-tasks generates from the
+    Verify of each task in its deps, so it carries a copy of each: only the copies that are
+    not retired stay in the command. Any other Verify is one command. Each drop is
+    (superseded task, superseding task); a copy whose command a live dependency still runs
+    is not a drop.
+    """
+
+    if source.task_id in superseded:
+        return "", superseded[source.task_id], [(source.task_id, superseded[source.task_id])]
+    deps = [by_id[dependency] for dependency in source.deps if dependency in by_id]
+    if not deps or source.verify != _common.fix_verify(dep.verify for dep in deps):
+        return source.verify, None, []
+    parts = [_live_verify(by_id, superseded, dep) for dep in deps]
+    live = [command for command, retired_by, _ in parts if not retired_by]
+    dropped = list(dict.fromkeys(drop for _, _, drops in parts for drop in drops
+                                 if by_id[drop[0]].verify not in live))
+    if not live:
+        return "", parts[0][1], dropped
+    return _common.fix_verify(live), None, dropped
+
+
+def _regression_sources(
+    tasks: Sequence[Task], task: Task
+) -> List[Tuple[Task, List[str], Optional[str], str, List[Tuple[str, str]]]]:
+    """Each `done` task whose Verify protects a file of this task:
+    (source, replaced, retired_by, command, dropped).
+
+    A source is a task of an earlier wave that shares a declared file with this task. A task
+    that supersedes others inherits their role: it is also a source, in any wave, for a task
+    that shares a file with a task it holds, and `replaced` names those tasks.
+    `retired_by` names the task that supersedes the source: this task, or a `done` task. A
+    retired Verify does not run, also not as a copy in the Verify of a fix task: `command`
+    is the Verify that runs and `dropped` names each retired copy (`_live_verify`). The source still counts for the one-at-a-time
+    rule, so the superseding task never runs beside a task that shares a file of the
+    superseded task.
+    """
+
+    by_id = {other.task_id: other for other in tasks}
+    superseded = _superseded(tasks, task)
+    sources = []
+    for other in tasks:
+        if other.status != "done" or other.task_id == task.task_id:
+            continue
+        replaced = [held.task_id for held in _held(by_id, other) if _overlap(task, held)]
+        if replaced or (other.wave < task.wave and _overlap(task, other)):
+            command, retired_by, dropped = _live_verify(by_id, superseded, other)
+            sources.append((other, replaced, retired_by, command, dropped))
+    return sources
+
+
+def _landing_tasks(repo: Path, task_id: str, project_dir: str) -> Tuple[List[Task], Task]:
+    tasks = [
+        _parse_task(path, path.relative_to(repo).as_posix())
+        for path in sorted((repo / project_dir / "tasks").glob("*.md"))
+    ]
+    task = next((item for item in tasks if item.task_id == task_id), None)
+    if task is None:
+        raise BuildStateError("unknown-task", f"task file is missing: {task_id}")
+    return tasks, task
+
+
+def retired_verifies(
+    repo: Path, task_id: str, project_dir: str = DEFAULT_PROJECT_DIR
+) -> List[Dict[str, str]]:
+    """Return the earlier-wave tasks whose Verify a landing of this task does not run again.
+
+    A task's plan-approved `supersedes` names them. The Verify is retired for that task, and
+    for every task that lands after that task is `done`: the Verify of the superseding task
+    then runs in its place (`regression_verifies`, key `supersedes`). A fix task whose
+    generated Verify holds only retired copies is here too. A fix task whose generated Verify
+    loses some of its copies has one entry for each, with the superseded task under `part`.
+    """
+
+    tasks, task = _landing_tasks(repo, task_id, project_dir)
+    retired: List[Dict[str, str]] = []
+    for other, _, retired_by, _, dropped in _regression_sources(tasks, task):
+        if retired_by:
+            if other.verify:
+                retired.append({"task": other.task_id, "superseded_by": retired_by})
+        else:
+            retired.extend({"task": other.task_id, "part": part, "superseded_by": by}
+                           for part, by in dropped)
+    return retired
+
+
+def regression_verifies(
+    repo: Path, task_id: str, own: str, project_dir: str = DEFAULT_PROJECT_DIR
+) -> List[Dict[str, object]]:
+    """Return the Verify commands of landed tasks that a landing of this task must also pass.
+
+    One entry per distinct command, with every source task that has it, and under
+    `supersedes` the tasks whose retired Verify it replaces for this landing. A command
+    that the task's own Verify already runs is left out: an identical command, or
+    a dependency's command when the own Verify is exactly the fix-task Verify of
+    the task's dependencies. Text that only contains a command proves nothing.
+    A retired Verify is not here, also not as a copy in the Verify of a fix task: see
+    `retired_verifies`.
+    """
+
+    tasks, task = _landing_tasks(repo, task_id, project_dir)
+    by_id = {item.task_id: item for item in tasks}
+    composed = [by_id[dependency].verify for dependency in task.deps if dependency in by_id]
+    covered = {own, *(composed if own == _common.fix_verify(composed) else ())}
+    sources: Dict[str, Dict[str, object]] = {}
+    for other, replaced, _, command, _ in _regression_sources(tasks, task):
+        if command and command not in covered:
+            entry = sources.setdefault(command, {"tasks": [], "command": command})
+            entry["tasks"].append(other.task_id)
+            if replaced:  # this Verify runs in the place of the Verify of each task it replaced
+                entry["supersedes"] = sorted({*entry.get("supersedes", ()), *replaced})
+    return list(sources.values())
 
 
 def _blocked_wave_reviews(project: Project) -> Dict[int, int]:
@@ -527,7 +675,7 @@ def ready(repo: str, project_dir: str = DEFAULT_PROJECT_DIR, *,
     """Return task readiness, optionally accepting build/done for completion checks."""
 
     project = _load_project(repo, project_dir, ("active", "done") if allow_done else ("active",))
-    _validate_ready_metadata(project)
+    reports = _validate_ready_metadata(project)
     by_id = {task.task_id: task for task in project.tasks}
     unfinished_waves = sorted({task.wave for task in project.tasks if task.status != "done"})
     current_wave = unfinished_waves[0] if unfinished_waves else None
@@ -626,6 +774,20 @@ def ready(repo: str, project_dir: str = DEFAULT_PROJECT_DIR, *,
             {"wave": current_wave, "tasks": stalled},
         )
 
+    # Tasks that share a regression source land one at a time, each from the landing of the one
+    # before, so the source's Verify runs on their combined edits. A parallel round leaves the
+    # primary task file pending: a retained isolate shows that the task is already dispatched.
+    # A retired source still counts: its superseding task holds its role.
+    sources = {task.task_id: {other.task_id for other, _, _, _, _ in _regression_sources(project.tasks, task)}
+               for task in concurrent}
+    started = [task for task in selectable if reports[task.task_id].get("verdict") != "none"]
+    claimed = {source for task in active + started for source in sources[task.task_id]}
+    dispatchable = []
+    for task in selectable:
+        if task in started or not sources[task.task_id] & claimed:
+            dispatchable.append(task)
+            claimed |= sources[task.task_id]
+
     typed: Dict[str, object] = {}
     if repair_for_wave is not None:
         typed["repair_for_wave"] = repair_for_wave
@@ -646,10 +808,13 @@ def ready(repo: str, project_dir: str = DEFAULT_PROJECT_DIR, *,
                 "deps": list(task.deps),
                 "files": list(task.files),
                 "task_file": task.task_file,
-                "verify_heavy": task.verify_heavy,
+                # The landing also runs each regression Verify, so a heavy one makes the task heavy.
+                "verify_heavy": task.verify_heavy
+                or any(other.verify_heavy and not retired_by
+                       for other, _, retired_by, _, _ in _regression_sources(project.tasks, task)),
                 **({"repo": task.repo} if task.repo else {}),
             }
-            for task in selectable
+            for task in dispatchable
         ],
     }
 

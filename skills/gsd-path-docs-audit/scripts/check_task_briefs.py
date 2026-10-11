@@ -100,13 +100,15 @@ def _supplied_contract(repo: Path, task: Path, token: str) -> bool:
     return path.is_file() and path.resolve() == repo.resolve() / token
 
 
+def _pipeline_workspace_path(repo: Path, task: Path, token: str) -> bool:
+    track = _project_track(task, repo)
+    return track is not None and token.startswith(
+        tuple(f"{track}/{name}/" for name in PIPELINE_WORKSPACE_DIRS))
+
+
 def _pipeline_workspace_file(repo: Path, task: Path, token: str) -> bool:
     """Pipeline-owned paths may exist only in the working tree before checkpoint."""
-    track = _project_track(task, repo)
-    if track is None:
-        return False
-    prefixes = tuple(f"{track}/{name}/" for name in PIPELINE_WORKSPACE_DIRS)
-    if not any(token.startswith(prefix) for prefix in prefixes):
+    if not _pipeline_workspace_path(repo, task, token):
         return False
     path = repo / token
     return path.is_file() and path.resolve() == repo.resolve() / token
@@ -277,7 +279,7 @@ def _verify_tokens(
 
 
 def _member_bases(root: Path):
-    """Resolve a member name to (checkout, origin/main SHA), reading MEMBERS.md once."""
+    """Resolve a member name to (checkout, base SHA), reading MEMBERS.md once."""
     cache: Dict[str, Optional[Tuple[Path, str]]] = {}
 
     def locate(name: str) -> Optional[Tuple[Path, str]]:
@@ -290,21 +292,22 @@ def _member_bases(root: Path):
                 except ImportError:  # pragma: no cover - package import used by tests
                     from scripts import members
             try:
-                listed = {member["name"]: Path(member["checkout"]) for member in members.read_members(root)}
-                checkout = listed.get(name)
-                if checkout is None:
+                listed = {member["name"]: member for member in members.read_members(root)}
+                if name not in listed:
                     cache[name] = None
                 else:
+                    checkout = Path(listed[name]["checkout"])
                     # A build lock selects the bound tip, including during Plan recovery;
-                    # without the lock, use origin/main before the first build start.
+                    # without the lock, use the member's recorded default branch on origin
+                    # before the first build start.
                     lock = root / members.LOCK_PATH
                     locked = [entry for entry in (json.loads(lock.read_text(encoding="utf-8"))["members"]
                                                   if lock.is_file() else []) if entry["name"] == name]
                     if locked:
                         cache[name] = (checkout, _resolve_base(checkout, f"refs/heads/{locked[0]['branch']}"))
                     else:
-                        members.require_origin_main(checkout)
-                        cache[name] = (checkout, _resolve_base(checkout, "refs/remotes/origin/main"))
+                        cache[name] = (checkout, members.require_origin_branch(
+                            checkout, members.default_branch(listed[name])))
             except (members.MembersError, BriefError) as error:
                 raise BriefError(f"member {name} is unavailable: {error}") from error
         return cache[name]
@@ -328,8 +331,8 @@ def _lint_task(
     checked = 0
     if fields is None:
         return task_id, [error or "invalid frontmatter"], None, checked
-    # A member task's paths resolve in the member at its origin/main, where the
-    # member bound branch starts; `repo:` absent means the coordinator.
+    # A member task's paths resolve in the member at its default branch on origin,
+    # where the member bound branch starts; `repo:` absent means the coordinator.
     git_root = repo
     member = fields.get("repo")
     if member is not None:
@@ -397,6 +400,8 @@ def _lint_task(
                 and token not in supplied
                 and not _supplied_contract(repo, path, token)
                 and not _pipeline_workspace_file(repo, path, token)
+                # A landed brief is history: the pipeline moves its own files (build recovery, archive) later.
+                and not (task_id in (landed_bases or {}) and _pipeline_workspace_path(repo, path, token))
                 and not _base_exists(git_root, base, token)
             ):
                 problems.append(f"## {name} names a path missing at the layer base: {token}")

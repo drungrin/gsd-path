@@ -19,9 +19,10 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE / "runtime" if (_HERE / "runtime" / "isolation.py").is_file() else _HERE))
 sys.dont_write_bytecode = True  # a hook must not leave __pycache__ in the worktree
 try:
-    from isolation import BOOKKEEPING_PREFIXES, NULL_SHA, _landing_state, task_frontmatter
+    from isolation import BOOKKEEPING_PREFIXES, NULL_SHA, _landing_state, task_frontmatter, undeclared_paths
     from pipeline_git import is_ship_subject, ship_body_matches, ship_commit_body, task_commit_body
     from pipeline_state import _completion_status
+    from _common import valid_default_branch
     import members
 except ImportError as error:  # pragma: no cover - broken install
     print(
@@ -240,7 +241,10 @@ def frontmatter_of(content, label):
 
 
 def strict_ship_state(state, archive):
-    fields = frozenset(state)
+    # default_branch is optional beside each accepted field set.
+    if "default_branch" in state and not valid_default_branch(state["default_branch"]):
+        return False
+    fields = frozenset(state) - {"default_branch"}
     if fields not in {
         frozenset(LEGACY_STATE_FIELDS),
         frozenset(INTEGRATION_STATE_FIELDS),
@@ -509,7 +513,7 @@ def product_commit_violations(entries, subject, body):
         if error:
             problems.append(error)
         if contract_paths is not None:
-            stray = sorted(set(staged) - contract_paths)
+            stray = undeclared_paths(repo_root(), base, set(staged), contract_paths)
             if stray:
                 problems.append("undeclared paths: " + ", ".join(stray))
         if body != task_commit_body(task_file, staged, base).strip():
@@ -559,8 +563,10 @@ def member_pre_push_violations(lines, role):
     """Member mode: the member's own STATE is ignored; coordinator refs need authorization."""
     checkout, project = repo_root(), role["project"]
     reserved = members.member_ref_prefixes(project)
-    members.require_origin_main(checkout)
-    exclude = ["--not", "refs/remotes/origin/main"]
+    # The coordinator's MEMBERS.md records this member's default branch.
+    default = members.member_default_branch(role["coordinator"], role["name"])
+    members.require_origin_branch(checkout, default)
+    exclude = ["--not", f"refs/remotes/origin/{default}"]
     member_work = None
     found = []
     for _, local_sha, remote_ref, remote_sha in _push_updates(lines):
@@ -641,7 +647,20 @@ def abandon_contract_violations(subject, body, abandon):
     return []
 
 
+def recorded_default_branch():
+    """STATE default_branch in the worktree: main without the field; None without a readable STATE."""
+    try:
+        content = (repo_root() / ".project" / "STATE.md").read_text(encoding="utf-8")
+        name = frontmatter_of(content, "STATE.md").get("default_branch", "main")
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return None
+    return name if valid_default_branch(name) else None
+
+
 def default_branch():
+    recorded = recorded_default_branch()
+    if recorded:
+        return recorded
     origin_head = subprocess.run(
         ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
         capture_output=True,
