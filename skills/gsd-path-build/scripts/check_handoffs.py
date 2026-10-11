@@ -1298,7 +1298,7 @@ def _normalize_ws(value: str) -> str:
 
 
 def task_review_observation(item: str, task_text: str) -> str:
-    """Separate an exact quoted acceptance criterion from its observed evidence."""
+    """Separate a quoted acceptance criterion from its observed evidence."""
     item = _normalize_ws(item)
     section = _common.section_body(task_text, "Acceptance criteria")
     if section is not None:
