@@ -1391,13 +1391,13 @@ class GuardHookTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assert_denied(
-                self.bash_in(repo, f"git worktree remove --force {task_worktree}")
+                self.bash_in(repo, f"git worktree remove --force {shlex.quote(str(task_worktree))}")
             )
 
             managed = root / "managed-task"
             self.git(repo, "worktree", "add", "-q", "-b", "gsd-path-task/T002", str(managed))
             self.assert_denied(
-                self.bash_in(repo, f"git worktree remove -f -- {managed}")
+                self.bash_in(repo, f"git worktree remove -f -- {shlex.quote(str(managed))}")
             )
 
     def test_ownership_scope_uses_cd_and_git_c_repository_context(self):
@@ -1861,12 +1861,18 @@ class GuardHookTests(unittest.TestCase):
                 for target in (inside, root / "plain-worktree"):
                     with self.subTest(target=target.name):
                         self.assert_allowed(
-                            self.bash_in(repo, f"git worktree remove --force {target}")
+                            self.bash_in(
+                                repo,
+                                f"git worktree remove --force {shlex.quote(str(target))}",
+                            )
                         )
                 for target in (recorded, root / "task-worktree", legacy, integrate):
                     with self.subTest(target=target.name):
                         self.assert_denied_with(
-                            self.bash_in(repo, f"git worktree remove --force {target}"),
+                            self.bash_in(
+                                repo,
+                                f"git worktree remove --force {shlex.quote(str(target))}",
+                            ),
                             guard_hook.GIT_REASONS["worktree"],
                         )
 
