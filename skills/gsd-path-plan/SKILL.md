@@ -119,6 +119,9 @@ as stated in Lookahead mode.
      in the same wave. Same-wave tasks may share files only when one
      transitively depends on the other through `deps`; the build executes
      them in dependency layers.
+   - Require an optional `supersedes` field to be a list of different task
+     ids; each one names an existing task of an earlier wave, in the same
+     repo, that shares a declared file with the task.
    - Reject a declared dependency that carries neither data nor a prerequisite
      effect. A `deps` edge is valid only when the dependent consumes a symbol,
      signature, schema, endpoint, file format, or path named in that
