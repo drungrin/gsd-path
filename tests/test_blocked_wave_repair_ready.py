@@ -230,6 +230,7 @@ class BlockedWaveRepairReadyTests(unittest.TestCase):
         payload = self.ready(source, ordinary, first_repair, second_repair)
         self.assertEqual(payload["unreviewed_waves"], [2])
 
+    def test_repair_marker_uses_an_exact_review_findings_section_heading(self) -> None:
         path = self.tasks_dir / "T003-fix.md"
         frontmatter = """---
 id: T003
