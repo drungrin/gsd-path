@@ -8,9 +8,9 @@ canonical review files, and every skeptic file for this wave. It groups
 blocking findings by canonical criterion locator (`t001_ac2`, `sc3`,
 `t001_files`, `t001_interface_contract`), collapses true duplicate
 observations, selects the groups that need a skeptic, carries refutations
-forward across cycles, batches fix-task groups by disjoint file scope, keeps
-structural blockers out of skeptic accounting, and reports whether the cycle
-cap is reached. It never decides the wave verdict.
+forward across cycles, batches fix-task groups by repo and disjoint file
+scope, keeps structural blockers out of skeptic accounting, and reports
+whether the cycle cap is reached. It never decides the wave verdict.
 """
 
 from __future__ import annotations
