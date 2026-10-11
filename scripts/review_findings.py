@@ -19,6 +19,7 @@ import argparse
 import json
 import re
 import sys
+sys.dont_write_bytecode = True
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 

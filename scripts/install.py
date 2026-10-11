@@ -2844,6 +2844,8 @@ def doctor(
     else:
         for name in PROJECT_RUNTIME_SCRIPTS:
             destination = runtime / name
+            if pinned and not _lexists(destination):
+                continue  # a valid older selected runtime lacks helpers added later
             if destination.is_symlink():
                 push("fail", f"project: runtime {name} is a symlink")
                 runtime_current = False

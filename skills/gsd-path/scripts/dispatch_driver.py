@@ -77,6 +77,9 @@ STOP_ERRORS = (DriverStop, isolation.IsolationError, build_state.BuildStateError
                pipeline_state.PipelineStateError, archive_milestone.ArchiveError, model_policy.PolicyError)
 _RUNTIME_ACTIVATION_ORDER = (
     "_common",
+    "roadmap",
+    "review_panel",
+    "loop_run",
     "pipeline_git",
     "worktree_paths",
     "build_recovery",
@@ -87,7 +90,11 @@ _RUNTIME_ACTIVATION_ORDER = (
     "build_state",
     "check_handoffs",
     "task_context",
+    # discussion_validate and archive_milestone import each other: the second
+    # reload binds the reloaded ArchiveError that STOP_ERRORS catches.
+    "discussion_validate",
     "archive_milestone",
+    "discussion_validate",
     "review_findings",
     "model_policy",
 )

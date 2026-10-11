@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+# gsd-path project runtime
 """Render a read-only coder intent view from the approved task and intent."""
 
 import argparse
 import hashlib
 import re
 import sys
+sys.dont_write_bytecode = True
 from pathlib import Path
 
 try:
