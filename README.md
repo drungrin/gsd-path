@@ -9,11 +9,19 @@ milestone loop. While a milestone builds, the next one can be planned in
 parallel under `.project/next/` (lookahead); a building milestone can also be
 abandoned on an explicit ruling, archiving its partial work for a re-slice.
 
-**Supported hosts:** Codex, Claude Code, Grok, OpenCode, GitHub Copilot CLI,
-Qwen Code, Antigravity CLI, Cursor, Zed, Kiro, Kimi Code, and Muse Code.
-Support means the installer and dispatch contract exist. See the
-[host trust matrix](https://github.com/open-gsd/gsd-path/blob/main/docs/trust-validation/HOST-MATRIX.md) for live milestone
-proof and each host's guard tier.
+**Hosts with a passing full live milestone for release 1.5.0:** Codex, Claude
+Code, Grok, OpenCode, Antigravity CLI, Cursor, and Kimi Code.
+
+**Hosts with an installer and a dispatch contract, but no live milestone for
+release 1.5.0:** GitHub Copilot CLI (account quota exhausted), Qwen Code, Zed,
+and Kiro (API credits), and Muse Code (no live release evidence recorded yet).
+These hosts are excluded from the release evaluation. Exclusion is not a pass.
+
+With guard hooks installed, only Claude Code and Cursor get a fail-closed
+native guard; every other host relies on Git hooks. The installer also writes a
+native Codex hook, and it runs only after you trust it (see [HOOKS.md](HOOKS.md)).
+The [host trust matrix](https://github.com/open-gsd/gsd-path/blob/main/docs/trust-validation/HOST-MATRIX.md)
+is the source of truth for live milestone proof and each host's guard tier.
 
 <!-- release-docs -->
 **Latest npm release:** [@opengsd/gsd-path@1.5.0](https://www.npmjs.com/package/@opengsd/gsd-path/v/1.5.0) — [release notes](CHANGELOG.md#150---2026-10-09)
@@ -120,11 +128,13 @@ contain newer changes.
 
 1. Open your project folder in your coding-agent host. Existing repositories
    need Git; GitHub repository creation and pull-request operations also need
-   an authenticated GitHub CLI (`gh`). The default branch of `origin` must be
-   `main`; Path stops at initialization for any other name. Pull-request
+   an authenticated GitHub CLI (`gh`). The default branch of `origin` can have
+   any name: Path records it at initialization and ships onto it. This guide
+   calls it `main`; see [default branch](WORKFLOW.md#default-branch).
+   Pull-request
    shipping supports GitHub.com only. On GitLab, Gitea, or GitHub Enterprise
    Server, use the [`external-landing` mode](WORKFLOW.md#integration) when
-   `main` accepts merge requests only.
+   the default branch accepts merge requests only.
 2. Start or reload the host session so it discovers the installed skills.
 3. Invoke `$path` in Codex, or `/path` on slash-command hosts. The router
    identifies the project and guides you through the required inputs and approvals.
@@ -154,6 +164,25 @@ Use `$path config` (Codex) or `/path config` to view and change user defaults or
 project settings. Dashboard users can open **Settings → Path settings** for the
 same shipping, model/effort, and future review-panel controls. See
 [Path settings](skills/gsd-path/references/config.md) for precedence and locks.
+
+### Uninstall
+
+```bash
+npx @opengsd/gsd-path@latest --uninstall --all --dry-run
+npx @opengsd/gsd-path@latest --uninstall --all
+```
+
+`--uninstall` removes the installed GSD Path skills from the selected hosts.
+For Cursor it also removes the GSD Path subagent file. Use host flags instead
+of `--all` to select hosts. For project-local skills, run the command from
+your project directory and add `--local`. `--dry-run` shows each path and
+removes nothing.
+
+The command removes only GSD Path skills. It keeps other skills, host
+settings, and `disabled-gsd-skills` backups. It makes no backup: changes that
+you made in a GSD Path skill directory are lost. It does not remove project
+contracts or hooks (`.project/`, `.gsd-path/`, the `AGENTS.md` block, guard
+hooks). See [Uninstall skills](UPDATE.md#uninstall-skills).
 
 ## Desktop app
 
@@ -362,12 +391,30 @@ partial remote/clone/worktree transaction; the default checkout stays clean.
 One project can change several repositories in the same milestone. The
 **coordinator** repo holds `.project/` and runs the pipeline; each other repo
 is a **member** listed in `.project/MEMBERS.md`. A member needs a GitHub.com
-`origin` whose default is `main`. See
+`origin`. Its default branch can have any name, and it can differ from the
+default branch of the coordinator and of the other members. See
 [ADR 0002](docs/adr/0002-multi-repo-coordinator.md) for the design.
+
+`MEMBERS.md` has one section per member, in ship order. `members.py` writes
+it; do not edit it by hand:
+
+```markdown
+## web
+Checkout: /absolute/path/to/web
+Remote: https://github.com/acme/web.git
+Integration: default
+Default branch: master
+```
+
+`Default branch` is the member's default branch on `origin`. `members.py add`
+records it one time, from the member's local `origin/HEAD`; run
+`git remote set-head origin --auto` in the member first. A section without
+the field means `main`. See [default branch](WORKFLOW.md#default-branch).
 
 - Add members at a milestone boundary: ask the router to add an existing repo
   (`members.py add`) or to create a new one (`members.py add --create`, after
-  you approve the exact owner, name, visibility, and checkout). For optional
+  you approve the exact owner, name, visibility, and checkout; a new
+  repository uses `main`). For optional
   guard hooks, install them in the member with
   `npx @opengsd/gsd-path@latest --member-of <coordinator> --project <member>`.
 - The planner gives each member task `repo: <member>`; one task changes one
@@ -442,6 +489,7 @@ node scripts/install.mjs --all --local
 node scripts/install.mjs --all --project /path/to/project
 node scripts/install.mjs --update
 node scripts/install.mjs --all --update --project /path/to/project   # refresh .gsd-path/; keeps contracts
+node scripts/install.mjs --uninstall --all --dry-run                 # preview; removes skills only
 ```
 
 | Flag | User skills root | Invoke |
@@ -461,7 +509,7 @@ OpenCode stable: ask to load and use the `gsd-path` skill.
 `gsd-path` remains the canonical router name; `path` is its short menu alias.
 For a single phase, use `$gsd-path-plan` in Codex or `/gsd-path-plan` on slash hosts.
 
-`scripts/install.py` — Python install, including `--local` and `--update`.
+`scripts/install.py` — Python install, including `--local`, `--update`, and `--uninstall`.
 The Node CLI remains the interactive and npm entry point. See [FULL.md](FULL.md) and
 [UPDATE.md](UPDATE.md) for `--hooks`, `--hooks-refresh`, `--local`, and host notes.
 

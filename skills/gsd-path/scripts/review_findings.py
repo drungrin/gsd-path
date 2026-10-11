@@ -19,8 +19,16 @@ import argparse
 import json
 import re
 import sys
+
+# Runtime helpers must not modify their immutable installation.
+sys.dont_write_bytecode = True
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
+
+try:
+    from . import _common
+except ImportError:  # installed standalone helper
+    import _common
 
 DEFAULT_PROJECT_DIR = ".project"
 DEFAULT_MAX_REVIEW_CYCLES = 3
@@ -449,7 +457,7 @@ def _fix_batches(groups: Sequence[dict], tasks: Dict[str, dict]) -> List[dict]:
             merged = {"locators": [group["locator"]], "files": files, **({"repo": repo} if repo else {})}
             keep: List[dict] = []
             for batch in batches:
-                if batch.get("repo") == merged.get("repo") and set(batch["files"]) & set(files):
+                if batch.get("repo") == merged.get("repo") and _common.overlapping_paths(batch["files"], files):
                     merged["locators"] = batch["locators"] + merged["locators"]
                     merged["files"] = sorted(set(batch["files"]) | set(merged["files"]))
                 else:

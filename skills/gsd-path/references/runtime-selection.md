@@ -20,6 +20,15 @@ references to bundled copies of those helpers. Other skill helpers, templates,
 and role briefs remain in the installed skill bundle. Pass `-B` to Python helper
 invocations so execution does not create bytecode in the runtime store.
 
+The selected runtime is authoritative for each helper in its `manifest.json`;
+this includes `review_findings.py` and `task_context.py`. A selected runtime
+that was published before a helper became a runtime file does not list that
+helper: run the bundled copy until the project runtime is upgraded.
+`dispatch_driver.py` and `workflow_run.py` always run from the installed skill
+bundle, because they read role briefs and templates from it; a skill update
+replaces them, a runtime upgrade does not. The driver reloads the helper modules
+that it imports from the selected runtime.
+
 With no declaration, retain the legacy helper lookup. An existing
 `.gsd-path/runtime/` requires the explicit `--runtime-migrate --project PATH`
 operation before adopting external storage; review the resulting Git diff.

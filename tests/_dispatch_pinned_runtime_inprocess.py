@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts import dispatch_driver
+from scripts import dispatch_driver, runtime_store
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PINNED_MARKER = "gsd-path-pinned-runtime-marker-209"
@@ -43,6 +43,44 @@ class DispatchPinnedRuntimeInProcessTests(unittest.TestCase):
                 PINNED_MARKER,
             )
             self.assertIn(dispatch_driver.isolation.IsolationError, dispatch_driver.STOP_ERRORS)
+
+    def activate(self, repo: Path, name: str, files: tuple) -> Path:
+        runtime = repo / name
+        runtime.mkdir()
+        for helper in files:
+            shutil.copyfile(PROJECT_ROOT / "scripts" / helper, runtime / helper)
+        completed = subprocess.CompletedProcess([], 0, stdout=str(runtime))
+        with mock.patch.object(dispatch_driver.subprocess, "run", return_value=completed):
+            dispatch_driver._activate_pinned_runtime(repo)
+        return runtime
+
+    def bundle_copies(self, runtime: Path) -> list:
+        """Loaded helper modules that the runtime has but that did not come from it."""
+        return sorted(
+            name for name, module in sys.modules.items()
+            if name.startswith("scripts.") and (runtime / f"{name[8:]}.py").is_file()
+            and Path(module.__file__).parent != runtime)
+
+    def test_driver_runs_every_sibling_that_the_selected_runtime_has(self) -> None:
+        files = runtime_store.RUNTIME_FILES
+        added = ("review_findings.py", "task_context.py")
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp).resolve()
+            (repo / ".gsd-path").mkdir()
+            (repo / ".gsd-path/runtime.json").write_text('{"digest":"test"}', encoding="utf-8")
+
+            older = self.activate(repo, "older", tuple(name for name in files if name not in added))
+            self.assertEqual(self.bundle_copies(older), [])
+            for module in (dispatch_driver.review_findings, dispatch_driver.task_context):
+                self.assertEqual(Path(module.__file__).parent, PROJECT_ROOT / "scripts")
+            self.assertIn(dispatch_driver.review_findings.ReviewFindingsError, dispatch_driver.STOP_ERRORS)
+
+            current = self.activate(repo, "current", files)
+            self.assertEqual(self.bundle_copies(current), [])
+            for module in (dispatch_driver.review_findings, dispatch_driver.task_context):
+                self.assertEqual(Path(module.__file__).parent, current)
+            with self.assertRaises(dispatch_driver.STOP_ERRORS):
+                raise dispatch_driver.discussion_validate.ArchiveError("review cycles are not valid")
 
 
 if __name__ == "__main__":

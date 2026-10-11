@@ -82,7 +82,9 @@ bundles this file; spawned agents follow their role brief instead.
   `isolation.py attest` may stand in for it: one `.project/`-only commit that
   names the base, the attested HEAD, the declared files that changed, the
   task Verify recorded as passing at that HEAD, and the ruling verbatim.
-  `recover` reports it as `attested`, never as a proven landing.
+  `recover` reports it as `attested`, never as a proven landing. Attestation
+  matches the declared files literally: work that is only below a declared
+  directory can land but cannot be attested.
 - All pipeline work for a milestone lives on `gsd-path/M00N` (M001, M002,
   …) bound in STATE.branch. The next milestone binds a new unused
   `gsd-path/M00N` at the remote default after the previous ship integrates.
@@ -90,6 +92,12 @@ bundles this file; spawned agents follow their role brief instead.
   branch — either Path's direct merge or a Path-owned PR merged by the user.
   The bound branch never receives merges or back-merges and is never the
   GitHub default.
+- The default branch is the one that STATE `default_branch` records at
+  initialization; a STATE file without the field means `main`. `main` and
+  `origin/main` in these rules mean that branch. Never change the record and
+  never take the name from a later `origin/HEAD` lookup. For a member
+  repository, the branch is the one that its `.project/MEMBERS.md` section
+  records as `Default branch`; a section without the field means `main`.
 - After initialization writes STATE.md, and before entering the first pipeline
   phase in an existing Git repository, the router calls
   `scripts/pipeline_git.py bind-initial` with the selected M00N and exact

@@ -301,7 +301,9 @@ def discard_unpublished_stale_integration(
         project, "merge-base", "--is-ancestor", merge_commit, remote_default_sha
     )
     if published.returncode == 0:
-        raise ArchiveError("stale integration merge is already published on origin/main")
+        raise ArchiveError(
+            f"stale integration merge is already published on origin/{default_name}"
+        )
     if published.returncode != 1:
         archive_milestone.require_git_success(published, "inspect stale integration publication")
 
@@ -659,9 +661,10 @@ def require_pull_request_identity(
     pull: dict,
     branch: str,
     ship_commit: str,
+    base: str = "main",
 ) -> None:
-    if pull["base"].get("ref") != "main":
-        raise ArchiveError("GitHub pull request base is not main")
+    if pull["base"].get("ref") != base:
+        raise ArchiveError(f"GitHub pull request base is not {base}")
     if pull["head"].get("ref") != branch:
         raise ArchiveError("GitHub pull request head is not the bound branch")
     if pull["head"].get("sha") != ship_commit:
@@ -670,7 +673,9 @@ def require_pull_request_identity(
         raise ArchiveError("GitHub pull request head repository is not origin")
 
 
-def find_pull_request(repository: str, branch: str, ship_commit: str) -> Optional[dict]:
+def find_pull_request(
+    repository: str, branch: str, ship_commit: str, base: str = "main"
+) -> Optional[dict]:
     pulls = require_pull_request_pages(
         github_api_json(
             f"repos/{repository}/pulls",
@@ -679,7 +684,7 @@ def find_pull_request(repository: str, branch: str, ship_commit: str) -> Optiona
             "-f",
             "state=all",
             "-f",
-            "base=main",
+            f"base={base}",
             "--paginate",
             "--slurp",
         )
@@ -687,7 +692,7 @@ def find_pull_request(repository: str, branch: str, ship_commit: str) -> Optiona
     pulls = [
         pull
         for pull in pulls
-        if pull["base"].get("ref") == "main"
+        if pull["base"].get("ref") == base
         and (
             pull["head"].get("sha") == ship_commit
             or (
@@ -697,17 +702,19 @@ def find_pull_request(repository: str, branch: str, ship_commit: str) -> Optiona
         )
     ]
     if len(pulls) > 1:
-        raise ArchiveError("multiple pull requests target main from the ship commit")
+        raise ArchiveError(f"multiple pull requests target {base} from the ship commit")
     if not pulls:
         return None
     pull = pulls[0]
-    require_pull_request_identity(repository, pull, branch, ship_commit)
+    require_pull_request_identity(repository, pull, branch, ship_commit, base)
     return pull
 
 
-def pull_request_body(archive_path: str, ship_commit: str, branch: str) -> str:
+def pull_request_body(
+    archive_path: str, ship_commit: str, branch: str, base: str = "main"
+) -> str:
     return (
-        f"{integrate_commit_body(archive_path, ship_commit, 'main', branch)}"
+        f"{integrate_commit_body(archive_path, ship_commit, base, branch)}"
         f"\n\n---\n{PR_CREDIT_LINE}"
     )
 
@@ -719,8 +726,12 @@ def update_pull_request_body(
     ship_commit: str,
     branch: str,
     expected_body: Optional[str] = None,
+    base: str = "main",
 ) -> dict:
-    expected = expected_body if expected_body is not None else pull_request_body(archive_path, ship_commit, branch)
+    expected = (
+        expected_body if expected_body is not None
+        else pull_request_body(archive_path, ship_commit, branch, base)
+    )
     current = pull.get("body")
     if isinstance(current, str) and current.rstrip().endswith(PR_CREDIT_LINE):
         return pull
@@ -732,7 +743,7 @@ def update_pull_request_body(
         f"body={expected}",
     )
     updated = require_pull_request_shape(response)
-    require_pull_request_identity(repository, updated, branch, ship_commit)
+    require_pull_request_identity(repository, updated, branch, ship_commit, base)
     if updated.get("body") != expected:
         raise ArchiveError("updated GitHub pull request is missing the credit footer")
     return updated
@@ -744,23 +755,24 @@ def create_pull_request(
     archive_path: str,
     archive_name: str,
     ship_commit: str,
+    base: str = "main",
 ) -> dict:
-    body = pull_request_body(archive_path, ship_commit, branch)
+    body = pull_request_body(archive_path, ship_commit, branch, base)
     response = github_api_json(
         f"repos/{repository}/pulls",
         "--method",
         "POST",
         "-f",
-        f"title={integrate_subject(archive_name, 'main')}",
+        f"title={integrate_subject(archive_name, base)}",
         "-f",
         f"head={branch}",
         "-f",
-        "base=main",
+        f"base={base}",
         "-f",
         f"body={body}",
     )
     pull = require_pull_request_shape(response)
-    require_pull_request_identity(repository, pull, branch, ship_commit)
+    require_pull_request_identity(repository, pull, branch, ship_commit, base)
     return pull
 
 
@@ -850,7 +862,9 @@ def require_pull_request_merge(
         "inspect remote-default first-parent history",
     ).splitlines()
     if merge_commit not in first_parent:
-        raise ArchiveError("pull-request merge is not on origin/main first-parent history")
+        raise ArchiveError(
+            f"pull-request merge is not on {remote_default} first-parent history"
+        )
 
 
 def require_pull_request_merge_provenance(
@@ -967,7 +981,8 @@ def integrate_pull_request(
         raise ArchiveError("pull-request integration requires a bound branch")
     require_github_authentication()
     repository = github_repository(project)
-    pull = find_pull_request(repository, branch, ship_commit)
+    base = state.default_branch
+    pull = find_pull_request(repository, branch, ship_commit, base)
     if pull is None:
         publish_bound_branch(project, branch, ship_commit)
         pull = create_pull_request(
@@ -976,6 +991,7 @@ def integrate_pull_request(
             archive_path,
             archive_name,
             ship_commit,
+            base,
         )
     elif pull["merged_at"] is None:
         if pull["state"] != "open":
@@ -986,6 +1002,7 @@ def integrate_pull_request(
             archive_path,
             ship_commit,
             branch,
+            base=base,
         )
     if pull["merged_at"] is None:
         if pull["state"] != "open":
@@ -1016,6 +1033,7 @@ def integrate_pull_request(
         archive_path,
         ship_commit,
         branch,
+        base=base,
     )
     tag_name = f"milestone/{archive_name}"
     message = pull_request_tag_message(
@@ -1163,8 +1181,10 @@ def integrate(repo: Path, slug: str) -> dict:
 
     remote_default = refresh_origin(project)["remote_default"]
     default_name = default_branch_name(remote_default)
-    if default_name != "main":
-        raise ArchiveError(f"remote default must be main, got {default_name!r}")
+    if default_name != state.default_branch:
+        raise ArchiveError(
+            f"remote default must be {state.default_branch}, got {default_name!r}"
+        )
     if bound_branch == default_name:
         raise ArchiveError("bound branch must not be the remote default")
     remote_default_sha = archive_milestone.require_git_success(
@@ -1271,7 +1291,7 @@ def integrate(repo: Path, slug: str) -> dict:
                     "origin",
                     f"{merge_commit}:refs/heads/{default_name}",
                 ),
-                "push integration merge to main",
+                f"push integration merge to {default_name}",
             )
             archive_milestone.require_git_success(
                 run_git(project, "update-ref", f"refs/remotes/{remote_default}", merge_commit),
@@ -1416,10 +1436,12 @@ def validate_integrated(
     if bound_branch == default_name:
         raise ArchiveError(
             f"bound branch {bound_branch!r} is the remote default; "
-            "ship merges onto main, never onto the work branch"
+            "ship merges onto the default branch, never onto the work branch"
         )
-    if default_name != "main":
-        raise ArchiveError(f"remote default must be main, got {default_name!r}")
+    if default_name != state.default_branch:
+        raise ArchiveError(
+            f"remote default must be {state.default_branch}, got {default_name!r}"
+        )
 
     # (b) Resolve the integration proof selected before build.
     tag_name = f"milestone/{archive_name}"
@@ -1435,7 +1457,7 @@ def validate_integrated(
         pull_request = metadata["Pull-Request"]
         require_github_authentication()
         repository = github_repository(project)
-        pull = find_pull_request(repository, bound_branch, ship_commit)
+        pull = find_pull_request(repository, bound_branch, ship_commit, default_name)
         if pull is None:
             raise ArchiveError("GitHub pull request for the ship commit is missing")
         if pull["html_url"] != pull_request:
@@ -1628,21 +1650,23 @@ def require_published_integration(
         )
 
 
-def _member_names(coordinator: Path, member: str, archive_path: str) -> tuple[Path, str, str, str, str]:
-    """A member's checkout, coordinator project, bound branch, merge subject, and tag."""
+def _member_names(coordinator: Path, member: str, archive_path: str) -> tuple[Path, str, str, str, str, str]:
+    """A member's checkout, coordinator project, bound branch, merge subject, tag,
+    and the default branch that MEMBERS.md records for it."""
     try:
         import isolation
     except ImportError:  # pragma: no cover - package import used by tests
         from scripts import isolation
     try:
         checkout, project = isolation.member_checkout(coordinator.resolve(), member)
+        default = isolation.member_default_branch(coordinator.resolve(), member)
     except isolation.IsolationError as error:
         raise ArchiveError(str(error)) from error
     archive_name = PurePosixPath(archive_path).name
     identifier = milestone_id(milestone_number(archive_name))
     bound = f"gsd-path/{project}-{identifier}"
-    subject = f"integrate: {project} {identifier} — merge {bound} into main"
-    return checkout, project, bound, subject, f"milestone/{project}-{archive_name}"
+    subject = f"integrate: {project} {identifier} — merge {bound} into {default}"
+    return checkout, project, bound, subject, f"milestone/{project}-{archive_name}", default
 
 
 def _member_merge_body(archive_path: str, member: str, reviewed_head: str) -> str:
@@ -1669,16 +1693,16 @@ def member_pull_request_tag_metadata(contents: str) -> dict[str, str]:
     return fields
 
 
-def _find_member_merge(checkout: Path, subject: str, body: str, reviewed_head: str) -> Optional[str]:
-    """The member merge in origin/main's first-parent history, if published."""
+def _find_member_merge(checkout: Path, subject: str, body: str, reviewed_head: str, default: str) -> Optional[str]:
+    """The member merge in the first-parent history of origin/<default>, if published."""
     log = archive_milestone.require_git_success(
-        run_git(checkout, "log", "--first-parent", "--format=%H%x00%s", "origin/main"),
-        "inspect member origin/main first-parent history",
+        run_git(checkout, "log", "--first-parent", "--format=%H%x00%s", f"origin/{default}"),
+        f"inspect member origin/{default} first-parent history",
     )
     matches = [commit for commit, _, text in (line.partition("\x00") for line in log.splitlines())
                if text == subject]
     if len(matches) > 1:
-        raise ArchiveError(f"multiple member merges named {subject!r} on origin/main")
+        raise ArchiveError(f"multiple member merges named {subject!r} on origin/{default}")
     if not matches:
         return None
     _require_member_merge(checkout, matches[0], subject, body, reviewed_head)
@@ -1733,7 +1757,7 @@ def _create_member_merge(checkout: Path, project: str, archive_path: str, subjec
                            + (", ".join(conflicts) or (merged.stderr or merged.stdout).strip()))
     merge = archive_milestone.require_git_success(run_git(worktree, "rev-parse", "HEAD"), "resolve member merge")
     if _require_member_merge(worktree, merge, subject, body, reviewed_head) != origin_main:
-        raise ArchiveError("member merge first parent is not origin/main")
+        raise ArchiveError("member merge first parent is not the origin default branch")
     remove_registered_worktree(checkout, branch, worktree)
     return merge
 
@@ -1760,34 +1784,39 @@ def _publish_member_bound(checkout: Path, project: str, member: str, bound: str,
         raise ArchiveError(f"member {member} origin/{bound} moved: {remote_bound}")
 
 
-def _require_member_close(checkout: Path, member: str, bound: str, reviewed_head: str) -> None:
+def _require_member_close(checkout: Path, member: str, bound: str, reviewed_head: str, default: str) -> None:
     if optional_ref(checkout, f"refs/heads/{bound}") != reviewed_head:
         raise ArchiveError(f"member {member} {bound} is not at its reviewed HEAD {reviewed_head}")
-    if default_branch_name(refresh_origin(checkout)["remote_default"]) != "main":
-        raise ArchiveError(f"member {member} remote default must be main")
+    live = default_branch_name(refresh_origin(checkout)["remote_default"])
+    if live != default:
+        raise ArchiveError(f"member {member} remote default must be {default}, got {live!r}")
 
 
 def integrate_member(coordinator: Path, member: str, archive_path: str, reviewed_head: str) -> dict:
-    """Direct-mode member close: publish the bound branch, merge it into main, then tag."""
-    checkout, project, bound, subject, tag_name = _member_names(coordinator, member, archive_path)
+    """Direct-mode member close: publish the bound branch, merge it into the member
+    default branch, then tag."""
+    checkout, project, bound, subject, tag_name, default = _member_names(coordinator, member, archive_path)
+    origin_default = f"origin/{default}"
     body = _member_merge_body(archive_path, member, reviewed_head)
-    _require_member_close(checkout, member, bound, reviewed_head)
-    merge = _find_member_merge(checkout, subject, body, reviewed_head)
+    _require_member_close(checkout, member, bound, reviewed_head, default)
+    merge = _find_member_merge(checkout, subject, body, reviewed_head, default)
     if merge is None:
         origin_main = archive_milestone.require_git_success(
-            run_git(checkout, "rev-parse", "origin/main"), "resolve member origin/main")
+            run_git(checkout, "rev-parse", origin_default), f"resolve member {origin_default}")
         ancestry = run_git(checkout, "merge-base", "--is-ancestor", reviewed_head, origin_main)
         if ancestry.returncode == 0:
-            raise ArchiveError("member reviewed HEAD reached origin/main outside Path; user-approved recovery required")
+            raise ArchiveError(
+                f"member reviewed HEAD reached {origin_default} outside Path; user-approved recovery required")
         if ancestry.returncode != 1:
             archive_milestone.require_git_success(ancestry, "inspect member reviewed HEAD ancestry")
         merge = _create_member_merge(checkout, project, archive_path, subject, body, reviewed_head, origin_main)
-    # Publish in order: bound branch, main, tag; a rerun publishes only what is missing.
+    # Publish in order: bound branch, default branch, tag; a rerun publishes only what is missing.
     _publish_member_bound(checkout, project, member, bound, reviewed_head)
-    if run_git(checkout, "merge-base", "--is-ancestor", merge, "origin/main").returncode != 0:
-        _push_member_ref(checkout, project, merge, "refs/heads/main", merge, None)
+    if run_git(checkout, "merge-base", "--is-ancestor", merge, origin_default).returncode != 0:
+        _push_member_ref(checkout, project, merge, f"refs/heads/{default}", merge, None)
         archive_milestone.require_git_success(
-            run_git(checkout, "update-ref", "refs/remotes/origin/main", merge), "refresh member origin/main")
+            run_git(checkout, "update-ref", f"refs/remotes/{origin_default}", merge),
+            f"refresh member {origin_default}")
     tag_object, tag_published = ensure_integration_tag(checkout, tag_name, merge)
     if not tag_published:
         _push_member_ref(checkout, project, f"refs/tags/{tag_name}", f"refs/tags/{tag_name}", tag_object, None)
@@ -1801,12 +1830,12 @@ def integrate_member(coordinator: Path, member: str, archive_path: str, reviewed
 
 def integrate_member_pull_request(coordinator: Path, member: str, archive_path: str, reviewed_head: str) -> dict:
     """Pull-request member close: open one PR for the bound branch; after a human merge, tag it."""
-    checkout, project, bound, subject, tag_name = _member_names(coordinator, member, archive_path)
+    checkout, project, bound, subject, tag_name, default = _member_names(coordinator, member, archive_path)
     body = _member_merge_body(archive_path, member, reviewed_head)
-    _require_member_close(checkout, member, bound, reviewed_head)
+    _require_member_close(checkout, member, bound, reviewed_head, default)
     require_github_authentication()
     repository = github_repository(checkout)
-    pull = find_pull_request(repository, bound, reviewed_head)
+    pull = find_pull_request(repository, bound, reviewed_head, default)
     if pull is None or pull["merged_at"] is None:
         if pull is not None and pull["state"] != "open":
             raise ArchiveError(f"member {member} pull request was closed without merging")
@@ -1814,12 +1843,12 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
         if pull is None:
             pull = require_pull_request_shape(github_api_json(
                 f"repos/{repository}/pulls", "--method", "POST", "-f", f"title={subject}",
-                "-f", f"head={bound}", "-f", "base=main", "-f", f"body={body}\n\n---\n{PR_CREDIT_LINE}"))
-            require_pull_request_identity(repository, pull, bound, reviewed_head)
+                "-f", f"head={bound}", "-f", f"base={default}", "-f", f"body={body}\n\n---\n{PR_CREDIT_LINE}"))
+            require_pull_request_identity(repository, pull, bound, reviewed_head, default)
         else:
             pull = update_pull_request_body(
                 repository, pull, archive_path, reviewed_head, bound,
-                f"{body}\n\n---\n{PR_CREDIT_LINE}",
+                f"{body}\n\n---\n{PR_CREDIT_LINE}", default,
             )
         require_pull_request_merge_provenance(repository, pull["number"])
         return {"status": "awaiting-merge", "mode": "pull-request", "member": member,
@@ -1829,10 +1858,10 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
         raise ArchiveError(f"member {member} pull request merge metadata is invalid")
     require_pull_request_merge_provenance(repository, pull["number"], merge)
     refresh_origin(checkout)
-    require_pull_request_merge(checkout, merge, reviewed_head, "origin/main")
+    require_pull_request_merge(checkout, merge, reviewed_head, f"origin/{default}")
     pull = update_pull_request_body(
         repository, pull, archive_path, reviewed_head, bound,
-        f"{body}\n\n---\n{PR_CREDIT_LINE}",
+        f"{body}\n\n---\n{PR_CREDIT_LINE}", default,
     )
     message = member_pull_request_tag_message(tag_name, pull["html_url"], reviewed_head, merge)
     tag_object, tag_published = ensure_integration_tag(checkout, tag_name, merge, message)
@@ -1847,8 +1876,8 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
 def validate_member_integrated(
     coordinator: Path, member: str, archive_path: str, reviewed_head: str, *, refresh: bool = True
 ) -> dict:
-    """Prove the member merge is on origin/main and its published tag points at it."""
-    checkout, _, bound, subject, tag_name = _member_names(coordinator, member, archive_path)
+    """Prove the member merge is on the member default branch and its published tag points at it."""
+    checkout, _, bound, subject, tag_name, default = _member_names(coordinator, member, archive_path)
     tracking = f"refs/remotes/origin/tags/{tag_name}"
     if refresh:
         refresh_origin(checkout)
@@ -1871,7 +1900,7 @@ def validate_member_integrated(
             raise ArchiveError(f"member {member} tag {tag_name} names a different landing")
         require_github_authentication()
         repository = github_repository(checkout)
-        pull = find_pull_request(repository, bound, reviewed_head)
+        pull = find_pull_request(repository, bound, reviewed_head, default)
         if pull is None:
             raise ArchiveError(f"member {member} GitHub pull request is missing")
         if pull["html_url"] != metadata["Pull-Request"]:
@@ -1880,16 +1909,16 @@ def validate_member_integrated(
                 or pull["merge_commit_sha"] != merge):
             raise ArchiveError(f"member {member} GitHub pull request is not merged at the tagged landing")
         require_pull_request_merge_provenance(repository, pull["number"], merge)
-        require_pull_request_merge(checkout, merge, reviewed_head, "origin/main")
+        require_pull_request_merge(checkout, merge, reviewed_head, f"origin/{default}")
         require_annotated_tag(
             checkout, tracking, merge, f"member tag {tag_name}",
             member_pull_request_tag_message(tag_name, pull["html_url"], reviewed_head, merge),
         )
     else:
         merge = _find_member_merge(checkout, subject, _member_merge_body(archive_path, member, reviewed_head),
-                                   reviewed_head)
+                                   reviewed_head, default)
         if merge is None:
-            raise ArchiveError(f"member {member} has no {subject!r} merge on origin/main")
+            raise ArchiveError(f"member {member} has no {subject!r} merge on origin/{default}")
         if published is None:
             raise ArchiveError(f"member {member} tag {tag_name} is not published")
         require_annotated_tag(checkout, tracking, merge, f"member tag {tag_name}")
@@ -1903,7 +1932,7 @@ def retire_member(coordinator: Path, member: str, archive_path: str, reviewed_he
         import members
     except ImportError:  # pragma: no cover - package import used by tests
         from scripts import members
-    checkout, project, bound, _, tag_name = _member_names(coordinator, member, archive_path)
+    checkout, project, bound, _, tag_name, default = _member_names(coordinator, member, archive_path)
     proven = validate_member_integrated(coordinator, member, archive_path, reviewed_head)
     if (proven["merge"], proven["tag"]) != (merge, tag):
         raise ArchiveError(f"member {member} integration differs from the ship commit")
@@ -1942,7 +1971,7 @@ def retire_member(coordinator: Path, member: str, archive_path: str, reviewed_he
         archive_milestone.require_git_success(run_git(checkout, "update-ref", "-d", bound_ref, reviewed_head),
                                               "delete member bound branch")
     run_git(checkout, "update-ref", "-d", f"refs/remotes/origin/{bound}")
-    for kind, ref in (("push", bound_ref), ("push", "refs/heads/main"), ("push", f"refs/tags/{tag_name}"),
+    for kind, ref in (("push", bound_ref), ("push", f"refs/heads/{default}"), ("push", f"refs/tags/{tag_name}"),
                       ("delete", bound_ref)):
         members.clear_authorization(checkout, project, kind, ref)
     # The last sidecar retires here at milestone end; isolation's retires also
