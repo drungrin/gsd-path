@@ -182,14 +182,41 @@ def section_body(text: str, heading: str) -> Optional[str]:
     return match.group("body") if match else None
 
 
-def criterion_key(text: str) -> str:
-    """Criterion text as every reader compares a review quote with it.
+# The `- ` of an indented sub-bullet line. A line that would then read as a
+# numbered item (`- 2. text`) keeps its marker, so both readings of a source
+# have the same criteria.
+SUB_BULLET_MARKER = re.compile(r"(?m)^([ \t]+)-[ \t]+(?![ \t]*\d+\.\s)")
 
-    A wrapped criterion is stored with the `- ` markers of its sub-bullets, and
-    a reviewer quotes it with or without them. Whitespace and those markers are
-    not compared; every other word is.
+
+def without_sub_bullet_markers(source: str) -> str:
+    """`source` with the `- ` marker of each indented sub-bullet line removed."""
+    return SUB_BULLET_MARKER.sub(r"\1", source)
+
+
+class Criterion(str):
+    """A criterion as its parser joins it, with the `- ` markers of its sub-bullet lines.
+
+    `bare` is the same criterion parsed from `without_sub_bullet_markers(source)`.
+    The joined text cannot tell a marker from a minus sign; the source lines can.
     """
-    return " ".join(word for word in text.split() if word != "-")
+
+    bare: str
+
+    def __new__(cls, text: str, bare: str) -> "Criterion":
+        criterion = super().__new__(cls, text)
+        criterion.bare = bare
+        return criterion
+
+
+def quotes_criterion(quote: str, criterion: str) -> bool:
+    """Whether a review quote is `criterion`, for every reader.
+
+    Only whitespace is collapsed. The quote must equal the criterion with all
+    the markers of its sub-bullet lines or with none of them; every other
+    character, a hyphen inside a line too, is compared.
+    """
+    forms = (criterion, getattr(criterion, "bare", criterion))
+    return " ".join(quote.split()) in {" ".join(form.split()) for form in forms}
 
 
 def criterion_quote_end(item: str, criterion: str) -> Optional[int]:
@@ -197,9 +224,8 @@ def criterion_quote_end(item: str, criterion: str) -> Optional[int]:
 
     A criterion can contain ` — ` itself, so every separator is a candidate.
     """
-    key = criterion_key(criterion)
     for separator in re.finditer("(?= — )", item):
-        if criterion_key(item[: separator.start()]) == key:
+        if quotes_criterion(item[: separator.start()], criterion):
             return separator.start()
     return None
 

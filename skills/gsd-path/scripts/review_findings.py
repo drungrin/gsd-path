@@ -148,9 +148,15 @@ def _frontmatter_list(frontmatter: str, key: str) -> List[str]:
 
 
 def _numbered_items(section: Optional[str]) -> List[str]:
-    items: List[str] = []
+    """Numbered criteria; each also carries its text without sub-bullet markers (issue #392)."""
     if section is None:
-        return items
+        return []
+    bare = _numbered_texts(_common.without_sub_bullet_markers(section))
+    return [_common.Criterion(text, other) for text, other in zip(_numbered_texts(section), bare)]
+
+
+def _numbered_texts(section: str) -> List[str]:
+    items: List[str] = []
     for line in _strip_comments(section).splitlines():
         match = NUMBERED_ITEM.match(line.strip())
         if match:
@@ -282,15 +288,14 @@ def parse_lens(text: str, lens: str, tasks: Dict[str, dict]) -> dict:
             criterion = _criterion_of(observation, task["acceptance"] + task["interface"])
             locator = None
             # Issue #392: match as the wave gate does, then report the task's own text.
-            quoted = _common.criterion_key(criterion)
-            acceptance = [_common.criterion_key(item) for item in task["acceptance"]]
-            interface = [_common.criterion_key(item) for item in task["interface"]]
-            if quoted in acceptance:
-                locator = f"{task_id.lower()}_ac{acceptance.index(quoted) + 1}"
-                criterion = task["acceptance"][acceptance.index(quoted)]
-            elif quoted in interface:
+            acceptance = [_common.quotes_criterion(criterion, item) for item in task["acceptance"]]
+            interface = [_common.quotes_criterion(criterion, item) for item in task["interface"]]
+            if True in acceptance:
+                locator = f"{task_id.lower()}_ac{acceptance.index(True) + 1}"
+                criterion = task["acceptance"][acceptance.index(True)]
+            elif True in interface:
                 locator = f"{task_id.lower()}_interface_contract"
-                criterion = task["interface"][interface.index(quoted)]
+                criterion = task["interface"][interface.index(True)]
             if locator is None:
                 problems.append(
                     f"{lens} lens {task_id} finding names no task criterion: {criterion}"

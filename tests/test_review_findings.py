@@ -292,6 +292,38 @@ class GroupingTest(unittest.TestCase):
         self.assertEqual(result["groups"], [])
         self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
 
+    def test_hyphen_inside_a_criterion_line_is_compared(self):
+        # Only the `- ` markers of sub-bullet lines are optional. Two criteria
+        # that differ by a minus sign are different criteria.
+        fixture = Fixture(self, skeptics="off")
+        write(
+            fixture.project / "tasks" / "T001-parse-input.md",
+            TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                        interface="None", owned="SC1", ac1="Render `a b`", ac2="Render `a - b`"),
+        )
+        for quote, locator in (("Render `a - b`", "t001_ac2"), ("Render `a b`", "t001_ac1")):
+            with self.subTest(quote=quote):
+                fixture.lens("contract", t001_fails=[f"{quote} — found: wrong output, parser.py:9"])
+                fixture.lens("adversarial", verdict="pass")
+                _, result = fixture.run()
+                self.assertEqual(result["structural_blockers"], [])
+                (group,) = result["groups"]
+                self.assertEqual((group["locator"], group["criterion"]), (locator, quote))
+        write(
+            fixture.project / "tasks" / "T001-parse-input.md",
+            TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                        interface="None", owned="SC1", ac1="Parses CSV rows",
+                        ac2="Returns a - b:\n   - for integers\n   - for floats"),
+        )
+        fixture.lens("contract", t001_fails=["Returns a b: for integers for floats — found: a + b, parser.py:9"])
+        _, result = fixture.run()
+        self.assertEqual(result["groups"], [])
+        self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
+        fixture.lens("contract", t001_fails=["Returns a - b: for integers for floats — found: a + b, parser.py:9"])
+        _, result = fixture.run()
+        self.assertEqual(result["structural_blockers"], [])
+        self.assertEqual(result["groups"][0]["locator"], "t001_ac2")
+
 
 class SkepticSelectionTest(unittest.TestCase):
     def test_skeptics_off_sends_groups_to_fix(self):

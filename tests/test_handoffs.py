@@ -2423,6 +2423,94 @@ Tasks reviewed: 2
                         ):
                             validate()
 
+    def test_reviews_compare_a_hyphen_inside_an_intent_criterion_line(self) -> None:
+        # Only the `- ` markers of sub-bullet lines are optional. A minus sign
+        # inside a line is part of the criterion.
+        cases = (
+            (
+                "1. The balance is credit - debit:\n   - for a store\n   - for a region",
+                (
+                    "The balance is credit - debit: - for a store - for a region",
+                    "The balance is credit - debit: for a store for a region",
+                ),
+                (
+                    "The balance is credit debit: for a store for a region",
+                    "The balance is credit debit: - for a store - for a region",
+                ),
+            ),
+            ("1. The balance is credit - debit.", ("The balance is credit - debit.",),
+             ("The balance is credit debit.",)),
+            # Without its marker this sub-bullet would read as criterion 2.
+            ("1. The steps:\n   -  2. run the demo", ("The steps: - 2. run the demo",),
+             ("The steps: run the demo",)),
+        )
+        for phase in ("wave", "final"):
+            for source, accepted, rejected in cases:
+                with self.subTest(phase=phase, source=source), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.write_plan_handoff(root)
+                    if phase == "wave":
+                        relative = self.write_wave_review(root)
+                        validate = lambda: check_handoffs.validate_wave(root, review=relative)
+                    else:
+                        self.write_state(root, "ship", "active")
+                        self.write_final_review(root)
+                        relative = ".project/review/FINAL.md"
+                        validate = lambda: check_handoffs.validate_final(root)
+                    intent = root / ".project/intent/INTENT.md"
+                    intent.write_bytes(intent.read_text(encoding="utf-8").replace(
+                        "1. The demo command prints hello.", source
+                    ).encode("utf-8"))
+                    review = root / relative
+                    original = review.read_text(encoding="utf-8")
+                    for heading in accepted:
+                        review.write_bytes(original.replace(
+                            "### SC1 — The demo command prints hello.", f"### SC1 — {heading}"
+                        ).encode("utf-8"))
+                        self.assertEqual(validate()["verdict"], "pass", heading)
+                    for heading in rejected:
+                        review.write_bytes(original.replace(
+                            "### SC1 — The demo command prints hello.", f"### SC1 — {heading}"
+                        ).encode("utf-8"))
+                        with self.assertRaisesRegex(
+                            check_handoffs.HandoffError, "SC1 heading text differs from INTENT.md"
+                        ):
+                            validate()
+
+    def test_wave_binds_a_quote_to_the_criterion_with_the_same_hyphens(self) -> None:
+        # Two acceptance criteria differ only by a minus sign. The quote of
+        # the second one must stay the second one, at the gate and in the
+        # finding groups that fix tasks are made from.
+        from scripts import review_findings
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            relative = self.write_wave_review(root, verdict="blocked")
+            self.write_coverage_task(
+                root, "T001", "- SC1", acceptance="1. Render `a b`\n2. Render `a - b`"
+            )
+            review = root / relative
+            original = review.read_text(encoding="utf-8").replace(
+                "## T001 — Demo task T001: pass", "## T001 — Demo task T001: fail"
+            )
+            old = "- ✅ The demo command prints hello. — ran hello.py"
+            review.write_bytes(original.replace(
+                old, "- ❌ Render `a - b` — found: prints `a b`, src/app.py:3"
+            ).encode("utf-8"))
+            self.assertEqual(check_handoffs.validate_wave(root, review=relative)["verdict"], "blocked")
+            (group,) = review_findings.compute(root, ".project", 1, 1)["groups"]
+            self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", "Render `a - b`"))
+            self.write_coverage_task(root, "T001", "- SC1", acceptance="1. Render `a - b`")
+            task_text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                check_handoffs.task_review_observation("Render `a - b` — none", task_text), "none"
+            )
+            self.assertEqual(
+                check_handoffs.task_review_observation("Render `a b` — none", task_text),
+                "Render `a b` — none",
+            )
+
     def test_wave_checks_evidence_after_task_criterion_quoted_without_list_markers(self) -> None:
         # Issue #392: a wrapped criterion is stored with the `- ` markers of its
         # sub-bullets. A quote without them is still the quoted criterion, so

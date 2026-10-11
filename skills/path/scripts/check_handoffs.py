@@ -694,7 +694,11 @@ def _success_criteria(intent: str) -> Dict[str, str]:
     expected = list(range(1, max(items) + 1))
     if sorted(items) != expected:
         raise HandoffError("INTENT.md success criteria must be contiguous from 1")
-    return {f"SC{number}": text for number, text in items.items()}
+    # Issue #392: a review can quote a criterion without the markers of its sub-bullet lines.
+    bare = _numbered_items(
+        _section(_common.without_sub_bullet_markers(intent), "Success criteria"), continuations=True
+    )
+    return {f"SC{number}": _common.Criterion(text, bare[number]) for number, text in items.items()}
 
 
 def _split_top_level_commas(value: str) -> List[str]:
@@ -1304,15 +1308,15 @@ def task_review_observation(item: str, task_text: str) -> str:
     if section is not None:
         for criterion in _numbered_items(section, continuations=True).values():
             quoted = _normalize_ws(criterion)
-            # Issue #392: a quote with or without the `- ` markers of the
-            # criterion's sub-bullets is the same quote.
             end = _common.criterion_quote_end(item, quoted)
             if end is not None:
                 return item[end + len(" — ") :]
-            key = _common.criterion_key(quoted)
-            if _common.criterion_key(item) in {key, key + " —"}:
+            if item in {quoted, quoted + " —"}:
                 return ""
-    return item
+    # Issue #392: a quote can leave out the `- ` markers of the criterion's
+    # sub-bullet lines, so read the criteria again without them.
+    bare = _common.without_sub_bullet_markers(task_text)
+    return item if bare == task_text else task_review_observation(item, bare)
 
 
 def _verify_command(task_text: str) -> str:
@@ -2142,7 +2146,7 @@ def validate_wave_evidence(
             sc_id in criteria
             and (
                 not separator
-                or _common.criterion_key(heading_text) != _common.criterion_key(criteria[sc_id])
+                or not _common.quotes_criterion(heading_text, criteria[sc_id])
             )
         ):
             raise HandoffError(f"{name} {sc_id} heading text differs from INTENT.md")
@@ -2243,7 +2247,7 @@ def validate_final(
     verdicts: Dict[str, str] = {}
     for index, heading in enumerate(blocks):
         sc_id = heading.group("id")
-        if _common.criterion_key(heading.group("title")) != _common.criterion_key(criteria[sc_id]):
+        if not _common.quotes_criterion(heading.group("title"), criteria[sc_id]):
             raise HandoffError(f"FINAL.md {sc_id} heading text differs from INTENT.md")
         end = blocks[index + 1].start() if index + 1 < len(blocks) else len(text)
         block = text[heading.end() : end]
