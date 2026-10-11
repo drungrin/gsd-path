@@ -161,10 +161,10 @@ See [UPDATE.md](UPDATE.md).
   redirection on the Git command (`2>/dev/null`, `>file`, `>>file`, `<file`,
   `2>&1`, `&>file`) is not a target. A here-document, here-string, process
   substitution, a redirection target that is not one literal word, or a
-  `# comment` after the command keeps the denial. Each Git command with a
-  file descriptor word of more than one digit or a `{name}` word against a
-  redirection (`10>file`, `{fd}>file`) is denied, because bash and zsh read
-  that word differently. With
+  `# comment` after the command keeps the denial. So does a file
+  descriptor word of more than one digit or a `{name}` word against a
+  redirection (`10>file`, `{fd}>file`), because bash and zsh read that word
+  differently. With
   such an `env` wrapper, or in a directory that does not exist yet, a Git
   command that is not a built-in command is denied too, because its alias
   cannot be inspected

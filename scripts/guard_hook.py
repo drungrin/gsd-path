@@ -2461,11 +2461,12 @@ def shell_tokens(command, direct=True):
                     break
             start = end - len(token)
             before = command[start - 1:start] if start > 0 else ""
+            escaped = (start - len(command[:start].rstrip("\\"))) % 2 == 1
             redirection = command[start:end] == token and (
                 (
                     set(token) <= SHELL_WRITE_REDIRECTION_CHARS
                     and ("<" in token or ">" in token)
-                    and before != "\\"
+                    and not escaped
                 )
                 or (
                     len(token) == 1
@@ -2487,7 +2488,7 @@ def shell_tokens(command, direct=True):
                 command[start:end] == token
                 and set(token) <= set("|;&()<>\n\r")
                 and ("<" in token or ">" in token)
-                and before != "\\"
+                and not escaped
             ):
                 parts = []
                 for part in SHELL_OPERATOR_PARTS.findall(token):
@@ -3412,11 +3413,18 @@ def _positional_targets(arguments):
 PLAIN_REDIRECTION_OPERATORS = frozenset({">", ">>", "<", ">&", "&>", "&>>"})
 
 
+def _without_descriptor(token):
+    word = ShellToken(token)
+    word.redirection = getattr(token, "redirection", False)
+    word.literal = getattr(token, "literal", None)
+    return word
+
+
 def _without_redirections(words):
     """The words of a simple command without the redirections the shell parsed.
 
-    Each redirection operator goes with the word after it and the file
-    descriptor word written against it. The second result is false when one
+    Each redirection operator goes with the word after it and one file
+    descriptor digit written against it. The second result is false when one
     of them is not plain: an operator outside PLAIN_REDIRECTION_OPERATORS or
     a target that is not one literal word.
     """
@@ -3425,9 +3433,6 @@ def _without_redirections(words):
     index = 0
     while index < len(words):
         word = words[index]
-        if getattr(word, "descriptor", False):
-            index += 1
-            continue
         if not getattr(word, "redirection", False):
             kept.append(word)
             index += 1
@@ -3932,6 +3937,39 @@ def destructive_git_reason(
             ))
             for token in segment
         )
+        # A descriptor word is a file descriptor in bash and an argument in
+        # zsh; a process substitution runs a second command. Each reading is
+        # checked, and a scoped deletion in one of them is denied.
+        readings = []
+        substitution = next(
+            (
+                index for index, token in enumerate(segment)
+                if token in ("<(", ">(") and getattr(token, "literal", None) != "quoted"
+            ),
+            None,
+        )
+        if any(getattr(token, "descriptor", False) for token in segment):
+            readings = [
+                [token for token in segment if not getattr(token, "descriptor", False)],
+                [_without_descriptor(token) for token in segment],
+            ]
+        elif substitution is not None:
+            readings = [segment[:substitution], segment[substitution + 1:]]
+        if readings:
+            for reading in filter(None, readings):
+                reason = destructive_git_reason(
+                    reading,
+                    resolved_aliases,
+                    initial_assignments=assignments,
+                    working_directories=directories,
+                    cwd_reliable=False,
+                    git_context_reliable=git_context_reliable,
+                    earlier_git=earlier_git,
+                )
+                if reason is not None:
+                    return reason
+            this_git = True
+            continue
         # A redirection can stand at each position of a simple command.
         words, exact = _without_redirections(segment)
         segment_git_context_reliable = (
@@ -3940,14 +3978,6 @@ def destructive_git_reason(
             and not assignments_change_git_context(assignments)
         )
         wrapped = wrapped_command_tokens(words if len(words) > 1 else segment)
-        invocation = git_command(words, assignments)
-        if (wrapped is not None or invocation is not None) and any(
-            getattr(token, "descriptor", False) for token in segment
-        ):
-            raise ValueError(
-                "a file descriptor word such as 10> or {fd}> is read "
-                "differently by bash and zsh; use a one-digit file descriptor"
-            )
         if wrapped is not None:
             reason = destructive_git_reason(
                 wrapped,
@@ -3960,6 +3990,7 @@ def destructive_git_reason(
             )
             if reason is not None:
                 return reason
+        invocation = git_command(words, assignments)
         this_git = wrapped is not None or invocation is not None
         if invocation is None:
             continue

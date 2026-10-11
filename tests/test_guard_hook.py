@@ -1947,6 +1947,18 @@ class GuardHookTests(unittest.TestCase):
                 "git 10>/dev/null push --force origin feature/x",
                 "git update-ref refs/heads/gsd-path/M001 00>/dev/null",
                 "command git 10>/dev/null reset --hard",
+                "git branch -D feature/x 10>/dev/null",
+                "git update-ref -d refs/heads/feature/x {fd}>/dev/null",
+                "echo a\\\\;>/dev/null git branch -D gsd-path/M001",
+                "echo a\\\\&&>/dev/null git reset --hard",
+                "echo a\\\\;>/dev/null git push --force origin feature/x",
+                "echo a\\\\;>/dev/null git worktree remove --force ../task-worktree",
+                "echo a\\\\\n>/dev/null git clean -fd",
+                "cat <(git push --force origin feature/x)",
+                "cat <(git branch -D gsd-path/M001)",
+                "tee >(git reset --hard)",
+                "git diff <(git stash drop) <(git clean -fd)",
+                "cat <(cat <(git update-ref -d refs/heads/gsd-path/M001))",
             ):
                 with self.subTest(command=command):
                     self.assert_denied(self.bash_in(repo, command))
@@ -1955,6 +1967,22 @@ class GuardHookTests(unittest.TestCase):
                 "git branch -D feature/x &>/dev/null",
                 "git status 2>&1 | tail -1",
                 "exec 3>/dev/null",
+                "exec {fd}>/dev/null",
+                "exec {lock}>/dev/null; make test",
+                "exec 10>/dev/null",
+                "command make test 10>/dev/null",
+                "bash -c 'make test' 10>/dev/null",
+                "echo hi 10>/dev/null",
+                "make {fd}>/dev/null",
+                "cat <<EOF\ntext\nEOF",
+                "make 2>&1 | tee /dev/null",
+                "git status 10>/dev/null",
+                "git log --oneline -1 {fd}>/dev/null",
+                "echo a\\\\;>/dev/null git status",
+                "echo a\\\\;>/dev/null git branch -D feature/x",
+                "cat <(git log --oneline -1)",
+                "git diff <(git show HEAD) <(git show HEAD)",
+                "diff <(echo a) <(echo b)",
             ):
                 with self.subTest(command=command):
                     self.assert_allowed(self.bash_in(repo, command))
