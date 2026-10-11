@@ -522,17 +522,41 @@ def _held(by_id: Mapping[str, Task], task: Task) -> List[Task]:
     return [by_id[name] for name in sorted(held)]
 
 
+def _live_verify(
+    by_id: Mapping[str, Task], superseded: Mapping[str, str], source: Task
+) -> Tuple[str, Optional[str]]:
+    """The Verify of a source that still runs, or the task that retired all of it.
+
+    The Verify of a fix task is exactly the composition that fix-tasks generates from the
+    Verify of each task in its deps, so it carries a copy of each: only the copies that are
+    not retired stay in the command. Any other Verify is one command.
+    """
+
+    if source.task_id in superseded:
+        return "", superseded[source.task_id]
+    deps = [by_id[dependency] for dependency in source.deps if dependency in by_id]
+    if not deps or source.verify != _common.fix_verify(dep.verify for dep in deps):
+        return source.verify, None
+    parts = [_live_verify(by_id, superseded, dep) for dep in deps]
+    live = [command for command, retired_by in parts if not retired_by]
+    if not live:
+        return "", parts[0][1]
+    return _common.fix_verify(live), None
+
+
 def _regression_sources(
     tasks: Sequence[Task], task: Task
-) -> List[Tuple[Task, List[str], Optional[str]]]:
-    """Each `done` task whose Verify protects a file of this task: (source, replaced, retired_by).
+) -> List[Tuple[Task, List[str], Optional[str], str]]:
+    """Each `done` task whose Verify protects a file of this task: (source, replaced, retired_by, command).
 
     A source is a task of an earlier wave that shares a declared file with this task. A task
     that supersedes others inherits their role: it is also a source, in any wave, for a task
     that shares a file with a task it holds, and `replaced` names those tasks.
     `retired_by` names the task that supersedes the source: this task, or a `done` task. A
-    retired Verify does not run. The source still counts for the one-at-a-time rule, so the
-    superseding task never runs beside a task that shares a file of the superseded task.
+    retired Verify does not run, also not as a copy in the Verify of a fix task: `command`
+    is the Verify that runs (`_live_verify`). The source still counts for the one-at-a-time
+    rule, so the superseding task never runs beside a task that shares a file of the
+    superseded task.
     """
 
     by_id = {other.task_id: other for other in tasks}
@@ -543,7 +567,8 @@ def _regression_sources(
             continue
         replaced = [held.task_id for held in _held(by_id, other) if _overlap(task, held)]
         if replaced or (other.wave < task.wave and _overlap(task, other)):
-            sources.append((other, replaced, superseded.get(other.task_id)))
+            command, retired_by = _live_verify(by_id, superseded, other)
+            sources.append((other, replaced, retired_by, command))
     return sources
 
 
@@ -565,13 +590,14 @@ def retired_verifies(
 
     A task's plan-approved `supersedes` names them. The Verify is retired for that task, and
     for every task that lands after that task is `done`: the Verify of the superseding task
-    then runs in its place (`regression_verifies`, key `supersedes`).
+    then runs in its place (`regression_verifies`, key `supersedes`). A fix task whose
+    generated Verify holds only retired copies is here too.
     """
 
     tasks, task = _landing_tasks(repo, task_id, project_dir)
     return [
         {"task": other.task_id, "superseded_by": retired_by}
-        for other, _, retired_by in _regression_sources(tasks, task)
+        for other, _, retired_by, _ in _regression_sources(tasks, task)
         if retired_by and other.verify
     ]
 
@@ -586,7 +612,8 @@ def regression_verifies(
     that the task's own Verify already runs is left out: an identical command, or
     a dependency's command when the own Verify is exactly the fix-task Verify of
     the task's dependencies. Text that only contains a command proves nothing.
-    A retired Verify is not here: see `retired_verifies`.
+    A retired Verify is not here, also not as a copy in the Verify of a fix task: see
+    `retired_verifies`.
     """
 
     tasks, task = _landing_tasks(repo, task_id, project_dir)
@@ -594,9 +621,9 @@ def regression_verifies(
     composed = [by_id[dependency].verify for dependency in task.deps if dependency in by_id]
     covered = {own, *(composed if own == _common.fix_verify(composed) else ())}
     sources: Dict[str, Dict[str, object]] = {}
-    for other, replaced, retired_by in _regression_sources(tasks, task):
-        if not retired_by and other.verify and other.verify not in covered:
-            entry = sources.setdefault(other.verify, {"tasks": [], "command": other.verify})
+    for other, replaced, _, command in _regression_sources(tasks, task):
+        if command and command not in covered:
+            entry = sources.setdefault(command, {"tasks": [], "command": command})
             entry["tasks"].append(other.task_id)
             if replaced:  # this Verify runs in the place of the Verify of each task it replaced
                 entry["supersedes"] = sorted({*entry.get("supersedes", ()), *replaced})
@@ -741,7 +768,7 @@ def ready(repo: str, project_dir: str = DEFAULT_PROJECT_DIR, *,
     # before, so the source's Verify runs on their combined edits. A parallel round leaves the
     # primary task file pending: a retained isolate shows that the task is already dispatched.
     # A retired source still counts: its superseding task holds its role.
-    sources = {task.task_id: {other.task_id for other, _, _ in _regression_sources(project.tasks, task)}
+    sources = {task.task_id: {other.task_id for other, _, _, _ in _regression_sources(project.tasks, task)}
                for task in concurrent}
     started = [task for task in selectable if reports[task.task_id].get("verdict") != "none"]
     claimed = {source for task in active + started for source in sources[task.task_id]}
@@ -774,7 +801,7 @@ def ready(repo: str, project_dir: str = DEFAULT_PROJECT_DIR, *,
                 # The landing also runs each regression Verify, so a heavy one makes the task heavy.
                 "verify_heavy": task.verify_heavy
                 or any(other.verify_heavy and not retired_by
-                       for other, _, retired_by in _regression_sources(project.tasks, task)),
+                       for other, _, retired_by, _ in _regression_sources(project.tasks, task)),
                 **({"repo": task.repo} if task.repo else {}),
             }
             for task in dispatchable

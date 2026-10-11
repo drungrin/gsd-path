@@ -819,6 +819,58 @@ archive: null
         self.write_verify_task("T001", 1, ("a.py", "b.py"), "check one", supersedes=("T007",))
         self.assertEqual(self.landing("T008")[0], [])
 
+    def test_fix_task_verify_drops_the_copy_of_a_retired_verify(self) -> None:
+        # The wave 1 review made fix task T003 from T001 and T005. T002 then replaced T001 on purpose.
+        self.write_verify_task("T001", 1, ("a.py",), "check old")
+        self.write_verify_task("T005", 1, ("a.py",), "check kept")
+        self.write_verify_task("T003", 4, ("a.py",), _common.fix_verify(["check old", "check kept"]),
+                               deps=("T001", "T005"))
+        self.write_verify_task("T002", 2, ("a.py",), "check new", status="in-progress", supersedes=("T001",))
+        self.write_verify_task("T004", 5, ("a.py",), "own", status="pending", deps=("T002",))
+
+        # T002 is not done: the old behavior is still there, so the generated Verify runs whole.
+        self.assertEqual(self.landing("T004"), (
+            [{"tasks": ["T001"], "command": "check old"},
+             {"tasks": ["T003"], "command": _common.fix_verify(["check old", "check kept"])},
+             {"tasks": ["T005"], "command": "check kept"}],
+            [],
+        ))
+        self.write_verify_task("T002", 2, ("a.py",), "check new", supersedes=("T001",))  # T002 landed
+        self.assertEqual(self.landing("T004"), (
+            [{"tasks": ["T002"], "command": "check new", "supersedes": ["T001"]},
+             {"tasks": ["T003"], "command": _common.fix_verify(["check kept"])},
+             {"tasks": ["T005"], "command": "check kept"}],
+            [{"task": "T001", "superseded_by": "T002"}],
+        ))
+
+    def test_fix_task_verify_is_retired_when_every_copy_in_it_is_retired(self) -> None:
+        self.write_verify_task("T001", 1, ("a.py",), "check old")
+        self.write_verify_task("T003", 4, ("a.py",), _common.fix_verify(["check old"]), deps=("T001",))
+        # A fix task of the fix task carries the copy one level deeper.
+        self.write_verify_task("T006", 6, ("a.py",), _common.fix_verify([_common.fix_verify(["check old"])]),
+                               deps=("T003",))
+        self.write_verify_task("T002", 2, ("a.py",), "check new", supersedes=("T001",))
+        self.write_verify_task("T004", 7, ("a.py",), "own", status="pending", deps=("T002",))
+
+        self.assertEqual(self.landing("T004"), (
+            [{"tasks": ["T002"], "command": "check new", "supersedes": ["T001"]}],
+            [{"task": "T001", "superseded_by": "T002"}, {"task": "T003", "superseded_by": "T002"},
+             {"task": "T006", "superseded_by": "T002"}],
+        ))
+
+    def test_hand_written_verify_that_contains_a_retired_verify_is_not_rewritten(self) -> None:
+        self.write_verify_task("T001", 1, ("a.py",), "check old")
+        written = _common.fix_verify(["check old"]) + "\ncheck more"  # not the generated composition
+        self.write_verify_task("T003", 4, ("a.py",), written, deps=("T001",))
+        self.write_verify_task("T002", 2, ("a.py",), "check new", supersedes=("T001",))
+        self.write_verify_task("T004", 5, ("a.py",), "own", status="pending", deps=("T002",))
+
+        self.assertEqual(self.landing("T004"), (
+            [{"tasks": ["T002"], "command": "check new", "supersedes": ["T001"]},
+             {"tasks": ["T003"], "command": written}],
+            [{"task": "T001", "superseded_by": "T002"}],
+        ))
+
     def test_supersedes_must_be_a_list_of_task_ids(self) -> None:
         self.write_verify_task("T001", 1, ("shared.py",), "check one")
         for value in ("T001", "[one]"):

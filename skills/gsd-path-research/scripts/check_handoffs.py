@@ -1391,15 +1391,15 @@ def _inline_ids(value: str, prefix: str, label: str) -> List[str]:
     return values
 
 
-def _task_ids(task_text: str, task_id: str, field: str) -> List[str]:
-    value = _strict_frontmatter(task_text, task_id).get(field)
+def _task_deps(task_text: str, task_id: str) -> List[str]:
+    value = _strict_frontmatter(task_text, task_id).get("deps")
     if value is None:
-        raise HandoffError(f"{task_id} is missing {field}")
+        raise HandoffError(f"{task_id} is missing deps")
     if isinstance(value, list):
         rendered = ",".join(str(item) for item in value)
     else:
         rendered = str(value)
-    return _inline_ids(rendered, "T", f"{task_id} {field}")
+    return _inline_ids(rendered, "T", f"{task_id} deps")
 
 
 def _dependency_reachable(graph: Dict[str, List[str]], start: str, target: str) -> bool:
@@ -1515,7 +1515,7 @@ def _validate_task_graph(
         landed = _task_scalar(text, task_id, "status") == "done"
         _require_task_structure(task_id, text, initial=initial and not landed)
         wave = _task_wave(text, task_id)
-        deps = _task_ids(text, task_id, "deps")
+        deps = _task_deps(text, task_id)
         files = _frontmatter_files(text)
         if wave not in wave_depths:
             raise HandoffError(f"{task_id} names unknown Wave {wave}")
