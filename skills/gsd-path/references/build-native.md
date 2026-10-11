@@ -128,6 +128,10 @@ dispatch contract and perform steps 1–5 by hand.
        rerun `recover`. The original lineage must stay reachable: keep a local
        branch on the old tip until the milestone ships. Adopted tasks report
        `attested` with `provenance: owner-authorized-rebase`.
+   - `block` with a `leftover` path: the task is landed, and that path is what
+     a failed removal left of its isolate; it holds nothing that Git does not
+     have. Do not set `build/blocked`. Stop with the returned reason; after
+     the path is removed, rerun `recover`.
    - `block` for any other reason: set `build/blocked` with the returned
      reason and stop.
    - `none`: take no recovery action for that task.
@@ -290,7 +294,9 @@ dispatch contract and perform steps 1–5 by hand.
      in its prepared sidecar, runs authoritative Verify, records exact output,
      lands through `isolation.py`, records eligible ledger evidence, and retires
      the isolate. A `landed` receipt proves those steps; do not run them again
-     or author another implementation narrative. A blocked receipt preserves
+     or author another implementation narrative. A `cleanup_warning` on a
+     landing means only that the isolate was not removed: the task is landed,
+     and the next `round` or `finish` checks the isolate again. A blocked receipt preserves
      its failure evidence and follows the recovery rule, never a manual bypass.
      Keep the pre-finish declared-path check above. Each landing re-opens step 2
      so ready dependents can run while unrelated children remain in flight.
