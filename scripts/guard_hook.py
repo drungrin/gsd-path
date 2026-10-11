@@ -415,6 +415,10 @@ GIT_REASONS = {
         "env changes Git's repository or alias configuration context; run the Git "
         "command without resetting or unsetting Git-related environment variables"
     ),
+    "update-ref-order": (
+        "git update-ref deletion after another Git command can follow a symbolic "
+        "ref that command changed; run it as its own command or add --no-deref"
+    ),
     "branch-move": (
         "git branch -m renames a branch the pipeline resumes by name "
         "(STATE.branch); create a new branch instead"
@@ -3047,9 +3051,9 @@ def update_ref_deletes(arguments):
         operands[1] == "" or not operands[1].strip("0")
     )
     return (
-        "-d" in arguments
+        has_short_option(arguments, "d")  # also a cluster such as -dm
         or "--delete" in arguments
-        or any(argument.startswith("--stdin") for argument in arguments)
+        or any(git_option_in(argument, {"--stdin"}) for argument in arguments)
         or zero_value
     )
 
@@ -3315,8 +3319,17 @@ def path_owned_records(roots):
 
 def ref_is_path_owned(name, owned_branches):
     lowered = name.casefold()
-    if lowered.startswith("refs/gsd-path/"):
+    # git stash drop and clear are denied too; refs/stash holds each stash.
+    if lowered.startswith("refs/gsd-path/") or lowered == "refs/stash":
         return True
+    if lowered.startswith("refs/remotes/"):
+        # The remote-tracking ref of a Path branch can be the last ref to its
+        # commits. A remote name can contain a slash, so try each split.
+        parts = name.split("/")[2:]
+        return any(
+            ref_is_path_owned("refs/heads/" + "/".join(parts[index:]), owned_branches)
+            for index in range(1, len(parts))
+        )
     short = name
     if short.startswith("refs/heads/"):
         short = short[len("refs/heads/"):]
@@ -3332,7 +3345,11 @@ def ref_is_path_owned(name, owned_branches):
             return value[len("heads/"):]
         return value
 
-    return any(canonical(name) == canonical(branch) for branch in owned_branches)
+    # Loose refs that differ only in case are one file on macOS and Windows.
+    return any(
+        canonical(name).casefold() == canonical(branch).casefold()
+        for branch in owned_branches
+    )
 
 
 def _literal_target(value):
@@ -3376,16 +3393,6 @@ def _git_refs(context):
     return {line for line in output.splitlines() if line}
 
 
-def _resolvable_branch_ref(target, refs):
-    if target.startswith("refs/heads/"):
-        candidate = target
-    elif target.startswith("refs/"):
-        return target if target in refs else None
-    else:
-        candidate = f"refs/heads/{target}"
-    return candidate if candidate in refs else None
-
-
 def _symbolic_ref_target(context, target):
     try:
         result = subprocess.run(
@@ -3405,22 +3412,27 @@ def _symbolic_ref_target(context, target):
     return result.stdout.strip()
 
 
-def _resolvable_update_ref(target, refs, context, no_deref):
-    candidate = target
-    if target not in refs and not target.startswith("refs/"):
-        short_candidate = f"refs/heads/{target}"
-        if short_candidate in refs:
-            candidate = short_candidate
-    symbolic = _symbolic_ref_target(context, candidate)
-    exists = candidate in refs or symbolic is not None
-    if not exists:
+def _update_ref_names(target, refs, context, no_deref):
+    """The ref names a deletion of this operand touches, or None when unresolved.
+
+    Git reads an update-ref operand as a full name below the git directory,
+    never as a branch short name. It follows each symbolic ref to the ref it
+    deletes; with --no-deref it deletes the named symbolic ref itself. A name
+    outside refs/ (HEAD, a symbolic ref at the top of the git directory) is
+    unresolved: an ordinary command such as git switch changes its target.
+    """
+    if not target.startswith("refs/"):
         return None
-    if no_deref:
-        if not candidate.startswith("refs/"):
+    names = [target]
+    while True:
+        symbolic = _symbolic_ref_target(context, names[-1])
+        if symbolic is None:
+            return names if names[-1] in refs else None
+        if no_deref:
+            return names
+        if symbolic in names:
             return None
-        return candidate
-    resolved = symbolic or candidate
-    return resolved if resolved in refs else None
+        names.append(symbolic)
 
 
 def _workspace_roots(contexts):
@@ -3487,37 +3499,41 @@ def owned_target_reason(command, arguments, git_options, working_directories):
     branches, task_worktrees = path_owned_records(_frontmatter_roots(contexts))
 
     if command == "branch":
-        targets = _positional_targets(
-            arguments,
-            {"--format", "--sort", "--color", "--contains", "--no-contains", "--merged", "--no-merged"},
-        )
+        # Each word that is not an option is read as a branch name. Git does
+        # the same after --color; after an option with a separate value
+        # (--sort key) this only adds a name to check.
+        targets = _positional_targets(arguments)
         if not targets or not all(_literal_target(target) for target in targets):
             return unresolved
+        remote = has_short_option(arguments, "r") or any(
+            git_option_in(argument, {"--remotes"}) for argument in arguments
+        )
         for target in targets:
-            for context in contexts:
-                ref = _resolvable_branch_ref(target, _git_refs(context))
-                if ref is None:
-                    return unresolved
-                if ref_is_path_owned(ref, branches):
-                    return GIT_REASONS["branch"]
+            # Git reads the name in exactly one namespace, with no other form.
+            ref = f"refs/{'remotes' if remote else 'heads'}/{target}"
+            if ref_is_path_owned(ref, branches) or ref_is_path_owned(
+                f"refs/heads/{target}", branches
+            ):
+                return GIT_REASONS["branch"]
+            if any(ref not in _git_refs(context) for context in contexts):
+                return unresolved
         return None
 
     if command == "update-ref":
-        if any(argument.startswith("--stdin") for argument in arguments):
-            return unresolved
-        operands = []
+        operands, options = [], set()
         index = 0
         while index < len(arguments):
             argument = arguments[index]
-            if argument in {"-m", "--message"}:
+            if argument == "-m":  # its value is not an option, also when it is -d
                 index += 2
                 continue
-            if argument.startswith("--message=") or argument.startswith("-"):
+            if argument.startswith("-"):
+                options.add(argument)
                 index += 1
                 continue
             operands.append(argument)
             index += 1
-        deletion_flag = "-d" in arguments or "--delete" in arguments
+        deletion_flag = "-d" in options
         expected_counts = {1, 2} if deletion_flag else {2, 3}
         if len(operands) not in expected_counts or not _literal_target(operands[0]):
             return unresolved
@@ -3527,17 +3543,16 @@ def owned_target_reason(command, arguments, git_options, working_directories):
             return unresolved
         if not deletion_flag and len(operands) == 3 and not _literal_target(operands[2]):
             return unresolved
-        no_deref = "--no-deref" in arguments
         # Dereferencing a symbolic ref must not erase ownership of its name.
         if ref_is_path_owned(operands[0], branches):
             return GIT_REASONS["update-ref"]
         for context in contexts:
-            ref = _resolvable_update_ref(
-                operands[0], _git_refs(context), context, no_deref
+            names = _update_ref_names(
+                operands[0], _git_refs(context), context, "--no-deref" in options
             )
-            if ref is None:
+            if names is None:
                 return unresolved
-            if ref_is_path_owned(ref, branches):
+            if any(ref_is_path_owned(name, branches) for name in names):
                 return GIT_REASONS["update-ref"]
         return None
 
@@ -3556,17 +3571,22 @@ def owned_target_reason(command, arguments, git_options, working_directories):
         except (OSError, RuntimeError):
             pass
         registered = context["worktrees"]
-        if resolved_target is not None and resolved_target in registered:
-            matches = [resolved_target]
-        else:
-            suffix = tuple(part for part in Path(targets[0]).parts if part not in {"", "."})
-            matches = [
+        # Git tries a unique path suffix first, then the path, and compares
+        # without case on macOS and Windows. Both readings must agree.
+        matches = {resolved_target} & set(registered)
+        suffix = tuple(
+            part.casefold() for part in Path(targets[0]).parts if part not in {"", "."}
+        )
+        if suffix and not Path(targets[0]).is_absolute() and ".." not in suffix:
+            by_suffix = [
                 path for path in registered
-                if suffix and tuple(path.parts[-len(suffix):]) == suffix
-            ] if not Path(targets[0]).is_absolute() and ".." not in suffix else []
+                if tuple(part.casefold() for part in path.parts[-len(suffix):]) == suffix
+            ]
+            if len(by_suffix) == 1:
+                matches.add(by_suffix[0])
         if len(matches) != 1:
             return unresolved
-        resolved_target = matches[0]
+        resolved_target = matches.pop()
         if not resolved_target.is_dir():
             return unresolved
         branch = registered[resolved_target]
@@ -3778,6 +3798,7 @@ def destructive_git_reason(
     working_directories=None,
     cwd_reliable=True,
     git_context_reliable=True,
+    earlier_git=False,
 ):
     cwd_reliable = cwd_reliable and not ownership_cwd_is_uncertain(
         tokens, working_directories
@@ -3786,9 +3807,12 @@ def destructive_git_reason(
     git_context_reliable = git_context_reliable and not any(
         re.fullmatch(r"GIT_\w+|HOME|XDG_CONFIG_HOME", token) for token in tokens
     )
+    this_git = False
     for segment, directories, assignments, _prefix in shell_segment_contexts(
         tokens, working_directories or [os.getcwd()], initial_assignments
     ):
+        # Whether a Git command or a wrapped command ran before this segment.
+        earlier_git = earlier_git or this_git
         # A dollar expansion can introduce literal percent/bang text; the second
         # expansion pass must not silently reinterpret it as a different path.
         cwd_reliable = cwd_reliable and not any(
@@ -3811,10 +3835,12 @@ def destructive_git_reason(
                 working_directories=directories,
                 cwd_reliable=cwd_reliable,
                 git_context_reliable=segment_git_context_reliable,
+                earlier_git=earlier_git,
             )
             if reason is not None:
                 return reason
         invocation = git_command(segment, assignments)
+        this_git = wrapped is not None or invocation is not None
         if invocation is None:
             continue
         command, arguments, git_options = invocation
@@ -3862,6 +3888,7 @@ def destructive_git_reason(
                     or CMD_PARAMETER_SYNTAX.search(alias)
                 ),
                 git_context_reliable=segment_git_context_reliable,
+                earlier_git=earlier_git,
             )
             if reason is not None:
                 return reason
@@ -3889,13 +3916,14 @@ def destructive_git_reason(
             if force_option or force_refspec:
                 return GIT_REASONS[command]
         if command == "branch":
+            # Git accepts each unique prefix of a long option (--del, --forc).
             deletes = (
-                "--delete" in arguments
+                any(git_option_in(argument, {"--delete"}) for argument in arguments)
                 or has_short_option(arguments, "d")
                 or has_short_option(arguments, "D")
             )
             forces = (
-                "--force" in arguments
+                any(git_option_in(argument, {"--force"}) for argument in arguments)
                 or has_short_option(arguments, "f")
                 or has_short_option(arguments, "D")
             )
@@ -3925,13 +3953,22 @@ def destructive_git_reason(
                     return GIT_REASONS["unresolved-target"].format(
                         action="git update-ref deletion"
                     )
+                # The guard reads each symbolic ref now; an earlier Git command
+                # of this command line can point it at a Path-owned ref later.
+                # (-m can take the text --no-deref as its value.)
+                if earlier_git and (
+                    "--no-deref" not in arguments or "-m" in arguments
+                ):
+                    return GIT_REASONS["update-ref-order"]
                 reason = owned_target_reason(
                     command, arguments, git_options, directories
                 )
                 if reason is not None:
                     return reason
         if command == "worktree" and arguments[:1] == ["remove"]:
-            if "--force" in arguments or has_short_option(arguments[1:], "f"):
+            if any(
+                git_option_in(argument, {"--force"}) for argument in arguments
+            ) or has_short_option(arguments[1:], "f"):
                 if not segment_git_context_reliable:
                     return GIT_REASONS["git-environment"]
                 if not resolvable:

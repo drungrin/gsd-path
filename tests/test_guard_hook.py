@@ -2098,6 +2098,160 @@ class GuardHookTests(unittest.TestCase):
                 self.bash_in(owned, "git -C ~/r branch -D bound"), unresolved
             )
 
+    def test_update_ref_deletion_follows_the_exact_name_as_git_does(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            self.git(repo, "branch", "FOO")
+            self.git(repo, "symbolic-ref", "FOO", "refs/heads/gsd-path/M001")
+            self.git(repo, "symbolic-ref", "refs/heads/first", "refs/heads/gsd-path/M001")
+            self.git(repo, "symbolic-ref", "refs/heads/second", "refs/heads/first")
+            self.git(repo, "symbolic-ref", "refs/heads/plain-alias", "refs/heads/feature/x")
+            self.git(repo, "update-ref", "refs/remotes/origin/stale", "HEAD")
+            self.git(repo, "update-ref", "refs/remotes/origin/gsd-path/M001", "HEAD")
+            (repo / "README.md").write_text("changed\n", encoding="utf-8")
+            self.git(repo, "stash")
+            owned = guard_hook.GIT_REASONS["update-ref"]
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git update-ref deletion"
+            )
+            for command in (
+                "git update-ref -d refs/heads/second",
+                "git update-ref -m --no-deref -d refs/heads/second",
+                "git update-ref -d refs/remotes/origin/gsd-path/M001",
+                "git update-ref -d refs/stash",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), owned)
+            for command in (
+                # Git deletes the Path branch that the symbolic ref FOO names,
+                # not the branch FOO; HEAD moves with each git switch.
+                "git update-ref -d FOO",
+                "git update-ref -d FOO " + "0" * 40,
+                "git update-ref -d HEAD",
+                # -m takes refs/heads/feature/x as its value here.
+                "git update-ref -dm refs/heads/feature/x refs/heads/gsd-path/M001",
+                "git update-ref -d feature/x",
+                "git update-ref --stdin",
+                "git update-ref --std",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), unresolved)
+            # An earlier Git command of the same command line can point a
+            # symbolic ref at the Path branch after the guard has read it.
+            repoint = "git symbolic-ref {} refs/heads/gsd-path/M001"
+            for command in (
+                repoint.format("refs/heads/plain-alias")
+                + " && git update-ref -d refs/heads/plain-alias",
+                repoint.format("refs/heads/feature/x")
+                + "; git update-ref -d refs/heads/feature/x",
+                "bash -c '" + repoint.format("refs/heads/plain-alias")
+                + "'; git update-ref -d refs/heads/plain-alias",
+                "git status && git update-ref -m --no-deref -d refs/heads/plain-alias",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(
+                        self.bash_in(repo, command),
+                        guard_hook.GIT_REASONS["update-ref-order"],
+                    )
+            for command in (
+                "git update-ref -d refs/heads/feature/x",
+                "git update-ref -m note -d refs/heads/feature/x",
+                "git update-ref -d refs/heads/plain-alias",
+                "git update-ref --no-deref -d refs/heads/second",
+                "git update-ref -d refs/remotes/origin/stale",
+                "git status && git update-ref --no-deref -d refs/heads/feature/x",
+                "ls && git update-ref -d refs/heads/feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+
+    def test_forced_branch_deletion_reads_names_and_options_as_git_does(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(
+                Path(temporary).resolve(),
+                "---\nphase: build\nbranch: bound\n---\n",
+            )
+            self.git(repo, "branch", "bound")
+            for name in ("stale", "gsd-path/M001", "bound"):
+                self.git(repo, "update-ref", f"refs/remotes/origin/{name}", "HEAD")
+            owned = guard_hook.GIT_REASONS["branch"]
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git branch -D"
+            )
+            for command in (
+                "git branch -rD origin/stale",
+                "git branch -r -D origin/stale",
+                "git branch --remotes --delete --force origin/stale",
+                "git branch --del --force feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+            for command in (
+                "git branch -rD origin/gsd-path/M001",
+                "git branch -r -D origin/bound",
+                # --color takes no separate value, so git deletes both names.
+                "git branch -D --color gsd-path/M001 feature/x",
+                "git branch --delete --forc gsd-path/M001",
+                "git branch --del --force gsd-path/M001",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), owned)
+            for command in (
+                "git branch -rD origin/missing",
+                "git branch -D -r feature/x",
+                "git branch -D refs/heads/feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), unresolved)
+
+    def test_branch_names_that_differ_only_in_case_from_a_bound_branch_are_owned(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.init_git_repo(Path(temporary).resolve() / "repo")
+            # A packed Bound and a loose bound share one file on macOS and Windows.
+            self.git(repo, "branch", "Bound")
+            self.git(repo, "pack-refs", "--all")
+            self.git(repo, "branch", "bound")
+            (repo / ".project").mkdir()
+            (repo / ".project" / "STATE.md").write_text(
+                "---\nphase: build\nbranch: bound\n---\n", encoding="utf-8"
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "git branch -D Bound"), guard_hook.GIT_REASONS["branch"]
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "git update-ref -d refs/heads/Bound"),
+                guard_hook.GIT_REASONS["update-ref"],
+            )
+
+    def test_forced_worktree_removal_reads_the_option_and_the_target_as_git_does(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            for option in ("--forc", "--fo"):
+                with self.subTest(option=option):
+                    self.assert_denied_with(
+                        self.bash_in(repo, f"git worktree remove {option} ../task-worktree"),
+                        guard_hook.GIT_REASONS["worktree"],
+                    )
+            self.assert_allowed(
+                self.bash_in(repo, "git worktree remove --forc ../plain-worktree")
+            )
+
+    @requires_symlink
+    def test_forced_worktree_removal_is_denied_when_git_can_pick_another_worktree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo = self.scoped_cleanup_fixture(root)
+            # Git tries the unique path suffix first: the Path-owned worktree.
+            (repo / "task-worktree").symlink_to(
+                root / "plain-worktree", target_is_directory=True
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "git worktree remove --force task-worktree"),
+                guard_hook.GIT_REASONS["unresolved-target"].format(
+                    action="git worktree remove --force"
+                ),
+            )
+
     def test_denies_powershell_archive_mutations(self):
         for command in (
             "Remove-Item -Recurse .project/archive/001-mvp",

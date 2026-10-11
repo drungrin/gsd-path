@@ -139,15 +139,28 @@ See [UPDATE.md](UPDATE.md).
   `GSD_PATH_WORKTREE_ROOT`, a pinned workspace root, or the earlier
   `<repo>.gsd-path/` and `.<repo>-gsd-path-integrate-*` locations beside the
   repository). The text `gsd-path` in a path does not make a worktree
-  Path-owned. Other branches, refs, and registered worktrees are allowed in each
-  pipeline state. These three commands are also denied when the guard cannot
-  resolve the target: a missing, non-literal, or unregistered target,
-  `update-ref --stdin`, ownership metadata it cannot read, a working directory
-  it cannot track or that does not exist yet, or an `env` wrapper that resets
-  or unsets `HOME`, `XDG_CONFIG_HOME`, or a `GIT_*` variable. With such an
-  `env` wrapper, or in a directory that does not exist yet, a Git command that
-  is not a built-in command is denied too, because its alias cannot be
-  inspected
+  Path-owned. Also Path-owned: the remote-tracking ref of one of these
+  branches (`origin/gsd-path/M001`), `refs/stash`, and a name that differs
+  from a recorded branch only in letter case. Other branches, refs, and
+  registered worktrees are allowed in each pipeline state. These three
+  commands are also denied when the guard cannot prove the target: a missing,
+  non-literal, or unregistered target, a shell parameter in the Git command
+  (`git -C "$dir" branch -D x`), a `~` or glob in a Git option value,
+  `update-ref --stdin`, an `update-ref` name outside `refs/` (`HEAD`) or an
+  option cluster (`-dm`), an `update-ref` deletion without `--no-deref` after
+  another Git command in the same command line, ownership metadata it cannot
+  read, a working directory that does not exist yet, or an `env` wrapper that
+  resets or unsets `HOME`, `XDG_CONFIG_HOME`, or a `GIT_*` variable. They are
+  denied too after a directory change the guard cannot model. Only
+  `cd <directory>` or `cd -- <directory>` is modeled, with one literal
+  directory that is absolute or starts with `./` or `../` (a shell with
+  `CDPATH` looks for a plain relative name in other directories). Another
+  command name (`pushd`, `chdir`), an option, a second operand, a redirection,
+  a `cd` in a subshell, pipeline, condition, function, alias, trap, or
+  comment line is not modeled. Use `git -C <directory>` there. With
+  such an `env` wrapper, or in a directory that does not exist yet, a Git
+  command that is not a built-in command is denied too, because its alias
+  cannot be inspected
 - shell writes (redirections, `tee`, `cp`, `mv`, `rm`, `sed -i`, ...) that
   target a routing control (`.git`, `.project/STATE.md`, `.project/next`,
   `.gsd-path`) while `.project/STATE.md` exists, or target a product file
