@@ -161,7 +161,8 @@ def _reject_placeholder(value: str, label: str) -> None:
     if placeholder is not None:
         raise HandoffError(
             f"{label} still contains the placeholder {placeholder.group(0)}; "
-            "replace it with the real value"
+            "replace it with the real value. A value cannot be only a placeholder; "
+            "literal text such as an HTML tag must be inside a sentence, in backticks"
         )
 
 
@@ -701,7 +702,11 @@ def _success_criteria(intent: str) -> Dict[str, str]:
     expected = list(range(1, max(items) + 1))
     if sorted(items) != expected:
         raise HandoffError("INTENT.md success criteria must be contiguous from 1")
-    return {f"SC{number}": text for number, text in items.items()}
+    # Issue #392: a review can quote a criterion without the markers of its sub-bullet lines.
+    bare = _numbered_items(
+        _section(_common.without_sub_bullet_markers(intent), "Success criteria"), continuations=True
+    )
+    return {f"SC{number}": _common.Criterion(text, bare[number]) for number, text in items.items()}
 
 
 def _split_top_level_commas(value: str) -> List[str]:
@@ -1305,21 +1310,22 @@ def _normalize_ws(value: str) -> str:
 
 
 def task_review_observation(item: str, task_text: str) -> str:
-    """Separate an exact quoted acceptance criterion from its observed evidence."""
+    """Separate a quoted acceptance criterion from its observed evidence."""
     item = _normalize_ws(item)
     section = _common.section_body(task_text, "Acceptance criteria")
     if section is not None:
         # Issue #374: frozen landed bytes may repeat a criterion number. Only the
         # criterion text matters here, so each repeated entry is still split
         # from its evidence and the evidence gets the same checks.
-        for _number, criterion in _numbered_entries(section, continuations=True):
-            quoted = _normalize_ws(criterion)
-            prefix = quoted + " — "
-            if item.startswith(prefix):
-                return item[len(prefix) :]
-            if item in {quoted, quoted + " —"}:
-                return ""
-    return item
+        criteria = [criterion for _number, criterion in _numbered_entries(section, continuations=True)]
+        quoted = _common.quoted_criterion(item, criteria)
+        if quoted is not None:
+            return item[quoted[1] + len(" — ") :]
+    # Issue #392: a quote can leave out the `- ` markers of the criterion's
+    # sub-bullet lines, so read the criteria again without them.
+    bare = _common.without_sub_bullet_markers(task_text)
+    return item if bare == task_text else task_review_observation(item, bare)
+
 
 
 def _verify_command(task_text: str) -> str:
@@ -2092,25 +2098,28 @@ def validate_wave_evidence(
     if enforce_plan_tasks:
         if reviewed_tasks != expected_tasks:
             raise HandoffError(
-                f"{name} must review exactly {', '.join(expected_tasks)} in plan order"
+                f"{name} must review exactly {', '.join(expected_tasks)} in task id order"
             )
     else:
         unknown = [task_id for task_id in reviewed_tasks if task_id not in expected_tasks]
         if unknown:
             raise HandoffError(
-                f"{name} must review exactly {', '.join(expected_tasks)} in plan order"
+                f"{name} must review exactly {', '.join(expected_tasks)} in task id order"
             )
         plan_order = [task_id for task_id in expected_tasks if task_id in reviewed_tasks]
         if reviewed_tasks != plan_order:
             raise HandoffError(
-                f"{name} must review exactly {', '.join(expected_tasks)} in plan order"
+                f"{name} must review exactly {', '.join(expected_tasks)} in task id order"
             )
     task_verdicts = []
     for heading_index, heading in task_headings:
         task_id = heading.group("task")
         expected_title = _normalize_ws(_task_scalar(tasks[task_id], task_id, "title"))
         if _normalize_ws(heading.group("title")) != expected_title:
-            raise HandoffError(f"{name} title for {task_id} differs from task file")
+            raise HandoffError(
+                f"{name} title for {task_id} differs from task file; "
+                f"expected the exact `title:` value: {expected_title}"
+            )
         end = next(
             (
                 index
@@ -2127,7 +2136,10 @@ def validate_wave_evidence(
             if line.strip().startswith(f"- {marker} ")
         ]
         if not evidence:
-            raise HandoffError(f"{name} task {task_id} lacks {verdict} evidence")
+            raise HandoffError(
+                f"{name} task {task_id} lacks {verdict} evidence; "
+                f"add a line that starts with `- {marker} ` under its heading"
+            )
         for item in evidence:
             item = task_review_observation(item, tasks[task_id])
             _non_placeholder(item, f"{name} task {task_id} {verdict} evidence")
@@ -2179,7 +2191,7 @@ def validate_wave_evidence(
             sc_id in criteria
             and (
                 not separator
-                or _normalize_ws(heading_text) != _normalize_ws(criteria[sc_id])
+                or not _common.quotes_criterion(heading_text, criteria[sc_id])
             )
         ):
             raise HandoffError(f"{name} {sc_id} heading text differs from INTENT.md")
@@ -2197,7 +2209,10 @@ def validate_wave_evidence(
             if line.strip().startswith(f"- {marker} ")
         ]
         if not evidence:
-            raise HandoffError(f"{name} {sc_id} lacks {verdict} evidence")
+            raise HandoffError(
+                f"{name} {sc_id} lacks {verdict} evidence; "
+                f"add a line that starts with `- {marker} ` under its heading"
+            )
         for item in evidence:
             _non_placeholder(item, f"{name} {sc_id} {verdict} evidence")
         verdicts[sc_id] = verdict
@@ -2277,7 +2292,7 @@ def validate_final(
     verdicts: Dict[str, str] = {}
     for index, heading in enumerate(blocks):
         sc_id = heading.group("id")
-        if _normalize_ws(heading.group("title")) != _normalize_ws(criteria[sc_id]):
+        if not _common.quotes_criterion(heading.group("title"), criteria[sc_id]):
             raise HandoffError(f"FINAL.md {sc_id} heading text differs from INTENT.md")
         end = blocks[index + 1].start() if index + 1 < len(blocks) else len(text)
         block = text[heading.end() : end]

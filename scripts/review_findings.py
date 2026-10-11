@@ -152,15 +152,25 @@ def _frontmatter_list(frontmatter: str, key: str) -> List[str]:
 
 
 def _numbered_items(section: Optional[str]) -> List[str]:
-    items: List[str] = []
+    """Numbered criteria; each also carries its text without sub-bullet markers (issue #392)."""
     if section is None:
-        return items
+        return []
+    bare = _numbered_texts(_common.without_sub_bullet_markers(section))
+    return [_common.Criterion(text, other) for text, other in zip(_numbered_texts(section), bare)]
+
+
+def _numbered_texts(section: str) -> List[str]:
+    items: List[str] = []
+    open_item = False
     for line in _strip_comments(section).splitlines():
         match = NUMBERED_ITEM.match(line.strip())
         if match:
             items.append(_normalize(match.group(2)))
-        elif items and line.startswith("   ") and line.strip():
+            open_item = True
+        elif open_item and line[:1].isspace() and line.strip():
             items[-1] = _normalize(items[-1] + " " + line.strip())
+        elif line.strip():
+            open_item = False
     return items
 
 
@@ -281,17 +291,20 @@ def parse_lens(text: str, lens: str, tasks: Dict[str, dict]) -> dict:
                 continue
             zones[zone].append(line)
         for observation in _fail_items(zones["criteria"]):
-            criterion = _criterion_of(observation)
-            locator = None
-            if criterion in task["acceptance"]:
-                locator = f"{task_id.lower()}_ac{task['acceptance'].index(criterion) + 1}"
-            elif criterion in task["interface"]:
-                locator = f"{task_id.lower()}_interface_contract"
-            if locator is None:
+            # Issue #392: match as the wave gate does, then report the task's own text.
+            criteria = task["acceptance"] + task["interface"]
+            quoted = _common.quoted_criterion(observation, criteria)
+            if quoted is None:
                 problems.append(
-                    f"{lens} lens {task_id} finding names no task criterion: {criterion}"
+                    f"{lens} lens {task_id} finding names no task criterion: "
+                    f"{_criterion_of(observation)}"
                 )
                 continue
+            criterion = criteria[quoted[0]]
+            if quoted[0] < len(task["acceptance"]):
+                locator = f"{task_id.lower()}_ac{quoted[0] + 1}"
+            else:
+                locator = f"{task_id.lower()}_interface_contract"
             findings.append(
                 {"locator": locator, "criterion": criterion, "task": task_id,
                  "lens": lens, "observation": observation}

@@ -2600,6 +2600,8 @@ Tasks reviewed: 2
                     ).encode("utf-8")
                 )
                 self.assertEqual(validate()["verdict"], "pass")
+                # Issue #392: the `- ` markers of the sub-bullets are not part of
+                # the compared text; every word is.
                 review.write_bytes(
                     original.replace(
                         "### SC1 — The demo command prints hello.",
@@ -2607,10 +2609,171 @@ Tasks reviewed: 2
                         "The dashboard shows a badge.",
                     ).encode("utf-8")
                 )
-                with self.assertRaisesRegex(
-                    check_handoffs.HandoffError, "SC1 heading text differs from INTENT.md"
+                self.assertEqual(validate()["verdict"], "pass")
+                for changed in (
+                    "At a store with a due review: The board lists the store. "
+                    "The dashboard shows a banner.",
+                    "At a store with a due review: The board lists the store.",
+                    "At a store with a due review: The dashboard shows a badge. "
+                    "The board lists the store.",
                 ):
-                    validate()
+                    with self.subTest(changed=changed):
+                        review.write_bytes(
+                            original.replace(
+                                "### SC1 — The demo command prints hello.", f"### SC1 — {changed}"
+                            ).encode("utf-8")
+                        )
+                        with self.assertRaisesRegex(
+                            check_handoffs.HandoffError, "SC1 heading text differs from INTENT.md"
+                        ):
+                            validate()
+
+    def test_reviews_compare_a_hyphen_inside_an_intent_criterion_line(self) -> None:
+        # Only the `- ` markers of sub-bullet lines are optional. A minus sign
+        # inside a line is part of the criterion.
+        cases = (
+            (
+                "1. The balance is credit - debit:\n   - for a store\n   - for a region",
+                (
+                    "The balance is credit - debit: - for a store - for a region",
+                    "The balance is credit - debit: for a store for a region",
+                ),
+                (
+                    "The balance is credit debit: for a store for a region",
+                    "The balance is credit debit: - for a store - for a region",
+                ),
+            ),
+            ("1. The balance is credit - debit.", ("The balance is credit - debit.",),
+             ("The balance is credit debit.",)),
+            # Without its marker this sub-bullet would read as criterion 2.
+            ("1. The steps:\n   -  2. run the demo", ("The steps: - 2. run the demo",),
+             ("The steps: run the demo",)),
+        )
+        for phase in ("wave", "final"):
+            for source, accepted, rejected in cases:
+                with self.subTest(phase=phase, source=source), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.write_plan_handoff(root)
+                    if phase == "wave":
+                        relative = self.write_wave_review(root)
+                        validate = lambda: check_handoffs.validate_wave(root, review=relative)
+                    else:
+                        self.write_state(root, "ship", "active")
+                        self.write_final_review(root)
+                        relative = ".project/review/FINAL.md"
+                        validate = lambda: check_handoffs.validate_final(root)
+                    intent = root / ".project/intent/INTENT.md"
+                    intent.write_bytes(intent.read_text(encoding="utf-8").replace(
+                        "1. The demo command prints hello.", source
+                    ).encode("utf-8"))
+                    review = root / relative
+                    original = review.read_text(encoding="utf-8")
+                    for heading in accepted:
+                        review.write_bytes(original.replace(
+                            "### SC1 — The demo command prints hello.", f"### SC1 — {heading}"
+                        ).encode("utf-8"))
+                        self.assertEqual(validate()["verdict"], "pass", heading)
+                    for heading in rejected:
+                        review.write_bytes(original.replace(
+                            "### SC1 — The demo command prints hello.", f"### SC1 — {heading}"
+                        ).encode("utf-8"))
+                        with self.assertRaisesRegex(
+                            check_handoffs.HandoffError, "SC1 heading text differs from INTENT.md"
+                        ):
+                            validate()
+
+    def test_wave_binds_a_quote_to_the_criterion_with_the_same_hyphens(self) -> None:
+        # Two acceptance criteria differ only by a minus sign. The quote of
+        # the second one must stay the second one, at the gate and in the
+        # finding groups that fix tasks are made from.
+        from scripts import review_findings
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            relative = self.write_wave_review(root, verdict="blocked")
+            self.write_coverage_task(
+                root, "T001", "- SC1", acceptance="1. Render `a b`\n2. Render `a - b`"
+            )
+            review = root / relative
+            original = review.read_text(encoding="utf-8").replace(
+                "## T001 — Demo task T001: pass", "## T001 — Demo task T001: fail"
+            )
+            old = "- ✅ The demo command prints hello. — ran hello.py"
+            review.write_bytes(original.replace(
+                old, "- ❌ Render `a - b` — found: prints `a b`, src/app.py:3"
+            ).encode("utf-8"))
+            self.assertEqual(check_handoffs.validate_wave(root, review=relative)["verdict"], "blocked")
+            (group,) = review_findings.compute(root, ".project", 1, 1)["groups"]
+            self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", "Render `a - b`"))
+            self.write_coverage_task(root, "T001", "- SC1", acceptance="1. Render `a - b`")
+            task_text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                check_handoffs.task_review_observation("Render `a - b` — none", task_text), "none"
+            )
+            self.assertEqual(
+                check_handoffs.task_review_observation("Render `a b` — none", task_text),
+                "Render `a b` — none",
+            )
+
+    def test_wave_checks_evidence_after_task_criterion_quoted_without_list_markers(self) -> None:
+        # Issue #392: a wrapped criterion is stored with the `- ` markers of its
+        # sub-bullets. A quote without them is still the quoted criterion, so
+        # the evidence after it gets the same checks.
+        stored = "The demo command: - prints hello - exits with 0"
+        bare = "The demo command: prints hello exits with 0"
+        for verdict, marker in (("pass", "✅"), ("fail", "❌")):
+            with self.subTest(verdict=verdict), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_plan_handoff(root)
+                relative = self.write_wave_review(root)
+                self.write_coverage_task(
+                    root, "T001", "- SC1",
+                    acceptance="1. The demo command:\n   - prints hello\n   - exits with 0",
+                )
+                review = root / relative
+                original = review.read_text(encoding="utf-8").replace(
+                    "## T001 — Demo task T001: pass", f"## T001 — Demo task T001: {verdict}"
+                )
+                if verdict == "fail":
+                    original = original.replace("Wave verdict: pass", "Wave verdict: blocked")
+                old = "- ✅ The demo command prints hello. — ran hello.py"
+                for quote in (stored, bare):
+                    with self.subTest(quote=quote):
+                        review.write_bytes(original.replace(
+                            old, f"- {marker} {quote} — ran hello.py; exit 0"
+                        ).encode("utf-8"))
+                        result = check_handoffs.validate_wave(root, review=relative)
+                        self.assertEqual(result["verdict"], "pass" if verdict == "pass" else "blocked")
+                        for evidence in ("none", ""):
+                            review.write_bytes(original.replace(
+                                old, f"- {marker} {quote} — {evidence}"
+                            ).encode("utf-8"))
+                            with self.assertRaisesRegex(check_handoffs.HandoffError, "is empty"):
+                                check_handoffs.validate_wave(root, review=relative)
+                task_text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
+                for changed in (
+                    "The demo command: prints hello exits with 1",
+                    "The demo command: prints hello",
+                    "The demo command: exits with 0 prints hello",
+                ):
+                    with self.subTest(changed=changed):
+                        self.assertEqual(
+                            check_handoffs.task_review_observation(f"{changed} — none", task_text),
+                            f"{changed} — none",
+                        )
+
+    def test_task_review_observation_prefers_the_exact_and_longest_quote(self) -> None:
+        for acceptance, item, evidence in (
+            ("1. Returns\n   - 5 items\n2. Returns 5 items", "Returns 5 items — ran it", "ran it"),
+            ("1. Prints hello\n2. Prints hello — and exits 0", "Prints hello — and exits 0 — ran it", "ran it"),
+            ("1. Prints hello\n2. Prints hello — and exits 0", "Prints hello — and exits 0", ""),
+        ):
+            with self.subTest(item=item), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_coverage_task(root, "T001", "- SC1", acceptance=acceptance)
+                task_text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
+                self.assertEqual(check_handoffs.task_review_observation(item, task_text), evidence)
 
     def test_wave_checks_evidence_after_exact_quoted_task_criterion(self) -> None:
         for verdict, marker in (("pass", "✅"), ("fail", "❌")):
@@ -2730,6 +2893,63 @@ Tasks reviewed: 2
                 check_handoffs.HandoffError, "SC1 lacks pass evidence"
             ):
                 check_handoffs.validate_wave(root, review=relative)
+
+    def test_wave_format_errors_say_what_the_gate_expects(self) -> None:
+        # Issue #392: each message names the rule the reviewer must follow.
+        t001 = "## T001 — Demo task T001: pass\n\n- ✅ The demo command prints hello. — ran hello.py\n\n"
+        t002 = "## T002 — Demo task T002: pass\n\n- ✅ The demo test suite is green. — unittest OK\n\n"
+        blocked = ("Wave verdict: pass", "Wave verdict: blocked")
+        order = "must review exactly T001, T002 in task id order"
+        cases = (
+            ("sections in PLAN table order", [(t001 + t002, t002 + t001)], order),
+            ("blocked review, sections out of order", [blocked, (t001 + t002, t002 + t001)], order),
+            ("blocked review, unknown task", [blocked, ("## T002 — Demo", "## T009 — Demo")], order),
+            (
+                "heading is not the task title",
+                [("## T001 — Demo task T001: pass", "## T001 — The demo task: pass")],
+                "title for T001 differs from task file; expected the exact `title:` value: Demo task T001",
+            ),
+            (
+                "SC evidence without the marker prefix",
+                [("- ✅ hello.py output", "- hello.py output ✅")],
+                "SC1 lacks pass evidence; add a line that starts with `- ✅ ` under its heading",
+            ),
+            (
+                "failed task described without a marker line",
+                [blocked, (t001, "## T001 — Demo task T001: fail\n\nBlocking findings:\n- prints goodbye, hello.py:3\n\n")],
+                "task T001 lacks fail evidence; add a line that starts with `- ❌ ` under its heading",
+            ),
+            (
+                "literal HTML outside backticks",
+                [("— ran hello.py", "— the output has <b>hello</b>")],
+                "task T001 pass evidence still contains the placeholder <b>; replace it with the "
+                "real value. A value cannot be only a placeholder; literal text such as an HTML "
+                "tag must be inside a sentence, in backticks",
+            ),
+        )
+        for label, edits, message in cases:
+            with self.subTest(label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_plan_handoff(root)
+                relative = self.write_wave_review(root)
+                review = root / relative
+                text = review.read_text(encoding="utf-8")
+                for old, new in edits:
+                    self.assertIn(old, text)
+                    text = text.replace(old, new)
+                review.write_bytes(text.encode("utf-8"))
+                with self.assertRaises(check_handoffs.HandoffError) as failure:
+                    check_handoffs.validate_wave(root, review=relative)
+                self.assertEqual(str(failure.exception), f"wave-1.cycle1.md {message}")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            relative = self.write_wave_review(root)
+            review = root / relative
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "— ran hello.py", "— the output has `<b>hello</b>`"
+            ).encode("utf-8"))
+            self.assertEqual(check_handoffs.validate_wave(root, review=relative)["verdict"], "pass")
 
     def test_wave_rejects_pass_while_an_owned_sc_failed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

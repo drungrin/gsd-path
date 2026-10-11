@@ -26,9 +26,17 @@ Tasks reviewed: <count>
 
 ## T001 — <title>: <pass | fail>
 
-<!-- Per task criterion: copy the full acceptance/interface criterion verbatim
-     before the em dash; join wrapped lines with spaces. An AC id or summary
-     alone cannot be matched by review_findings.py. -->
+<!-- Task sections go in task id order (T001 before T002), not in the order
+     of the PLAN.md wave table. The heading title is the exact `title:` of
+     the task file. An evidence line starts with `- ✅ ` (pass) or `- ❌ `
+     (fail). A section needs one or more lines with the marker of its own
+     verdict, so a failed task needs a `- ❌ ` criterion line.
+     Per task criterion: copy every word of the acceptance/interface
+     criterion before the em dash; join wrapped lines and sub-bullets with
+     spaces (the `- ` markers of sub-bullets are optional). An AC id or
+     summary alone cannot be matched by review_findings.py.
+     Write literal markup and code in backticks inside a sentence: text
+     such as <b> outside backticks reads as an unfilled placeholder. -->
 - ✅ <criterion> — <evidence: verify output / file:line checked>
 - ❌ <criterion> — found: <what exists instead, file:line>
   fix: <concrete direction a coder can execute without re-investigating>
@@ -47,13 +55,14 @@ Contract violations (blocking):
      wave, ending `: pass` or `: fail`. `scripts/check_handoffs.py wave
      --review <this file>` gates the SC id set and verdicts. Omit this
      section when no task in the wave owns an SC.
-     Copy the criterion text from INTENT.md `## Success criteria` exactly as
-     `_success_criteria` stores it: indented continuation lines join with a
-     single space and keep their leading `- ` markers; the gate compares
-     heading text with `_normalize_ws` only (no paraphrase or stripped
-     sub-bullets). -->
+     Copy every word of the criterion from INTENT.md `## Success criteria`:
+     join indented continuation lines and sub-bullets with a single space
+     (the `- ` markers of sub-bullets are optional). The gate compares every
+     other word: no paraphrase, no dropped sub-bullet.
+     Each SC block needs an evidence line with the marker of its own
+     verdict: `- ✅ ` (pass) or `- ❌ ` (fail). -->
 
-### SC1 — <criterion as stored by the gate>: <pass | fail>
+### SC1 — <criterion from INTENT.md>: <pass | fail>
 - ✅ <evidence: verify output / file:line checked>
 - ❌ <criterion> — found: <what exists instead, file:line>
   fix: <concrete direction a coder can execute without re-investigating>

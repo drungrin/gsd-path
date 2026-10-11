@@ -867,6 +867,48 @@ wave: 1   # inline comment
             checked = self.preflight(repo)
             self.assertEqual(checked.returncode, 0, checked.stderr)
 
+    def test_archive_binds_sub_bullet_criterion_headings_without_list_markers(self) -> None:
+        # Issue #392: the archive reads review headings as the wave and final
+        # gates do. The `- ` markers of the sub-bullet lines are optional;
+        # every other word and hyphen is compared.
+        bare = "demo works for credit - debit: the board lists the store the dashboard shows a badge"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo = Path(temporary_directory)
+            self.make_repo(repo)
+            for relative in ("review/FINAL.md", "review/wave-1.cycle1.md"):
+                path = repo / ".project" / relative
+                path.write_bytes(path.read_text(encoding="utf-8").replace(
+                    "### SC1 — demo works", f"### SC1 — {bare}"
+                ).encode("utf-8"))
+            intent = repo / ".project/intent/INTENT.md"
+            intent.write_bytes(intent.read_text(encoding="utf-8").replace(
+                "1. demo works",
+                "1. demo works for credit - debit:\n"
+                "   - the board lists the store\n   - the dashboard shows a badge",
+            ).encode("utf-8"))
+            archive = self.prepare_archive(repo)
+            result = self.render_manifest(repo)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.preflight(repo)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            stored = "demo works for credit - debit: - the board lists the store - the dashboard shows a badge"
+            for relative, message in (
+                ("review/wave-1.cycle1.md", "does not match its owned success criteria"),
+                ("review/FINAL.md", "heading text differs"),
+            ):
+                with self.subTest(relative=relative):
+                    path = archive / relative
+                    content = path.read_text(encoding="utf-8")
+                    for old, new in (("shows a badge", "shows a banner"), ("credit - debit", "credit debit")):
+                        path.write_bytes(content.replace(old, new).encode("utf-8"))
+                        result = self.render_manifest(repo)
+                        self.assertNotEqual(result.returncode, 0, new)
+                        self.assertIn(message, result.stderr)
+                    # The heading as the criterion is stored stays valid.
+                    path.write_bytes(content.replace(bare, stored).encode("utf-8"))
+                    result = self.render_manifest(repo)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_render_manifest_checks_evidence_after_quoted_task_criterion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)

@@ -25,7 +25,8 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import BinaryIO, Iterable, Iterator, List, Optional, Sequence
+from typing import BinaryIO, Iterable, Iterator, List, Optional, Sequence, Tuple
+
 
 # Chosen by what imports, not os.name, so tests can emulate Windows on POSIX.
 try:
@@ -212,6 +213,61 @@ def overlapping_paths(left: Sequence[str], right: Sequence[str]) -> List[str]:
             if one == other or one.startswith(other + "/") or other.startswith(one + "/")
         }
     )
+
+
+# The `- ` of an indented sub-bullet line. A line that would then read as a
+# numbered item (`- 2. text`) keeps its marker, so both readings of a source
+# have the same criteria.
+SUB_BULLET_MARKER = re.compile(r"(?m)^([ \t]+)-[ \t]+(?![ \t]*\d+\.\s)")
+
+
+def without_sub_bullet_markers(source: str) -> str:
+    """`source` with the `- ` marker of each indented sub-bullet line removed."""
+    return SUB_BULLET_MARKER.sub(r"\1", source)
+
+
+class Criterion(str):
+    """A criterion as its parser joins it, with the `- ` markers of its sub-bullet lines.
+
+    `bare` is the same criterion parsed from `without_sub_bullet_markers(source)`.
+    The joined text cannot tell a marker from a minus sign; the source lines can.
+    """
+
+    bare: str
+
+    def __new__(cls, text: str, bare: str) -> "Criterion":
+        criterion = super().__new__(cls, text)
+        criterion.bare = bare
+        return criterion
+
+
+def quotes_criterion(quote: str, criterion: str) -> bool:
+    """Whether a review quote is `criterion`, for every reader.
+
+    Only whitespace is collapsed. The quote must equal the criterion with all
+    the markers of its sub-bullet lines or with none of them; every other
+    character, a hyphen inside a line too, is compared.
+    """
+    forms = (criterion, getattr(criterion, "bare", criterion))
+    return " ".join(quote.split()) in {" ".join(form.split()) for form in forms}
+
+
+def quoted_criterion(item: str, criteria: Sequence[str]) -> Optional[Tuple[int, int]]:
+    """Index of the criterion quoted at the start of `item`, and where the quote ends.
+
+    A criterion can contain ` — ` itself, so each separator and the end of
+    `item` is a candidate, the longest quote first. A criterion as written
+    wins over any criterion read without its sub-bullet markers.
+    """
+    ends = [match.start() for match in re.finditer("(?= —(?: |$))|$", item)][::-1]
+    for bare in (False, True):
+        for end in ends:
+            quote = " ".join(item[:end].split())
+            for index, criterion in enumerate(criteria):
+                form = getattr(criterion, "bare", criterion) if bare else criterion
+                if quote == " ".join(form.split()):
+                    return index, end
+    return None
 
 
 def task_verify_command(task_text: str) -> str:

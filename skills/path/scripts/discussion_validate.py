@@ -507,7 +507,8 @@ def archived_intent_criteria(archive: Path) -> dict[int, str]:
         criteria = check_handoffs._success_criteria(text)
     except check_handoffs.HandoffError as error:
         raise ArchiveError(str(error)) from error
-    return {int(key[2:]): " ".join(value.split()) for key, value in criteria.items()}
+    # Each value keeps the form without sub-bullet markers that quotes_criterion reads.
+    return {int(key[2:]): value for key, value in criteria.items()}
 
 
 def parse_final_review(archive: Path) -> tuple:
@@ -563,7 +564,7 @@ def _final_review(archive: Path) -> tuple:
     if len(headings) != len(intent_criteria):
         raise ArchiveError("FINAL.md success criteria do not exactly cover INTENT.md")
     for _, number, criterion in headings:
-        if " ".join(criterion.split()) != intent_criteria[number]:
+        if not _common.quotes_criterion(criterion, intent_criteria[number]):
             raise ArchiveError(
                 f"FINAL.md SC{number} heading text differs from archived INTENT.md"
             )
@@ -951,10 +952,10 @@ def validate_wave_review(
             (index, match.group(1), " ".join(match.group(2).split()), match.group(3))
         )
     actual = [(sc_id, text) for _, sc_id, text, _ in criterion_headings]
-    normalized_expected_criteria = [
-        (sc_id, " ".join(text.split())) for sc_id, text in expected_criteria
-    ]
-    if actual != normalized_expected_criteria:
+    if len(actual) != len(expected_criteria) or any(
+        sc_id != expected_id or not _common.quotes_criterion(text, expected)
+        for (sc_id, text), (expected_id, expected) in zip(actual, expected_criteria)
+    ):
         raise ArchiveError(
             f"{path.name} Intent coverage does not match its owned success criteria"
         )

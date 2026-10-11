@@ -1,11 +1,11 @@
 ## Final integration mode
 
 Use only final-review.md. Treat INTENT.md success criteria as the rubric.
-Each `### SCn —` heading must match the criterion text as
-`check_handoffs._success_criteria` stores it from INTENT.md `## Success
-criteria`: indented continuation lines join with a single space and keep
-their `- ` list markers; the gate compares titles with `_normalize_ws`
-only. Exercise the running system and record `met`, `not-met`, or
+Each `### SCn —` heading must have every word of the criterion in INTENT.md
+`## Success criteria`: join indented continuation lines and sub-bullets
+with a single space. You can keep or remove the `- ` markers of the
+sub-bullets; the gate compares every other word. Exercise the running
+system and record `met`, `not-met`, or
 `unverifiable` with checked command output or a precise file reference.
 When PLAN.md carries
 a `## Surface contract`, every criterion it lists under a surface is checked

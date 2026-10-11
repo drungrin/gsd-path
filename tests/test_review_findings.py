@@ -234,6 +234,136 @@ class GroupingTest(unittest.TestCase):
         self.assertEqual(result["structural_blockers"][0]["kind"], "invalid-artifact")
         self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
 
+    def test_sub_bullet_criterion_quoted_without_list_markers_keeps_its_locator(self):
+        # Issue #392: a wrapped criterion is stored with the `- ` markers of its
+        # sub-bullets. A quote without them is the same criterion, not a
+        # structural blocker.
+        fixture = Fixture(self, skeptics="off")
+        write(
+            fixture.project / "tasks" / "T001-parse-input.md",
+            TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                        interface="None", owned="SC1", ac1="Parses CSV rows",
+                        ac2="Rejects malformed rows:\n   - reports the row number\n   - keeps the earlier rows"),
+        )
+        stored = "Rejects malformed rows: - reports the row number - keeps the earlier rows"
+        for quote in (stored, "Rejects malformed rows: reports the row number keeps the earlier rows"):
+            with self.subTest(quote=quote):
+                fixture.lens("contract", t001_fails=[f"{quote} — found: drops them, parser.py:9"])
+                fixture.lens("adversarial", verdict="pass")
+                _, result = fixture.run()
+                self.assertEqual(result["structural_blockers"], [])
+                (group,) = result["groups"]
+                self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", stored))
+                self.assertEqual(result["fix_groups"], ["t001_ac2"])
+        for quote in (
+            "Rejects malformed rows: reports the row number keeps the later rows",  # changed word
+            "Rejects malformed rows:",  # sub-bullets dropped
+            "Rejects malformed rows: keeps the earlier rows reports the row number",  # reordered
+            "Rejects malformed rows- reports the row number keeps the earlier rows",  # changed punctuation
+        ):
+            with self.subTest(quote=quote):
+                fixture.lens("contract", t001_fails=[f"{quote} — found: drops them, parser.py:9"])
+                _, result = fixture.run()
+                self.assertEqual(result["groups"], [])
+                self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
+
+    def test_quote_of_a_criterion_that_contains_an_em_dash(self):
+        # The wave gate tries each ` — ` as the end of the quote; this reader
+        # must find the same criterion.
+        fixture = Fixture(self, skeptics="off")
+        stored = "Rejects malformed rows — and keeps the earlier rows"
+        write(
+            fixture.project / "tasks" / "T001-parse-input.md",
+            TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                        interface="None", owned="SC1", ac1="Parses CSV rows", ac2=stored),
+        )
+        fixture.lens("contract", t001_fails=[f"{stored} — found: drops them, parser.py:9"])
+        fixture.lens("adversarial", verdict="pass")
+        _, result = fixture.run()
+        self.assertEqual(result["structural_blockers"], [])
+        (group,) = result["groups"]
+        self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", stored))
+
+        fixture.lens(
+            "contract",
+            t001_fails=["Rejects malformed rows — and keeps the later rows — found: drops them, parser.py:9"],
+        )
+        _, result = fixture.run()
+        self.assertEqual(result["groups"], [])
+        self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
+
+    def test_exact_quote_wins_over_a_marker_free_reading_of_an_earlier_criterion(self):
+        fixture = Fixture(self, skeptics="off")
+        fixture.lens("adversarial", verdict="pass")
+        for ac1, ac2, quote in (
+            ("Returns\n   - 5 items", "Returns 5 items", "Returns 5 items"),
+            ("Prints hello", "Prints hello — and exits 0", "Prints hello — and exits 0"),
+        ):
+            with self.subTest(quote=quote):
+                write(
+                    fixture.project / "tasks" / "T001-parse-input.md",
+                    TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                                interface="None", owned="SC1", ac1=ac1, ac2=ac2),
+                )
+                fixture.lens("contract", t001_fails=[f"{quote} — found: 4, parser.py:9"])
+                _, result = fixture.run()
+                self.assertEqual(result["structural_blockers"], [])
+                (group,) = result["groups"]
+                self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", ac2))
+
+    def test_sub_bullets_join_at_any_indentation(self):
+        # The wave gate joins any indented line to its criterion; this reader
+        # must store the same criterion.
+        fixture = Fixture(self, skeptics="off")
+        fixture.lens("adversarial", verdict="pass")
+        stored = "Prints all of: - alpha - beta"
+        for indent in ("  ", "\t", "   "):
+            for quote in (stored, "Prints all of: alpha beta"):
+                with self.subTest(indent=indent, quote=quote):
+                    write(
+                        fixture.project / "tasks" / "T001-parse-input.md",
+                        TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                                    interface="None", owned="SC1", ac1="Parses CSV rows",
+                                    ac2=f"Prints all of:\n{indent}- alpha\n{indent}- beta"),
+                    )
+                    fixture.lens("contract", t001_fails=[f"{quote} — found: only alpha, parser.py:9"])
+                    _, result = fixture.run()
+                    self.assertEqual(result["structural_blockers"], [])
+                    (group,) = result["groups"]
+                    self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", stored))
+
+    def test_hyphen_inside_a_criterion_line_is_compared(self):
+        # Only the `- ` markers of sub-bullet lines are optional. Two criteria
+        # that differ by a minus sign are different criteria.
+        fixture = Fixture(self, skeptics="off")
+        write(
+            fixture.project / "tasks" / "T001-parse-input.md",
+            TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                        interface="None", owned="SC1", ac1="Render `a b`", ac2="Render `a - b`"),
+        )
+        for quote, locator in (("Render `a - b`", "t001_ac2"), ("Render `a b`", "t001_ac1")):
+            with self.subTest(quote=quote):
+                fixture.lens("contract", t001_fails=[f"{quote} — found: wrong output, parser.py:9"])
+                fixture.lens("adversarial", verdict="pass")
+                _, result = fixture.run()
+                self.assertEqual(result["structural_blockers"], [])
+                (group,) = result["groups"]
+                self.assertEqual((group["locator"], group["criterion"]), (locator, quote))
+        write(
+            fixture.project / "tasks" / "T001-parse-input.md",
+            TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                        interface="None", owned="SC1", ac1="Parses CSV rows",
+                        ac2="Returns a - b:\n   - for integers\n   - for floats"),
+        )
+        fixture.lens("contract", t001_fails=["Returns a b: for integers for floats — found: a + b, parser.py:9"])
+        _, result = fixture.run()
+        self.assertEqual(result["groups"], [])
+        self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
+        fixture.lens("contract", t001_fails=["Returns a - b: for integers for floats — found: a + b, parser.py:9"])
+        _, result = fixture.run()
+        self.assertEqual(result["structural_blockers"], [])
+        self.assertEqual(result["groups"][0]["locator"], "t001_ac2")
+
 
 class FixBatchTest(unittest.TestCase):
     def test_a_declared_directory_and_a_path_below_it_share_a_fix_batch(self):
