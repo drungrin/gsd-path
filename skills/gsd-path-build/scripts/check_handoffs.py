@@ -1561,7 +1561,7 @@ def _validate_task_graph(
                 raise HandoffError(f"{task_id} supersedes {earlier}, which is not in an earlier wave")
             if task_repos[earlier] != task_repos[task_id]:
                 raise HandoffError(f"{task_id} supersedes {earlier}, which is in another repo")
-            if not set(task_files[earlier]) & set(task_files[task_id]):
+            if not _common.overlapping_paths(task_files[earlier], task_files[task_id]):
                 raise HandoffError(f"{task_id} supersedes {earlier}, which shares no declared file with it")
 
     for index, left in enumerate(task_ids):
