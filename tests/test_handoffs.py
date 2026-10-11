@@ -2297,6 +2297,29 @@ Surfaces: none
             supersede("\n  - T001")  # the block list form that `deps` and `files` accept
             self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 6)
 
+    def test_plan_accepts_supersedes_for_a_file_below_a_declared_directory(self) -> None:
+        # The regression rule reads a declared directory as its files; the plan gate must read it the same way.
+        for earlier, later in (("src", "src/app.py"), ("src/app.py", "src")):
+            with self.subTest(earlier=earlier, later=later), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_plan_handoff(root)
+                self.write_plan_coverage(
+                    root,
+                    task_rows=(
+                        f"| T001 | Demo task T001 | — | {earlier} |\n"
+                        "| T002 | Demo task T002 | — | tests/test_app.py |\n"
+                        "\n## Wave 2 — replace\n\nGoal: Replace the demo behavior.\nReview depth: full\n\n"
+                        "| Task | Title | Deps | Files |\n|------|-------|------|-------|\n"
+                        f"| T003 | Demo task T003 | — | {later} |"
+                    ),
+                )
+                self.write_coverage_task(root, "T001", "- SC1", files=earlier)
+                self.write_coverage_task(root, "T003", "- None", wave=2, files=later)
+                path = root / ".project/tasks/T003-demo.md"
+                path.write_bytes(path.read_text(encoding="utf-8").replace(
+                    "files:\n", "supersedes: [T001]\nfiles:\n").encode("utf-8"))
+                self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 3)
+
     def test_plan_rejects_dependency_cycles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
