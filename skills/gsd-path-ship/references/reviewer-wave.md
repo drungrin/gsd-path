@@ -60,14 +60,21 @@ its isolated repair product for the linked original criteria, including owned
 INTENT criteria. The original faulty landing and earlier verdicts remain
 historical evidence; they do not force the later verdict to remain failed.
 Reconstruct the receipt's repair `base` plus only its `commit^..commit` patch
-for `files` inside the supplied sidecar. Read the repair task's recorded
-Verify, inspect the patch against the original unchanged contract, and reuse
+for `files` inside the supplied sidecar. For a member repair (the receipt
+names `member`), use `member_base` and `member_commit` in that member's
+repository. `earlier_repairs` are linked repairs of the same findings that
+are already in the repair base. When the receipt has `later_repairs`, linked
+repairs changed the same files after this repair: apply their patches in
+order too. Read the repair task's recorded
+Verify, or with `later_repairs` that of the last one, which is the receipt's
+`verification`; inspect the patch against the original unchanged contract, and reuse
 settled checks. Check unaffected criteria from their prior evidence plus the
 repair diff for regressions. Cite the receipt, repair landing and task Log in
 the new review. A receipt proves provenance, not acceptance: judge whether the
 repair actually satisfies the criterion. A missing or rejected receipt blocks
-using that repair; the parent resolves it rather than creating another product
-fix for the unchanged historical failure.
+using that repair; the parent resolves it, or briefs this review in full at
+the current HEAD without a receipt, rather than creating another product fix
+for the unchanged historical failure.
 
 ## Final scope in a quick full wave
 

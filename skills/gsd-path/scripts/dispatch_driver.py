@@ -2142,6 +2142,11 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
                     raise DriverStop(f"fix batch names unknown task {source}")
             # One task changes one repo: the fix depends on, and runs the Verify of, the source tasks of its repo.
             sources = [source for source in sources if isolation.task_frontmatter(texts[source])[0].get("repo") == repo]
+            # A repeat builds on the landed repairs of its finding: repair-evidence links them by this dependency.
+            deps = sources + [item["task"] for item in repairs
+                              if item not in pending and item.get("repo") == repo
+                              and f"-fix-wave-{options.wave}-cycle-" in item["path"] and not item["path"].endswith(suffix)
+                              and set(item["locators"]) & set(batch["locators"])]
             task_id = next_task_id(tasks_dir)
             verify = _common.fix_verify(_common.task_verify_command(texts[source]) for source in sources)
             heavy = any(re.search(r"(?m)^Heavy:\s*yes", texts[source]) for source in sources)
@@ -2157,7 +2162,7 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
 id: {task_id}
 title: {title}
 wave: {fix_wave}
-deps: [{', '.join(sources)}]
+deps: [{', '.join(deps)}]
 status: pending
 agent: null
 base: null
@@ -2212,7 +2217,7 @@ Heavy: {'yes' if heavy else 'no'}
             path = tasks_dir / f"{task_id}-fix-wave-{options.wave}-cycle-{options.cycle}.md"
             _common.atomic_write(path, text)
             receipt["created"].append({"task": task_id, "path": path.relative_to(primary).as_posix(),
-                                       "wave": fix_wave, "deps": sources, "files": batch["files"],
+                                       "wave": fix_wave, "deps": deps, "files": batch["files"],
                                        "locators": batch["locators"], **({"repo": repo} if repo else {})})
         rows = []
         for item in [*existing, *receipt["created"]]:

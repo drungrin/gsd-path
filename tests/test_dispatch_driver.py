@@ -2212,6 +2212,10 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(repeat["status"], "created", repeat)
         self.assertEqual(repeat["carried"], [])
         self.assertEqual([(item["task"], item["wave"]) for item in repeat["created"]], [("T004", 3)])
+        # The repeat builds on the landed repair T003, so repair-evidence can link the two.
+        self.assertEqual(repeat["created"][0]["deps"], ["T001", "T003"])
+        self.assertEqual(dispatch_driver.isolation.task_frontmatter(
+            (root / repeat["created"][0]["path"]).read_text(encoding="utf-8"))[0]["deps"], ["T001", "T003"])
         self.assertEqual(dispatch_driver.build_state.ready(str(root))["repair_for_wave"], 1)
 
     def state_cli(self, root: Path, *args: str) -> dict:
