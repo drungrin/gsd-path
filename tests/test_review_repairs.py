@@ -73,10 +73,10 @@ Prints good — found: prints bad, count.py:1 fix: print good
         run_git(self.repo, "commit", "-qm", message)
         return run_git(self.repo, "rev-parse", "HEAD")
 
-    def land(self, task_id, title, task_file, output):
+    def land(self, task_id, title, task_file, output, target="count.py"):
         base = run_git(self.repo, "rev-parse", "HEAD")
         isolation.activate_task(self.repo, base, task_id, "coder", task_file, None)
-        (self.repo / "count.py").write_bytes(f"print({output!r})\n".encode("utf-8"))
+        (self.repo / target).write_bytes(f"print({output!r})\n".encode("utf-8"))
         result = subprocess.run([sys.executable, "-B", "count.py"], cwd=self.repo,
                                 capture_output=True, encoding="utf-8", errors="replace", check=True)
         allowed = isolation.task_frontmatter((self.repo / task_file).read_text(encoding="utf-8"))[0]["files"]
@@ -90,10 +90,16 @@ Prints good — found: prints bad, count.py:1 fix: print good
         self.commit("plan repair")
         return self.land("T002", "Repair", self.repair_file, "good")
 
-    def cli(self):
+    def repair(self, task_id, deps, output, findings=None, files="  - count.py", target="count.py"):
+        """Plan and land one more repair task; return its landing commit."""
+        task_file = self.task(task_id, "Repair", 2, deps, self.findings if findings is None else findings, files=files)
+        self.commit(f"plan {task_id}")
+        return self.land(task_id, "Repair", task_file, output, target)
+
+    def cli(self, task="T002", cycle=1):
         result = subprocess.run(
             [sys.executable, "-B", str(SCRIPT), "repair-evidence", "--repo", str(self.repo),
-             "--wave", "1", "--cycle", "1", "--task", "T002"],
+             "--wave", "1", "--cycle", str(cycle), "--task", task],
             capture_output=True, encoding="utf-8", errors="replace",
         )
         return result, json.loads(result.stdout) if result.stdout else {}
@@ -152,17 +158,16 @@ Prints good — found: prints bad, count.py:1 fix: print good
                 self.assertEqual(evidence.get("status"), "error", result.stderr or evidence)
                 self.assertIn(error, evidence["error"])
 
-    def test_repair_files_may_be_a_subset_of_the_batch_but_not_outside_it(self):
+    def test_repair_files_need_not_stay_in_the_batch_but_are_never_none(self):
         # A repair with no files lands only its task file, so it leaves the product at "bad".
-        for files, output, error in (("  - count.py", "good", None),
-                                     ("  - count.py\n  - outside.py", "good", "dependencies/files"),
-                                     ("", "bad", "dependencies/files")):
+        for files, target, output, error in (("  - count.py", "count.py", "good", None),
+                                             ("  - count.py\n  - outside.py", "count.py", "good", None),
+                                             ("  - outside.py", "outside.py", "good", None),
+                                             ("", "count.py", "bad", "dependencies/files")):
             with self.subTest(files=files):
                 self.original_task = {"files": "  - count.py\n  - extra.py"}
                 self.setUp()
-                self.repair_file = self.task("T002", "Repair", 2, "T001", self.findings, files=files)
-                self.commit("plan repair")
-                repair = self.land("T002", "Repair", self.repair_file, output)
+                repair = self.repair("T002", "T001", output, files=files, target=target)
                 result, evidence = self.cli()
                 if error:
                     self.assertEqual(result.returncode, 2)
@@ -171,8 +176,22 @@ Prints good — found: prints bad, count.py:1 fix: print good
                     self.assertEqual(result.returncode, 0, result.stderr or evidence)
                     self.assertEqual(evidence["repair"], {"task": "T002", "task_file": self.repair_file,
                                                           "base": evidence["repair"]["base"], "commit": repair,
-                                                          "files": ["count.py"]})
+                                                          "files": [line.strip(" -") for line in files.splitlines()]})
                     self.assertEqual(evidence["originals"][0]["files"], ["count.py", "extra.py"])
+
+    def test_repair_outside_the_batch_still_needs_the_unchanged_original_product(self):
+        expected_errors = {"before": "unlinked changes", "after": "product changed after"}
+        for fault, error in expected_errors.items():
+            with self.subTest(fault=fault):
+                self.setUp()
+                if fault == "before":  # another change to the original task's file, in the repair base
+                    (self.repo / "count.py").write_bytes("print('unrelated')\n".encode("utf-8"))
+                self.repair("T002", "T001", "good", files="  - outside.py", target="outside.py")
+                if fault == "after":  # another change to the repair's own file, after its landing
+                    (self.repo / "outside.py").write_bytes("print('later')\n".encode("utf-8"))
+                result, evidence = self.cli()
+                self.assertEqual(result.returncode, 2, evidence)
+                self.assertIn(error, evidence["error"])
 
     def test_repair_of_a_finding_in_two_repos_binds_to_the_batch_of_its_own_repo(self):
         self.original_task = {"owned": "SC1"}

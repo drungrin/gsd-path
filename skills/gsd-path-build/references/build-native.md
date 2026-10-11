@@ -520,7 +520,11 @@ dispatch contract and perform steps 1–5 by hand.
      PLAN.md before dispatch. Its dependencies include every source task of
      the batch that is in the same repo, and its Verify runs the Verify of
      those tasks; its files are the batch files or a subset of them, never
-     none. In `## Review findings`, use one
+     none. When a finding names a fix site outside the batch files, follow
+     [build recovery](build-recovery.md) to plan, which adds a repair task
+     with those files, the batch's `## Review findings` and the same
+     dependencies; `repair-evidence` accepts that task. In
+     `## Review findings`, use one
      `### <locator>` block per group, `Criterion: <verbatim criterion>`, and
      every observation verbatim. Run the repair through the same isolated
      layer loop, even when its appended wave repairs an earlier blocked wave.

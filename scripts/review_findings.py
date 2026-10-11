@@ -638,9 +638,10 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
         files = _frontmatter_list(frontmatter, "files")
         sources = load_wave_tasks(project, wave)
         originals = sorted({task for group in groups for task in group["tasks"] if sources[task]["repo"] == member})
-        # A repair may be narrowed to the files it needs; it names a file and never leaves its batch.
+        # A repair names the files it needs. They can be fewer than the batch files, and a plan repair
+        # can add a fix site that the source tasks did not declare.
         if (task_id in originals or not set(originals) <= set(_frontmatter_list(frontmatter, "deps"))
-                or not files or not set(files) <= set(batches[0]["files"])):
+                or not files):
             raise ReviewFindingsError("repair dependencies/files do not match its source batch")
         original_paths = [Path(sources[task]["path"]) for task in originals]
         original_proofs = isolation.verify_landed_task_files(
