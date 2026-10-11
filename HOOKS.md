@@ -151,9 +151,46 @@ See [UPDATE.md](UPDATE.md).
   the archive tree; shell operands count an ancestor only for deletion or move
   commands
 - `git reset --hard`, destructive `git clean` modes, force pushes (including
-  `+` refspecs), destructive branch or ref deletion, `git branch -m`,
-  `git worktree remove --force`, `git stash drop`/`clear`, and whole-tree
+  `+` refspecs), `git branch -m`, `git stash drop`/`clear`, and whole-tree
   `git checkout -- .`/`git restore .`
+- forced branch deletion (`git branch -D`), `git update-ref` deletion, and
+  `git worktree remove --force` when the target is Path-owned: a `gsd-path/`,
+  `gsd-path-task/`, `gsd-path-verify/`, or `gsd-path-integrate/` branch, a
+  `refs/gsd-path/` ref, the bound `STATE.branch`, a task branch or worktree
+  that task frontmatter records, a worktree on one of these branches, and a
+  worktree below a managed worktree root (`~/.gsd-path`,
+  `GSD_PATH_WORKTREE_ROOT`, a pinned workspace root, or the earlier
+  `<repo>.gsd-path/` and `.<repo>-gsd-path-integrate-*` locations beside the
+  repository). The text `gsd-path` in a path does not make a worktree
+  Path-owned. Also Path-owned: the remote-tracking ref of one of these
+  branches (`origin/gsd-path/M001`), `refs/stash`, and a name that differs
+  from a recorded branch only in letter case. Other branches, refs, and
+  registered worktrees are allowed in each pipeline state. These three
+  commands are also denied when the guard cannot prove the target: a missing,
+  non-literal, or unregistered target, a shell parameter in the Git command
+  (`git -C "$dir" branch -D x`), a `~` or glob in a Git option value,
+  `update-ref --stdin`, an `update-ref` name outside `refs/` (`HEAD`) or an
+  option cluster (`-dm`), an `update-ref` deletion without `--no-deref` after
+  another Git command in the same command line, ownership metadata it cannot
+  read, a working directory that does not exist yet, or an `env` wrapper that
+  resets or unsets `HOME`, `XDG_CONFIG_HOME`, or a `GIT_*` variable. They are
+  denied too after a directory change the guard cannot model. Only
+  `cd <directory>` or `cd -- <directory>` is modeled, with one literal
+  directory that is absolute or starts with `./` or `../` (a shell with
+  `CDPATH` looks for a plain relative name in other directories). Another
+  command name (`pushd`, `chdir`), an option, a second operand, a redirection,
+  a `cd` in a subshell, pipeline, condition, function, alias, trap, or
+  comment line is not modeled. Use `git -C <directory>` there. A plain
+  redirection on the Git command (`2>/dev/null`, `>file`, `>>file`, `<file`,
+  `2>&1`, `&>file`) is not a target. A here-document, here-string, process
+  substitution, a redirection target that is not one literal word, or a
+  `# comment` after the command keeps the denial. So does a file
+  descriptor word of more than one digit or a `{name}` word against a
+  redirection (`10>file`, `{fd}>file`), because bash and zsh read that word
+  differently. With
+  such an `env` wrapper, or in a directory that does not exist yet, a Git
+  command that is not a built-in command is denied too, because its alias
+  cannot be inspected
 - shell writes (redirections, `tee`, `cp`, `mv`, `rm`, `sed -i`, ...) that
   target a routing control (`.git`, `.project/STATE.md`, `.project/next`,
   `.gsd-path`) while `.project/STATE.md` exists, or target a product file

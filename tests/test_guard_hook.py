@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import guard_hook
 from install import PROJECT_RUNTIME_SCRIPTS
 import status_runtime
-from tests._platform import requires_symlink
+from tests._platform import posix_only, requires_symlink
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "guard_hook.py"
 
@@ -81,6 +81,52 @@ class GuardHookTests(unittest.TestCase):
         status, output, error = run_guard(payload)
         self.assertEqual(status, 0, error)
         self.assertEqual(output, "")
+
+    def init_git_repo(self, root):
+        root.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "config", "user.name", "Guard test"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "guard-test@example.invalid"],
+            cwd=root,
+            check=True,
+        )
+        (root / "README.md").write_text("guard fixture\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+        return root
+
+    def git(self, root, *arguments):
+        return subprocess.run(
+            ["git", *arguments], cwd=root, check=True, capture_output=True,
+            encoding="utf-8", errors="replace",
+        )
+
+    def bash_in(self, root, command):
+        return {
+            "tool_name": "Bash",
+            "tool_input": {"command": command, "cwd": str(root)},
+        }
+
+    def assert_denied_with(self, payload, reason):
+        status, _output, error = run_guard(payload)
+        self.assertEqual(status, 2, error)
+        self.assertIn(reason, error)
+
+    def scoped_cleanup_fixture(self, root, state=None):
+        """A repository with an ordinary and a Path-owned branch and worktree."""
+        repo = self.init_git_repo(root / "repo")
+        self.git(repo, "branch", "feature/x")
+        self.git(repo, "branch", "gsd-path/M001")
+        self.git(repo, "worktree", "add", "-q", "-b", "plain", str(root / "plain-worktree"))
+        self.git(
+            repo, "worktree", "add", "-q", "-b", "gsd-path-task/T001",
+            str(root / "task-worktree"),
+        )
+        if state is not None:
+            (repo / ".project").mkdir()
+            (repo / ".project" / "STATE.md").write_text(state, encoding="utf-8")
+        return repo
 
     def test_denies_edit_inside_archive(self):
         self.assert_denied(
@@ -1204,6 +1250,1349 @@ class GuardHookTests(unittest.TestCase):
                 self.assert_denied(
                     {"tool_name": "Bash", "tool_input": {"command": command}}
                 )
+
+    def test_allows_forced_delete_of_literal_non_path_branch_in_every_state(self):
+        for label, state in (
+            ("no-state", None),
+            ("active", "---\nphase: build\nbranch: bound\n---\n"),
+            ("shipped", "---\nphase: shipped\nbranch: bound\n---\n"),
+        ):
+            with self.subTest(state=label), tempfile.TemporaryDirectory() as temporary:
+                repo = self.init_git_repo(Path(temporary) / "repo")
+                self.git(repo, "branch", "ordinary")
+                if state is not None:
+                    project = repo / ".project"
+                    project.mkdir()
+                    (project / "STATE.md").write_text(state, encoding="utf-8")
+                self.assert_allowed(self.bash_in(repo, "git branch -D ordinary"))
+
+    def test_forced_branch_deletes_block_path_namespaces_and_recorded_branches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.init_git_repo(Path(temporary) / "repo")
+            names = (
+                "gsd-path/M001",
+                "gsd-path-task/T001",
+                "gsd-path-verify/T001",
+                "gsd-path-integrate/T001",
+                "bound-without-marker",
+                "task/demo",
+                "ordinary",
+            )
+            for name in names:
+                self.git(repo, "branch", name)
+            project = repo / ".project"
+            tasks = project / "plan" / "tasks"
+            tasks.mkdir(parents=True)
+            (project / "STATE.md").write_text(
+                "---\nphase: build\nbranch: bound-without-marker\n---\n",
+                encoding="utf-8",
+            )
+            (tasks / "T001.md").write_text(
+                "---\ntask_branch: task/demo\nworktree: null\n---\n",
+                encoding="utf-8",
+            )
+            for flag, target in (
+                ("-D", "gsd-path/M001"),
+                ("-df", "gsd-path-task/T001"),
+                ("-fd", "gsd-path-verify/T001"),
+                ("--delete --force", "gsd-path-integrate/T001"),
+                ("-D", "bound-without-marker"),
+                ("-D", "task/demo"),
+                ("-D", "ordinary task/demo"),
+            ):
+                with self.subTest(flag=flag, target=target):
+                    self.assert_denied(
+                        self.bash_in(repo, f"git branch {flag} {target}")
+                    )
+
+    def test_non_path_update_ref_deletes_are_allowed_but_owned_refs_are_blocked(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.init_git_repo(Path(temporary) / "repo")
+            for name in ("ordinary", "bound-without-marker", "task/demo", "gsd-path/M001"):
+                self.git(repo, "branch", name)
+            project = repo / ".project"
+            tasks = project / "tasks"
+            tasks.mkdir(parents=True)
+            (project / "STATE.md").write_text(
+                "---\nphase: build\nbranch: bound-without-marker\n---\n",
+                encoding="utf-8",
+            )
+            (tasks / "T001.md").write_text(
+                "---\ntask_branch: task/demo\nworktree: null\n---\n",
+                encoding="utf-8",
+            )
+            self.git(repo, "update-ref", "refs/gsd-path/task-authorizations/T001", "HEAD")
+            self.git(
+                repo,
+                "symbolic-ref",
+                "refs/heads/path-alias",
+                "refs/heads/gsd-path/M001",
+            )
+            self.git(
+                repo, "symbolic-ref", "refs/gsd-path/checkpoint", "refs/heads/ordinary"
+            )
+            for command in (
+                "git update-ref -d refs/heads/ordinary",
+                "git update-ref -d refs/heads/ordinary HEAD",
+                "git update-ref refs/heads/ordinary " + "0" * 40 + " HEAD",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+            for ref in (
+                "refs/heads/bound-without-marker",
+                "refs/heads/task/demo",
+                "refs/heads/gsd-path/M001",
+                "refs/gsd-path/task-authorizations/T001",
+                "refs/heads/path-alias",
+            ):
+                with self.subTest(ref=ref):
+                    self.assert_denied(
+                        self.bash_in(repo, f"git update-ref -d {ref}")
+                    )
+            self.assert_allowed(
+                self.bash_in(repo, "git update-ref --no-deref -d refs/heads/path-alias")
+            )
+            self.assert_denied(
+                self.bash_in(
+                    repo,
+                    "git update-ref -d refs/heads/bound-without-marker HEAD",
+                )
+            )
+            for flag in ("", "--no-deref "):
+                for deletion in (
+                    "-d refs/gsd-path/checkpoint",
+                    "refs/gsd-path/checkpoint " + "0" * 40,
+                ):
+                    with self.subTest(flag=flag, deletion=deletion):
+                        self.assert_denied(
+                            self.bash_in(repo, f"git update-ref {flag}{deletion}")
+                        )
+
+    def test_forced_worktree_remove_checks_registered_path_and_owner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = self.init_git_repo(root / "repo")
+            ordinary = root / "nested" / "ordinary-worktree"
+            ordinary.parent.mkdir()
+            self.git(repo, "worktree", "add", "-q", "-b", "ordinary-wt", str(ordinary))
+            self.assert_allowed(
+                self.bash_in(repo, "git worktree remove --force ordinary-worktree")
+            )
+            self.assert_denied(
+                self.bash_in(repo, "git worktree remove --force missing-worktree")
+            )
+
+            task_worktree = root / "recorded-task"
+            self.git(repo, "worktree", "add", "-q", "-b", "recorded-wt", str(task_worktree))
+            tasks = repo / ".project" / "tasks"
+            tasks.mkdir(parents=True)
+            (tasks / "T001.md").write_text(
+                f"---\ntask_branch: null\nworktree: {task_worktree}\n---\n",
+                encoding="utf-8",
+            )
+            self.assert_denied(
+                self.bash_in(repo, f"git worktree remove --force {shlex.quote(str(task_worktree))}")
+            )
+
+            managed = root / "managed-task"
+            self.git(repo, "worktree", "add", "-q", "-b", "gsd-path-task/T002", str(managed))
+            self.assert_denied(
+                self.bash_in(repo, f"git worktree remove -f -- {shlex.quote(str(managed))}")
+            )
+
+    def test_ownership_scope_uses_cd_and_git_c_repository_context(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            owned = self.init_git_repo(parent / "owned")
+            unrelated = self.init_git_repo(parent / "unrelated")
+            self.git(owned, "branch", "same-name")
+            self.git(unrelated, "branch", "same-name")
+            project = owned / ".project"
+            project.mkdir()
+            (project / "STATE.md").write_text(
+                "---\nphase: build\nbranch: same-name\n---\n", encoding="utf-8"
+            )
+
+            self.assert_denied(self.bash_in(owned, "git branch -D same-name"))
+            self.assert_allowed(
+                self.bash_in(owned, "cd ../unrelated && git branch -D same-name")
+            )
+            self.assert_allowed(
+                self.bash_in(owned, "git -C ../unrelated branch -D same-name")
+            )
+            self.assert_allowed(
+                self.bash_in(owned, "git -C .. -C unrelated branch -D same-name")
+            )
+            self.assert_denied(
+                self.bash_in(
+                    parent,
+                    f"cd {owned} ; (cd {unrelated}) ; git branch -D same-name",
+                )
+            )
+            self.assert_denied(
+                self.bash_in(
+                    owned,
+                    f"cd {unrelated} ; (cd {owned}) ; git branch -D same-name",
+                )
+            )
+            self.assert_denied(
+                self.bash_in(
+                    owned,
+                    f"cd {owned} ; true || cd {unrelated} ; git branch -D same-name",
+                )
+            )
+            self.assert_denied(
+                self.bash_in(
+                    owned,
+                    f"cd {owned} ; if false; then cd {unrelated}; fi; "
+                    "git branch -D same-name",
+                )
+            )
+            self.assert_denied(
+                self.bash_in(
+                    owned,
+                    f"coproc cd {unrelated}; git branch -D same-name",
+                )
+            )
+            for command in (
+                f"eval 'cd {owned}'; git branch -D same-name",
+                f"command cd {owned}; git branch -D same-name",
+                f"builtin cd {owned}; git branch -D same-name",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied(self.bash_in(unrelated, command))
+            self.assert_denied(
+                self.bash_in(
+                    owned,
+                    f"cd {owned} ; cd {unrelated} & wait; "
+                    "git branch -D same-name",
+                )
+            )
+
+    def test_git_c_uses_segment_pwd_oldpwd_and_unset_variables(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            owned = self.init_git_repo(parent / "owned")
+            safe = self.init_git_repo(parent / "safe")
+            owned_path = shlex.quote(owned.as_posix())
+            safe_path = shlex.quote(safe.as_posix())
+            for repo in (owned, safe):
+                self.git(repo, "branch", "same-name")
+            project = owned / ".project"
+            project.mkdir()
+            (project / "STATE.md").write_text(
+                "---\nphase: build\nbranch: same-name\n---\n", encoding="utf-8"
+            )
+            with mock.patch.dict(os.environ, {"PWD": str(safe), "OLDPWD": str(safe), "W": str(safe)}):
+                for root, command in (
+                    (safe, f'cd {owned_path} && git -C "$PWD" branch -D same-name'),
+                    (owned, f'cd {safe_path} && git -C "$OLDPWD" branch -D same-name'),
+                    (owned, 'git -C "$PWD" branch -D same-name'),
+                    (owned, 'unset W; git -C "$W" branch -D same-name'),
+                    # A parameter is denied also when it names the safe repository:
+                    # the shell can change it in ways the guard does not track.
+                    (owned, f'cd {safe_path} && git -C "$PWD" branch -D same-name'),
+                    (safe, f'cd {owned_path} && git -C "$OLDPWD" branch -D same-name'),
+                    (safe, 'git -C "$PWD" branch -D same-name'),
+                    (safe, 'unset W; git -C "$W" branch -D same-name'),
+                    (owned, f'W={safe_path}; git -C "$W" branch -D same-name'),
+                ):
+                    with self.subTest(root=root, command=command):
+                        self.assert_denied(self.bash_in(root, command))
+                self.assert_allowed(
+                    self.bash_in(owned, f"git -C {safe_path} branch -D same-name")
+                )
+                self.assert_denied(
+                    self.bash_in(safe, f"git -C {owned_path} branch -D same-name")
+                )
+
+    def test_git_c_literal_parameter_paths_fail_closed_for_scoped_deletion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            safe = self.init_git_repo(Path(temporary) / "quote-safe")
+            owned = self.init_git_repo(safe / "$PWD")
+            for repo in (safe, owned):
+                self.git(repo, "branch", "same-name")
+            project = owned / ".project"
+            project.mkdir()
+            (project / "STATE.md").write_text(
+                "---\nphase: build\nbranch: same-name\n---\n", encoding="utf-8"
+            )
+            self.git(safe, "config", "alias.literal-path", '-C "$PWD" branch -D')
+            with mock.patch.dict(os.environ, {"PWD": str(safe)}):
+                for command in (
+                    "git -C '$PWD' branch -D same-name",
+                    "git '-C$PWD' branch -D same-name",
+                    r"git -C \$PWD branch -D same-name",
+                    r"git -C\$PWD branch -D same-name",
+                    "W='$PWD'; git -C \"$W\" branch -D same-name",
+                    "command git -C '$PWD' branch -D same-name",
+                    "echo \"'\"; git -C '$PWD' branch -D same-name",
+                    "git literal-path same-name",
+                    'git -C "$PWD" branch -D same-name',
+                    f'W={shlex.quote(str(safe))}; git -C "$W" branch -D same-name',
+                ):
+                    with self.subTest(command=command):
+                        self.assert_denied(self.bash_in(safe, command))
+                for command in (
+                    f"git -C {shlex.quote(str(safe))} branch -D same-name",
+                    "git -C '$PWD' status --short",
+                ):
+                    with self.subTest(command=command):
+                        self.assert_allowed(self.bash_in(safe, command))
+
+    def test_git_c_cmd_parameter_spellings_fail_closed_for_scoped_deletion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            safe = self.init_git_repo(Path(temporary) / "syntax-safe")
+            self.git(safe, "branch", "same-name")
+            for spelling in ("%W%", "!W!"):
+                owned = self.init_git_repo(safe / spelling)
+                self.git(owned, "branch", "same-name")
+                project = owned / ".project"
+                project.mkdir()
+                (project / "STATE.md").write_text(
+                    "---\nphase: build\nbranch: same-name\n---\n", encoding="utf-8"
+                )
+                self.git(safe, "config", "alias.literal-cmd-path", f'-C "{spelling}" branch -D')
+                with mock.patch.dict(os.environ, {"W": str(safe), "INDIRECT": spelling}):
+                    for command in (
+                        f"git -C {spelling} branch -D same-name",
+                        f"git -C '{spelling}' branch -D same-name",
+                        f'git "-C{spelling}" branch -D same-name',
+                        f'P="{spelling}"; git -C "$P" branch -D same-name',
+                        'git -C "$INDIRECT" branch -D same-name',
+                        'P=$INDIRECT; git -C "$P" branch -D same-name',
+                        f"command git -C '{spelling}' branch -D same-name",
+                        "git literal-cmd-path same-name",
+                        'git -C "$W" branch -D same-name',
+                        f'INDIRECT={shlex.quote(str(safe))}; git -C "$INDIRECT" branch -D same-name',
+                    ):
+                        with self.subTest(spelling=spelling, command=command):
+                            self.assert_denied(self.bash_in(safe, command))
+                    for command in (
+                        f"git -C {shlex.quote(str(safe))} branch -D same-name",
+                        f"git -C '{spelling}' status --short",
+                    ):
+                        with self.subTest(spelling=spelling, command=command):
+                            self.assert_allowed(self.bash_in(safe, command))
+
+    def test_ownership_scoping_fails_closed_for_env_git_context_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            owned = self.init_git_repo(parent / "owned")
+            unrelated = self.init_git_repo(parent / "unrelated")
+            self.git(owned, "branch", "ordinary")
+            self.git(unrelated, "branch", "ordinary")
+            self.git(unrelated, "config", "alias.retire", "branch -D ordinary")
+            project = owned / ".project"
+            project.mkdir()
+            (project / "STATE.md").write_text(
+                "---\nphase: build\nbranch: ordinary\n---\n", encoding="utf-8"
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "GIT_DIR": str(unrelated / ".git"),
+                    "GIT_WORK_TREE": str(unrelated),
+                },
+            ):
+                for command in (
+                    "env -i git branch -D ordinary",
+                    "env --ignore-environment git branch -D ordinary",
+                    "env -u GIT_DIR -u GIT_WORK_TREE git branch -D ordinary",
+                    "env --unset=GIT_DIR --unset GIT_WORK_TREE git branch -D ordinary",
+                    "env -u HOME git branch -D ordinary",
+                    "env --unset=XDG_CONFIG_HOME git branch -D ordinary",
+                    "env -i git retire ordinary",
+                ):
+                    with self.subTest(command=command):
+                        reason = guard_hook.command_denial(command, [str(owned)])
+                        self.assertIsNotNone(reason)
+
+    def test_env_config_unset_is_denied_before_alias_lookup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            owned = self.init_git_repo(root / "owned")
+            self.git(owned, "branch", "ordinary")
+            project = owned / ".project"
+            tasks = project / "plan" / "tasks"
+            tasks.mkdir(parents=True)
+            (tasks / "T001.md").write_text(
+                "---\ntask_branch: ordinary\nworktree: null\n---\n",
+                encoding="utf-8",
+            )
+            home = root / "alias-home"
+            home.mkdir()
+            alias_config = home / ".gitconfig"
+            alias_config.write_text(
+                "[alias]\n\tretire2 = branch -D ordinary\n", encoding="utf-8"
+            )
+            empty_global = root / "empty-global"
+            empty_global.write_text("", encoding="utf-8")
+
+            with mock.patch.dict(
+                os.environ,
+                {"HOME": str(home), "GIT_CONFIG_GLOBAL": str(empty_global)},
+            ):
+                self.assertIsNone(
+                    guard_hook.git_alias("retire2", [], [str(owned)])
+                )
+                changed_environment = os.environ.copy()
+                changed_environment.pop("GIT_CONFIG_GLOBAL")
+                actual_alias = subprocess.run(
+                    ["git", "config", "--get", "alias.retire2"],
+                    cwd=owned,
+                    env=changed_environment,
+                    capture_output=True,
+                    encoding="utf-8",
+                    check=False,
+                )
+                self.assertEqual(0, actual_alias.returncode, actual_alias.stderr)
+                self.assertEqual("branch -D ordinary", actual_alias.stdout.strip())
+                reason = guard_hook.command_denial(
+                    "env -u GIT_CONFIG_GLOBAL git retire2 ordinary", [str(owned)]
+                )
+                self.assertIsNotNone(reason)
+
+    @requires_symlink
+    def test_ownership_scoping_fails_closed_for_symlink_cd_and_cdpath(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            owned = self.init_git_repo(parent / "owned")
+            unrelated = self.init_git_repo(parent / "unrelated")
+            self.git(owned, "branch", "same-name")
+            self.git(unrelated, "branch", "same-name")
+            project = owned / ".project"
+            project.mkdir()
+            (project / "STATE.md").write_text(
+                "---\nphase: build\nbranch: same-name\n---\n", encoding="utf-8"
+            )
+
+            child = unrelated / "child"
+            child.mkdir()
+            (owned / "link").symlink_to(child, target_is_directory=True)
+            self.assert_denied(
+                self.bash_in(
+                    parent,
+                    f"cd {owned / 'link'}; cd ..; git branch -D same-name",
+                )
+            )
+
+            (unrelated / "owned").mkdir()
+            self.assert_denied(
+                self.bash_in(
+                    unrelated,
+                    f"CDPATH={parent} cd owned; git branch -D same-name",
+                )
+            )
+
+    def test_owned_delete_fails_closed_on_malformed_or_unreadable_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.init_git_repo(Path(temporary) / "repo")
+            self.git(repo, "branch", "ordinary")
+            project = repo / ".project"
+            project.mkdir()
+            (project / "STATE.md").write_text(
+                "---\nbranch: ordinary\nbranch: other\n---\n", encoding="utf-8"
+            )
+            self.assert_denied(self.bash_in(repo, "git branch -D ordinary"))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.init_git_repo(Path(temporary) / "repo")
+            self.git(repo, "branch", "ordinary")
+            tasks = repo / ".project" / "plan" / "tasks"
+            tasks.mkdir(parents=True)
+            (tasks / "T001.md").write_text(
+                "---\ntask_branch: ordinary\nworktree: null\n---\n",
+                encoding="utf-8",
+            )
+            original_scandir = os.scandir
+
+            def hide_task_directory(path):
+                if Path(path) == tasks:
+                    raise PermissionError("task directory is unreadable")
+                return original_scandir(path)
+
+            with mock.patch.object(guard_hook.os, "scandir", side_effect=hide_task_directory):
+                self.assert_denied(self.bash_in(repo, "git branch -D ordinary"))
+
+    def test_scoped_cleanup_keeps_ordinary_git_and_path_owned_results(self):
+        for label, state in (
+            ("no-state", None),
+            ("active", "---\nphase: build\nbranch: gsd-path/M001\n---\n"),
+            ("shipped", "---\nphase: shipped\nbranch: gsd-path/M001\n---\n"),
+        ):
+            with self.subTest(state=label), tempfile.TemporaryDirectory() as temporary:
+                repo = self.scoped_cleanup_fixture(Path(temporary).resolve(), state)
+                for command in (
+                    "git status",
+                    "git log --oneline -1",
+                    "git commit -m message",
+                    "git push origin feature/x",
+                    "git branch -D feature/x",
+                    "git update-ref -d refs/heads/feature/x",
+                    "git worktree remove --force ../plain-worktree",
+                ):
+                    with self.subTest(command=command):
+                        self.assert_allowed(self.bash_in(repo, command))
+                for command, rule in (
+                    ("git branch -D gsd-path/M001", "branch"),
+                    ("git branch -D gsd-path-task/T001", "branch"),
+                    ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                    ("git worktree remove --force ../task-worktree", "worktree"),
+                    ("git reset --hard HEAD", "reset"),
+                    ("git push --force origin feature/x", "push"),
+                ):
+                    with self.subTest(command=command):
+                        self.assert_denied_with(
+                            self.bash_in(repo, command), guard_hook.GIT_REASONS[rule]
+                        )
+
+    def test_env_wrapper_denies_only_scoped_deletions_and_possible_aliases(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            self.git(repo, "config", "alias.retire", "branch -D")
+            for command in (
+                "env -u HOME git status",
+                "env -i git log --oneline -1",
+                "env -u HOME git commit -m message",
+                "env --unset=XDG_CONFIG_HOME git push origin feature/x",
+                "env -i git branch --show-current",
+                "env -i git worktree list",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+            self.assert_denied_with(
+                self.bash_in(repo, "env -i git reset --hard HEAD"),
+                guard_hook.GIT_REASONS["reset"],
+            )
+            for command in (
+                "env -u HOME git branch -D feature/x",
+                "env -u HOME git branch -D gsd-path/M001",
+                "env -i git update-ref -d refs/heads/feature/x",
+                "env -i git worktree remove --force ../plain-worktree",
+                "env -i git retire feature/x",
+                "env -u HOME git not-a-git-command",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(
+                        self.bash_in(repo, command),
+                        guard_hook.GIT_REASONS["git-environment"],
+                    )
+
+    def test_scoped_deletion_does_not_read_a_plain_redirection_as_a_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            redirections = (
+                "2>/dev/null", "2> /dev/null", ">/dev/null", ">/dev/null 2>&1",
+                "&>/dev/null", ">> out.log", "< /dev/null", "2>&1 | tail -1",
+            )
+            for delete, owned, rule in (
+                ("git branch -D feature/x", "git branch -D gsd-path/M001", "branch"),
+                (
+                    "git update-ref -d refs/heads/feature/x",
+                    "git update-ref -d refs/heads/gsd-path/M001",
+                    "update-ref",
+                ),
+                (
+                    "git worktree remove --force ../plain-worktree",
+                    "git worktree remove --force ../task-worktree",
+                    "worktree",
+                ),
+            ):
+                for redirection in redirections:
+                    with self.subTest(command=delete, redirection=redirection):
+                        self.assert_allowed(
+                            self.bash_in(repo, f"{delete} {redirection}")
+                        )
+                        self.assert_denied_with(
+                            self.bash_in(repo, f"{owned} {redirection}"),
+                            guard_hook.GIT_REASONS[rule],
+                        )
+            self.assert_allowed(
+                self.bash_in(repo, "git branch -D 2>/dev/null feature/x")
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "git branch -D feature/x 2>/dev/null gsd-path/M001"),
+                guard_hook.GIT_REASONS["branch"],
+            )
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git branch -D"
+            )
+            for command in (
+                "git branch -D feature/x < <(cat README.md)",
+                "git branch -D feature/x <<EOF\ntext\nEOF",
+                "git branch -D feature/x <<< text",
+                "git branch -D feature/x > out*",
+                "git branch -D feature/x 2 >/dev/null",
+                "git branch -D feature/x # cleanup",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), unresolved)
+            self.assert_denied(self.bash_in(repo, 'git branch -D feature/x > "$OUT"'))
+
+    def test_redirection_at_each_position_does_not_hide_a_destructive_git_command(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            for owned, plain, rule in (
+                (
+                    "git 2>/dev/null branch -D gsd-path/M001",
+                    "git 2>/dev/null branch -D feature/x",
+                    "branch",
+                ),
+                (
+                    "2>/dev/null git branch -D gsd-path/M001",
+                    "2>/dev/null git branch -D feature/x",
+                    "branch",
+                ),
+                (
+                    ">/dev/null command git branch -D gsd-path/M001",
+                    ">/dev/null command git branch -D feature/x",
+                    "branch",
+                ),
+                (
+                    "git worktree 2>/dev/null remove --force ../task-worktree",
+                    "git worktree 2>/dev/null remove --force ../plain-worktree",
+                    "worktree",
+                ),
+                (
+                    "git update-ref >/dev/null -d refs/heads/gsd-path/M001",
+                    "git update-ref >/dev/null -d refs/heads/feature/x",
+                    "update-ref",
+                ),
+                (
+                    "git update-ref >/dev/null refs/heads/gsd-path/M001 " + "0" * 40,
+                    "git update-ref >/dev/null refs/heads/feature/x " + "0" * 40,
+                    "update-ref",
+                ),
+            ):
+                with self.subTest(command=owned):
+                    self.assert_denied_with(
+                        self.bash_in(repo, owned), guard_hook.GIT_REASONS[rule]
+                    )
+                    self.assert_allowed(self.bash_in(repo, plain))
+            for command, rule in (
+                ("git push --force 2>/dev/null origin feature/x", "push"),
+                ("git 2>/dev/null push --force origin feature/x", "push"),
+                ("git reset 2>/dev/null --hard", "reset"),
+                ("2>/dev/null git reset --hard", "reset"),
+                ("git clean >/dev/null -fd", "clean"),
+                ("git stash 2>/dev/null drop", "stash"),
+                ("git checkout >/dev/null -- .", "checkout"),
+                ("git branch 2>/dev/null -m old new", "branch-move"),
+                ("git reset <<< text --hard", "reset"),
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(
+                        self.bash_in(repo, command), guard_hook.GIT_REASONS[rule]
+                    )
+            self.assert_denied_with(
+                self.bash_in(repo, "git <<< text branch -D feature/x"),
+                guard_hook.GIT_REASONS["unresolved-target"].format(
+                    action="git branch -D"
+                ),
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "2>/dev/null env -i git branch -D feature/x"),
+                guard_hook.GIT_REASONS["git-environment"],
+            )
+            self.assert_allowed(self.bash_in(repo, "git 2>/dev/null status"))
+
+    def test_redirection_joined_to_a_separator_or_word_does_not_hide_git(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            joins = (
+                "true;>/dev/null {}",
+                "true &&>/dev/null {}",
+                "true ||>/dev/null {}",
+                "true|>/dev/null {}",
+                "(>/dev/null {})",
+                "true\n>/dev/null {}",
+                "true;</dev/null {}",
+                "(true)>/dev/null;>/dev/null {}",
+            )
+            for join in joins:
+                for command, rule in (
+                    ("git branch -D gsd-path/M001", "branch"),
+                    ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                    ("git push --force origin feature/x", "push"),
+                    ("git reset --hard", "reset"),
+                    ("git clean -fd", "clean"),
+                    ("git stash drop", "stash"),
+                    ("git checkout -- .", "checkout"),
+                    ("git branch -m old new", "branch-move"),
+                ):
+                    with self.subTest(join=join, command=command):
+                        self.assert_denied(self.bash_in(repo, join.format(command)))
+                with self.subTest(join=join):
+                    self.assert_denied(
+                        self.bash_in(
+                            repo,
+                            join.format("git worktree remove --force ../task-worktree"),
+                        )
+                    )
+                    self.assert_allowed(self.bash_in(repo, join.format("git status")))
+            for join in ("true;>/dev/null {}", "true\n>/dev/null {}"):
+                with self.subTest(join=join):
+                    self.assert_denied_with(
+                        self.bash_in(repo, join.format("git branch -D gsd-path/M001")),
+                        guard_hook.GIT_REASONS["branch"],
+                    )
+                    self.assert_allowed(
+                        self.bash_in(repo, join.format("git branch -D feature/x"))
+                    )
+            for command in (
+                "git 10>/dev/null branch -D gsd-path/M001",
+                "git {fd}>/dev/null branch -D gsd-path/M001",
+                "git 10>/dev/null push --force origin feature/x",
+                "git update-ref refs/heads/gsd-path/M001 00>/dev/null",
+                "command git 10>/dev/null reset --hard",
+                "git branch -D feature/x 10>/dev/null",
+                "git update-ref -d refs/heads/feature/x {fd}>/dev/null",
+                "echo a\\\\;>/dev/null git branch -D gsd-path/M001",
+                "echo a\\\\&&>/dev/null git reset --hard",
+                "echo a\\\\;>/dev/null git push --force origin feature/x",
+                "echo a\\\\;>/dev/null git worktree remove --force ../task-worktree",
+                "echo a\\\\\n>/dev/null git clean -fd",
+                "cat <(git push --force origin feature/x)",
+                "cat <(git branch -D gsd-path/M001)",
+                "tee >(git reset --hard)",
+                "git diff <(git stash drop) <(git clean -fd)",
+                "cat <(cat <(git update-ref -d refs/heads/gsd-path/M001))",
+                "git branch <(echo) -D gsd-path/M001",
+                "git branch <(echo) -D feature/x",
+                "git reset <(echo) --hard",
+                "git push <(echo) --force origin feature/x",
+                "git clean <(echo) -fd",
+                "git stash <(echo) drop",
+                "git checkout <(echo) -- .",
+                "git branch <(echo) -m old new",
+                "git update-ref <(echo) -d refs/heads/gsd-path/M001",
+                "git worktree remove <(echo) --force ../task-worktree",
+                "git reset <(cat <(echo)) >(cat) --hard",
+                "(git reset <(echo)) && git reset <(echo a; echo b) --hard",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied(self.bash_in(repo, command))
+            for command in (
+                "git status 10>/dev/null; git update-ref -d refs/heads/feature/x",
+                "cat <(git status); git update-ref -d refs/heads/feature/x",
+                "cat <(cat <(git status)); git update-ref -d refs/heads/feature/x",
+                "make 10>/dev/null <(git status); git update-ref -d refs/heads/feature/x",
+                "cat <(case x in x) git status;; esac); "
+                "git update-ref -d refs/heads/feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(
+                        self.bash_in(repo, command),
+                        guard_hook.GIT_REASONS["update-ref-order"],
+                    )
+            for command in (
+                "git log -n 10 >/dev/null",
+                "git branch -D feature/x &>/dev/null",
+                "git status 2>&1 | tail -1",
+                "exec 3>/dev/null",
+                "exec {fd}>/dev/null",
+                "exec {lock}>/dev/null; make test",
+                "exec 10>/dev/null",
+                "command make test 10>/dev/null",
+                "bash -c 'make test' 10>/dev/null",
+                "echo hi 10>/dev/null",
+                "make {fd}>/dev/null",
+                "cat <<EOF\ntext\nEOF",
+                "make 2>&1 | tee /dev/null",
+                "git status 10>/dev/null",
+                "git log --oneline -1 {fd}>/dev/null",
+                "echo a\\\\;>/dev/null git status",
+                "echo a\\\\;>/dev/null git branch -D feature/x",
+                "cat <(git log --oneline -1)",
+                "git diff <(git show HEAD) <(git show HEAD)",
+                "diff <(echo a) <(echo b)",
+                "diff <(echo a) <(echo b); git branch -D feature/x",
+                "git log <(echo) --oneline -1",
+                "make 10>/dev/null; git update-ref -d refs/heads/feature/x",
+                "diff <(echo a) <(echo b); git update-ref -d refs/heads/feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+
+    def test_destructive_git_in_a_case_body_of_a_process_substitution_is_denied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            for command, rule in (
+                ("git branch -D gsd-path/M001", "branch"),
+                ("git branch -D gsd-path-task/T001", "branch"),
+                ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                ("git worktree remove --force ../task-worktree", "worktree"),
+                ("git reset --hard HEAD", "reset"),
+                ("git push --force origin feature/x", "push"),
+                ("git clean -fd", "clean"),
+                ("git stash drop", "stash"),
+                ("git checkout -- .", "checkout"),
+                ("git branch -m old new", "branch-move"),
+            ):
+                for wrap in (
+                    "cat <(case x in x) {};; esac)",
+                    "cat <(cat <(case x in x) {};; esac))",
+                    "cat <(echo) <(case x in x) {};; esac",
+                ):
+                    with self.subTest(command=command, wrap=wrap):
+                        self.assert_denied_with(
+                            self.bash_in(repo, wrap.format(command)),
+                            guard_hook.GIT_REASONS[rule],
+                        )
+            for command in (
+                "cat <(case x in x) git status;; esac)",
+                "cat <(case x in x) git branch -D feature/x;; esac)",
+                "cat <(case x in x) echo hi;; esac)",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+
+    def test_git_alias_words_are_arguments_and_never_redirections(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            self.git(repo, "config", "alias.del", "branch -D > gsd-path/M001")
+            self.git(repo, "config", "alias.unref", "update-ref -d > refs/heads/gsd-path/M001")
+            self.git(repo, "config", "alias.retire", "branch -D")
+            for command in (
+                "git del feature/x",
+                "git del feature/x 2>/dev/null",
+                "git unref refs/heads/feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied(self.bash_in(repo, command))
+            self.assert_allowed(self.bash_in(repo, "git retire feature/x"))
+            self.assert_allowed(self.bash_in(repo, "git retire feature/x 2>/dev/null"))
+            self.assert_denied_with(
+                self.bash_in(repo, "git retire gsd-path/M001 2>/dev/null"),
+                guard_hook.GIT_REASONS["branch"],
+            )
+            # What the guard denies: Git gives the alias words to branch -D.
+            subprocess.run(["git", "del", "feature/x"], cwd=repo, capture_output=True)
+            branches = self.git(repo, "branch", "--format=%(refname:short)").stdout.split()
+            self.assertNotIn("gsd-path/M001", branches)
+
+    def test_git_context_name_counts_only_where_a_command_sets_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            self.git(repo, "config", "alias.lg", "log --oneline")
+            for command in (
+                "git lg HOME",
+                "echo HOME; git lg",
+                "echo GIT_DIR XDG_CONFIG_HOME; git lg",
+                "grep GIT_DIR README.md; git lg",
+                "printf HOME; git lg",
+                "echo HOME && git branch -D feature/x",
+                "for d in HOME GIT_DIR; do git lg; done",
+                "read x <<< HOME; git lg",
+                "read -r line < HOME; git lg",
+                "echo read HOME; git lg",
+                "git lg -- read HOME",
+                "printf -v x HOME; git lg",
+                "printf -vx HOME; git lg",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+            for command in (
+                "read HOME; git lg",
+                "read -r GIT_DIR <<< .git; git lg",
+                "while read XDG_CONFIG_HOME; do git lg; done",
+                "printf -v HOME %s /tmp; git lg",
+                "for GIT_DIR in .git; do git lg; done",
+                "getopts a HOME; git lg",
+                "print -v HOME /tmp; git lg",
+                "printf -vHOME %s /tmp; git lg",
+                "printf -vGIT_DIR %s .git; git lg",
+                "select GIT_DIR in .git; do git lg; done",
+                "read -r x HOME < README.md; git lg",
+                "< README.md read HOME; git lg",
+                "command read HOME; git lg",
+                "IFS= read -r GIT_DIR; git lg",
+                "true && read HOME; git branch -D feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(
+                        self.bash_in(repo, command),
+                        guard_hook.GIT_REASONS["git-environment"],
+                    )
+            for command in ("export GIT_DIR", "unset HOME", "local XDG_CONFIG_HOME"):
+                with self.subTest(command=command):
+                    self.assert_denied(
+                        self.bash_in(repo, f"{command}; git branch -D feature/x")
+                    )
+
+    def test_built_in_git_runs_in_a_directory_that_does_not_exist_yet(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo = self.scoped_cleanup_fixture(root)
+            self.git(repo, "config", "alias.retire", "branch -D")
+            for command in (
+                "mkdir new && cd new && git init",
+                "mkdir new && cd new && git status",
+                "git init fresh && cd fresh && git commit --allow-empty -m initial",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+            self.assert_allowed(self.bash_in(root / "absent", "git status"))
+            self.assert_denied_with(
+                self.bash_in(root / "absent", "git branch -D gsd-path/M001"),
+                "git target repository cannot be resolved",
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "mkdir new && cd new && git reset --hard HEAD"),
+                guard_hook.GIT_REASONS["reset"],
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "mkdir new && cd new && git retire feature/x"),
+                "git alias configuration cannot be validated",
+            )
+            for command in ("mkdir new && cd new && git STATUS", "env -i git STATUS"):
+                with self.subTest(command=command):
+                    self.assert_denied(self.bash_in(repo, command))
+            for target in ("feature/x", "gsd-path/M001"):
+                with self.subTest(target=target):
+                    self.assert_denied_with(
+                        self.bash_in(repo, f"mkdir new && cd new && git branch -D {target}"),
+                        guard_hook.GIT_REASONS["unresolved-target"].format(
+                            action="git branch -D"
+                        ),
+                    )
+
+    def test_ordinary_git_commands_are_not_possible_aliases(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            clone = "git clone https://example.invalid/r.git r && cd r && "
+            for command in (
+                clone + "git submodule update --init",
+                clone + "env -u HOME git submodule update --init",
+                "env -u HOME git submodule update --init",
+                "mkdir new && cd new && git mergetool",
+                "env -i git count-objects -v",
+                "mkdir n && cd n && git init && git commit -m Commit",
+                "env -i git commit -m Commit",
+                "env -i git log STATUS",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+
+    def test_gsd_path_text_in_a_path_does_not_make_a_worktree_path_owned(self):
+        for label, state in (
+            ("no-state", None),
+            ("active", "---\nphase: build\nbranch: gsd-path/M001\n---\n"),
+            ("shipped", "---\nphase: shipped\nbranch: gsd-path/M001\n---\n"),
+        ):
+            with self.subTest(state=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve() / "gsd-path"
+                repo = self.scoped_cleanup_fixture(root, state)
+                inside = repo / "worktrees" / "feature"
+                inside.parent.mkdir()
+                self.git(repo, "worktree", "add", "-q", str(inside), "feature/x")
+                recorded = root / "recorded-task"
+                self.git(repo, "worktree", "add", "-q", "-b", "recorded", str(recorded))
+                tasks = repo / ".project" / "tasks"
+                tasks.mkdir(parents=True)
+                (tasks / "T001.md").write_text(
+                    f"---\ntask_branch: null\nworktree: {recorded}\n---\n",
+                    encoding="utf-8",
+                )
+                legacy = root / "repo.gsd-path" / "verify" / "T001"
+                self.git(repo, "worktree", "add", "-q", "--detach", str(legacy))
+                integrate = root / ".repo-gsd-path-integrate-T001"
+                self.git(repo, "worktree", "add", "-q", "--detach", str(integrate))
+                for target in (inside, root / "plain-worktree"):
+                    with self.subTest(target=target.name):
+                        self.assert_allowed(
+                            self.bash_in(
+                                repo,
+                                f"git worktree remove --force {shlex.quote(str(target))}",
+                            )
+                        )
+                for target in (recorded, root / "task-worktree", legacy, integrate):
+                    with self.subTest(target=target.name):
+                        self.assert_denied_with(
+                            self.bash_in(
+                                repo,
+                                f"git worktree remove --force {shlex.quote(str(target))}",
+                            ),
+                            guard_hook.GIT_REASONS["worktree"],
+                        )
+
+    def test_alias_inspection_runs_in_the_native_form_of_the_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            self.git(repo, "config", "alias.retire", "branch -D")
+
+            # Stand in for the Git Bash drive mapping, which only Windows applies.
+            def native(value):
+                return value.replace("/gitbash", repo.as_posix(), 1)
+
+            with mock.patch.object(guard_hook, "native_path_text", side_effect=native):
+                self.assert_allowed(self.bash_in(repo, "cd /gitbash && git status"))
+                self.assert_allowed(
+                    self.bash_in(repo, "cd /gitbash && git retire feature/x")
+                )
+                self.assert_denied_with(
+                    self.bash_in(repo, "cd /gitbash && git retire gsd-path/M001"),
+                    guard_hook.GIT_REASONS["branch"],
+                )
+
+    def test_scoped_deletion_after_a_parameter_cd_stays_denied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            owned = self.init_git_repo(parent / "owned")
+            unrelated = self.init_git_repo(parent / "unrelated")
+            for repo in (owned, unrelated):
+                self.git(repo, "branch", "same-name")
+            (owned / ".project").mkdir()
+            (owned / ".project" / "STATE.md").write_text(
+                "---\nphase: build\nbranch: same-name\n---\n", encoding="utf-8"
+            )
+            for repo in (owned, unrelated):
+                directory = shlex.quote(repo.as_posix())
+                with self.subTest(repo=repo.name):
+                    self.assert_denied_with(
+                        self.bash_in(
+                            parent, f'D={directory}; cd "$D" && git branch -D same-name'
+                        ),
+                        guard_hook.GIT_REASONS["unresolved-target"].format(
+                            action="git branch -D"
+                        ),
+                    )
+                    self.assert_allowed(
+                        self.bash_in(
+                            parent, f'D={directory}; cd "$D" && git -C "$PWD" status --short'
+                        )
+                    )
+            self.assert_denied_with(
+                self.bash_in(parent, "unset D; cd $D && git status"),
+                "cd target $D cannot be resolved by the guard",
+            )
+
+    @posix_only
+    def test_scoped_cleanup_works_when_git_rejects_nul_worktree_listing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo = self.scoped_cleanup_fixture(root)
+            self.git(repo, "worktree", "add", "-q", "--detach", str(root / "detached-worktree"))
+            # Git before 2.36 has no `worktree list -z`.
+            shim = root / "bin" / "git"
+            shim.parent.mkdir()
+            shim.write_text(
+                "#!/bin/sh\n"
+                'case " $* " in *" worktree list "*" -z "*)\n'
+                '  echo "error: unknown switch z" >&2; exit 129;;\n'
+                "esac\n"
+                f'exec {shlex.quote(shutil.which("git"))} "$@"\n',
+                encoding="utf-8",
+            )
+            shim.chmod(0o755)
+            path = f"{shim.parent}{os.pathsep}{os.environ['PATH']}"
+            with mock.patch.dict(os.environ, {"PATH": path}):
+                rejected = subprocess.run(
+                    ["git", "worktree", "list", "--porcelain", "-z"],
+                    cwd=repo, capture_output=True, check=False,
+                )
+                self.assertEqual(129, rejected.returncode)
+                for command in (
+                    "git branch -D feature/x",
+                    "git update-ref -d refs/heads/feature/x",
+                    "git worktree remove --force ../plain-worktree",
+                    "git worktree remove --force ../detached-worktree",
+                ):
+                    with self.subTest(command=command):
+                        self.assert_allowed(self.bash_in(repo, command))
+                for command, rule in (
+                    ("git branch -D gsd-path/M001", "branch"),
+                    ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                    ("git worktree remove --force ../task-worktree", "worktree"),
+                ):
+                    with self.subTest(command=command):
+                        self.assert_denied_with(
+                            self.bash_in(repo, command), guard_hook.GIT_REASONS[rule]
+                        )
+
+    def test_git_ignores_an_alias_for_each_built_in_command_the_guard_skips(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo = self.init_git_repo(root / "repo")
+            (root / "home").mkdir()
+            environment = {**os.environ, "HOME": str(root / "home")}
+            for command in sorted(guard_hook.GIT_BUILT_IN_COMMANDS):
+                with self.subTest(command=command):
+                    result = subprocess.run(
+                        ["git", "-c", f"alias.{command}=!echo alias-ran", command,
+                         "--no-such-option"],
+                        cwd=repo, env=environment, capture_output=True,
+                        encoding="utf-8", errors="replace", check=False,
+                    )
+                    self.assertNotIn("alias-ran", result.stdout)
+
+    def scoped_pair_fixture(self, parent):
+        """`owned` binds the branch `bound` in STATE; `unrelated` has a plain `bound`."""
+        owned = self.init_git_repo(parent / "owned")
+        unrelated = self.init_git_repo(parent / "unrelated")
+        for repo in (owned, unrelated):
+            self.git(repo, "branch", "bound")
+        (owned / ".project").mkdir()
+        (owned / ".project" / "STATE.md").write_text(
+            "---\nphase: build\nbranch: bound\n---\n", encoding="utf-8"
+        )
+        return owned, unrelated
+
+    def test_scoped_deletion_is_denied_after_a_directory_change_the_guard_cannot_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            owned, unrelated = self.scoped_pair_fixture(Path(temporary).resolve())
+            a, b = (shlex.quote(repo.as_posix()) for repo in (owned, unrelated))
+            # A directory with the literal name ~ is not the home directory.
+            self.git(self.init_git_repo(owned / "~" / "r"), "branch", "bound")
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git branch -D"
+            )
+            delete = "git branch -D bound"
+            for command in (
+                f"cd {a} {b}; {delete}",
+                f"cd {a} {b} && {delete}",
+                f"cd -- {a} {b}; {delete}",
+                f"cd -P {b}; {delete}",
+                f"cd {b} -P; {delete}",
+                f"cd {b} 2>/dev/null extra; {delete}",
+                f"cd {b}-missing 2>/dev/null; {delete}",
+                f"cd '' {b}; {delete}",
+                f"chdir {b}; {delete}",
+                f"pushd {b}; {delete}",
+                f"CD {b}; {delete}",
+                f"/usr/bin/cd {b} && {delete}",
+                f"env cd {b} && {delete}",
+                f"true # note; cd {b}\n{delete}",
+                f"false &&\ncd {b}; {delete}",
+                f"cd ~/r && {delete}",
+                # Without the builtin, cd is the program /usr/bin/cd: no effect.
+                f"enable -n cd; cd {b} && {delete}",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(owned, command), unresolved)
+            for command in (
+                f"function enter {{ cd {a}; }}; enter; {delete}",
+                f"trap 'cd {a}' DEBUG; {delete}",
+                f"alias enter='cd {a}'\nenter\n{delete}",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(unrelated, command), unresolved)
+            self.assert_denied_with(
+                self.bash_in(owned, f"cd {b}-missing; {delete}"),
+                "git target repository cannot be resolved",
+            )
+            # A shell with CDPATH can find the plain name `unrelated` elsewhere.
+            self.assert_denied_with(
+                self.bash_in(owned.parent, f"cd unrelated && {delete}"), unresolved
+            )
+            self.assert_allowed(
+                self.bash_in(owned.parent, f"cd ./unrelated && {delete}")
+            )
+            for command in (
+                f"cd {b} && {delete}",
+                f"cd -- {b} && {delete}",
+                f"cd {b}; {delete}",
+                f"cd {b} &&\n{delete}",
+                f"cd ../unrelated && {delete}",
+                f"cd {a} {b}; git status",
+                f"cd -P {b}; git log --oneline -1",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(owned, command))
+
+    def test_scoped_deletion_with_a_parameter_in_the_git_command_is_denied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            owned, unrelated = self.scoped_pair_fixture(Path(temporary).resolve())
+            a, b = (shlex.quote(repo.as_posix()) for repo in (owned, unrelated))
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git branch -D"
+            )
+            delete = 'git -C "$W" branch -D bound'
+            # The shell changes W in ways the guard does not track.
+            for command in (
+                f"W={b}; read W <<< {a}; {delete}",
+                f"W={b}; W+=/../owned; {delete}",
+                f"W={b}; for W in {a}; do :; done; {delete}",
+                f"W={b}; printf -v W %s {a}; {delete}",
+                f"keep() {{ W={b}; }}; {delete}",
+                f"true # note; W={b}\n{delete}",
+                f"W={b}; {delete}",
+                f'cd {b} && git -C "$PWD" branch -D bound',
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(owned, command), unresolved)
+            self.assert_allowed(
+                self.bash_in(owned, f'W={b}; git -C "$W" status --short')
+            )
+            # read sets GIT_DIR and set -a exports it; the guard tracks neither.
+            self.assert_denied_with(
+                self.bash_in(
+                    unrelated, f"set -a; read GIT_DIR <<< {a}/.git; git branch -D bound"
+                ),
+                guard_hook.GIT_REASONS["git-environment"],
+            )
+            self.assert_allowed(self.bash_in(owned, f"git -C {b} branch -D bound"))
+            # A literal ~ or glob in the directory is expanded by the shell only.
+            self.git(self.init_git_repo(owned / "~" / "r"), "branch", "bound")
+            self.assert_denied_with(
+                self.bash_in(owned, "git -C ~/r branch -D bound"), unresolved
+            )
+
+    def test_update_ref_deletion_follows_the_exact_name_as_git_does(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            self.git(repo, "branch", "FOO")
+            self.git(repo, "symbolic-ref", "FOO", "refs/heads/gsd-path/M001")
+            self.git(repo, "symbolic-ref", "refs/heads/first", "refs/heads/gsd-path/M001")
+            self.git(repo, "symbolic-ref", "refs/heads/second", "refs/heads/first")
+            self.git(repo, "symbolic-ref", "refs/heads/plain-alias", "refs/heads/feature/x")
+            self.git(repo, "update-ref", "refs/remotes/origin/stale", "HEAD")
+            self.git(repo, "update-ref", "refs/remotes/origin/gsd-path/M001", "HEAD")
+            (repo / "README.md").write_text("changed\n", encoding="utf-8")
+            self.git(repo, "stash")
+            owned = guard_hook.GIT_REASONS["update-ref"]
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git update-ref deletion"
+            )
+            for command in (
+                "git update-ref -d refs/heads/second",
+                "git update-ref -m --no-deref -d refs/heads/second",
+                "git update-ref -d refs/remotes/origin/gsd-path/M001",
+                "git update-ref -d refs/stash",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), owned)
+            for command in (
+                # Git deletes the Path branch that the symbolic ref FOO names,
+                # not the branch FOO; HEAD moves with each git switch.
+                "git update-ref -d FOO",
+                "git update-ref -d FOO " + "0" * 40,
+                "git update-ref -d HEAD",
+                # -m takes refs/heads/feature/x as its value here.
+                "git update-ref -dm refs/heads/feature/x refs/heads/gsd-path/M001",
+                "git update-ref -d feature/x",
+                "git update-ref --stdin",
+                "git update-ref --std",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), unresolved)
+            # An earlier Git command of the same command line can point a
+            # symbolic ref at the Path branch after the guard has read it.
+            repoint = "git symbolic-ref {} refs/heads/gsd-path/M001"
+            for command in (
+                repoint.format("refs/heads/plain-alias")
+                + " && git update-ref -d refs/heads/plain-alias",
+                repoint.format("refs/heads/feature/x")
+                + "; git update-ref -d refs/heads/feature/x",
+                "bash -c '" + repoint.format("refs/heads/plain-alias")
+                + "'; git update-ref -d refs/heads/plain-alias",
+                "git status && git update-ref -m --no-deref -d refs/heads/plain-alias",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(
+                        self.bash_in(repo, command),
+                        guard_hook.GIT_REASONS["update-ref-order"],
+                    )
+            for command in (
+                "git update-ref -d refs/heads/feature/x",
+                "git update-ref -m note -d refs/heads/feature/x",
+                "git update-ref -d refs/heads/plain-alias",
+                "git update-ref --no-deref -d refs/heads/second",
+                "git update-ref -d refs/remotes/origin/stale",
+                "git status && git update-ref --no-deref -d refs/heads/feature/x",
+                "ls && git update-ref -d refs/heads/feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+
+    def test_forced_branch_deletion_reads_names_and_options_as_git_does(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(
+                Path(temporary).resolve(),
+                "---\nphase: build\nbranch: bound\n---\n",
+            )
+            self.git(repo, "branch", "bound")
+            for name in ("stale", "gsd-path/M001", "bound"):
+                self.git(repo, "update-ref", f"refs/remotes/origin/{name}", "HEAD")
+            owned = guard_hook.GIT_REASONS["branch"]
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git branch -D"
+            )
+            for command in (
+                "git branch -rD origin/stale",
+                "git branch -r -D origin/stale",
+                "git branch --remotes --delete --force origin/stale",
+                "git branch --del --force feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+            for command in (
+                "git branch -rD origin/gsd-path/M001",
+                "git branch -r -D origin/bound",
+                # --color takes no separate value, so git deletes both names.
+                "git branch -D --color gsd-path/M001 feature/x",
+                "git branch --delete --forc gsd-path/M001",
+                "git branch --del --force gsd-path/M001",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), owned)
+            for command in (
+                "git branch -rD origin/missing",
+                "git branch -D -r feature/x",
+                "git branch -D refs/heads/feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), unresolved)
+
+    def test_branch_names_that_differ_only_in_case_from_a_bound_branch_are_owned(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.init_git_repo(Path(temporary).resolve() / "repo")
+            # A packed Bound and a loose bound share one file on macOS and Windows.
+            self.git(repo, "branch", "Bound")
+            self.git(repo, "pack-refs", "--all")
+            self.git(repo, "branch", "bound")
+            (repo / ".project").mkdir()
+            (repo / ".project" / "STATE.md").write_text(
+                "---\nphase: build\nbranch: bound\n---\n", encoding="utf-8"
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "git branch -D Bound"), guard_hook.GIT_REASONS["branch"]
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "git update-ref -d refs/heads/Bound"),
+                guard_hook.GIT_REASONS["update-ref"],
+            )
+
+    def test_forced_worktree_removal_reads_the_option_and_the_target_as_git_does(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            for option in ("--forc", "--fo"):
+                with self.subTest(option=option):
+                    self.assert_denied_with(
+                        self.bash_in(repo, f"git worktree remove {option} ../task-worktree"),
+                        guard_hook.GIT_REASONS["worktree"],
+                    )
+            self.assert_allowed(
+                self.bash_in(repo, "git worktree remove --forc ../plain-worktree")
+            )
+
+    @requires_symlink
+    def test_forced_worktree_removal_is_denied_when_git_can_pick_another_worktree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo = self.scoped_cleanup_fixture(root)
+            # Git tries the unique path suffix first: the Path-owned worktree.
+            (repo / "task-worktree").symlink_to(
+                root / "plain-worktree", target_is_directory=True
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "git worktree remove --force task-worktree"),
+                guard_hook.GIT_REASONS["unresolved-target"].format(
+                    action="git worktree remove --force"
+                ),
+            )
 
     def test_denies_powershell_archive_mutations(self):
         for command in (
