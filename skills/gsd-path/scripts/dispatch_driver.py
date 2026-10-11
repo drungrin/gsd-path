@@ -693,6 +693,21 @@ def state_from_task(primary: Path, task_id: str) -> Dict[str, object]:
 
 def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
     """Verify in the isolate, land, record the ledger, retire. Returns the landing receipt."""
+    landing = land_task(primary, state)
+    try:
+        if state["mode"] == "member":
+            isolation.retire_member_task(primary, str(state["member"]), str(state["task_id"]))
+        else:
+            isolation.retire(primary, Path(str(state["worktree"])), state.get("task_branch") or None, False)
+    except isolation.IsolationError as error:
+        # The landing is proven, so a failed removal is a warning; Round.recover retires the isolate again.
+        landing["cleanup_warning"] = (f"{error}; the task is landed, and the next round or finish "
+                                      "retries the removal of its isolate")
+    return landing
+
+
+def land_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
+    """Verify in the isolate, land, record the ledger. Returns the landing receipt."""
     worktree = Path(str(state["worktree"]))
     task_id = str(state["task_id"])
     task_file = str(state["task_file"])
@@ -744,7 +759,6 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
         ledger = isolation.git_output(worktree, "rev-parse", f"{landing}^") == str(state["member_base"])
         if ledger:
             build_state.verify_record(str(primary), command, landing, "pass", execution=execution, member=member)
-        isolation.retire_member_task(primary, member, task_id)
         return {"task": task_id, "commit": str(landed["commit"]), "mode": "member",
                 "landing": landing, "verify": execution, "ledger": ledger}
     landed = isolation.land(primary, worktree, base, task_id, str(state["title"]), task_file,
@@ -754,7 +768,6 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
     ledger = isolation.git_output(primary, "rev-parse", f"{commit}^") == base
     if ledger:
         build_state.verify_record(str(primary), command, commit, "pass", execution=execution)
-    isolation.retire(primary, worktree, state.get("task_branch") or None, False)
     return {"task": task_id, "commit": commit, "mode": landed["mode"], "verify": execution,
             "ledger": ledger}
 

@@ -61,6 +61,35 @@ class NativeMemberDispatchTests(unittest.TestCase):
         self.assertEqual(git(self.member, "show", f"{bound}:app.py"), "v2")
         self.assertIn("Member: web", git(self.coordinator, "log", "-1", "--format=%B"))
 
+    def test_finish_reports_a_landed_member_task_when_sidecar_removal_fails(self) -> None:
+        import contextlib
+        import io
+        from unittest import mock
+        from scripts import dispatch_driver
+        active = self.attempt("v2\n")
+        sidecar = Path(active["worktree"])
+        removal = dispatch_driver.isolation.IsolationError(
+            "fatal: working trees containing submodules cannot be moved or removed")
+        output = io.StringIO()
+
+        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree", side_effect=removal), \
+                contextlib.redirect_stdout(output):
+            code = dispatch_driver.main(["finish", "--repo", str(self.coordinator), "--task-id", "T001"])
+
+        receipt = json.loads(output.getvalue())
+        self.assertEqual((code, receipt["status"]), (0, "landed"), receipt)
+        self.assertEqual(receipt["landed"][0]["mode"], "member")
+        self.assertIn("cannot be moved or removed", receipt["landed"][0]["cleanup_warning"])
+        self.assertEqual(git(self.member, "show", "gsd-path/acme-M001:app.py"), "v2")
+        self.assertIn("status: done", git(self.coordinator, "show", f"HEAD:{landing.TASK_FILE}"))
+        self.assertTrue(sidecar.is_dir())
+
+        # The next finish retires the sidecar that the failed removal left.
+        again = run("dispatch_driver.py", "finish", "--repo", str(self.coordinator), "--task-id", "T001")
+        self.assertEqual(again["status"], "landed", again)
+        self.assertFalse(sidecar.exists())
+        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
+
     def attempt(self, content: str) -> dict:
         head = git(self.coordinator, "rev-parse", "HEAD")
         run("workflow_run.py", "prepare-task", "--repo", str(self.coordinator),

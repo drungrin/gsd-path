@@ -958,6 +958,42 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(self.subjects(root)[:2], ["T002: Demo task T002", "T001: Demo task T001"])
         self.assertEqual(self.branches(root), ["gsd-path/M001"])
 
+    def test_finish_reports_a_landed_parallel_task_when_isolate_removal_fails(self) -> None:
+        root = self.root
+        head = self.fixture(root)
+        prepared = subprocess.run(
+            [sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"), "prepare-task",
+             "--repo", str(root), "--expected-head", head, "--task-id", "T001", "--round-size", "2"],
+            check=True, capture_output=True, encoding="utf-8", errors="replace")
+        isolate = json.loads(prepared.stdout)["steps"][0]["result"]
+        worktree = Path(isolate["worktree"])
+        subprocess.run([sys.executable, "-B", str(PROJECT_ROOT / "scripts/isolation.py"),
+                        "activate-task", "--repo", str(worktree), "--base", head, "--task-id", "T001",
+                        "--agent", "build_t001", "--task-file", ".project/tasks/T001-demo.md",
+                        "--task-branch", isolate["task_branch"]], check=True, capture_output=True)
+        (worktree / "src").mkdir()
+        (worktree / "src/app.py").write_bytes("print('hello')\n".encode("utf-8"))
+        removal = dispatch_driver.isolation.IsolationError("fatal: Directory not empty")
+        output = io.StringIO()
+
+        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree", side_effect=removal), \
+                redirect_stdout(output):
+            code = dispatch_driver.main(["finish", "--repo", str(root), "--task-id", "T001"])
+
+        receipt = json.loads(output.getvalue())
+        self.assertEqual((code, receipt["status"]), (0, "landed"), receipt)
+        self.assertIn("Directory not empty", receipt["landed"][0]["cleanup_warning"])
+        self.assertEqual(self.subjects(root)[0], "T001: Demo task T001")
+        self.assertTrue(worktree.is_dir())
+        record = dispatch_driver.records_root(root) / "T001/attempt-1/state.json"
+        self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["outcome"], "landed")
+
+        # The next finish retires the isolate that the failed removal left.
+        again = self.driver(root, "finish", "--task-id", "T001")
+        self.assertEqual(again["status"], "landed", again)
+        self.assertFalse(worktree.exists())
+        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+
     def test_finish_refuses_a_deactivated_parallel_isolate(self) -> None:
         root = self.root
         head = self.fixture(root)
