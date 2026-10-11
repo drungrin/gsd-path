@@ -9,6 +9,7 @@ sys.dont_write_bytecode = True
 
 import json
 import re
+import contextlib
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
@@ -1074,6 +1075,11 @@ def integrate_external_landing(
             "mode": "external-landing",
             "archive": archive_path,
             "commit": ship_commit,
+            "branch": bound_branch,
+            "merge_subject": integrate_subject(archive_name, default_name),
+            "merge_body": integrate_commit_body(
+                archive_path, ship_commit, default_name, bound_branch
+            ),
         }
     if contains_ship.returncode != 0:
         archive_milestone.require_git_success(
@@ -1939,6 +1945,10 @@ def retire_member(coordinator: Path, member: str, archive_path: str, reviewed_he
     for kind, ref in (("push", bound_ref), ("push", "refs/heads/main"), ("push", f"refs/tags/{tag_name}"),
                       ("delete", bound_ref)):
         members.clear_authorization(checkout, project, kind, ref)
+    # The last sidecar retires here at milestone end; isolation's retires also
+    # release the pin whenever the workspace is idle, so a new root can apply.
+    with contextlib.suppress(ValueError, OSError):
+        worktree_paths.release_workspace(checkout)
     return {"member": member, "retired": bound}
 
 

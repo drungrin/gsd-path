@@ -34,9 +34,10 @@ DISPATCH_PATTERN = re.compile(
     r"→ (?P<output>[^—]+) — (?P<reason>.+)$"
 )
 QUESTION_PATTERN = re.compile(
-    r"^- `\[RESEARCH\] (?P<question>[^`]+)` → "
+    r"^- (?P<fence>`+)(?!`)(?P<body>.+?)(?<!`)(?P=fence)(?!`) → "
     r"(?P<dimensions>`[^`,\s]+`(?:,\s*`[^`,\s]+`)*)$"
 )
+QUESTION_PREFIX = "[RESEARCH] "
 FINDING_PATTERN = re.compile(r"^### (?P<id>P\d{3}) — (?P<title>.+)$")
 CRITERION_LOCATOR_PATTERN = re.compile(r"^SC[1-9]\d*$")
 COMMENT_PATTERN = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -407,10 +408,25 @@ def _research_assignments(section: str) -> List[Tuple[str, List[str]]]:
         match = QUESTION_PATTERN.fullmatch(line)
         if match is None:
             raise HandoffError("RESEARCH.md has a malformed question assignment")
+        body = match.group("body")
+        fence_length = len(match.group("fence"))
+        if any(len(run) == fence_length for run in re.findall(r"`+", body)):
+            raise HandoffError("RESEARCH.md has a malformed question assignment")
+        if (
+            body.startswith(" ")
+            and body.endswith(" ")
+            and body.strip(" ")
+        ):
+            body = body[1:-1]
+        if not body.startswith(QUESTION_PREFIX):
+            raise HandoffError("RESEARCH.md has a malformed question assignment")
+        question = body[len(QUESTION_PREFIX) :]
+        if not question:
+            raise HandoffError("RESEARCH.md has a malformed question assignment")
         dimensions = re.findall(r"`([^`]+)`", match.group("dimensions"))
         if len(dimensions) != len(set(dimensions)):
             raise HandoffError("RESEARCH.md repeats a target in a question assignment")
-        assignments.append((match.group("question").strip(), dimensions))
+        assignments.append((question, dimensions))
     return assignments
 
 
@@ -1386,6 +1402,20 @@ def _task_deps(task_text: str, task_id: str) -> List[str]:
     return _inline_ids(rendered, "T", f"{task_id} deps")
 
 
+def _dependency_reachable(graph: Dict[str, List[str]], start: str, target: str) -> bool:
+    seen: Set[str] = set()
+    pending = list(graph[start])
+    while pending:
+        task_id = pending.pop()
+        if task_id in seen:
+            continue
+        if task_id == target:
+            return True
+        seen.add(task_id)
+        pending.extend(graph[task_id])
+    return False
+
+
 def _canonical_repo_path(value: str, label: str) -> str:
     cleaned = value.strip().strip("`\"'")
     path = PurePosixPath(cleaned)
@@ -1507,6 +1537,12 @@ def _validate_task_graph(
                 if (
                     _task_scalar(tasks[left], left, "status") == "done"
                     and _task_scalar(tasks[right], right, "status") == "done"
+                ):
+                    continue
+                # Dependency-ordered tasks serialize safely; only unordered
+                # same-wave overlap races on a shared file.
+                if _dependency_reachable(graph, left, right) or _dependency_reachable(
+                    graph, right, left
                 ):
                     continue
                 raise HandoffError(
