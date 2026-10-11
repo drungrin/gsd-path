@@ -1306,13 +1306,10 @@ def task_review_observation(item: str, task_text: str) -> str:
     item = _normalize_ws(item)
     section = _common.section_body(task_text, "Acceptance criteria")
     if section is not None:
-        for criterion in _numbered_items(section, continuations=True).values():
-            quoted = _normalize_ws(criterion)
-            end = _common.criterion_quote_end(item, quoted)
-            if end is not None:
-                return item[end + len(" — ") :]
-            if item in {quoted, quoted + " —"}:
-                return ""
+        criteria = list(_numbered_items(section, continuations=True).values())
+        quoted = _common.quoted_criterion(item, criteria)
+        if quoted is not None:
+            return item[quoted[1] + len(" — ") :]
     # Issue #392: a quote can leave out the `- ` markers of the criterion's
     # sub-bullet lines, so read the criteria again without them.
     bare = _common.without_sub_bullet_markers(task_text)

@@ -292,6 +292,46 @@ class GroupingTest(unittest.TestCase):
         self.assertEqual(result["groups"], [])
         self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
 
+    def test_exact_quote_wins_over_a_marker_free_reading_of_an_earlier_criterion(self):
+        fixture = Fixture(self, skeptics="off")
+        fixture.lens("adversarial", verdict="pass")
+        for ac1, ac2, quote in (
+            ("Returns\n   - 5 items", "Returns 5 items", "Returns 5 items"),
+            ("Prints hello", "Prints hello — and exits 0", "Prints hello — and exits 0"),
+        ):
+            with self.subTest(quote=quote):
+                write(
+                    fixture.project / "tasks" / "T001-parse-input.md",
+                    TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                                interface="None", owned="SC1", ac1=ac1, ac2=ac2),
+                )
+                fixture.lens("contract", t001_fails=[f"{quote} — found: 4, parser.py:9"])
+                _, result = fixture.run()
+                self.assertEqual(result["structural_blockers"], [])
+                (group,) = result["groups"]
+                self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", ac2))
+
+    def test_sub_bullets_join_at_any_indentation(self):
+        # The wave gate joins any indented line to its criterion; this reader
+        # must store the same criterion.
+        fixture = Fixture(self, skeptics="off")
+        fixture.lens("adversarial", verdict="pass")
+        stored = "Prints all of: - alpha - beta"
+        for indent in ("  ", "\t", "   "):
+            for quote in (stored, "Prints all of: alpha beta"):
+                with self.subTest(indent=indent, quote=quote):
+                    write(
+                        fixture.project / "tasks" / "T001-parse-input.md",
+                        TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                                    interface="None", owned="SC1", ac1="Parses CSV rows",
+                                    ac2=f"Prints all of:\n{indent}- alpha\n{indent}- beta"),
+                    )
+                    fixture.lens("contract", t001_fails=[f"{quote} — found: only alpha, parser.py:9"])
+                    _, result = fixture.run()
+                    self.assertEqual(result["structural_blockers"], [])
+                    (group,) = result["groups"]
+                    self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", stored))
+
     def test_hyphen_inside_a_criterion_line_is_compared(self):
         # Only the `- ` markers of sub-bullet lines are optional. Two criteria
         # that differ by a minus sign are different criteria.

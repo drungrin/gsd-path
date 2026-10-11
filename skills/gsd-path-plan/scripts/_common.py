@@ -25,7 +25,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import BinaryIO, Iterator, List, Optional, Sequence
+from typing import BinaryIO, Iterator, List, Optional, Sequence, Tuple
 
 # Chosen by what imports, not os.name, so tests can emulate Windows on POSIX.
 try:
@@ -219,14 +219,21 @@ def quotes_criterion(quote: str, criterion: str) -> bool:
     return " ".join(quote.split()) in {" ".join(form.split()) for form in forms}
 
 
-def criterion_quote_end(item: str, criterion: str) -> Optional[int]:
-    """Offset of the ` — ` that ends a quote of `criterion` at the start of `item`.
+def quoted_criterion(item: str, criteria: Sequence[str]) -> Optional[Tuple[int, int]]:
+    """Index of the criterion quoted at the start of `item`, and where the quote ends.
 
-    A criterion can contain ` — ` itself, so every separator is a candidate.
+    A criterion can contain ` — ` itself, so each separator and the end of
+    `item` is a candidate, the longest quote first. A criterion as written
+    wins over any criterion read without its sub-bullet markers.
     """
-    for separator in re.finditer("(?= — )", item):
-        if quotes_criterion(item[: separator.start()], criterion):
-            return separator.start()
+    ends = [match.start() for match in re.finditer("(?= —(?: |$))|$", item)][::-1]
+    for bare in (False, True):
+        for end in ends:
+            quote = " ".join(item[:end].split())
+            for index, criterion in enumerate(criteria):
+                form = getattr(criterion, "bare", criterion) if bare else criterion
+                if quote == " ".join(form.split()):
+                    return index, end
     return None
 
 

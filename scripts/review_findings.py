@@ -157,12 +157,16 @@ def _numbered_items(section: Optional[str]) -> List[str]:
 
 def _numbered_texts(section: str) -> List[str]:
     items: List[str] = []
+    open_item = False
     for line in _strip_comments(section).splitlines():
         match = NUMBERED_ITEM.match(line.strip())
         if match:
             items.append(_normalize(match.group(2)))
-        elif items and line.startswith("   ") and line.strip():
+            open_item = True
+        elif open_item and line[:1].isspace() and line.strip():
             items[-1] = _normalize(items[-1] + " " + line.strip())
+        elif line.strip():
+            open_item = False
     return items
 
 
@@ -241,11 +245,7 @@ def _fail_items(lines: Sequence[str]) -> List[str]:
     return [_normalize(item) for item in items]
 
 
-def _criterion_of(observation: str, criteria: Sequence[str] = ()) -> str:
-    for criterion in criteria:
-        end = _common.criterion_quote_end(observation, criterion)
-        if end is not None:
-            return _normalize(observation[:end])
+def _criterion_of(observation: str) -> str:
     return _normalize(observation.split(" — ", 1)[0])
 
 
@@ -285,22 +285,20 @@ def parse_lens(text: str, lens: str, tasks: Dict[str, dict]) -> dict:
                 continue
             zones[zone].append(line)
         for observation in _fail_items(zones["criteria"]):
-            criterion = _criterion_of(observation, task["acceptance"] + task["interface"])
-            locator = None
             # Issue #392: match as the wave gate does, then report the task's own text.
-            acceptance = [_common.quotes_criterion(criterion, item) for item in task["acceptance"]]
-            interface = [_common.quotes_criterion(criterion, item) for item in task["interface"]]
-            if True in acceptance:
-                locator = f"{task_id.lower()}_ac{acceptance.index(True) + 1}"
-                criterion = task["acceptance"][acceptance.index(True)]
-            elif True in interface:
-                locator = f"{task_id.lower()}_interface_contract"
-                criterion = task["interface"][interface.index(True)]
-            if locator is None:
+            criteria = task["acceptance"] + task["interface"]
+            quoted = _common.quoted_criterion(observation, criteria)
+            if quoted is None:
                 problems.append(
-                    f"{lens} lens {task_id} finding names no task criterion: {criterion}"
+                    f"{lens} lens {task_id} finding names no task criterion: "
+                    f"{_criterion_of(observation)}"
                 )
                 continue
+            criterion = criteria[quoted[0]]
+            if quoted[0] < len(task["acceptance"]):
+                locator = f"{task_id.lower()}_ac{quoted[0] + 1}"
+            else:
+                locator = f"{task_id.lower()}_interface_contract"
             findings.append(
                 {"locator": locator, "criterion": criterion, "task": task_id,
                  "lens": lens, "observation": observation}

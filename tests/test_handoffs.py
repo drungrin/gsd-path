@@ -2558,6 +2558,18 @@ Tasks reviewed: 2
                             f"{changed} — none",
                         )
 
+    def test_task_review_observation_prefers_the_exact_and_longest_quote(self) -> None:
+        for acceptance, item, evidence in (
+            ("1. Returns\n   - 5 items\n2. Returns 5 items", "Returns 5 items — ran it", "ran it"),
+            ("1. Prints hello\n2. Prints hello — and exits 0", "Prints hello — and exits 0 — ran it", "ran it"),
+            ("1. Prints hello\n2. Prints hello — and exits 0", "Prints hello — and exits 0", ""),
+        ):
+            with self.subTest(item=item), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_coverage_task(root, "T001", "- SC1", acceptance=acceptance)
+                task_text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
+                self.assertEqual(check_handoffs.task_review_observation(item, task_text), evidence)
+
     def test_wave_checks_evidence_after_exact_quoted_task_criterion(self) -> None:
         for verdict, marker in (("pass", "✅"), ("fail", "❌")):
             with self.subTest(verdict=verdict), tempfile.TemporaryDirectory() as directory:
