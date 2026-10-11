@@ -107,12 +107,12 @@ class MemberRoundTests(unittest.TestCase):
         self.assertTrue(completed.stdout.strip(), completed.stderr)
         return json.loads(completed.stdout)
 
-    def test_member_task_that_breaks_an_earlier_member_verify_is_blocked(self) -> None:
-        # T003 in wave 2 edits the file of T002 in the same member. Its own Verify passes; T002's fails.
+    def later_member_task(self, fields: str = "repo: web") -> str:
+        """T003 in wave 2 edits the file of T002 in the same member. Wave 1 lands. Returns the member tip."""
         driver_tests.test_handoffs.HandoffValidationTests().write_coverage_task(
             self.root, "T003", "- None", wave=2, files="tests/test_app.py", verify="test -f tests/test_app.py")
         task = self.root / ".project/tasks/T003-demo.md"
-        task.write_bytes(task.read_text(encoding="utf-8").replace("files:", "repo: web\nfiles:", 1).encode("utf-8"))
+        task.write_bytes(task.read_text(encoding="utf-8").replace("files:", f"{fields}\nfiles:", 1).encode("utf-8"))
         plan = self.root / ".project/plan/PLAN.md"
         plan.write_bytes(plan.read_text(encoding="utf-8").replace(
             "\n## Intent coverage",
@@ -122,7 +122,10 @@ class MemberRoundTests(unittest.TestCase):
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "plan: T003 edits the T002 file in the web member")
         self.assertEqual(self.round()["status"], "done")
-        tip = git(self.member, "rev-parse", "gsd-path/demo-M001")
+        return git(self.member, "rev-parse", "gsd-path/demo-M001")
+
+    def test_member_task_that_breaks_an_earlier_member_verify_is_blocked(self) -> None:
+        tip = self.later_member_task()  # T003's own Verify passes; T002's fails
 
         receipt = self.round_with_mode("badverify", wave=2)
 
@@ -132,6 +135,22 @@ class MemberRoundTests(unittest.TestCase):
         self.assertEqual(blocked["execution"]["exit_code"], 0)
         self.assertEqual([(item["tasks"], item["exit_code"]) for item in blocked["regressions"]], [(["T002"], 1)])
         self.assertEqual(git(self.member, "rev-parse", "gsd-path/demo-M001"), tip)  # the member got no landing
+
+    def test_member_task_that_supersedes_the_earlier_member_task_lands_and_keeps_the_field(self) -> None:
+        tip = self.later_member_task("repo: web\nsupersedes: [T002]")
+
+        receipt = self.round_with_mode("badverify", wave=2)
+
+        self.assertEqual(receipt["status"], "done", json.dumps(receipt, indent=1)[:4000])
+        landed = receipt["landed"][0]
+        self.assertEqual((landed["task"], landed["regressions"]), ("T003", []))
+        self.assertEqual(landed["retired"], [{"task": "T002", "superseded_by": "T003"}])
+        self.assertNotEqual(git(self.member, "rev-parse", "gsd-path/demo-M001"), tip)
+        # Member activation and the coordinator landing rewrite the frontmatter; the field stays.
+        text = (self.root / ".project/tasks/T003-demo.md").read_text(encoding="utf-8")
+        self.assertIn("status: done", text)
+        self.assertIn("\nrepo: web\nsupersedes: [T002]\nfiles:\n", text)
+        self.assertIn("orchestrator regression Verify of T002 retired: superseded by T003\n", text)
 
     def test_round_finishes_a_pending_member_landing_journal(self) -> None:
         from unittest import mock

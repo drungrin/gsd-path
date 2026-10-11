@@ -272,11 +272,16 @@ class ParseTaskTests(unittest.TestCase):
         project_dir = self.root / ".project"
         path = make_task(project_dir, "T009", "inline", wave=3, status="pending")
         text = path.read_text(encoding="utf-8").replace(
-            "files:\n  - src/a.py", "files: [src/x.py, src/y.py]"
+            "files:\n  - src/a.py", "supersedes: [T001]\nfiles: [src/x.py, src/y.py]"
         )
         path.write_bytes(text.encode("utf-8"))
         task = probe.parse_task_file(path)
         self.assertEqual(task.files, ["src/x.py", "src/y.py"])
+        # The optional `supersedes` field does not hide the task or the project.
+        self.assertEqual((task.id, task.wave, task.status), ("T009", 3, "pending"))
+        status = probe.probe_project(self.root, enrich=False)
+        self.assertEqual((status.tasks_total, status.phase), (4, "build"))
+        self.assertIn("T009", [item.id for item in status.tasks])
 
     def test_parse_plan(self) -> None:
         waves = probe.parse_plan(self.root / ".project" / "plan" / "PLAN.md")

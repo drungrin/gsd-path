@@ -1391,15 +1391,15 @@ def _inline_ids(value: str, prefix: str, label: str) -> List[str]:
     return values
 
 
-def _task_deps(task_text: str, task_id: str) -> List[str]:
-    value = _strict_frontmatter(task_text, task_id).get("deps")
+def _task_ids(task_text: str, task_id: str, field: str) -> List[str]:
+    value = _strict_frontmatter(task_text, task_id).get(field)
     if value is None:
-        raise HandoffError(f"{task_id} is missing deps")
+        raise HandoffError(f"{task_id} is missing {field}")
     if isinstance(value, list):
         rendered = ",".join(str(item) for item in value)
     else:
         rendered = str(value)
-    return _inline_ids(rendered, "T", f"{task_id} deps")
+    return _inline_ids(rendered, "T", f"{task_id} {field}")
 
 
 def _dependency_reachable(graph: Dict[str, List[str]], start: str, target: str) -> bool:
@@ -1515,7 +1515,7 @@ def _validate_task_graph(
         landed = _task_scalar(text, task_id, "status") == "done"
         _require_task_structure(task_id, text, initial=initial and not landed)
         wave = _task_wave(text, task_id)
-        deps = _task_deps(text, task_id)
+        deps = _task_ids(text, task_id, "deps")
         files = _frontmatter_files(text)
         if wave not in wave_depths:
             raise HandoffError(f"{task_id} names unknown Wave {wave}")
@@ -1527,6 +1527,20 @@ def _validate_task_graph(
                 raise HandoffError(f"{task_id} names unknown dependency {dependency}")
             if _task_wave(tasks[dependency], dependency) > wave:
                 raise HandoffError(f"{task_id} depends on later-wave {dependency}")
+
+    # `supersedes` retires the regression Verify of an earlier task: the same overlap rule selects both.
+    for task_id, text in tasks.items():
+        if "supersedes" not in _strict_frontmatter(text, task_id):
+            continue
+        for earlier in _task_ids(text, task_id, "supersedes"):
+            if earlier not in tasks:
+                raise HandoffError(f"{task_id} supersedes unknown task {earlier}")
+            if task_waves[earlier] >= task_waves[task_id]:
+                raise HandoffError(f"{task_id} supersedes {earlier}, which is not in an earlier wave")
+            if task_repos[earlier] != task_repos[task_id]:
+                raise HandoffError(f"{task_id} supersedes {earlier}, which is in another repo")
+            if not set(task_files[earlier]) & set(task_files[task_id]):
+                raise HandoffError(f"{task_id} supersedes {earlier}, which shares no declared file with it")
 
     for index, left in enumerate(task_ids):
         for right in task_ids[index + 1 :]:

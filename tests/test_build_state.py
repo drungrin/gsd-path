@@ -681,9 +681,12 @@ archive: null
         )
 
     def write_verify_task(self, task_id: str, wave: int, files: tuple[str, ...], command: str, *,
-                          status: str = "done", repo: str = "", deps: tuple[str, ...] = ()) -> None:
+                          status: str = "done", repo: str = "", deps: tuple[str, ...] = (),
+                          supersedes: tuple[str, ...] = ()) -> None:
         text = task_text(task_id, f"Task {task_id}", wave, deps, files, status=status)
         text = text.replace("\n## Log", f"\n## Verify\n\n```bash\n{command}\n```\n\n## Log")
+        if supersedes:
+            text = text.replace("files: [", f"supersedes: [{', '.join(supersedes)}]\nfiles: [")
         self.write_task(task_id, text.replace("files: [", f"repo: {repo}\nfiles: [") if repo else text)
 
     def test_regression_verifies_names_done_earlier_wave_tasks_that_share_a_file(self) -> None:
@@ -739,6 +742,43 @@ archive: null
         for own in (generated + " || true", generated + "\ntrue", generated.replace("set -e\n", ""),
                     _common.fix_verify(["check one"]), _common.fix_verify(["check one", "check three"])):
             self.assertEqual(reruns(own), ["check one", "check two", "check three"], own)
+
+    def test_superseded_task_verify_is_retired_for_the_superseding_task_and_after_it_is_done(self) -> None:
+        self.write_verify_task("T001", 1, ("shared.py",), "check one")
+        self.write_verify_task("T002", 1, ("shared.py",), "check two")
+        self.write_verify_task("T003", 2, ("shared.py",), "check own", status="in-progress", supersedes=("T001",))
+        self.write_verify_task("T004", 3, ("shared.py",), "check later", status="pending")
+
+        def landing(task_id: str, own: str) -> tuple:
+            return (build_state.regression_verifies(self.repo, task_id, own),
+                    build_state.retired_verifies(self.repo, task_id))
+
+        # The superseding task runs every other earlier Verify.
+        self.assertEqual(landing("T003", "check own"), (
+            [{"tasks": ["T002"], "command": "check two"}],
+            [{"task": "T001", "superseded_by": "T003"}],
+        ))
+        # T003 is not done: the old behavior is still there, so another task still runs T001's Verify.
+        self.assertEqual(landing("T004", "check later"), (
+            [{"tasks": ["T001"], "command": "check one"}, {"tasks": ["T002"], "command": "check two"}],
+            [],
+        ))
+        self.write_verify_task("T003", 2, ("shared.py",), "check own", supersedes=("T001",))  # T003 landed
+        self.assertEqual(landing("T004", "check later"), (
+            [{"tasks": ["T002"], "command": "check two"}, {"tasks": ["T003"], "command": "check own"}],
+            [{"task": "T001", "superseded_by": "T003"}],
+        ))
+
+    def test_supersedes_must_be_a_list_of_task_ids(self) -> None:
+        self.write_verify_task("T001", 1, ("shared.py",), "check one")
+        for value in ("T001", "[one]"):
+            text = task_text("T002", "Task T002", 2, (), ("shared.py",)).replace(
+                "files: [", f"supersedes: {value}\nfiles: [")
+            self.write_task("T002", text)
+            with self.assertRaises(build_state.BuildStateError) as failure:
+                build_state.regression_verifies(self.repo, "T002", "check own")
+            self.assertEqual(failure.exception.code, "invalid-frontmatter", value)
+            self.assertIn("T002-task.md supersedes", str(failure.exception))
 
     def test_ready_marks_a_task_heavy_when_its_landing_reruns_a_heavy_verify(self) -> None:
         self.write_plan(
@@ -819,6 +859,19 @@ archive: null
             ("T003", "Edits one", (), ("one.py",)),
             ("T004", "Edits three", (), ("three.py",)),
         )
+
+        self.assertEqual(self.ready_ids(), ["T003", "T004"])
+
+    def test_ready_returns_a_superseding_task_together_with_a_task_that_shares_the_retired_source(self) -> None:
+        # T003 replaces T001, so T001's Verify is not a regression source for T003 and the two never share one.
+        self.shared_source_plan(
+            ("T003", "Replaces one", (), ("one.py",)),
+            ("T004", "Edits two", (), ("two.py",)),
+        )
+        self.assertEqual(self.ready_ids(), ["T003"])  # without the field T004 waits for T003
+        self.write_task("T003", task_text("T003", "Replaces one", 2, (), ("one.py",)).replace(
+            "files: [", "supersedes: [T001]\nfiles: ["))
+        self.commit_all("plan: T003 supersedes T001")
 
         self.assertEqual(self.ready_ids(), ["T003", "T004"])
 

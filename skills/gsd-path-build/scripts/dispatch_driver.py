@@ -712,6 +712,9 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
         raise DriverStop("task has no Verify command", task=task_id)
     # A later task can break an earlier task that shares a file; that task's Verify also decides this landing.
     regressions = build_state.regression_verifies(primary, task_id, command)
+    # A plan-approved `supersedes` retires an earlier Verify; the receipt and the Log show each one.
+    retired = build_state.retired_verifies(primary, task_id)
+    superseded = {"retired": retired} if retired else {}
     if state["mode"] == "serial":
         sidecar = state["sidecar"]
         ensured = isolation.ensure_verify_sidecar(primary, base, str(sidecar["branch"]))
@@ -735,7 +738,8 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
                     else records_root(primary) / task_id / f"manual-{now().replace(':', '')}")
     evidence_dir.mkdir(parents=True, exist_ok=True)
     _common.atomic_write(evidence_dir / "verify.json",
-                         json.dumps({**execution, "regressions": reruns}, indent=2, sort_keys=True) + "\n")
+                         json.dumps({**execution, "regressions": reruns, **superseded},
+                                    indent=2, sort_keys=True) + "\n")
     execution["evidence"] = str(evidence_dir / "verify.json")
     for label, run in [("Verify", execution),
                        *((f"regression Verify of {', '.join(item['tasks'])}", item) for item in reruns)]:
@@ -743,6 +747,9 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
         append_log(task_path, f"- {now()[:10]} — orchestrator {label} ({location}): "
                               f"{'fail' if run['exit_code'] else 'pass'}, exit {run['exit_code']}"
                               + (f"; output tail:\n  ```\n{output}\n  ```" if output else ""))
+    for item in retired:
+        append_log(task_path, f"- {now()[:10]} — orchestrator regression Verify of {item['task']} retired: "
+                              f"superseded by {item['superseded_by']}")
     if not passed or broken:
         if state["mode"] == "parallel":
             isolation.deactivate_task(worktree, task_id, str(state["task_branch"]))
@@ -764,7 +771,8 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
             build_state.verify_record(str(primary), command, landing, "pass", execution=execution, member=member)
         isolation.retire_member_task(primary, member, task_id)
         return {"task": task_id, "commit": str(landed["commit"]), "mode": "member",
-                "landing": landing, "verify": execution, "regressions": reruns, "ledger": ledger}
+                "landing": landing, "verify": execution, "regressions": reruns, **superseded,
+                "ledger": ledger}
     landed = isolation.land(primary, worktree, base, task_id, str(state["title"]), task_file,
                             list(state["files"]))
     commit = str(landed["commit"])
@@ -774,7 +782,7 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
         build_state.verify_record(str(primary), command, commit, "pass", execution=execution)
     isolation.retire(primary, worktree, state.get("task_branch") or None, False)
     return {"task": task_id, "commit": commit, "mode": landed["mode"], "verify": execution,
-            "regressions": reruns, "ledger": ledger}
+            "regressions": reruns, **superseded, "ledger": ledger}
 
 
 # --- shared by round and review --------------------------------------------

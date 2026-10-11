@@ -65,6 +65,9 @@ FAKE_CODER = textwrap.dedent(
             unexpected.write_bytes(b"preserve this Verify output\\n")
         print(f"RESULT: {task_id} blocked")
         sys.exit(0)
+    if mode == "selfsupersede":  # a coder that tries to retire the earlier Verify without the plan gate
+        text = text.replace("files:\\n", "supersedes: [T001]\\nfiles:\\n", 1)
+        mode = "badverify"
     target = worktree / declared
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(("raise SystemExit(1)\\n" if mode == "badverify" else "print('hello')\\n").encode("utf-8"))
@@ -813,6 +816,87 @@ class DispatchDriverTests(unittest.TestCase):
                       "fail, exit 1", text)
         ledger = (root / ".project/build/verify-ledger.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(ledger), 1)  # the wave 1 landing only
+
+    def supersede(self, root: Path, task_id: str, earlier: str) -> None:
+        """Commit `supersedes: [<earlier>]` in the pending task, as an approved plan has it."""
+        task = root / f".project/tasks/{task_id}-demo.md"
+        task.write_bytes(task.read_text(encoding="utf-8").replace(
+            "files:\n", f"supersedes: [{earlier}]\nfiles:\n").encode("utf-8"))
+        run_git(root, "commit", "-qam", f"plan: {task_id} supersedes {earlier}")
+
+    def test_later_wave_task_that_supersedes_the_earlier_task_lands_without_its_verify(self) -> None:
+        root = self.root
+        trace, _ = self.later_wave_fixture(root, "test -f src/app.py")
+        self.supersede(root, "T002", "T001")
+        # The same coder as in the blocked test above: src/app.py now exits 1, so T001's Verify would fail.
+        receipt = self.round(root, "--wait", "60", wave=2, mode="badverify")
+        self.assertEqual(receipt["status"], "done", receipt)
+        landed = receipt["landed"][0]
+        self.assertEqual(landed["task"], "T002")
+        self.assertEqual(trace.read_text(encoding="utf-8").splitlines(), ["ran"])  # T001's Verify did not run
+        self.assertEqual(landed["regressions"], [])
+        self.assertEqual(landed["retired"], [{"task": "T001", "superseded_by": "T002"}])
+        evidence = json.loads(Path(landed["verify"]["evidence"]).read_text(encoding="utf-8"))
+        self.assertEqual(evidence["retired"], landed["retired"])
+        text = (root / ".project/tasks/T002-demo.md").read_text(encoding="utf-8")
+        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t002-verify): pass, exit 0", text)
+        self.assertIn("orchestrator regression Verify of T001 retired: superseded by T002\n", text)
+        # Dispatch and landing rewrite the frontmatter; the plan-approved field stays.
+        self.assertIn("task_branch: null\nsupersedes: [T001]\nfiles:\n", text)
+        self.assertIn("status: done", text)
+
+    def test_coder_that_adds_supersedes_to_its_own_task_does_not_land(self) -> None:
+        root = self.root
+        self.later_wave_fixture(root, "test -f src/app.py")
+        head = self.head(root)
+        receipt = self.round(root, "--wait", "60", wave=2, mode="selfsupersede")
+        self.assertEqual(receipt["status"], "blocked", receipt)
+        self.assertEqual(receipt["landed"], [])
+        self.assertEqual(receipt["blocked"][0]["reason"], "task changes the task contract recorded at its base")
+        self.assertEqual(self.head(root), head)
+
+    def test_earlier_verify_stays_retired_for_a_task_that_lands_after_the_superseding_task(self) -> None:
+        root = self.root
+        # T001 owns app.py, a.py and b.py. In wave 2 T002 edits a.py, then T003 replaces app.py and
+        # supersedes T001, then T004 edits b.py. The coder makes each file exit 1.
+        trace = root.parent / "t001-verify-runs"
+        verify_t001 = f"python3 src/app.py && echo ran >> {shlex.quote(trace.as_posix())}"
+        self.fixture(root, wave_t002=2, files_t002="src/a.py", verify_t002="test -f src/a.py",
+                     verify_t001=verify_t001)
+        handoffs = test_handoffs.HandoffValidationTests()
+        handoffs.write_coverage_task(root, "T003", "- None", wave=2, deps="[T002]", files="src/app.py",
+                                     verify="test -f src/app.py")
+        handoffs.write_coverage_task(root, "T004", "- None", wave=2, deps="[T003]", files="src/b.py",
+                                     verify="test -f src/b.py")
+        t001 = root / ".project/tasks/T001-demo.md"
+        t001.write_bytes(t001.read_text(encoding="utf-8").replace(
+            "  - src/app.py\n", "  - src/app.py\n  - src/a.py\n  - src/b.py\n").encode("utf-8"))
+        plan = root / ".project/plan/PLAN.md"
+        plan.write_bytes(plan.read_text(encoding="utf-8").replace(
+            "| — | src/app.py |\n", "| — | src/app.py, src/a.py, src/b.py |\n").replace(
+            "| T002 | Demo task T002 | — | src/a.py |\n",
+            "| T002 | Demo task T002 | — | src/a.py |\n| T003 | Demo task T003 | T002 | src/app.py |\n"
+            "| T004 | Demo task T004 | T003 | src/b.py |\n").encode("utf-8"))
+        run_git(root, "add", ".")
+        run_git(root, "commit", "-qm", "plan: T002, T003 and T004 edit the files of T001")
+        self.supersede(root, "T003", "T001")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(trace.read_text(encoding="utf-8").splitlines(), ["ran"])  # the wave 1 landing
+
+        receipt = self.round(root, "--wait", "120", wave=2, mode="badverify")
+
+        self.assertEqual(receipt["status"], "done", receipt)
+        landed = {item["task"]: item for item in receipt["landed"]}
+        self.assertEqual(list(landed), ["T002", "T003", "T004"])
+        # T003 was not done when T002 landed: T002 ran T001's Verify. After T003 nothing runs it.
+        self.assertEqual(trace.read_text(encoding="utf-8").splitlines(), ["ran", "ran"])
+        self.assertEqual([item["tasks"] for item in landed["T002"]["regressions"]], [["T001"]])
+        self.assertNotIn("retired", landed["T002"])
+        retired = [{"task": "T001", "superseded_by": "T003"}]
+        self.assertEqual((landed["T003"]["retired"], landed["T004"]["retired"]), (retired, retired))
+        self.assertEqual(landed["T004"]["regressions"], [])
+        self.assertIn("orchestrator regression Verify of T001 retired: superseded by T003\n",
+                      (root / ".project/tasks/T004-demo.md").read_text(encoding="utf-8"))
 
     def test_later_wave_task_lands_when_the_earlier_verify_still_passes(self) -> None:
         root = self.root
@@ -1680,6 +1764,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(text.count("1. The demo command prints hello."), 1)
         self.assertNotIn("2. The demo command prints hello.", text)
         self.assertEqual(dispatch_driver._common.task_verify_command(text), f"set -e\n(\n{verify_t001}\n)")
+        self.assertNotIn("supersedes", dispatch_driver.isolation.task_frontmatter(text)[0])
         self.assertEqual(receipt["plan_wave"], 2)
         self.assertIn("## Wave 2 — fix wave 1 cycle 1 review findings", (root / ".project/plan/PLAN.md").read_text(encoding="utf-8"))
         self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review and fix tasks")

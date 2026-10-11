@@ -306,6 +306,11 @@ dispatch contract and perform steps 1–5 by hand.
      failed own Verify does. The receipt (`regressions`) and the task Log
      entry `orchestrator regression Verify of <task id>` name the earlier
      task. The ledger records only the own command.
+     A plan-approved `supersedes` field retires the Verify of each earlier
+     task that it names: `finish` does not run that Verify for the task, or
+     for a task that lands after the task is `done`. The receipt (`retired`)
+     and the task Log entry `orchestrator regression Verify of <task id>
+     retired: superseded by <task id>` name both tasks.
      A `landed` receipt proves those steps; do not run them again
      or author another implementation narrative. A blocked receipt preserves
      its failure evidence and follows the recovery rule, never a manual bypass.

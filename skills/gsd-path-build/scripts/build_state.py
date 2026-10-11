@@ -95,6 +95,7 @@ class Task:
     repo: str = ""
     review_findings: bool = False
     verify: str = ""
+    supersedes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -250,6 +251,7 @@ def _parse_task(path: Path, relative_path: str, task_file: Optional[str] = None)
         repo=str(fields.get("repo") or ""),
         review_findings=REVIEW_FINDINGS_HEADING in _sections(text),
         verify=_common.task_verify_command(text),
+        supersedes=_normalize_list(fields.get("supersedes", []), f"{label} supersedes", task_ids=True),
     )
 
 
@@ -496,13 +498,58 @@ def _overlap(left: Task, right: Task) -> List[str]:
     return sorted(set(left.files) & set(right.files))
 
 
-def _regression_sources(tasks: Sequence[Task], task: Task) -> List[Task]:
-    """Done tasks of an earlier wave that share a declared file with this task."""
+def _superseded(tasks: Sequence[Task], task: Task) -> Dict[str, str]:
+    """Earlier task id -> the task that replaces its behavior: this task, or a `done` task."""
 
+    return {
+        earlier: other.task_id
+        for other in tasks
+        if other.status == "done" or other.task_id == task.task_id
+        for earlier in other.supersedes
+    }
+
+
+def _regression_sources(tasks: Sequence[Task], task: Task, retired: bool = False) -> List[Task]:
+    """Done tasks of an earlier wave that share a declared file with this task.
+
+    A superseded task is not a source: its Verify is retired. `retired` returns those tasks instead.
+    """
+
+    superseded = _superseded(tasks, task)
     return [
         other
         for other in tasks
         if other.status == "done" and other.wave < task.wave and _overlap(task, other)
+        and (other.task_id in superseded) == retired
+    ]
+
+
+def _landing_tasks(repo: Path, task_id: str, project_dir: str) -> Tuple[List[Task], Task]:
+    tasks = [
+        _parse_task(path, path.relative_to(repo).as_posix())
+        for path in sorted((repo / project_dir / "tasks").glob("*.md"))
+    ]
+    task = next((item for item in tasks if item.task_id == task_id), None)
+    if task is None:
+        raise BuildStateError("unknown-task", f"task file is missing: {task_id}")
+    return tasks, task
+
+
+def retired_verifies(
+    repo: Path, task_id: str, project_dir: str = DEFAULT_PROJECT_DIR
+) -> List[Dict[str, str]]:
+    """Return the earlier-wave tasks whose Verify a landing of this task does not run again.
+
+    A task's plan-approved `supersedes` names them. The Verify is retired for that task, and
+    for every task that lands after that task is `done`.
+    """
+
+    tasks, task = _landing_tasks(repo, task_id, project_dir)
+    superseded = _superseded(tasks, task)
+    return [
+        {"task": other.task_id, "superseded_by": superseded[other.task_id]}
+        for other in _regression_sources(tasks, task, retired=True)
+        if other.verify
     ]
 
 
@@ -515,16 +562,11 @@ def regression_verifies(
     that the task's own Verify already runs is left out: an identical command, or
     a dependency's command when the own Verify is exactly the fix-task Verify of
     the task's dependencies. Text that only contains a command proves nothing.
+    A retired Verify is not here: see `retired_verifies`.
     """
 
-    tasks = [
-        _parse_task(path, path.relative_to(repo).as_posix())
-        for path in sorted((repo / project_dir / "tasks").glob("*.md"))
-    ]
+    tasks, task = _landing_tasks(repo, task_id, project_dir)
     by_id = {item.task_id: item for item in tasks}
-    task = by_id.get(task_id)
-    if task is None:
-        raise BuildStateError("unknown-task", f"task file is missing: {task_id}")
     composed = [by_id[dependency].verify for dependency in task.deps if dependency in by_id]
     covered = {own, *(composed if own == _common.fix_verify(composed) else ())}
     sources: Dict[str, List[str]] = {}

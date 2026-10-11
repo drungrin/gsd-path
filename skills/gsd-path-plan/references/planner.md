@@ -99,6 +99,12 @@ plan order above, which still keeps plan-invalidating risk in wave 1.
   A task that lists a file of an earlier-wave task must also pass that
   task's Verify to land. When it changes that behavior on purpose, list the
   tests that Verify runs in its `files`.
+- Add `supersedes: [<task id>]` only when INTENT.md requires this task to
+  remove or replace behavior of an earlier-wave task, and that task's Verify
+  cannot pass after the change. The named task must be in an earlier wave,
+  in the same repo, and share a file with this task. Its Verify is then
+  retired: it does not run at this landing or at a later landing. State the
+  replacement in this task's acceptance criteria.
 - In a multi-repo milestone (`.project/MEMBERS.md` lists members), each task
   changes exactly one repo. Give a member task `repo: <member>`; its `files`
   and Verify are relative to that member's root, and its Verify runs there.

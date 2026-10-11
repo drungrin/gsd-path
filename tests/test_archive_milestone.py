@@ -45,7 +45,8 @@ class ArchiveMilestoneTests(unittest.TestCase):
     def git(self, repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return self.run_command("git", *args, cwd=repo)
 
-    def make_repo(self, root: Path, branch: str = "gsd-path/M001", landing: str = "land", acceptance: str = "") -> None:
+    def make_repo(self, root: Path, branch: str = "gsd-path/M001", landing: str = "land", acceptance: str = "",
+                  supersedes: str = "") -> None:
         self.git(root, "init", "-q", "-b", branch)
         # Finish automatic housekeeping before TemporaryDirectory removes Git objects.
         self.git(root, "config", "gc.autoDetach", "false")
@@ -146,6 +147,9 @@ python3 -c 'print(1)'
             task.write_bytes(task.read_text(encoding="utf-8").replace(
                 "## Intent coverage", f"## Acceptance criteria\n\n{acceptance}\n\n## Intent coverage"
             ).encode("utf-8"))
+        if supersedes:
+            task.write_bytes(task.read_text(encoding="utf-8").replace(
+                "files: [", f"supersedes: {supersedes}\nfiles: [").encode("utf-8"))
         (project / "review" / "FINAL.md").write_bytes("Overall verdict: pass\n".encode("utf-8"))
         (project / "review" / "wave-1.cycle1.md").write_bytes(
             """# Review — wave 1, cycle 1
@@ -2386,6 +2390,20 @@ wave: 1   # inline comment
 
             self.assertTrue((archive / "review" / "wave-1.cycle1.contract.md").is_file())
             self.assertTrue((archive / "review" / "wave-1.cycle1.adversarial.md").is_file())
+            self.write_manifest(archive)
+            preflight = self.preflight(repo)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+
+    def test_archive_accepts_a_landed_task_that_has_the_supersedes_field(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo = Path(temporary_directory)
+            # Archive validation does not read the value; the plan gate checks it.
+            self.make_repo(repo, supersedes="[T000]")
+
+            archive = self.prepare_archive(repo)
+
+            self.assertIn("\nsupersedes: [T000]\nfiles: [src/demo.py]\n",
+                          (archive / "tasks" / "T001-demo.md").read_text(encoding="utf-8"))
             self.write_manifest(archive)
             preflight = self.preflight(repo)
             self.assertEqual(preflight.returncode, 0, preflight.stderr)

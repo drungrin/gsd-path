@@ -22,6 +22,10 @@ tasks in this wave as the rubric. For each task:
    binds this text to the task. Give the observed result, `file:line`, and
    concrete fix direction for each failure.
 
+A Log entry `orchestrator regression Verify of <task id> retired: superseded
+by <task id>` is not evidence: judge the superseding task's acceptance
+criteria, and fail the task when INTENT.md does not require the replacement.
+
 Then check each INTENT.md success criterion owned by a task in this wave
 against that same isolated product. In each `### SCn —` heading, copy the
 criterion text exactly as `check_handoffs._success_criteria` stores it from
