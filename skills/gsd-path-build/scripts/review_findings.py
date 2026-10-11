@@ -22,6 +22,11 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+try:
+    from . import _common
+except ImportError:  # installed standalone helper
+    import _common
+
 DEFAULT_PROJECT_DIR = ".project"
 DEFAULT_MAX_REVIEW_CYCLES = 3
 CONFIG_KEYS = ("max_review_cycles", "wave_budget", "review_panel", "finding_skeptics")
@@ -272,10 +277,16 @@ def parse_lens(text: str, lens: str, tasks: Dict[str, dict]) -> dict:
         for observation in _fail_items(zones["criteria"]):
             criterion = _criterion_of(observation)
             locator = None
-            if criterion in task["acceptance"]:
-                locator = f"{task_id.lower()}_ac{task['acceptance'].index(criterion) + 1}"
-            elif criterion in task["interface"]:
+            # Issue #392: match as the wave gate does, then report the task's own text.
+            quoted = _common.criterion_key(criterion)
+            acceptance = [_common.criterion_key(item) for item in task["acceptance"]]
+            interface = [_common.criterion_key(item) for item in task["interface"]]
+            if quoted in acceptance:
+                locator = f"{task_id.lower()}_ac{acceptance.index(quoted) + 1}"
+                criterion = task["acceptance"][acceptance.index(quoted)]
+            elif quoted in interface:
                 locator = f"{task_id.lower()}_interface_contract"
+                criterion = task["interface"][interface.index(quoted)]
             if locator is None:
                 problems.append(
                     f"{lens} lens {task_id} finding names no task criterion: {criterion}"

@@ -2395,6 +2395,8 @@ Tasks reviewed: 2
                     ).encode("utf-8")
                 )
                 self.assertEqual(validate()["verdict"], "pass")
+                # Issue #392: the `- ` markers of the sub-bullets are not part of
+                # the compared text; every word is.
                 review.write_bytes(
                     original.replace(
                         "### SC1 — The demo command prints hello.",
@@ -2402,10 +2404,71 @@ Tasks reviewed: 2
                         "The dashboard shows a badge.",
                     ).encode("utf-8")
                 )
-                with self.assertRaisesRegex(
-                    check_handoffs.HandoffError, "SC1 heading text differs from INTENT.md"
+                self.assertEqual(validate()["verdict"], "pass")
+                for changed in (
+                    "At a store with a due review: The board lists the store. "
+                    "The dashboard shows a banner.",
+                    "At a store with a due review: The board lists the store.",
+                    "At a store with a due review: The dashboard shows a badge. "
+                    "The board lists the store.",
                 ):
-                    validate()
+                    with self.subTest(changed=changed):
+                        review.write_bytes(
+                            original.replace(
+                                "### SC1 — The demo command prints hello.", f"### SC1 — {changed}"
+                            ).encode("utf-8")
+                        )
+                        with self.assertRaisesRegex(
+                            check_handoffs.HandoffError, "SC1 heading text differs from INTENT.md"
+                        ):
+                            validate()
+
+    def test_wave_checks_evidence_after_task_criterion_quoted_without_list_markers(self) -> None:
+        # Issue #392: a wrapped criterion is stored with the `- ` markers of its
+        # sub-bullets. A quote without them is still the quoted criterion, so
+        # the evidence after it gets the same checks.
+        stored = "The demo command: - prints hello - exits with 0"
+        bare = "The demo command: prints hello exits with 0"
+        for verdict, marker in (("pass", "✅"), ("fail", "❌")):
+            with self.subTest(verdict=verdict), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_plan_handoff(root)
+                relative = self.write_wave_review(root)
+                self.write_coverage_task(
+                    root, "T001", "- SC1",
+                    acceptance="1. The demo command:\n   - prints hello\n   - exits with 0",
+                )
+                review = root / relative
+                original = review.read_text(encoding="utf-8").replace(
+                    "## T001 — Demo task T001: pass", f"## T001 — Demo task T001: {verdict}"
+                )
+                if verdict == "fail":
+                    original = original.replace("Wave verdict: pass", "Wave verdict: blocked")
+                old = "- ✅ The demo command prints hello. — ran hello.py"
+                for quote in (stored, bare):
+                    with self.subTest(quote=quote):
+                        review.write_bytes(original.replace(
+                            old, f"- {marker} {quote} — ran hello.py; exit 0"
+                        ).encode("utf-8"))
+                        result = check_handoffs.validate_wave(root, review=relative)
+                        self.assertEqual(result["verdict"], "pass" if verdict == "pass" else "blocked")
+                        for evidence in ("none", ""):
+                            review.write_bytes(original.replace(
+                                old, f"- {marker} {quote} — {evidence}"
+                            ).encode("utf-8"))
+                            with self.assertRaisesRegex(check_handoffs.HandoffError, "is empty"):
+                                check_handoffs.validate_wave(root, review=relative)
+                task_text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
+                for changed in (
+                    "The demo command: prints hello exits with 1",
+                    "The demo command: prints hello",
+                    "The demo command: exits with 0 prints hello",
+                ):
+                    with self.subTest(changed=changed):
+                        self.assertEqual(
+                            check_handoffs.task_review_observation(f"{changed} — none", task_text),
+                            f"{changed} — none",
+                        )
 
     def test_wave_checks_evidence_after_exact_quoted_task_criterion(self) -> None:
         for verdict, marker in (("pass", "✅"), ("fail", "❌")):

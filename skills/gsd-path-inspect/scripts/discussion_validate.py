@@ -563,7 +563,7 @@ def _final_review(archive: Path) -> tuple:
     if len(headings) != len(intent_criteria):
         raise ArchiveError("FINAL.md success criteria do not exactly cover INTENT.md")
     for _, number, criterion in headings:
-        if " ".join(criterion.split()) != intent_criteria[number]:
+        if _common.criterion_key(criterion) != _common.criterion_key(intent_criteria[number]):
             raise ArchiveError(
                 f"FINAL.md SC{number} heading text differs from archived INTENT.md"
             )
@@ -948,11 +948,11 @@ def validate_wave_review(
         if match is None:
             raise ArchiveError(f"{path.name} has an invalid Intent coverage heading")
         criterion_headings.append(
-            (index, match.group(1), " ".join(match.group(2).split()), match.group(3))
+            (index, match.group(1), _common.criterion_key(match.group(2)), match.group(3))
         )
     actual = [(sc_id, text) for _, sc_id, text, _ in criterion_headings]
     normalized_expected_criteria = [
-        (sc_id, " ".join(text.split())) for sc_id, text in expected_criteria
+        (sc_id, _common.criterion_key(text)) for sc_id, text in expected_criteria
     ]
     if actual != normalized_expected_criteria:
         raise ArchiveError(

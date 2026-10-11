@@ -182,6 +182,16 @@ def section_body(text: str, heading: str) -> Optional[str]:
     return match.group("body") if match else None
 
 
+def criterion_key(text: str) -> str:
+    """Criterion text as every reader compares a review quote with it.
+
+    A wrapped criterion is stored with the `- ` markers of its sub-bullets, and
+    a reviewer quotes it with or without them. Whitespace and those markers are
+    not compared; every other word is.
+    """
+    return " ".join(word for word in text.split() if word != "-")
+
+
 def task_verify_command(task_text: str) -> str:
     """The Verify shell text, excluding the closing fence's separator newline."""
     body = section_body(task_text, "Verify")

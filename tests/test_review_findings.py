@@ -234,6 +234,39 @@ class GroupingTest(unittest.TestCase):
         self.assertEqual(result["structural_blockers"][0]["kind"], "invalid-artifact")
         self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
 
+    def test_sub_bullet_criterion_quoted_without_list_markers_keeps_its_locator(self):
+        # Issue #392: a wrapped criterion is stored with the `- ` markers of its
+        # sub-bullets. A quote without them is the same criterion, not a
+        # structural blocker.
+        fixture = Fixture(self, skeptics="off")
+        write(
+            fixture.project / "tasks" / "T001-parse-input.md",
+            TASK.format(id="T001", title="Parse input", files="  - src/parser.py",
+                        interface="None", owned="SC1", ac1="Parses CSV rows",
+                        ac2="Rejects malformed rows:\n   - reports the row number\n   - keeps the earlier rows"),
+        )
+        stored = "Rejects malformed rows: - reports the row number - keeps the earlier rows"
+        for quote in (stored, "Rejects malformed rows: reports the row number keeps the earlier rows"):
+            with self.subTest(quote=quote):
+                fixture.lens("contract", t001_fails=[f"{quote} — found: drops them, parser.py:9"])
+                fixture.lens("adversarial", verdict="pass")
+                _, result = fixture.run()
+                self.assertEqual(result["structural_blockers"], [])
+                (group,) = result["groups"]
+                self.assertEqual((group["locator"], group["criterion"]), ("t001_ac2", stored))
+                self.assertEqual(result["fix_groups"], ["t001_ac2"])
+        for quote in (
+            "Rejects malformed rows: reports the row number keeps the later rows",  # changed word
+            "Rejects malformed rows:",  # sub-bullets dropped
+            "Rejects malformed rows: keeps the earlier rows reports the row number",  # reordered
+            "Rejects malformed rows- reports the row number keeps the earlier rows",  # changed punctuation
+        ):
+            with self.subTest(quote=quote):
+                fixture.lens("contract", t001_fails=[f"{quote} — found: drops them, parser.py:9"])
+                _, result = fixture.run()
+                self.assertEqual(result["groups"], [])
+                self.assertIn("names no task criterion", result["structural_blockers"][0]["detail"])
+
 
 class SkepticSelectionTest(unittest.TestCase):
     def test_skeptics_off_sends_groups_to_fix(self):

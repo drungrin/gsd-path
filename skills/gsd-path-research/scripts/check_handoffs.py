@@ -1303,10 +1303,13 @@ def task_review_observation(item: str, task_text: str) -> str:
     if section is not None:
         for criterion in _numbered_items(section, continuations=True).values():
             quoted = _normalize_ws(criterion)
-            prefix = quoted + " — "
-            if item.startswith(prefix):
-                return item[len(prefix) :]
-            if item in {quoted, quoted + " —"}:
+            # Issue #392: a quote with or without the `- ` markers of the
+            # criterion's sub-bullets is the same quote.
+            key = _common.criterion_key(quoted)
+            for separator in re.finditer("(?= — )", item):
+                if _common.criterion_key(item[: separator.start()]) == key:
+                    return item[separator.start() + len(" — ") :]
+            if _common.criterion_key(item) in {key, key + " —"}:
                 return ""
     return item
 
@@ -2132,7 +2135,7 @@ def validate_wave_evidence(
             sc_id in criteria
             and (
                 not separator
-                or _normalize_ws(heading_text) != _normalize_ws(criteria[sc_id])
+                or _common.criterion_key(heading_text) != _common.criterion_key(criteria[sc_id])
             )
         ):
             raise HandoffError(f"{name} {sc_id} heading text differs from INTENT.md")
@@ -2230,7 +2233,7 @@ def validate_final(
     verdicts: Dict[str, str] = {}
     for index, heading in enumerate(blocks):
         sc_id = heading.group("id")
-        if _normalize_ws(heading.group("title")) != _normalize_ws(criteria[sc_id]):
+        if _common.criterion_key(heading.group("title")) != _common.criterion_key(criteria[sc_id]):
             raise HandoffError(f"FINAL.md {sc_id} heading text differs from INTENT.md")
         end = blocks[index + 1].start() if index + 1 < len(blocks) else len(text)
         block = text[heading.end() : end]
