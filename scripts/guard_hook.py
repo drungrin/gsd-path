@@ -2270,6 +2270,8 @@ class ShellToken(str):
     `descriptor` is true for a longer digit word or a {name} word written
     against a redirection operator: bash reads it as a file descriptor, zsh
     as an argument.
+    `body` holds the tokens of a process substitution on its operator token,
+    once destructive_git_reason has folded them.
     `literal` is "bare" for a word written with no quote or escape, "quoted"
     for a word inside one pair of plain quotes, "mixed" for plain quoted and
     unquoted parts where no unquoted part can expand, and None when the shell
@@ -2281,6 +2283,7 @@ class ShellToken(str):
     redirection = False
     descriptor = False
     literal = None
+    body = None
 
 
 def double_quoted_markers(command):
@@ -3413,6 +3416,55 @@ def _positional_targets(arguments):
 PLAIN_REDIRECTION_OPERATORS = frozenset({">", ">>", "<", ">&", "&>", "&>>"})
 
 
+def _opens_process_substitution(token):
+    return token in ("<(", ">(") and getattr(token, "literal", None) != "quoted"
+
+
+def _fold_process_substitutions(tokens):
+    """The tokens with each process substitution body moved onto its operator."""
+    folded = []
+    body = None
+    depth = 0
+    for token in tokens:
+        opens = _opens_process_substitution(token) and (
+            getattr(token, "body", None) is None
+        )
+        if depth == 0:
+            if opens:
+                depth, body = 1, []
+                operator = ShellToken(token)
+                operator.literal = getattr(token, "literal", None)
+                operator.body = body
+                token = operator
+            folded.append(token)
+            continue
+        if opens:
+            depth += 1
+        elif token and set(token) <= set("|;&()\n\r") and (
+            getattr(token, "literal", None) != "quoted"
+        ):
+            for index, character in enumerate(token):
+                depth += (character == "(") - (character == ")")
+                if depth == 0:
+                    if token[index + 1:]:
+                        folded.append(ShellToken(token[index + 1:]))
+                    if token[:index]:
+                        body.append(token[:index])
+                    break
+            if depth == 0:
+                continue
+        body.append(token)
+    return folded
+
+
+def _runs_git_or_wrapper(segment, assignments):
+    words, _exact = _without_redirections(segment)
+    return (
+        wrapped_command_tokens(words if len(words) > 1 else segment) is not None
+        or git_command(words, assignments) is not None
+    )
+
+
 def _without_descriptor(token):
     word = ShellToken(token)
     word.redirection = getattr(token, "redirection", False)
@@ -3426,13 +3478,18 @@ def _without_redirections(words):
     Each redirection operator goes with the word after it and one file
     descriptor digit written against it. The second result is false when one
     of them is not plain: an operator outside PLAIN_REDIRECTION_OPERATORS or
-    a target that is not one literal word.
+    a target that is not one literal word. A process substitution operator is
+    removed too and is never plain.
     """
     kept = []
     exact = True
     index = 0
     while index < len(words):
         word = words[index]
+        if _opens_process_substitution(word):
+            exact = False
+            index += 1
+            continue
         if not getattr(word, "redirection", False):
             kept.append(word)
             index += 1
@@ -3917,6 +3974,7 @@ def destructive_git_reason(
     git_context_reliable=True,
     earlier_git=False,
 ):
+    tokens = _fold_process_substitutions(tokens)
     cwd_reliable = cwd_reliable and not ownership_cwd_is_uncertain(
         tokens, working_directories
     )
@@ -3940,35 +3998,37 @@ def destructive_git_reason(
         # A descriptor word is a file descriptor in bash and an argument in
         # zsh; a process substitution runs a second command. Each reading is
         # checked, and a scoped deletion in one of them is denied.
-        readings = []
-        substitution = next(
-            (
-                index for index, token in enumerate(segment)
-                if token in ("<(", ">(") and getattr(token, "literal", None) != "quoted"
-            ),
-            None,
-        )
-        if any(getattr(token, "descriptor", False) for token in segment):
+        descriptor = any(getattr(token, "descriptor", False) for token in segment)
+        if descriptor:
             readings = [
                 [token for token in segment if not getattr(token, "descriptor", False)],
-                [_without_descriptor(token) for token in segment],
+                [
+                    _without_descriptor(token)
+                    if getattr(token, "descriptor", False) else token
+                    for token in segment
+                ],
             ]
-        elif substitution is not None:
-            readings = [segment[:substitution], segment[substitution + 1:]]
-        if readings:
-            for reading in filter(None, readings):
-                reason = destructive_git_reason(
-                    reading,
-                    resolved_aliases,
-                    initial_assignments=assignments,
-                    working_directories=directories,
-                    cwd_reliable=False,
-                    git_context_reliable=git_context_reliable,
-                    earlier_git=earlier_git,
-                )
-                if reason is not None:
-                    return reason
-            this_git = True
+        else:
+            readings = [token.body for token in segment if getattr(token, "body", None)]
+        for reading in readings:
+            reason = destructive_git_reason(
+                reading,
+                resolved_aliases,
+                initial_assignments=assignments,
+                working_directories=directories,
+                cwd_reliable=False,
+                git_context_reliable=git_context_reliable,
+                earlier_git=earlier_git,
+            )
+            if reason is not None:
+                return reason
+        nested_git = any(
+            _runs_git_or_wrapper(part, assignments)
+            for reading in readings
+            for part in command_segments(_fold_process_substitutions(reading))
+        )
+        if descriptor:
+            this_git = nested_git
             continue
         # A redirection can stand at each position of a simple command.
         words, exact = _without_redirections(segment)
@@ -3991,7 +4051,7 @@ def destructive_git_reason(
             if reason is not None:
                 return reason
         invocation = git_command(words, assignments)
-        this_git = wrapped is not None or invocation is not None
+        this_git = nested_git or wrapped is not None or invocation is not None
         if invocation is None:
             continue
         command, arguments, git_options = invocation
