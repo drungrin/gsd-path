@@ -768,6 +768,10 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
             raise ReviewFindingsError("repair has no reusable passing Verify at its landing")
         if later is None or (later and linked_changes(at(repair), tip, chain_files) is None):
             raise ReviewFindingsError("product changed after the repair landing")
+        # A parallel landing can have a parent that is newer than the repair base. The reviewer builds the
+        # product from the base, so no other landing between the two can change a file of the chain.
+        if differ(at(repair, "base"), [f"{at(repair)}^"], chain_files):
+            raise ReviewFindingsError("product changed between the repair base and the repair landing")
         return {
             "status": "ok", "command": "repair-evidence", "head": head,
             "source": {"wave": wave, "cycle": cycle}, "groups": groups,

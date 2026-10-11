@@ -1,11 +1,13 @@
 """Repair evidence must follow real task landings, not a shared branch tip."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts import _common, build_state, isolation
 from tests.test_build_state import run_git
@@ -314,6 +316,35 @@ Criterion: Prints good
                 result, evidence = self.cli()
                 self.assertEqual(result.returncode, 2, evidence)
                 self.assertIn("product changed after", evidence["error"])
+
+    def test_superseded_repair_that_landed_on_a_newer_parent_needs_the_chain_files_unchanged_from_its_base(self):
+        # T002 starts at its base in its own isolate. Another task lands before T002 does, so the parent of
+        # the T002 landing is not its base. The reviewer builds the product from that base.
+        for other, error in (("late.py", "between the repair base and the repair landing"), ("other.py", None)):
+            with self.subTest(other=other):
+                self.setUp()
+                base = self.commit("plan repair")
+                sidecars = tempfile.TemporaryDirectory()
+                self.addCleanup(sidecars.cleanup)
+                with mock.patch.dict(os.environ, {"GSD_PATH_WORKTREE_ROOT": sidecars.name}):
+                    isolated = isolation.isolate_task(self.repo, base, "T002", 2)
+                    worktree = Path(isolated["worktree"])
+                    isolation.activate_task(worktree, base, "T002", "coder", self.repair_file, isolated["task_branch"])
+                    (worktree / "count.py").write_bytes("print('good')\n".encode("utf-8"))
+                    (self.repo / other).write_bytes("print('parallel task')\n".encode("utf-8"))
+                    self.commit("parallel task")
+                    repair = isolation.land(self.repo, worktree, base, "T002", "Repair", self.repair_file, ["count.py"])["commit"]
+                    isolation.retire(self.repo, worktree, isolated["task_branch"], False)
+                self.assertNotEqual(run_git(self.repo, "rev-parse", f"{repair}^"), base)
+                self.repair("T003", "T002", "better", files="  - count.py\n  - late.py", target="count.py,late.py")
+                result, evidence = self.cli()
+                if error:
+                    self.assertEqual(result.returncode, 2, evidence)
+                    self.assertIn(error, evidence["error"])
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr or evidence)
+                    self.assertEqual((evidence["repair"]["base"], evidence["repair"]["commit"], evidence["chain_files"]),
+                                     (base, repair, ["count.py", "late.py"]))
 
     def test_superseded_repair_gets_no_receipt_from_an_unlinked_or_unverified_later_change(self):
         expected_errors = {"no dependency": "product changed after", "other finding": "product changed after",

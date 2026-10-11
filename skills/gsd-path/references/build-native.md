@@ -548,8 +548,8 @@ dispatch contract and perform steps 1–5 by hand.
      repairs in the repair base are in `earlier_repairs`. Linked repairs
      after the repair are in `later_repairs`; then the landing and the
      recorded Verify of the last one are the evidence, and `chain_files`
-     lists the files checked after the repair landing: those of the repair
-     and of every later linked repair. On success, brief the next
+     lists the files checked from the repair base to the tip: those of the
+     repair and of every later linked repair. On success, brief the next
      original-wave review with this receipt and the reviewer role's
      **Re-review after a proven repair** contract. Reuse command evidence;
      the new review judges the repaired product against the original criteria.
