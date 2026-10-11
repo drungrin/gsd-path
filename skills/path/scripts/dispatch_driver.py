@@ -92,6 +92,7 @@ _RUNTIME_ACTIVATION_ORDER = (
     "model_policy",
 )
 RECOVERY_BLOCKED = "recovery blocked"
+LEFTOVER_ISOLATE = "task {} is landed; remove its leftover isolate: {}"
 # The stops the build contract answers with build/blocked when the round raises them (steps 1 and 2);
 # the same stops from review, panel, or skeptics stay with the parent.
 BLOCKING_STOPS = {"dependency-deadlock": "dependency deadlock", RECOVERY_BLOCKED: "blocked recovery"}
@@ -700,9 +701,10 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
         else:
             isolation.retire(primary, Path(str(state["worktree"])), state.get("task_branch") or None, False)
     except isolation.IsolationError as error:
-        # The landing is proven, so a failed removal is a warning; Round.recover retires the isolate again.
-        landing["cleanup_warning"] = (f"{error}; the task is landed, and the next round or finish "
-                                      "retries the removal of its isolate")
+        # The landing is proven, so a failed removal is a warning; Round.recover checks the isolate again.
+        landing["cleanup_warning"] = (f"{error}; the task is landed, but its isolate was not removed. The next "
+                                      "round or finish checks the isolate again and stops with the path to "
+                                      "remove if it cannot remove it")
     return landing
 
 
@@ -785,6 +787,11 @@ def recover_report(primary: Path, project_dir: str, receipt: Dict[str, object]) 
     report = isolation.recover(primary, Path(project_dir) / "tasks")
     receipt["steps"].append({"script": "isolation.py recover", "result": report})
     if report["verdict"] == "block":
+        blocked = [task for task in report["tasks"] if task["verdict"] == "block"]
+        if blocked and all(task.get("leftover") for task in blocked):
+            # Every blocked task is landed: the stop names only the isolates to remove, and the build stays active.
+            raise DriverStop("; ".join(LEFTOVER_ISOLATE.format(task["task_id"], task["leftover"])
+                                       for task in blocked), recover=blocked)
         raise DriverStop(RECOVERY_BLOCKED, recover=report)
     return report
 
@@ -920,7 +927,7 @@ class Round:
             self.receipt["steps"].append({"script": "isolation.recover_member_landing", "task": journal.stem,
                                           "result": result})
             if result["state"] == "landed":
-                isolation.retire_member_task(self.primary, str(result["member"]), journal.stem)
+                self.retire_member(str(result["member"]), journal.stem)
                 retired_members.add(journal.stem)
         report = recover_report(self.primary, self.project_dir, self.receipt)
         for task in report["tasks"]:
@@ -949,15 +956,34 @@ class Round:
                     recover=task,
                 )
             if verdict == "recovered" and task.get("member") and task.get("task_id") not in retired_members:
-                isolation.retire_member_task(self.primary, str(task["member"]), str(task["task_id"]))
+                self.retire_member(str(task["member"]), str(task["task_id"]))
             if verdict == "recovered" and worktree and worktree["clean"] and task.get("task_branch"):
                 isolation.retire(self.primary, Path(str(worktree["path"])),
                                  str(task["task_branch"]), False)
-            elif (verdict == "recovered" and worktree is None and task.get("task_branch")) or (
-                    verdict == "resume" and (task.get("landing_retry") or task.get("dispatch_retry"))):
-                # ponytail: interrupted retirements and retries stay with the parent's documented
+            elif verdict == "recovered" and worktree is None and task.get("task_branch"):
+                # The isolate is gone and the landing is proven: retire proves the branch, then deletes it.
+                isolation.retire(self.primary, None, str(task["task_branch"]), True, str(task["commit"]))
+            elif verdict == "resume" and (task.get("landing_retry") or task.get("dispatch_retry")):
+                # ponytail: interrupted retries stay with the parent's documented
                 # procedure; failed/blocked reconciliation surfaces through ready's typed error.
                 raise DriverStop(f"task {task.get('task_id')} needs recovery: {verdict}", recover=task)
+
+    def retire_member(self, member: str, task_id: str) -> None:
+        """Retire a landed member task's sidecar; what is left of it is a stop that names only its path."""
+        checkout, project, _ = isolation._member_context(self.primary, member)
+        sidecar = isolation.sidecar_root(checkout, "task", f"{project}-{task_id}")
+        details = {}
+        try:
+            isolation.retire_member_task(self.primary, member, task_id)
+        except isolation.IsolationError as error:
+            status = isolation.run_git(sidecar, "status", "--porcelain", "--untracked-files=all")
+            # Content that Git does not have keeps the refusal; missing files are a removal that stopped part way.
+            if not os.path.lexists(sidecar) or (status.returncode == 0 and any(
+                    not line.startswith(" D") for line in status.stdout.splitlines())):
+                raise
+            details["cleanup_error"] = str(error)
+        if os.path.lexists(sidecar):
+            raise DriverStop(LEFTOVER_ISOLATE.format(task_id, sidecar), **details)
 
     # settle exited children ---------------------------------------------
 

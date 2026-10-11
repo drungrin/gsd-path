@@ -90,6 +90,45 @@ class NativeMemberDispatchTests(unittest.TestCase):
         self.assertFalse(sidecar.exists())
         self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
 
+    def test_next_finish_names_only_the_leftover_sidecar_of_a_landed_member_task(self) -> None:
+        import contextlib
+        import io
+        import shutil
+        from unittest import mock
+        from scripts import dispatch_driver
+        sidecar = Path(self.attempt("v2\n")["worktree"])
+
+        def partial_removal(checkout: Path, destination: Path, force: bool) -> None:
+            (destination / "app.py").unlink()
+            raise dispatch_driver.isolation.IsolationError(
+                f"could not delete {destination}: [WinError 145] The directory is not empty")
+
+        output = io.StringIO()
+        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree", side_effect=partial_removal), \
+                contextlib.redirect_stdout(output):
+            code = dispatch_driver.main(["finish", "--repo", str(self.coordinator), "--task-id", "T001"])
+        receipt = json.loads(output.getvalue())
+        self.assertEqual((code, receipt["status"]), (0, "landed"), receipt)
+        self.assertIn("its isolate was not removed", receipt["landed"][0]["cleanup_warning"])
+
+        finish = ("dispatch_driver.py", "finish", "--repo", str(self.coordinator), "--task-id", "T001")
+        leftover = f"task T001 is landed; remove its leftover isolate: {sidecar}"
+        self.assertEqual(json.loads(call(*finish).stdout)["reason"], leftover)
+
+        # Content that Git does not have is not a leftover: Git's refusal stays.
+        (sidecar / "unknown.txt").write_bytes(b"not landed\n")
+        self.assertIn("contains modified or untracked files", json.loads(call(*finish).stdout)["reason"])
+        (sidecar / "unknown.txt").unlink()
+
+        # The removal also deleted the Git link, and Git no longer lists the sidecar.
+        (sidecar / ".git").unlink()
+        git(self.member, "worktree", "prune")
+        self.assertEqual(json.loads(call(*finish).stdout)["reason"], leftover)
+
+        shutil.rmtree(sidecar)
+        self.assertEqual(run(*finish)["status"], "landed")
+        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
+
     def attempt(self, content: str) -> dict:
         head = git(self.coordinator, "rev-parse", "HEAD")
         run("workflow_run.py", "prepare-task", "--repo", str(self.coordinator),

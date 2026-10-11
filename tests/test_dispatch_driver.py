@@ -958,8 +958,8 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(self.subjects(root)[:2], ["T002: Demo task T002", "T001: Demo task T001"])
         self.assertEqual(self.branches(root), ["gsd-path/M001"])
 
-    def test_finish_reports_a_landed_parallel_task_when_isolate_removal_fails(self) -> None:
-        root = self.root
+    def hand_dispatch_parallel(self, root: Path) -> Path:
+        """prepare-task and activate-task T001 by hand in a parallel isolate, then write its product file."""
         head = self.fixture(root)
         prepared = subprocess.run(
             [sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"), "prepare-task",
@@ -973,6 +973,11 @@ class DispatchDriverTests(unittest.TestCase):
                         "--task-branch", isolate["task_branch"]], check=True, capture_output=True)
         (worktree / "src").mkdir()
         (worktree / "src/app.py").write_bytes("print('hello')\n".encode("utf-8"))
+        return worktree
+
+    def test_finish_reports_a_landed_parallel_task_when_isolate_removal_fails(self) -> None:
+        root = self.root
+        worktree = self.hand_dispatch_parallel(root)
         removal = dispatch_driver.isolation.IsolationError("fatal: Directory not empty")
         output = io.StringIO()
 
@@ -993,6 +998,58 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(again["status"], "landed", again)
         self.assertFalse(worktree.exists())
         self.assertEqual(self.branches(root), ["gsd-path/M001"])
+
+    def test_next_round_names_only_the_leftover_isolate_of_a_landed_parallel_task(self) -> None:
+        root = self.root
+        worktree = self.hand_dispatch_parallel(root)
+
+        def partial_removal(primary: Path, destination: Path, force: bool) -> None:
+            (destination / "src/app.py").unlink()
+            raise dispatch_driver.isolation.IsolationError(
+                f"could not delete {destination}: [WinError 145] The directory is not empty")
+
+        output = io.StringIO()
+        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree", side_effect=partial_removal), \
+                redirect_stdout(output):
+            code = dispatch_driver.main(["finish", "--repo", str(root), "--task-id", "T001"])
+        receipt = json.loads(output.getvalue())
+        self.assertEqual((code, receipt["status"]), (0, "landed"), receipt)
+        warning = receipt["landed"][0]["cleanup_warning"]
+        self.assertIn("its isolate was not removed", warning)
+        self.assertNotIn("retries", warning)
+
+        leftover = f"task T001 is landed; remove its leftover isolate: {worktree}"
+        state = (root / ".project/STATE.md").read_bytes()
+        head = self.head(root)
+        stopped = self.round(root)
+        self.assertEqual(stopped["status"], "blocked", stopped)
+        self.assertEqual([item["reason"] for item in stopped["blocked"]], [leftover])
+        # The build is not blocked: no build/blocked transition, no checkpoint.
+        self.assertEqual(((root / ".project/STATE.md").read_bytes(), self.head(root)), (state, head))
+
+        (worktree / ".git").unlink()  # the removal also deleted the Git link
+        self.assertEqual(self.driver(root, "finish", "--task-id", "T001")["reason"], leftover)
+
+        shutil.rmtree(worktree)
+        again = self.driver(root, "finish", "--task-id", "T001")
+        self.assertEqual(again["status"], "landed", again)
+        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+
+    def test_partly_removed_isolate_of_a_task_that_did_not_land_keeps_the_recovery_block(self) -> None:
+        root = self.root
+        worktree = self.hand_dispatch_parallel(root)
+        head = self.head(root)
+        (worktree / "src/app.py").unlink()
+        (worktree / ".git").unlink()
+
+        receipt = self.driver(root, "finish", "--task-id", "T001")
+
+        self.assertEqual((receipt["status"], receipt["reason"]), ("blocked", "recovery blocked"))
+        blocked = [task for task in receipt["recover"]["tasks"] if task["verdict"] == "block"]
+        self.assertEqual([task["task_id"] for task in blocked], ["T001"])
+        self.assertIn("invalid sidecar worktree", blocked[0]["reason"])
+        self.assertNotIn("leftover", blocked[0])
+        self.assertEqual(self.head(root), head)
 
     def test_finish_refuses_a_deactivated_parallel_isolate(self) -> None:
         root = self.root

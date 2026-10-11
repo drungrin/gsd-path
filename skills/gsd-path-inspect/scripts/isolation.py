@@ -2947,12 +2947,18 @@ def _recover_task(
     head: str,
     bound: str,
     canonical_task_file: Optional[str] = None,
+    inspect_isolate: bool = True,
 ) -> Dict[str, object]:
     task_file = canonical_task_file or relative_posix(str(path.relative_to(primary)))
     report: Dict[str, object] = {"task": task_file}
 
     def result(verdict: str, **extra: object) -> Dict[str, object]:
         return {**report, "verdict": verdict, **extra}
+
+    def leftover(commit: object, base: object) -> Dict[str, object]:
+        # The landing is proven, so this block names only what is left to remove.
+        return result("block", reason=f"task landed at {commit}; remove its leftover isolate: {sidecar}",
+                      commit=commit, base=base, leftover=str(sidecar))
 
     try:
         task_text, _ = _read_task_text(path)
@@ -2980,14 +2986,20 @@ def _recover_task(
         return result(**_prove_member_task(primary, task_file, fields, subject, history))
     task_branch = task_branch_name(task_id)
     branch_exists = task_branch in branches
-    worktree, worktree_error = _worktree_report(
-        primary, sidecar_root(primary, "task", task_id), task_branch
+    sidecar = sidecar_root(primary, "task", task_id)
+    worktree, worktree_error = (
+        _worktree_report(primary, sidecar, task_branch) if inspect_isolate else (None, None)
     )
     report["worktree"] = worktree
     report["task_branch"] = task_branch if branch_exists else None
     report["rejected"] = []
 
     if worktree_error:
+        landed = _recover_task(
+            primary, path, history, branches, head, bound, canonical_task_file, False
+        ) if status == "done" else {}
+        if landed.get("verdict") == "recovered":
+            return leftover(landed["commit"], landed["base"])
         return result("block", reason=worktree_error)
 
     valid_statuses = {"pending", "in-progress", "done", "failed", "blocked"}
@@ -3241,6 +3253,10 @@ def _recover_task(
             if branch_error:
                 return result("block", reason=branch_error)
         if worktree is not None and not bool(worktree["clean"]):
+            dirt = run_git(sidecar, "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
+            if all(line.startswith(" D") for line in dirt):
+                # Only landed files are missing: a removal stopped part way, and nothing unknown is there.
+                return leftover(commit, base)
             return result(
                 "block",
                 reason="proven task retains a dirty worktree",

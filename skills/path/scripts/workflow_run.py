@@ -211,7 +211,7 @@ def run_workflow(repo: Path, action: str, project_dir: str, expected_head: str =
                         "--round-size", str(round_size))
             if task["mode"] == "serial":
                 name = f"task-{task_id.lower()}-verify"
-                stale = isolation.worktree_paths.worktree_path(repo, "verify", name)
+                stale = isolation.sidecar_root(repo, "verify", name)
                 if os.path.lexists(stale / ".git"):
                     # An earlier prepare-task left this sidecar. A clean one holds nothing; retire keeps a dirty one.
                     step("isolation.py", "retire", "--repo", str(repo), "--worktree", str(stale),
@@ -284,7 +284,8 @@ def run_workflow(repo: Path, action: str, project_dir: str, expected_head: str =
             if action == "approve-plan":
                 step("pipeline_state.py", "approve", *common, "--kind", "plan",
                      "--expected-head", expected_head)
-    except (StepFailed, OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:
+    except (StepFailed, isolation.IsolationError, OSError, subprocess.CalledProcessError,
+            ValueError, KeyError, TypeError) as error:
         return {"status": "blocked", "reason": str(error), "steps": steps,
                 "next": next_step}
     return {"status": "complete", "steps": steps, **outputs}

@@ -3388,6 +3388,37 @@ class RecoverTests(unittest.TestCase):
                 self.assertIsNone(report["task_branch"])
                 self.assertEqual(report["worktree"]["path"], str(self.repo.resolve()))
 
+    def test_landed_task_with_a_partly_removed_isolate_names_only_the_leftover_path(self) -> None:
+        source = self.land_parallel(b"print('hello')\n")
+        landed = git(self.repo, "rev-parse", "HEAD")
+        reason = f"task landed at {landed}; remove its leftover isolate: {source}"
+        # A failed removal first deletes files, then also the Git link of the isolate.
+        for removed in ("src/app.py", ".git"):
+            (source / removed).unlink()
+            with self.subTest(removed=removed):
+                report = self.recover()
+                self.assertEqual(
+                    (report["verdict"], report["reason"], report["leftover"], report["commit"]),
+                    ("block", reason, str(source), landed),
+                )
+
+    def test_done_task_without_a_proven_landing_keeps_the_invalid_isolate_block(self) -> None:
+        expected = isolation.sidecar_root(self.repo.resolve(), "task", "T001")
+        expected.mkdir(parents=True)
+        self.write_task(
+            "done",
+            self.base,
+            agent="coder",
+            worktree=str(expected),
+            task_branch="gsd-path-task/T001",
+        )
+
+        report = self.recover()
+
+        self.assertEqual(report["verdict"], "block")
+        self.assertIn("invalid sidecar worktree", report["reason"])
+        self.assertNotIn("leftover", report)
+
     def test_partial_sidecar_path_blocks_recovery(self) -> None:
         expected = isolation.sidecar_root(self.repo.resolve(), "task", "T001")
         expected.mkdir(parents=True)
