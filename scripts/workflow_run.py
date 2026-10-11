@@ -210,8 +210,14 @@ def run_workflow(repo: Path, action: str, project_dir: str, expected_head: str =
                         "--base", expected_head, "--task-id", task_id,
                         "--round-size", str(round_size))
             if task["mode"] == "serial":
+                name = f"task-{task_id.lower()}-verify"
+                stale = isolation.worktree_paths.worktree_path(repo, "verify", name)
+                if os.path.lexists(stale / ".git"):
+                    # An earlier prepare-task left this sidecar. A clean one holds nothing; retire keeps a dirty one.
+                    step("isolation.py", "retire", "--repo", str(repo), "--worktree", str(stale),
+                         "--branch", isolation.verify_branch_name(name))
                 step("isolation.py", "isolate-verify", "--repo", str(repo),
-                     "--base", expected_head, "--name", f"task-{task_id.lower()}-verify")
+                     "--base", expected_head, "--name", name)
         elif action == "build-evidence":
             proof = step("build_state.py", "verify-landed", *common, "--head", expected_head)
             # The landing proof has one canonical home; lean final-review reuse allows only this path.

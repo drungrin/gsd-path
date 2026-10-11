@@ -2421,6 +2421,10 @@ def main(argv=None) -> int:
                 if native and native["base"] != records[0].get("base"):
                     records = []
                 else:
+                    if (native and records[0]["outcome"] == "blocked" and records[0].get("native")
+                            and not records[0].get("command")):
+                        # A failed finish leaves a host-dispatched task active at its base: finish may run again.
+                        update_state(records[0], outcome=None, reason=None)
                     native = None
             if arguments.task_id in current.proven:
                 commit = current.proven[arguments.task_id]

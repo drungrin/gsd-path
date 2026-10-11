@@ -857,6 +857,79 @@ class DispatchDriverTests(unittest.TestCase):
         text = task.read_text(encoding="utf-8")
         self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): pass", text)
 
+    def hand_dispatch_serial(self, root: Path, source: str) -> str:
+        """prepare-task and activate-task T001 by hand, then write its product file and Log line."""
+        head = self.head(root)
+        subprocess.run([sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"),
+                        "prepare-task", "--repo", str(root), "--expected-head", head,
+                        "--task-id", "T001", "--round-size", "1"], check=True, capture_output=True)
+        subprocess.run([sys.executable, "-B", str(PROJECT_ROOT / "scripts/isolation.py"),
+                        "activate-task", "--repo", str(root), "--base", head, "--task-id", "T001",
+                        "--agent", "build_t001", "--task-file", ".project/tasks/T001-demo.md"],
+                       check=True, capture_output=True)
+        (root / "src").mkdir(exist_ok=True)
+        (root / "src/app.py").write_bytes(source.encode("utf-8"))
+        task = root / ".project/tasks/T001-demo.md"
+        task.write_bytes((task.read_text(encoding="utf-8")
+                          + "- 2026-10-10 — implemented src/app.py; Verify pass\n").encode("utf-8"))
+        return head
+
+    def test_finish_runs_again_after_a_failed_serial_verify_once_the_task_is_fixed(self) -> None:
+        root = self.root
+        self.fixture(root, deps_t002="[T001]")
+        head = self.hand_dispatch_serial(root, "raise SystemExit(1)\n")
+
+        failed = self.driver(root, "finish", "--task-id", "T001")
+
+        self.assertEqual(failed["status"], "blocked", failed)
+        self.assertEqual(failed["reason"], "Verify failed in the isolate")
+        self.assertEqual(self.head(root), head)
+        # Still broken: the same Verify failure again, not a refusal to run.
+        self.assertEqual(self.driver(root, "finish", "--task-id", "T001")["reason"],
+                         "Verify failed in the isolate")
+
+        (root / "src/app.py").write_bytes("print('hello')\n".encode("utf-8"))
+        receipt = self.driver(root, "finish", "--task-id", "T001")
+
+        self.assertEqual(receipt["status"], "landed", receipt)
+        records = dispatch_driver.records_root(root)
+        record = json.loads((records / "T001/attempt-1/state.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["outcome"], record["reason"]), ("landed", None))
+        self.assertEqual(dispatch_driver.attempts_used(records, "T001"), 1)
+        self.assertEqual(self.subjects(root)[0], "T001: Demo task T001")
+        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
+        self.assertIn("status: done", text)
+        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): fail", text)
+        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): pass", text)
+
+    def test_prepare_task_replaces_a_clean_verify_sidecar_left_at_an_earlier_base(self) -> None:
+        root = self.root
+        self.fixture(root, deps_t002="[T001]")
+        sidecar = dispatch_driver.isolation.sidecar_root(root.resolve(), "verify", "task-t001-verify")
+
+        def prepare_after_checkpoint() -> subprocess.CompletedProcess:
+            dispatch_driver.append_log(root / ".project/tasks/T001-demo.md",
+                                       "- 2026-10-10 — orchestrator: repaired the Verify command")
+            run_git(root, "commit", "-qam", "build: repair T001 Verify")
+            return subprocess.run(
+                [sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"), "prepare-task",
+                 "--repo", str(root), "--expected-head", self.head(root), "--task-id", "T001",
+                 "--round-size", "1"], capture_output=True, encoding="utf-8", errors="replace")
+
+        self.assertEqual(prepare_after_checkpoint().returncode, 0)
+        retry = prepare_after_checkpoint()
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.head(sidecar), self.head(root))
+
+        # A sidecar that holds files is evidence of an attempt: it stays, and prepare-task stops.
+        (sidecar / "unexpected.txt").write_bytes(b"preserve this Verify output\n")
+        refused = prepare_after_checkpoint()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("worktree is dirty", refused.stderr)
+        self.assertTrue((sidecar / "unexpected.txt").is_file())
+        self.assertNotEqual(self.head(sidecar), self.head(root))
+
     def test_finish_lands_natively_dispatched_parallel_tasks_from_their_isolates(self) -> None:
         root = self.root
         head = self.fixture(root)
