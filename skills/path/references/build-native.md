@@ -151,6 +151,10 @@ dispatch contract and perform steps 1–5 by hand.
    repair remains, `ready` returns no tasks and adds `blocked_review` (`wave`,
    `cycle`, `waiting_waves`); a later passing canonical review cycle releases
    the waiting waves.
+   `unreviewed_waves`, when present, lists earlier waves whose tasks are all
+   `done` and that have no canonical review file. `ready` reports them and
+   does not hold the returned tasks: run step 6 for each listed wave before
+   you dispatch.
    Its typed errors are the recovery rule:
    - `task-recovery-required`: for each listed failed or blocked task run
      `python3 <absolute build_state.py> reconcile --repo <absolute primary>
@@ -513,6 +517,9 @@ dispatch contract and perform steps 1–5 by hand.
      `### <locator>` block per group, `Criterion: <verbatim criterion>`, and
      every observation verbatim. Run the repair through the same isolated
      layer loop, even when its appended wave repairs an earlier blocked wave.
+     An appended repair wave has the highest wave number and still runs before
+     the pending waves, because `ready` gates them on the blocked wave (step
+     2). Do not renumber waves or move the repair wave.
      After landing, call `review_findings.py repair-evidence --repo <primary>
      --wave <source wave> --cycle <source cycle> --task <repair id>` and save
      its JSON as the repair evidence for the next review. The helper validates
