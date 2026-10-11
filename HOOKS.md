@@ -128,9 +128,23 @@ See [UPDATE.md](UPDATE.md).
   the archive tree; shell operands count an ancestor only for deletion or move
   commands
 - `git reset --hard`, destructive `git clean` modes, force pushes (including
-  `+` refspecs), destructive branch or ref deletion, `git branch -m`,
-  `git worktree remove --force`, `git stash drop`/`clear`, and whole-tree
+  `+` refspecs), `git branch -m`, `git stash drop`/`clear`, and whole-tree
   `git checkout -- .`/`git restore .`
+- forced branch deletion (`git branch -D`), `git update-ref` deletion, and
+  `git worktree remove --force` when the target is Path-owned: a `gsd-path/`,
+  `gsd-path-task/`, `gsd-path-verify/`, or `gsd-path-integrate/` branch, a
+  `refs/gsd-path/` ref, the bound `STATE.branch`, a task branch or worktree
+  that task frontmatter records, a worktree on one of these branches, and a
+  worktree below a managed worktree root (`~/.gsd-path`,
+  `GSD_PATH_WORKTREE_ROOT`, a pinned workspace root) or with `gsd-path` in its
+  path. Other branches, refs, and registered worktrees are allowed in each
+  pipeline state. These three commands are also denied when the guard cannot
+  resolve the target: a missing, non-literal, or unregistered target,
+  `update-ref --stdin`, ownership metadata it cannot read, a working directory
+  it cannot track or that does not exist yet, or an `env` wrapper that resets
+  or unsets `HOME`, `XDG_CONFIG_HOME`, or a `GIT_*` variable. With such an
+  `env` wrapper, a Git command that is not a built-in command is denied too,
+  because its alias cannot be inspected
 - shell writes (redirections, `tee`, `cp`, `mv`, `rm`, `sed -i`, ...) that
   target a routing control (`.git`, `.project/STATE.md`, `.project/next`,
   `.gsd-path`) while `.project/STATE.md` exists, or target a product file

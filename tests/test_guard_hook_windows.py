@@ -50,6 +50,21 @@ class WindowsGuardPathTests(unittest.TestCase):
         scratch.mkdir()
         self.assertIsNone(guard_hook.command_denial(f"rm -rf {msys(scratch)}", [str(self.base)]))
 
+    def test_git_in_a_git_bash_directory_is_inspected_on_its_drive(self) -> None:
+        git = ["git", "-C", str(self.repo), "-c", "user.name=Guard test",
+               "-c", "user.email=guard-test@example.invalid"]
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "initial"], check=True)
+        for branch in ("ordinary", "gsd-path/M001"):
+            subprocess.run([*git, "branch", branch], check=True)
+        prefix = f"cd {msys(self.repo)} && git"
+        base = [str(self.base)]
+        self.assertIsNone(guard_hook.command_denial(f"{prefix} status", base))
+        self.assertIsNone(guard_hook.command_denial(f"{prefix} branch -D ordinary", base))
+        self.assertEqual(
+            guard_hook.command_denial(f"{prefix} branch -D gsd-path/M001", base),
+            guard_hook.GIT_REASONS["branch"],
+        )
+
     def test_a_junction_is_treated_as_a_link(self) -> None:
         import _winapi
 

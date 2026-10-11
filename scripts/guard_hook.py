@@ -2992,13 +2992,16 @@ def has_short_option(arguments, option):
 def git_alias(command, git_options, working_directories=None):
     aliases = set()
     for directory in working_directories or [os.getcwd()]:
-        result = subprocess.run(
-            ["git", *git_options, "config", "--get", f"alias.{command}"],
-            cwd=directory,
-            encoding="utf-8", errors="replace",
-            capture_output=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["git", *git_options, "config", "--get", f"alias.{command}"],
+                cwd=directory,
+                encoding="utf-8", errors="replace",
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            raise ValueError("git alias configuration cannot be validated") from None
         if result.returncode == 1:
             aliases.add(None)
             continue
@@ -3043,6 +3046,23 @@ PATH_OWNED_REF_PREFIXES = (
     "gsd-path-verify/",
     "gsd-path-integrate/",
 )
+# Git ignores an alias that has the name of one of its own commands, so these
+# need no alias inspection. Each has been a Git command since Git 2.31, the
+# oldest Git that has the rev-parse --path-format option the pipeline uses.
+# Deprecated commands stay out: newer Git lets an alias replace them
+# (whatchanged, pack-redundant). A name that is absent only fails closed.
+GIT_BUILT_IN_COMMANDS = frozenset({
+    "add", "am", "apply", "archive", "bisect", "blame", "branch", "bundle",
+    "cat-file", "check-ignore", "checkout", "cherry", "cherry-pick", "clean",
+    "clone", "commit", "config", "describe", "diff", "diff-tree", "fetch",
+    "for-each-ref", "format-patch", "fsck", "gc", "grep", "hash-object", "init",
+    "log", "ls-files", "ls-remote", "ls-tree", "maintenance", "merge",
+    "merge-base", "mv", "name-rev", "notes", "prune", "pull", "push",
+    "range-diff", "rebase", "reflog", "remote", "reset", "restore", "rev-list",
+    "rev-parse", "revert", "rm", "shortlog", "show", "show-ref",
+    "sparse-checkout", "stash", "status", "switch", "symbolic-ref", "tag",
+    "update-index", "update-ref", "worktree", "write-tree",
+})
 
 
 def _ownership_scalar(raw, path, key):
@@ -3731,9 +3751,14 @@ def destructive_git_reason(
         invocation = git_command(segment, assignments)
         if invocation is None:
             continue
-        if not segment_git_context_reliable:
-            return GIT_REASONS["git-environment"]
         command, arguments, git_options = invocation
+        # Git matches its own commands by exact case, but alias names in any case.
+        built_in = command in GIT_BUILT_IN_COMMANDS and not any(
+            token != command and token.casefold() == command for token in segment
+        )
+        if not segment_git_context_reliable and not built_in:
+            return GIT_REASONS["git-environment"]
+        directories = [native_path_text(directory) for directory in directories]
         if command == "config":
             alias_indexes = [
                 index
@@ -3745,7 +3770,10 @@ def destructive_git_reason(
                     "git config alias.* defines an alias the guard cannot inspect; "
                     "run the underlying git command directly"
                 )
-        alias = git_alias(command, git_options, directories)
+        # A directory that an earlier segment creates does not exist yet.
+        alias = None
+        if not built_in or all(os.path.isdir(directory) for directory in directories):
+            alias = git_alias(command, git_options, directories)
         if alias is not None:
             if command in resolved_aliases:
                 raise ValueError(
@@ -3801,6 +3829,8 @@ def destructive_git_reason(
                 or has_short_option(arguments, "D")
             )
             if deletes and forces:
+                if not segment_git_context_reliable:
+                    return GIT_REASONS["git-environment"]
                 if not cwd_reliable:
                     return GIT_REASONS["unresolved-target"].format(
                         action="git branch -D"
@@ -3818,6 +3848,8 @@ def destructive_git_reason(
                 return GIT_REASONS["branch-move"]
         if command == "update-ref":
             if update_ref_deletes(arguments):
+                if not segment_git_context_reliable:
+                    return GIT_REASONS["git-environment"]
                 if not cwd_reliable:
                     return GIT_REASONS["unresolved-target"].format(
                         action="git update-ref deletion"
@@ -3829,6 +3861,8 @@ def destructive_git_reason(
                     return reason
         if command == "worktree" and arguments[:1] == ["remove"]:
             if "--force" in arguments or has_short_option(arguments[1:], "f"):
+                if not segment_git_context_reliable:
+                    return GIT_REASONS["git-environment"]
                 if not cwd_reliable:
                     return GIT_REASONS["unresolved-target"].format(
                         action="git worktree remove --force"
