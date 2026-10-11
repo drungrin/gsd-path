@@ -458,6 +458,47 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertTrue(result)
         checkpoint.assert_called_once()
 
+    def test_repair_wave_numbered_last_runs_before_the_pending_wave(self) -> None:
+        root = self.root
+        self.fixture(root, wave_t002=2)
+
+        def ready() -> dict:
+            return dispatch_driver.build_state.ready(str(root))
+
+        def blocked_reason(wave: int) -> str:
+            receipt = self.round(root, "--wait", "60", wave=wave)
+            self.assertEqual(receipt["status"], "blocked", receipt)
+            self.assertEqual(receipt["dispatched"], [])
+            return receipt["blocked"][0]["reason"]
+
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(ready()["unreviewed_waves"], [1])
+        self.assertEqual(self.review(root, "--wait", "60", verdict="blocked")["status"], "blocked")
+        created = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+        self.assertEqual(created["status"], "created", created)
+        self.assertEqual(created["plan_wave"], 3)  # after pending wave 2
+
+        payload = ready()
+        self.assertNotIn("unreviewed_waves", payload)
+        self.assertEqual(payload["current_wave"], 3)
+        self.assertEqual(payload["repair_for_wave"], 1)
+        self.assertEqual([item["id"] for item in payload["ready"]], ["T003"])
+        self.assertEqual(blocked_reason(2),
+                         "wave 2 is waiting on blocked wave 1; dispatch repair wave 3 first")
+
+        repair = self.round(root, "--wait", "60", wave=3)
+        self.assertEqual([item["task"] for item in repair["landed"]], ["T003"], repair)
+        payload = ready()
+        self.assertEqual(payload["ready"], [])
+        self.assertEqual(payload["blocked_review"], {"wave": 1, "cycle": 1, "waiting_waves": [2]})
+        self.assertEqual(blocked_reason(2), "wave 2 has unfinished tasks but wave 1 review cycle 1 "
+                                            "is blocked; it must pass before dispatch")
+
+        self.assertEqual(self.review(root, "--wait", "60", cycle=2)["status"], "pass")
+        self.assertEqual([item["id"] for item in ready()["ready"]], ["T002"])
+        product = self.round(root, "--wait", "60", wave=2)
+        self.assertEqual([item["task"] for item in product["landed"]], ["T002"], product)
+
     def test_mutating_commands_refuse_a_held_repository_lock(self) -> None:
         root = self.root
         head = self.fixture(root)

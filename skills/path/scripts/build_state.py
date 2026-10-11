@@ -670,6 +670,25 @@ def _blocked_wave_reviews(project: Project) -> Dict[int, int]:
     }
 
 
+def _unreviewed_waves(project: Project, waves: Sequence[int]) -> List[int]:
+    """Return the given waves that still need a canonical review file of their own.
+
+    A repair wave is left out: the next review cycle of its source wave judges it.
+    """
+
+    review_dir = project.tasks_dir.parent / "review"
+    reviewed = {
+        wave for wave in waves
+        if all(task.review_findings for task in project.tasks if task.wave == wave)
+    }
+    if review_dir.is_dir() and not review_dir.is_symlink():
+        for path in review_dir.iterdir():
+            named = check_handoffs.WAVE_REVIEW_NAME.fullmatch(path.name)
+            if named is not None and path.is_file() and not path.is_symlink():
+                reviewed.add(int(named.group("wave")))
+    return [wave for wave in waves if wave not in reviewed]
+
+
 def ready(repo: str, project_dir: str = DEFAULT_PROJECT_DIR, *,
           allow_done: bool = False) -> Dict[str, object]:
     """Return task readiness, optionally accepting build/done for completion checks."""
@@ -793,6 +812,12 @@ def ready(repo: str, project_dir: str = DEFAULT_PROJECT_DIR, *,
         typed["repair_for_wave"] = repair_for_wave
     if blocked_review is not None:
         typed["blocked_review"] = blocked_review
+    # Informational: every wave below the lowest unfinished wave is all done.
+    unreviewed = _unreviewed_waves(project, sorted(
+        {task.wave for task in project.tasks if unfinished_waves and task.wave < unfinished_waves[0]}
+    ))
+    if unreviewed:
+        typed["unreviewed_waves"] = unreviewed
     return {
         "command": "ready",
         "branch": project.branch,
