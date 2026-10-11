@@ -1489,19 +1489,19 @@ class GuardHookTests(unittest.TestCase):
                     (owned, f'cd {safe_path} && git -C "$OLDPWD" branch -D same-name'),
                     (owned, 'git -C "$PWD" branch -D same-name'),
                     (owned, 'unset W; git -C "$W" branch -D same-name'),
-                ):
-                    with self.subTest(root=root, command=command):
-                        self.assert_denied(self.bash_in(root, command))
-                for root, command in (
+                    # A parameter is denied also when it names the safe repository:
+                    # the shell can change it in ways the guard does not track.
                     (owned, f'cd {safe_path} && git -C "$PWD" branch -D same-name'),
                     (safe, f'cd {owned_path} && git -C "$OLDPWD" branch -D same-name'),
                     (safe, 'git -C "$PWD" branch -D same-name'),
                     (safe, 'unset W; git -C "$W" branch -D same-name'),
                     (owned, f'W={safe_path}; git -C "$W" branch -D same-name'),
-                    (owned, f'git -C {safe_path} branch -D same-name'),
                 ):
                     with self.subTest(root=root, command=command):
-                        self.assert_allowed(self.bash_in(root, command))
+                        self.assert_denied(self.bash_in(root, command))
+                self.assert_allowed(
+                    self.bash_in(owned, f"git -C {safe_path} branch -D same-name")
+                )
                 self.assert_denied(
                     self.bash_in(safe, f"git -C {owned_path} branch -D same-name")
                 )
@@ -1528,13 +1528,13 @@ class GuardHookTests(unittest.TestCase):
                     "command git -C '$PWD' branch -D same-name",
                     "echo \"'\"; git -C '$PWD' branch -D same-name",
                     "git literal-path same-name",
+                    'git -C "$PWD" branch -D same-name',
+                    f'W={shlex.quote(str(safe))}; git -C "$W" branch -D same-name',
                 ):
                     with self.subTest(command=command):
                         self.assert_denied(self.bash_in(safe, command))
                 for command in (
-                    'git -C "$PWD" branch -D same-name',
                     f"git -C {shlex.quote(str(safe))} branch -D same-name",
-                    f'W={shlex.quote(str(safe))}; git -C "$W" branch -D same-name',
                     "git -C '$PWD' status --short",
                 ):
                     with self.subTest(command=command):
@@ -1563,13 +1563,13 @@ class GuardHookTests(unittest.TestCase):
                         'P=$INDIRECT; git -C "$P" branch -D same-name',
                         f"command git -C '{spelling}' branch -D same-name",
                         "git literal-cmd-path same-name",
+                        'git -C "$W" branch -D same-name',
+                        f'INDIRECT={shlex.quote(str(safe))}; git -C "$INDIRECT" branch -D same-name',
                     ):
                         with self.subTest(spelling=spelling, command=command):
                             self.assert_denied(self.bash_in(safe, command))
                     for command in (
                         f"git -C {shlex.quote(str(safe))} branch -D same-name",
-                        'git -C "$W" branch -D same-name',
-                        f'INDIRECT={shlex.quote(str(safe))}; git -C "$INDIRECT" branch -D same-name',
                         f"git -C '{spelling}' status --short",
                     ):
                         with self.subTest(spelling=spelling, command=command):
@@ -1985,6 +1985,118 @@ class GuardHookTests(unittest.TestCase):
                         encoding="utf-8", errors="replace", check=False,
                     )
                     self.assertNotIn("alias-ran", result.stdout)
+
+    def scoped_pair_fixture(self, parent):
+        """`owned` binds the branch `bound` in STATE; `unrelated` has a plain `bound`."""
+        owned = self.init_git_repo(parent / "owned")
+        unrelated = self.init_git_repo(parent / "unrelated")
+        for repo in (owned, unrelated):
+            self.git(repo, "branch", "bound")
+        (owned / ".project").mkdir()
+        (owned / ".project" / "STATE.md").write_text(
+            "---\nphase: build\nbranch: bound\n---\n", encoding="utf-8"
+        )
+        return owned, unrelated
+
+    def test_scoped_deletion_is_denied_after_a_directory_change_the_guard_cannot_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            owned, unrelated = self.scoped_pair_fixture(Path(temporary).resolve())
+            a, b = (shlex.quote(repo.as_posix()) for repo in (owned, unrelated))
+            # A directory with the literal name ~ is not the home directory.
+            self.git(self.init_git_repo(owned / "~" / "r"), "branch", "bound")
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git branch -D"
+            )
+            delete = "git branch -D bound"
+            for command in (
+                f"cd {a} {b}; {delete}",
+                f"cd {a} {b} && {delete}",
+                f"cd -- {a} {b}; {delete}",
+                f"cd -P {b}; {delete}",
+                f"cd {b} -P; {delete}",
+                f"cd {b} 2>/dev/null extra; {delete}",
+                f"cd {b}-missing 2>/dev/null; {delete}",
+                f"cd '' {b}; {delete}",
+                f"chdir {b}; {delete}",
+                f"pushd {b}; {delete}",
+                f"CD {b}; {delete}",
+                f"/usr/bin/cd {b} && {delete}",
+                f"env cd {b} && {delete}",
+                f"true # note; cd {b}\n{delete}",
+                f"false &&\ncd {b}; {delete}",
+                f"cd ~/r && {delete}",
+                # Without the builtin, cd is the program /usr/bin/cd: no effect.
+                f"enable -n cd; cd {b} && {delete}",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(owned, command), unresolved)
+            for command in (
+                f"function enter {{ cd {a}; }}; enter; {delete}",
+                f"trap 'cd {a}' DEBUG; {delete}",
+                f"alias enter='cd {a}'\nenter\n{delete}",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(unrelated, command), unresolved)
+            self.assert_denied_with(
+                self.bash_in(owned, f"cd {b}-missing; {delete}"),
+                "git target repository cannot be resolved",
+            )
+            # A shell with CDPATH can find the plain name `unrelated` elsewhere.
+            self.assert_denied_with(
+                self.bash_in(owned.parent, f"cd unrelated && {delete}"), unresolved
+            )
+            self.assert_allowed(
+                self.bash_in(owned.parent, f"cd ./unrelated && {delete}")
+            )
+            for command in (
+                f"cd {b} && {delete}",
+                f"cd -- {b} && {delete}",
+                f"cd {b}; {delete}",
+                f"cd {b} &&\n{delete}",
+                f"cd ../unrelated && {delete}",
+                f"cd {a} {b}; git status",
+                f"cd -P {b}; git log --oneline -1",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(owned, command))
+
+    def test_scoped_deletion_with_a_parameter_in_the_git_command_is_denied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            owned, unrelated = self.scoped_pair_fixture(Path(temporary).resolve())
+            a, b = (shlex.quote(repo.as_posix()) for repo in (owned, unrelated))
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git branch -D"
+            )
+            delete = 'git -C "$W" branch -D bound'
+            # The shell changes W in ways the guard does not track.
+            for command in (
+                f"W={b}; read W <<< {a}; {delete}",
+                f"W={b}; W+=/../owned; {delete}",
+                f"W={b}; for W in {a}; do :; done; {delete}",
+                f"W={b}; printf -v W %s {a}; {delete}",
+                f"keep() {{ W={b}; }}; {delete}",
+                f"true # note; W={b}\n{delete}",
+                f"W={b}; {delete}",
+                f'cd {b} && git -C "$PWD" branch -D bound',
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(owned, command), unresolved)
+            self.assert_allowed(
+                self.bash_in(owned, f'W={b}; git -C "$W" status --short')
+            )
+            # read sets GIT_DIR and set -a exports it; the guard tracks neither.
+            self.assert_denied_with(
+                self.bash_in(
+                    unrelated, f"set -a; read GIT_DIR <<< {a}/.git; git branch -D bound"
+                ),
+                guard_hook.GIT_REASONS["git-environment"],
+            )
+            self.assert_allowed(self.bash_in(owned, f"git -C {b} branch -D bound"))
+            # A literal ~ or glob in the directory is expanded by the shell only.
+            self.git(self.init_git_repo(owned / "~" / "r"), "branch", "bound")
+            self.assert_denied_with(
+                self.bash_in(owned, "git -C ~/r branch -D bound"), unresolved
+            )
 
     def test_denies_powershell_archive_mutations(self):
         for command in (

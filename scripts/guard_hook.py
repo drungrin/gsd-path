@@ -3476,6 +3476,13 @@ def owned_target_reason(command, arguments, git_options, working_directories):
         "worktree": "git worktree remove --force",
     }[command]
     unresolved = GIT_REASONS["unresolved-target"].format(action=action)
+    # The shell expands a leading ~ and a glob in an option value such as the
+    # -C directory; the guard has only the literal text.
+    if any(
+        value[:1] == "~" or any(character in value for character in "*?[]{}")
+        for value in git_options[1::2]
+    ):
+        return unresolved
     contexts = git_target_contexts(git_options, working_directories)
     branches, task_worktrees = path_owned_records(_frontmatter_roots(contexts))
 
@@ -3655,13 +3662,28 @@ def env_wrapper_changes_git_context(segment):
 def ownership_cwd_is_uncertain(tokens, working_directories=None):
     """Whether a scoped delete follows a cd whose shell control flow is unclear."""
     conditional_words = SHELL_CONTROL_WORDS
-    cwd_wrappers = COMMAND_WRAPPERS | {"eval", "source", "."}
+    cwd_wrappers = COMMAND_WRAPPERS | {
+        "eval", "source", ".",
+        # These change what a later cd does, or run a cd later.
+        "alias", "trap", "enable", "disable",
+    }
     segments = []
     current = []
     separator = None
     depth = 0
+    comment = False
     for token in tokens:
+        # Most shells run nothing from a # word to the end of the line, but
+        # the guard reads that text as commands. A cd there can run or not.
+        if comment and "\n" in token:
+            if not set(token) <= set("|;&()\n\r"):
+                return True
+            comment = False
+        elif comment and token.casefold() in DIRECTORY_CHANGE_COMMANDS:
+            return True
         if token and set(token) <= set("|;&()\n\r"):
+            if "()" in token:
+                return True  # a function definition: its body runs only on a call
             if current:
                 segments.append((current, separator, depth))
                 current = []
@@ -3669,8 +3691,11 @@ def ownership_cwd_is_uncertain(tokens, working_directories=None):
                 depth += token.count("(")
             if ")" in token:
                 depth = max(0, depth - token.count(")"))
-            separator = token
+            separator = token.strip()
         else:
+            comment = comment or (
+                token.startswith("#") and getattr(token, "literal", None) != "quoted"
+            )
             current.append(token)
     if current:
         segments.append((current, separator, depth))
@@ -3678,12 +3703,13 @@ def ownership_cwd_is_uncertain(tokens, working_directories=None):
     uncertain = False
     conditional = False
     current_directories = list(working_directories or [os.getcwd()])
-    cdpath_ambiguous = bool(os.environ.get("CDPATH"))
     initial_symlink = any(
         _path_has_symlink_component(directory) for directory in current_directories
     )
     for index, (segment, previous_separator, group_depth) in enumerate(segments):
         if env_wrapper_changes_git_context(segment):
+            return True
+        if segment[0] == "function":
             return True
         if any(token.casefold() in conditional_words for token in segment):
             conditional = True
@@ -3696,29 +3722,33 @@ def ownership_cwd_is_uncertain(tokens, working_directories=None):
         next_separator = (
             segments[index + 1][1] if index + 1 < len(segments) else None
         )
-        if any(token.partition("=")[0] == "CDPATH" for token in segment):
-            cdpath_ambiguous = True
-        if command == "export" and any(
-            token.partition("=")[0] == "CDPATH" for token in arguments
-        ):
-            cdpath_ambiguous = True
         if command in DIRECTORY_CHANGE_COMMANDS:
             target = directory_change_target(arguments)
             absolute = is_absolute_path(target)
+            dotted = target.replace("\\", "/")
             next_directories = (
                 [target]
                 if absolute
                 else [f"{directory}/{target}" for directory in current_directories]
             )
             if (
-                SHELL_PARAMETER_SYNTAX.search(target)
+                # Only a plain `cd <directory>` has the same effect in each shell.
+                segment[0] != "cd"
+                or arguments not in ([target], ["--", target])
+                # A shell with CDPATH looks for a plain relative name in other
+                # directories first; ./name and ../name are not looked up there.
+                or not (
+                    absolute
+                    or dotted in {".", ".."}
+                    or dotted.startswith(("./", "../"))
+                )
+                or any(character in target for character in "*?[]{}$")
                 or group_depth > 0
                 or previous_separator in {"&&", "||", "&"}
                 or next_separator in {"||", "&"}
                 or (previous_separator is not None and "|" in previous_separator)
                 or (next_separator is not None and "|" in next_separator)
                 or conditional
-                or (not absolute and cdpath_ambiguous)
                 or initial_symlink
                 or any(_path_has_symlink_component(path) for path in next_directories)
             ):
@@ -3751,6 +3781,10 @@ def destructive_git_reason(
 ):
     cwd_reliable = cwd_reliable and not ownership_cwd_is_uncertain(
         tokens, working_directories
+    )
+    # read, printf -v and for set a variable that the guard does not track.
+    git_context_reliable = git_context_reliable and not any(
+        re.fullmatch(r"GIT_\w+|HOME|XDG_CONFIG_HOME", token) for token in tokens
     )
     for segment, directories, assignments, _prefix in shell_segment_contexts(
         tokens, working_directories or [os.getcwd()], initial_assignments
@@ -3790,6 +3824,11 @@ def destructive_git_reason(
         )
         if not segment_git_context_reliable and not built_in:
             return GIT_REASONS["git-environment"]
+        # A scoped deletion needs literal words: the shell can change a variable
+        # in ways the guard does not track (read, +=, for, printf -v).
+        resolvable = cwd_reliable and not any(
+            SHELL_PARAMETER_SYNTAX.search(token) for token in segment
+        )
         directories = [native_path_text(directory) for directory in directories]
         if command == "config":
             alias_indexes = [
@@ -3818,7 +3857,7 @@ def destructive_git_reason(
                 initial_assignments=assignments,
                 working_directories=directories,
                 # Non-shell Git aliases do not expand environment parameters.
-                cwd_reliable=cwd_reliable and not (
+                cwd_reliable=resolvable and not (
                     NAMED_SHELL_PARAMETER_SYNTAX.search(alias)
                     or CMD_PARAMETER_SYNTAX.search(alias)
                 ),
@@ -3863,7 +3902,7 @@ def destructive_git_reason(
             if deletes and forces:
                 if not segment_git_context_reliable:
                     return GIT_REASONS["git-environment"]
-                if not cwd_reliable:
+                if not resolvable:
                     return GIT_REASONS["unresolved-target"].format(
                         action="git branch -D"
                     )
@@ -3882,7 +3921,7 @@ def destructive_git_reason(
             if update_ref_deletes(arguments):
                 if not segment_git_context_reliable:
                     return GIT_REASONS["git-environment"]
-                if not cwd_reliable:
+                if not resolvable:
                     return GIT_REASONS["unresolved-target"].format(
                         action="git update-ref deletion"
                     )
@@ -3895,7 +3934,7 @@ def destructive_git_reason(
             if "--force" in arguments or has_short_option(arguments[1:], "f"):
                 if not segment_git_context_reliable:
                     return GIT_REASONS["git-environment"]
-                if not cwd_reliable:
+                if not resolvable:
                     return GIT_REASONS["unresolved-target"].format(
                         action="git worktree remove --force"
                     )

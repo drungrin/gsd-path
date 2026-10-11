@@ -64,6 +64,13 @@ class WindowsGuardPathTests(unittest.TestCase):
             guard_hook.command_denial(f"{prefix} branch -D gsd-path/M001", base),
             guard_hook.GIT_REASONS["branch"],
         )
+        # Bash rejects two cd operands and stays where it is.
+        self.assertEqual(
+            guard_hook.command_denial(
+                f"cd {msys(self.base)} {msys(self.repo)}; git branch -D ordinary", base
+            ),
+            guard_hook.GIT_REASONS["unresolved-target"].format(action="git branch -D"),
+        )
 
     def test_a_junction_is_treated_as_a_link(self) -> None:
         import _winapi
