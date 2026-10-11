@@ -132,7 +132,8 @@ class NativeMemberDispatchTests(unittest.TestCase):
 
         # With only landed files left, the stop names the path.
         shutil.rmtree(sidecar / ".gsd-path-coordinator")
-        (sidecar / "app.py").write_bytes(b"v2\n")
+        # The same write as attempt(), so the bytes are the landed blob on Windows too.
+        (sidecar / "app.py").write_text("v2\n", encoding="utf-8")
         self.assertEqual(json.loads(call(*finish).stdout)["reason"], leftover)
 
         shutil.rmtree(sidecar)
