@@ -1530,9 +1530,14 @@ def _validate_task_graph(
 
     # `supersedes` retires the regression Verify of an earlier task: the same overlap rule selects both.
     for task_id, text in tasks.items():
-        if "supersedes" not in _strict_frontmatter(text, task_id):
-            continue
-        for earlier in _task_ids(text, task_id, "supersedes"):
+        superseded = _strict_frontmatter(text, task_id).get("supersedes", [])
+        if (
+            not isinstance(superseded, list)
+            or any(not re.fullmatch(r"T\d{3}", item) for item in superseded)
+            or len(superseded) != len(set(superseded))
+        ):
+            raise HandoffError(f"{task_id} supersedes must be a list of different task ids, for example [T001]")
+        for earlier in superseded:
             if earlier not in tasks:
                 raise HandoffError(f"{task_id} supersedes unknown task {earlier}")
             if task_waves[earlier] >= task_waves[task_id]:

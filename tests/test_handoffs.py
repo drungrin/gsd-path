@@ -2134,7 +2134,13 @@ Surfaces: none
                 ("[T003]", "T004 supersedes T003, which is in another repo"),
                 ("[T002]", "T004 supersedes T002, which shares no declared file with it"),
                 ("[T001, T002]", "T004 supersedes T002, which shares no declared file with it"),
-                ("T1", "T004 supersedes has an invalid id list: T1"),
+                ("T001", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("none", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("-", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("—", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("[none]", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("[T1]", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("[T001, T001]", "T004 supersedes must be a list of different task ids, for example [T001]"),
             ):
                 supersede(value)
                 with self.assertRaises(check_handoffs.HandoffError, msg=value) as failure:
