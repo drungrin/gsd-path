@@ -3356,23 +3356,50 @@ def _literal_target(value):
     return bool(value) and not any(character in value for character in "*?[]{}~")
 
 
-def _positional_targets(arguments, options_with_values=()):
+def _positional_targets(arguments):
     targets = []
     after_separator = False
-    index = 0
-    while index < len(arguments):
-        argument = arguments[index]
+    for argument in arguments:
         if after_separator:
             targets.append(argument)
         elif argument == "--":
             after_separator = True
-        elif argument.startswith("-"):
-            if argument in options_with_values:
-                index += 1
-        else:
+        elif not argument.startswith("-"):
             targets.append(argument)
-        index += 1
     return targets
+
+
+PLAIN_REDIRECTION_OPERATORS = frozenset({">", ">>", "<", ">&", "&>", "&>>"})
+
+
+def _without_redirections(arguments):
+    """The arguments Git receives, or None when a redirection is not plain.
+
+    A plain redirection is one of PLAIN_REDIRECTION_OPERATORS with a literal
+    target word, and optionally one file descriptor digit written against it.
+    """
+    kept = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if not getattr(argument, "redirection", False):
+            kept.append(argument)
+            index += 1
+            continue
+        if argument.isdigit():
+            index += 1
+            argument = arguments[index] if index < len(arguments) else ""
+        target = arguments[index + 1] if index + 1 < len(arguments) else ""
+        if (
+            argument not in PLAIN_REDIRECTION_OPERATORS
+            or getattr(target, "redirection", False)
+            or getattr(target, "literal", None) not in ("bare", "quoted")
+            or not _literal_target(target)
+            or any(character in target for character in "$`<>()&|#")
+        ):
+            return None
+        index += 2
+    return kept
 
 
 def _frontmatter_roots(contexts):
@@ -3488,6 +3515,9 @@ def owned_target_reason(command, arguments, git_options, working_directories):
         "worktree": "git worktree remove --force",
     }[command]
     unresolved = GIT_REASONS["unresolved-target"].format(action=action)
+    arguments = _without_redirections(arguments)
+    if arguments is None:
+        return unresolved
     # The shell expands a leading ~ and a glob in an option value such as the
     # -C directory; the guard has only the literal text.
     if any(
@@ -3673,15 +3703,12 @@ def env_wrapper_changes_git_context(segment):
         if option in ENV_OPTIONS_WITHOUT_VALUES:
             index += 1
             continue
-        if token.startswith("-"):
-            return False
         return False
     return False
 
 
 def ownership_cwd_is_uncertain(tokens, working_directories=None):
     """Whether a scoped delete follows a cd whose shell control flow is unclear."""
-    conditional_words = SHELL_CONTROL_WORDS
     cwd_wrappers = COMMAND_WRAPPERS | {
         "eval", "source", ".",
         # These change what a later cd does, or run a cd later.
@@ -3731,7 +3758,7 @@ def ownership_cwd_is_uncertain(tokens, working_directories=None):
             return True
         if segment[0] == "function":
             return True
-        if any(token.casefold() in conditional_words for token in segment):
+        if any(token.casefold() in SHELL_CONTROL_WORDS for token in segment):
             conditional = True
         while segment and segment[0].casefold() in SHELL_CONTROL_WORDS:
             segment = segment[1:]
@@ -3791,6 +3818,36 @@ def assignments_change_git_context(assignments):
         for name in assignments
     )
 
+GIT_CONTEXT_NAME = re.compile(r"GIT_\w+|HOME|XDG_CONFIG_HOME")
+# export, declare, typeset, local, readonly and unset of these names are
+# denied where the guard reads assignments.
+VARIABLE_SETTING_COMMANDS = frozenset(
+    {
+        "read", "for", "select", "getopts", "mapfile", "readarray", "integer",
+        "float", "vared",
+    }
+)
+
+
+def command_sets_git_context_name(tokens):
+    """Whether a command that the guard does not track sets a Git context variable."""
+    setter = printf = False
+    previous = ""
+    for token in tokens:
+        if token and set(token) <= set("|;&()\n\r"):
+            setter = printf = False
+        elif GIT_CONTEXT_NAME.fullmatch(token) and (
+            setter or (printf and previous == "-v")
+        ):
+            return True
+        elif token in VARIABLE_SETTING_COMMANDS:
+            setter = True
+        elif token == "printf":
+            printf = True
+        previous = token
+    return False
+
+
 def destructive_git_reason(
     tokens,
     resolved_aliases=frozenset(),
@@ -3803,9 +3860,8 @@ def destructive_git_reason(
     cwd_reliable = cwd_reliable and not ownership_cwd_is_uncertain(
         tokens, working_directories
     )
-    # read, printf -v and for set a variable that the guard does not track.
-    git_context_reliable = git_context_reliable and not any(
-        re.fullmatch(r"GIT_\w+|HOME|XDG_CONFIG_HOME", token) for token in tokens
+    git_context_reliable = (
+        git_context_reliable and not command_sets_git_context_name(tokens)
     )
     this_git = False
     for segment, directories, assignments, _prefix in shell_segment_contexts(

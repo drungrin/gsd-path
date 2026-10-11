@@ -157,7 +157,11 @@ See [UPDATE.md](UPDATE.md).
   `CDPATH` looks for a plain relative name in other directories). Another
   command name (`pushd`, `chdir`), an option, a second operand, a redirection,
   a `cd` in a subshell, pipeline, condition, function, alias, trap, or
-  comment line is not modeled. Use `git -C <directory>` there. With
+  comment line is not modeled. Use `git -C <directory>` there. A plain
+  redirection on the Git command (`2>/dev/null`, `>file`, `>>file`, `<file`,
+  `2>&1`, `&>file`) is not a target. A here-document, here-string, process
+  substitution, a redirection target that is not one literal word, or a
+  `# comment` after the command keeps the denial. With
   such an `env` wrapper, or in a directory that does not exist yet, a Git
   command that is not a built-in command is denied too, because its alias
   cannot be inspected

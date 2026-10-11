@@ -1780,6 +1780,91 @@ class GuardHookTests(unittest.TestCase):
                         guard_hook.GIT_REASONS["git-environment"],
                     )
 
+    def test_scoped_deletion_does_not_read_a_plain_redirection_as_a_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            redirections = (
+                "2>/dev/null", "2> /dev/null", ">/dev/null", ">/dev/null 2>&1",
+                "&>/dev/null", ">> out.log", "< /dev/null", "2>&1 | tail -1",
+            )
+            for delete, owned, rule in (
+                ("git branch -D feature/x", "git branch -D gsd-path/M001", "branch"),
+                (
+                    "git update-ref -d refs/heads/feature/x",
+                    "git update-ref -d refs/heads/gsd-path/M001",
+                    "update-ref",
+                ),
+                (
+                    "git worktree remove --force ../plain-worktree",
+                    "git worktree remove --force ../task-worktree",
+                    "worktree",
+                ),
+            ):
+                for redirection in redirections:
+                    with self.subTest(command=delete, redirection=redirection):
+                        self.assert_allowed(
+                            self.bash_in(repo, f"{delete} {redirection}")
+                        )
+                        self.assert_denied_with(
+                            self.bash_in(repo, f"{owned} {redirection}"),
+                            guard_hook.GIT_REASONS[rule],
+                        )
+            self.assert_allowed(
+                self.bash_in(repo, "git branch -D 2>/dev/null feature/x")
+            )
+            self.assert_denied_with(
+                self.bash_in(repo, "git branch -D feature/x 2>/dev/null gsd-path/M001"),
+                guard_hook.GIT_REASONS["branch"],
+            )
+            unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
+                action="git branch -D"
+            )
+            for command in (
+                "git branch -D feature/x < <(cat README.md)",
+                "git branch -D feature/x <<EOF\ntext\nEOF",
+                "git branch -D feature/x <<< text",
+                "git branch -D feature/x > out*",
+                "git branch -D feature/x 2 >/dev/null",
+                "git branch -D feature/x # cleanup",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(self.bash_in(repo, command), unresolved)
+            self.assert_denied(self.bash_in(repo, 'git branch -D feature/x > "$OUT"'))
+
+    def test_git_context_name_counts_only_where_a_command_sets_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
+            self.git(repo, "config", "alias.lg", "log --oneline")
+            for command in (
+                "git lg HOME",
+                "echo HOME; git lg",
+                "echo GIT_DIR XDG_CONFIG_HOME; git lg",
+                "grep GIT_DIR README.md; git lg",
+                "printf HOME; git lg",
+                "echo HOME && git branch -D feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_allowed(self.bash_in(repo, command))
+            for command in (
+                "read HOME; git lg",
+                "read -r GIT_DIR <<< .git; git lg",
+                "while read XDG_CONFIG_HOME; do git lg; done",
+                "printf -v HOME %s /tmp; git lg",
+                "for GIT_DIR in .git; do git lg; done",
+                "getopts a HOME; git lg",
+                "true && read HOME; git branch -D feature/x",
+            ):
+                with self.subTest(command=command):
+                    self.assert_denied_with(
+                        self.bash_in(repo, command),
+                        guard_hook.GIT_REASONS["git-environment"],
+                    )
+            for command in ("export GIT_DIR", "unset HOME", "local XDG_CONFIG_HOME"):
+                with self.subTest(command=command):
+                    self.assert_denied(
+                        self.bash_in(repo, f"{command}; git branch -D feature/x")
+                    )
+
     def test_built_in_git_runs_in_a_directory_that_does_not_exist_yet(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
