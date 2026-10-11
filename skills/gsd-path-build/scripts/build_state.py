@@ -530,7 +530,8 @@ def _live_verify(
     The Verify of a fix task is exactly the composition that fix-tasks generates from the
     Verify of each task in its deps, so it carries a copy of each: only the copies that are
     not retired stay in the command. Any other Verify is one command. Each drop is
-    (superseded task, superseding task).
+    (superseded task, superseding task); a copy whose command a live dependency still runs
+    is not a drop.
     """
 
     if source.task_id in superseded:
@@ -539,8 +540,9 @@ def _live_verify(
     if not deps or source.verify != _common.fix_verify(dep.verify for dep in deps):
         return source.verify, None, []
     parts = [_live_verify(by_id, superseded, dep) for dep in deps]
-    dropped = list(dict.fromkeys(drop for _, _, drops in parts for drop in drops))
     live = [command for command, retired_by, _ in parts if not retired_by]
+    dropped = list(dict.fromkeys(drop for _, _, drops in parts for drop in drops
+                                 if by_id[drop[0]].verify not in live))
     if not live:
         return "", parts[0][1], dropped
     return _common.fix_verify(live), None, dropped

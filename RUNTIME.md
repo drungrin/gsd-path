@@ -131,7 +131,10 @@ Verify output is saved in `verify.json`. `finish` also runs the Verify of each
 earlier-wave task that shares a file with the task, under the
 [wave loop](skills/gsd-path/references/build-native.md#wave-loop) rule; those
 runs are saved under `regressions` and a failure blocks the landing. A Verify
-that a `supersedes` field retires does not run; it is listed under `retired`. A task
+that a `supersedes` field retires does not run; it is listed under `retired`. A fix
+task Verify that loses only the copy of a retired Verify has a `retired` entry with
+the key `part` (the superseded task) and the Log entry `orchestrator regression
+Verify of <fix task id>: part of <task id> retired: superseded by <task id>`. A task
 with a `Heavy: yes` regression Verify counts as heavy. A `verify-record` ledger entry is
 written only when the landing commit's parent equals the recorded task base;
 a later parallel landing can therefore have no ledger entry.

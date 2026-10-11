@@ -24,7 +24,8 @@ tasks in this wave as the rubric. For each task:
 
 A Log entry `orchestrator regression Verify of <task id> retired: superseded
 by <task id>` is not evidence: judge the superseding task's acceptance
-criteria.
+criteria. The same applies to the entry `orchestrator regression Verify of
+<fix task id>: part of <task id> retired: superseded by <task id>`.
 
 Then check each INTENT.md success criterion owned by a task in this wave
 against that same isolated product. In each `### SCn —` heading, copy the

@@ -863,6 +863,20 @@ archive: null
              {"task": "T006", "part": "T001", "superseded_by": "T002"}],
         ))
 
+    def test_copy_that_a_live_dependency_still_runs_is_not_listed_as_retired(self) -> None:
+        # T001 and T005 have the same Verify: the generated Verify of T003 still runs it for T005.
+        self.write_verify_task("T001", 1, ("a.py",), "pytest")
+        self.write_verify_task("T005", 1, ("b.py",), "pytest")
+        generated = _common.fix_verify(["pytest", "pytest"])
+        self.write_verify_task("T003", 4, ("a.py", "b.py"), generated, deps=("T001", "T005"))
+        self.write_verify_task("T002", 2, ("a.py",), "check new", supersedes=("T001",))
+        self.write_verify_task("T004", 7, ("b.py",), "own", status="pending")
+
+        self.assertEqual(self.landing("T004"), (
+            [{"tasks": ["T003"], "command": generated}, {"tasks": ["T005"], "command": "pytest"}],
+            [],
+        ))
+
     def test_fix_task_verify_is_retired_when_every_copy_in_it_is_retired(self) -> None:
         self.write_verify_task("T001", 1, ("a.py",), "check old")
         self.write_verify_task("T003", 4, ("a.py",), _common.fix_verify(["check old"]), deps=("T001",))

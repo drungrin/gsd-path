@@ -312,7 +312,11 @@ dispatch contract and perform steps 1–5 by hand.
      task that it names: `finish` does not run that Verify for the task, or
      for a task that lands after the task is `done`. The receipt (`retired`)
      and the task Log entry `orchestrator regression Verify of <task id>
-     retired: superseded by <task id>` name both tasks. The superseding
+     retired: superseded by <task id>` name both tasks. When the generated
+     Verify of a fix task loses only the copy of a retired Verify, the
+     `retired` entry has the key `part` and the Log entry is `orchestrator
+     regression Verify of <fix task id>: part of <task id> retired:
+     superseded by <task id>`. The superseding
      task inherits the role of each task that it names, also through a
      chain: after it is `done`, its Verify runs in the place of the retired
      Verify for each later landing that shares a file with a superseded
