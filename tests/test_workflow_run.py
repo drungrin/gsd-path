@@ -330,6 +330,20 @@ class WorkflowRunTests(unittest.TestCase):
             self.assertEqual(head, run_git(sidecar, "rev-parse", "HEAD").stdout.strip())
             self.assertTrue(run_git(sidecar, "branch", "--show-current").stdout.strip())
 
+    def test_serial_prepare_returns_a_blocked_receipt_when_the_sidecar_path_is_unavailable(self):
+        from unittest import mock
+        from scripts import workflow_run
+        from tests import test_isolation
+        with tempfile.TemporaryDirectory() as tmp:
+            root = (Path(tmp) / "repo").resolve()
+            root.mkdir()
+            head = test_isolation.IsolationTests().init_bound_repo(root)
+            with mock.patch.object(workflow_run.isolation.worktree_paths, "worktree_path",
+                                   side_effect=OSError("workspace pin is unreadable")):
+                result = workflow_run.run_workflow(root, "prepare-task", ".project", head, "T001", 1)
+            self.assertEqual((result["status"], result["reason"]), ("blocked", "workspace pin is unreadable"))
+            self.assertEqual([step["script"] for step in result["steps"]], ["isolation.py"])
+
     def test_packaged_runner_uses_its_bundled_dependencies(self):
         for skill in ("gsd-path", "gsd-path-plan", "gsd-path-build"):
             with self.subTest(skill=skill), tempfile.TemporaryDirectory() as tmp:

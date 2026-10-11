@@ -61,6 +61,97 @@ class NativeMemberDispatchTests(unittest.TestCase):
         self.assertEqual(git(self.member, "show", f"{bound}:app.py"), "v2")
         self.assertIn("Member: web", git(self.coordinator, "log", "-1", "--format=%B"))
 
+    def test_finish_reports_a_landed_member_task_when_sidecar_removal_fails(self) -> None:
+        import contextlib
+        import io
+        from unittest import mock
+        from scripts import dispatch_driver
+        active = self.attempt("v2\n")
+        sidecar = Path(active["worktree"])
+        removal = dispatch_driver.isolation.IsolationError(
+            "fatal: working trees containing submodules cannot be moved or removed")
+        output = io.StringIO()
+
+        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree", side_effect=removal), \
+                contextlib.redirect_stdout(output):
+            code = dispatch_driver.main(["finish", "--repo", str(self.coordinator), "--task-id", "T001"])
+
+        receipt = json.loads(output.getvalue())
+        self.assertEqual((code, receipt["status"]), (0, "landed"), receipt)
+        self.assertEqual(receipt["landed"][0]["mode"], "member")
+        self.assertIn("cannot be moved or removed", receipt["landed"][0]["cleanup_warning"])
+        self.assertEqual(git(self.member, "show", "gsd-path/acme-M001:app.py"), "v2")
+        self.assertIn("status: done", git(self.coordinator, "show", f"HEAD:{landing.TASK_FILE}"))
+        self.assertTrue(sidecar.is_dir())
+
+        # The next finish retires the sidecar that the failed removal left.
+        again = run("dispatch_driver.py", "finish", "--repo", str(self.coordinator), "--task-id", "T001")
+        self.assertEqual(again["status"], "landed", again)
+        self.assertFalse(sidecar.exists())
+        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
+
+    def test_next_finish_names_only_the_leftover_sidecar_of_a_landed_member_task(self) -> None:
+        import contextlib
+        import io
+        import shutil
+        from unittest import mock
+        from scripts import dispatch_driver
+        sidecar = Path(self.attempt("v2\n")["worktree"])
+
+        def partial_removal(checkout: Path, destination: Path, force: bool) -> None:
+            (destination / "app.py").unlink()
+            raise dispatch_driver.isolation.IsolationError(
+                f"could not delete {destination}: [WinError 145] The directory is not empty")
+
+        output = io.StringIO()
+        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree", side_effect=partial_removal), \
+                contextlib.redirect_stdout(output):
+            code = dispatch_driver.main(["finish", "--repo", str(self.coordinator), "--task-id", "T001"])
+        receipt = json.loads(output.getvalue())
+        self.assertEqual((code, receipt["status"]), (0, "landed"), receipt)
+        self.assertIn("its isolate was not removed", receipt["landed"][0]["cleanup_warning"])
+
+        finish = ("dispatch_driver.py", "finish", "--repo", str(self.coordinator), "--task-id", "T001")
+        leftover = f"task T001 is landed; remove its leftover isolate: {sidecar}"
+
+        # The live task copy is a gitignored file that Git does not have: Git's refusal stays, and
+        # nothing says to remove the sidecar.
+        copy = sidecar / ".gsd-path-coordinator"
+        self.assertEqual(git(sidecar, "status", "--porcelain", "--untracked-files=all"), "D app.py")
+        refused = call(*finish).stdout
+        self.assertIn("contains modified or untracked files", json.loads(refused)["reason"])
+        self.assertNotIn("remove", refused)
+        self.assertTrue((copy / landing.TASK_FILE).is_file())
+
+        # Without it, only a landed file is missing: the stop names the path.
+        copy.rename(sidecar.parent / "copy-aside")
+        self.assertEqual(json.loads(call(*finish).stdout)["reason"], leftover)
+        (sidecar.parent / "copy-aside").rename(copy)
+
+        # Content that Git does not have is not a leftover: Git's refusal stays.
+        (sidecar / "unknown.txt").write_bytes(b"not landed\n")
+        self.assertIn("contains modified or untracked files", json.loads(call(*finish).stdout)["reason"])
+        (sidecar / "unknown.txt").unlink()
+
+        # The removal also deleted the Git link, and Git no longer lists the sidecar. The live task copy
+        # is not in the landing commit, so the path is not named for removal and nothing deletes it.
+        (sidecar / ".git").unlink()
+        git(self.member, "worktree", "prune")
+        again = run(*finish)
+        self.assertEqual(again["status"], "landed", again)
+        self.assertNotIn("remove", json.dumps(again))
+        self.assertTrue((sidecar / ".gsd-path-coordinator" / landing.TASK_FILE).is_file())
+        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
+
+        # With only landed files left, the stop names the path.
+        shutil.rmtree(sidecar / ".gsd-path-coordinator")
+        # The same write as attempt(), so the bytes are the landed blob on Windows too.
+        (sidecar / "app.py").write_text("v2\n", encoding="utf-8")
+        self.assertEqual(json.loads(call(*finish).stdout)["reason"], leftover)
+
+        shutil.rmtree(sidecar)
+        self.assertEqual(run(*finish)["status"], "landed")
+
     def attempt(self, content: str) -> dict:
         head = git(self.coordinator, "rev-parse", "HEAD")
         run("workflow_run.py", "prepare-task", "--repo", str(self.coordinator),

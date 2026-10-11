@@ -578,7 +578,10 @@ def checkpoint_approval(
             f"{expected_head}^{{commit}}",
         ).stdout.strip()
         if resolved_head != expected_head:
-            raise PipelineStateError("expected-head must be an exact full commit SHA")
+            raise PipelineStateError(
+                "expected-head must be an exact full commit SHA; "
+                "resolve a ref or a short SHA with git rev-parse first"
+            )
         if pipeline_state._run_git(resolved, "rev-parse", "HEAD").stdout.strip() != expected_head:
             raise PipelineStateError("approval must start at expected-head")
         active_state, _, _ = pipeline_state.load_state(resolved)

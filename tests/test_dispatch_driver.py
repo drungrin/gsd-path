@@ -1197,6 +1197,134 @@ class DispatchDriverTests(unittest.TestCase):
         text = task.read_text(encoding="utf-8")
         self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): pass", text)
 
+    def hand_dispatch_serial(self, root: Path, source: str) -> str:
+        """prepare-task and activate-task T001 by hand, then write its product file and Log line."""
+        head = self.head(root)
+        subprocess.run([sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"),
+                        "prepare-task", "--repo", str(root), "--expected-head", head,
+                        "--task-id", "T001", "--round-size", "1"], check=True, capture_output=True)
+        subprocess.run([sys.executable, "-B", str(PROJECT_ROOT / "scripts/isolation.py"),
+                        "activate-task", "--repo", str(root), "--base", head, "--task-id", "T001",
+                        "--agent", "build_t001", "--task-file", ".project/tasks/T001-demo.md"],
+                       check=True, capture_output=True)
+        (root / "src").mkdir(exist_ok=True)
+        (root / "src/app.py").write_bytes(source.encode("utf-8"))
+        task = root / ".project/tasks/T001-demo.md"
+        task.write_bytes((task.read_text(encoding="utf-8")
+                          + "- 2026-10-10 — implemented src/app.py; Verify pass\n").encode("utf-8"))
+        return head
+
+    def test_finish_runs_again_after_a_failed_serial_verify_once_the_task_is_fixed(self) -> None:
+        root = self.root
+        self.fixture(root, deps_t002="[T001]")
+        head = self.hand_dispatch_serial(root, "raise SystemExit(1)\n")
+
+        failed = self.driver(root, "finish", "--task-id", "T001")
+
+        self.assertEqual(failed["status"], "blocked", failed)
+        self.assertEqual(failed["reason"], "Verify failed in the isolate")
+        self.assertEqual(self.head(root), head)
+        # Still broken: the same Verify failure again, not a refusal to run.
+        self.assertEqual(self.driver(root, "finish", "--task-id", "T001")["reason"],
+                         "Verify failed in the isolate")
+
+        (root / "src/app.py").write_bytes("print('hello')\n".encode("utf-8"))
+        receipt = self.driver(root, "finish", "--task-id", "T001")
+
+        self.assertEqual(receipt["status"], "landed", receipt)
+        records = dispatch_driver.records_root(root)
+        record = json.loads((records / "T001/attempt-1/state.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["outcome"], record["reason"]), ("landed", None))
+        self.assertEqual(dispatch_driver.attempts_used(records, "T001"), 1)
+        self.assertEqual(self.subjects(root)[0], "T001: Demo task T001")
+        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
+        self.assertIn("status: done", text)
+        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): fail", text)
+        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): pass", text)
+
+    def test_prepare_task_replaces_a_clean_verify_sidecar_left_at_an_earlier_base(self) -> None:
+        root = self.root
+        self.fixture(root, deps_t002="[T001]")
+        sidecar = dispatch_driver.isolation.sidecar_root(root.resolve(), "verify", "task-t001-verify")
+
+        def prepare_after_checkpoint() -> subprocess.CompletedProcess:
+            dispatch_driver.append_log(root / ".project/tasks/T001-demo.md",
+                                       "- 2026-10-10 — orchestrator: repaired the Verify command")
+            run_git(root, "commit", "-qam", "build: repair T001 Verify")
+            return subprocess.run(
+                [sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"), "prepare-task",
+                 "--repo", str(root), "--expected-head", self.head(root), "--task-id", "T001",
+                 "--round-size", "1"], capture_output=True, encoding="utf-8", errors="replace")
+
+        (root / ".gitignore").write_bytes(b"*.log\n")
+        run_git(root, "add", ".gitignore")
+        self.assertEqual(prepare_after_checkpoint().returncode, 0)
+        retry = prepare_after_checkpoint()
+        self.assertEqual(retry.returncode, 0, retry.stdout)
+        self.assertEqual(self.head(sidecar), self.head(root))
+
+        # Only a sidecar that is proven untouched is replaced. Each state below holds something
+        # that the bound branch does not have: prepare-task stops and keeps all of it.
+        def write(name: str) -> None:
+            (sidecar / name).write_bytes(b"work in the Verify sidecar\n")
+
+        def commit_work() -> None:
+            write("work.py")
+            run_git(sidecar, "add", "work.py")
+            run_git(sidecar, "commit", "-q", "-m", "work in the Verify sidecar")
+
+        def reflog() -> str:
+            return run_git(root, "reflog", "show", "--format=%H", "gsd-path-verify/task-t001-verify").stdout
+
+        states = (
+            ("gitignored file", lambda: write("build.log"), "build.log", "uncommitted files"),
+            ("untracked file", lambda: write("unexpected.txt"), "unexpected.txt", "uncommitted files"),
+            ("tracked change", lambda: write("fake_coder.py"), "fake_coder.py", "uncommitted files"),
+            ("creation base left the bound branch", lambda: run_git(root, "reset", "-q", "--hard", "HEAD^"),
+             None, "not at a commit of the bound branch"),
+            ("committed work", commit_work, "work.py", "moved after its creation"),
+            ("committed work that a reset removed", lambda: run_git(sidecar, "reset", "-q", "--hard", "HEAD^"),
+             None, "moved after its creation"),
+        )
+        for state, change, name, found in states:
+            with self.subTest(state=state):
+                bound = self.head(root)
+                change()
+                kept = (sidecar / name).read_bytes() if name else None
+                history = reflog()
+                refused = prepare_after_checkpoint()
+                try:
+                    self.assertEqual(refused.returncode, 1, refused.stdout[:300])
+                    reason = json.loads(refused.stdout)["reason"]
+                    self.assertIn(f"Verify sidecar {sidecar} is kept: ", reason)
+                    self.assertIn(found, reason)
+                    self.assertEqual(reflog(), history)
+                    if name:
+                        self.assertEqual((sidecar / name).read_bytes(), kept)
+                finally:  # back to an untouched checkout and the same bound head for the next state
+                    run_git(sidecar, "checkout", "--", ".")
+                    run_git(sidecar, "clean", "-fdxq")
+                    run_git(root, "reset", "-q", "--hard", bound)
+
+    def test_round_records_the_new_verify_sidecar_after_it_replaced_a_stale_one(self) -> None:
+        root = self.root
+        self.fixture(root, wave_t002=2)
+        subprocess.run([sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"), "prepare-task",
+                        "--repo", str(root), "--expected-head", self.head(root), "--task-id", "T001",
+                        "--round-size", "1"], check=True, capture_output=True)
+        dispatch_driver.append_log(root / ".project/tasks/T001-demo.md",
+                                   "- 2026-10-11 — orchestrator: repaired the Verify command")
+        run_git(root, "commit", "-qam", "build: repair T001 Verify")
+        base = self.head(root)
+
+        receipt = self.round(root, "--wait", "60")
+
+        self.assertEqual(receipt["status"], "done", receipt)
+        record = json.loads((dispatch_driver.records_root(root) / "T001/attempt-1/state.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual((record["sidecar"]["kind"], record["sidecar"]["base"]), ("verify", base))
+
     def test_finish_lands_natively_dispatched_parallel_tasks_from_their_isolates(self) -> None:
         root = self.root
         head = self.fixture(root)
@@ -1224,6 +1352,101 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual([first["landed"][0]["ledger"], second["landed"][0]["ledger"]], [True, False])
         self.assertEqual(self.subjects(root)[:2], ["T002: Demo task T002", "T001: Demo task T001"])
         self.assertEqual(self.branches(root), ["gsd-path/M001"])
+
+    def hand_dispatch_parallel(self, root: Path) -> Path:
+        """prepare-task and activate-task T001 by hand in a parallel isolate, then write its product file."""
+        head = self.fixture(root)
+        prepared = subprocess.run(
+            [sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"), "prepare-task",
+             "--repo", str(root), "--expected-head", head, "--task-id", "T001", "--round-size", "2"],
+            check=True, capture_output=True, encoding="utf-8", errors="replace")
+        isolate = json.loads(prepared.stdout)["steps"][0]["result"]
+        worktree = Path(isolate["worktree"])
+        subprocess.run([sys.executable, "-B", str(PROJECT_ROOT / "scripts/isolation.py"),
+                        "activate-task", "--repo", str(worktree), "--base", head, "--task-id", "T001",
+                        "--agent", "build_t001", "--task-file", ".project/tasks/T001-demo.md",
+                        "--task-branch", isolate["task_branch"]], check=True, capture_output=True)
+        (worktree / "src").mkdir()
+        (worktree / "src/app.py").write_bytes("print('hello')\n".encode("utf-8"))
+        return worktree
+
+    def test_finish_reports_a_landed_parallel_task_when_isolate_removal_fails(self) -> None:
+        root = self.root
+        worktree = self.hand_dispatch_parallel(root)
+        removal = dispatch_driver.isolation.IsolationError("fatal: Directory not empty")
+        output = io.StringIO()
+
+        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree", side_effect=removal), \
+                redirect_stdout(output):
+            code = dispatch_driver.main(["finish", "--repo", str(root), "--task-id", "T001"])
+
+        receipt = json.loads(output.getvalue())
+        self.assertEqual((code, receipt["status"]), (0, "landed"), receipt)
+        self.assertIn("Directory not empty", receipt["landed"][0]["cleanup_warning"])
+        self.assertEqual(self.subjects(root)[0], "T001: Demo task T001")
+        self.assertTrue(worktree.is_dir())
+        record = dispatch_driver.records_root(root) / "T001/attempt-1/state.json"
+        self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["outcome"], "landed")
+
+        # The next finish retires the isolate that the failed removal left.
+        again = self.driver(root, "finish", "--task-id", "T001")
+        self.assertEqual(again["status"], "landed", again)
+        self.assertFalse(worktree.exists())
+        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+
+    def test_next_round_names_only_the_leftover_isolate_of_a_landed_parallel_task(self) -> None:
+        root = self.root
+        worktree = self.hand_dispatch_parallel(root)
+
+        def partial_removal(primary: Path, destination: Path, force: bool) -> None:
+            (destination / "src/app.py").unlink()
+            raise dispatch_driver.isolation.IsolationError(
+                f"could not delete {destination}: [WinError 145] The directory is not empty")
+
+        output = io.StringIO()
+        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree", side_effect=partial_removal), \
+                redirect_stdout(output):
+            code = dispatch_driver.main(["finish", "--repo", str(root), "--task-id", "T001"])
+        receipt = json.loads(output.getvalue())
+        self.assertEqual((code, receipt["status"]), (0, "landed"), receipt)
+        warning = receipt["landed"][0]["cleanup_warning"]
+        self.assertIn("its isolate was not removed", warning)
+        self.assertNotIn("retries", warning)
+        # The warning does not know what the isolate holds, so it gives no removal advice.
+        self.assertNotIn("to remove", warning)
+
+        leftover = f"task T001 is landed; remove its leftover isolate: {worktree}"
+        state = (root / ".project/STATE.md").read_bytes()
+        head = self.head(root)
+        stopped = self.round(root)
+        self.assertEqual(stopped["status"], "blocked", stopped)
+        self.assertEqual([item["reason"] for item in stopped["blocked"]], [leftover])
+        # The build is not blocked: no build/blocked transition, no checkpoint.
+        self.assertEqual(((root / ".project/STATE.md").read_bytes(), self.head(root)), (state, head))
+
+        (worktree / ".git").unlink()  # the removal also deleted the Git link
+        self.assertEqual(self.driver(root, "finish", "--task-id", "T001")["reason"], leftover)
+
+        shutil.rmtree(worktree)
+        again = self.driver(root, "finish", "--task-id", "T001")
+        self.assertEqual(again["status"], "landed", again)
+        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+
+    def test_partly_removed_isolate_of_a_task_that_did_not_land_keeps_the_recovery_block(self) -> None:
+        root = self.root
+        worktree = self.hand_dispatch_parallel(root)
+        head = self.head(root)
+        (worktree / "src/app.py").unlink()
+        (worktree / ".git").unlink()
+
+        receipt = self.driver(root, "finish", "--task-id", "T001")
+
+        self.assertEqual((receipt["status"], receipt["reason"]), ("blocked", "recovery blocked"))
+        blocked = [task for task in receipt["recover"]["tasks"] if task["verdict"] == "block"]
+        self.assertEqual([task["task_id"] for task in blocked], ["T001"])
+        self.assertIn("invalid sidecar worktree", blocked[0]["reason"])
+        self.assertNotIn("leftover", blocked[0])
+        self.assertEqual(self.head(root), head)
 
     def test_finish_refuses_a_deactivated_parallel_isolate(self) -> None:
         root = self.root

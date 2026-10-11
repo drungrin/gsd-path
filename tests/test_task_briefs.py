@@ -245,6 +245,37 @@ class TaskBriefTests(unittest.TestCase):
             )
             self.assertEqual(code, 0, error)
 
+    def test_cli_reports_only_the_pending_task_after_a_done_task_context_path_is_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.init_repo(root)
+            self.write(root, "static/logo.svg", "<svg/>\n")
+            historical = self.commit(root)
+            (root / "static/logo.svg").unlink()
+            head = self.commit(root)
+            self.write(root, ".project/plan/PLAN.md", PLAN_WAVE.format(title="first"))
+            self.write_task(root, "T001", contract="- None", context="Read `static/logo.svg`.")
+            done = root / ".project/tasks/T001-demo.md"
+            done.write_bytes(
+                done.read_text(encoding="utf-8").replace("status: pending", "status: done")
+                .replace("agent: null", "agent: coder").replace("base: null", f"base: {historical}")
+                .encode("utf-8")
+            )
+            self.write_task(
+                root, "T002", files=("tests/test_app.py",), contract="- None",
+                context="Read `src/app.py`.",
+            )
+            code, _, error = self.lint(root, head)
+            self.assertEqual(code, 0, error)
+            self.write_task(
+                root, "T002", files=("tests/test_app.py",), contract="- None",
+                context="Read `static/logo.svg`.",
+            )
+            code, _, error = self.lint(root, head)
+            self.assertEqual(code, 1)
+            self.assertIn("T002: ## Context names a path missing at the layer base: static/logo.svg", error)
+            self.assertNotIn("T001", error)
+
     def test_landed_briefs_use_recorded_historical_base(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

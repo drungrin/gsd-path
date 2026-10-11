@@ -1777,7 +1777,10 @@ def transition_state(
     if unsupported:
         raise PipelineStateError(f"unsupported state fields: {', '.join(sorted(unsupported))}")
     if not changes:
-        raise PipelineStateError("transition requires at least one changed field")
+        raise PipelineStateError(
+            "transition requires at least one changed field; "
+            "to record only a Log event, pass --set-status with the current status"
+        )
     required_expected = {"phase", "status", "branch", "archive"} | set(changes)
     missing_expected = sorted(required_expected - set(expected))
     if missing_expected:

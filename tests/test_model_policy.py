@@ -195,6 +195,18 @@ class DispatchPolicyTests(unittest.TestCase):
         self.assertNotEqual(self.native(scope='M002/active/plan')[0], 0)
         self.assertEqual((self.root / 'native.json').read_bytes(), before)
 
+    def test_native_release_with_wrong_role_names_only_the_differing_field(self):
+        self.assertEqual(self.native('resolve', '--model', 'small')[0], 0)
+        before = (self.root / 'native.json').read_bytes()
+        code, blocked = self.native(
+            'release', '--terminal-result', 'host:completed/plan', '--role', 'planner')
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            blocked['reason'],
+            'record belongs to another assignment or milestone/track/cycle '
+            '(role: planner, record has plan)')
+        self.assertEqual((self.root / 'native.json').read_bytes(), before)
+
     def test_legacy_command_without_policy_is_unchanged(self):
         self.policy.unlink()
         self.options.model_capabilities = None

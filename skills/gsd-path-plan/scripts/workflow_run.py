@@ -210,8 +210,14 @@ def run_workflow(repo: Path, action: str, project_dir: str, expected_head: str =
                         "--base", expected_head, "--task-id", task_id,
                         "--round-size", str(round_size))
             if task["mode"] == "serial":
+                name = f"task-{task_id.lower()}-verify"
+                stale = isolation.sidecar_root(repo, "verify", name)
+                if os.path.lexists(stale / ".git"):
+                    # An earlier prepare-task left this sidecar. Only one that is proven untouched is replaced.
+                    steps.append({"script": "isolation.py", "result": isolation.retire_stale_verify(
+                        repo, stale, isolation.verify_branch_name(name))})
                 step("isolation.py", "isolate-verify", "--repo", str(repo),
-                     "--base", expected_head, "--name", f"task-{task_id.lower()}-verify")
+                     "--base", expected_head, "--name", name)
         elif action == "build-evidence":
             proof = step("build_state.py", "verify-landed", *common, "--head", expected_head)
             # The landing proof has one canonical home; lean final-review reuse allows only this path.
@@ -278,7 +284,8 @@ def run_workflow(repo: Path, action: str, project_dir: str, expected_head: str =
             if action == "approve-plan":
                 step("pipeline_state.py", "approve", *common, "--kind", "plan",
                      "--expected-head", expected_head)
-    except (StepFailed, OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:
+    except (StepFailed, isolation.IsolationError, OSError, subprocess.CalledProcessError,
+            ValueError, KeyError, TypeError) as error:
         return {"status": "blocked", "reason": str(error), "steps": steps,
                 "next": next_step}
     return {"status": "complete", "steps": steps, **outputs}

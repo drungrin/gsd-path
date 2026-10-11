@@ -99,6 +99,7 @@ _RUNTIME_ACTIVATION_ORDER = (
     "model_policy",
 )
 RECOVERY_BLOCKED = "recovery blocked"
+LEFTOVER_ISOLATE = "task {} is landed; remove its leftover isolate: {}"
 # The stops the build contract answers with build/blocked when the round raises them (steps 1 and 2);
 # the same stops from review, panel, or skeptics stay with the parent.
 BLOCKING_STOPS = {"dependency-deadlock": "dependency deadlock", RECOVERY_BLOCKED: "blocked recovery"}
@@ -709,6 +710,22 @@ def state_from_task(primary: Path, task_id: str) -> Dict[str, object]:
 
 def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
     """Verify in the isolate, land, record the ledger, retire. Returns the landing receipt."""
+    landing = land_task(primary, state)
+    try:
+        if state["mode"] == "member":
+            isolation.retire_member_task(primary, str(state["member"]), str(state["task_id"]))
+        else:
+            isolation.retire(primary, Path(str(state["worktree"])), state.get("task_branch") or None, False)
+    except isolation.IsolationError as error:
+        # The landing is proven, so a failed removal is a warning; Round.recover checks the isolate again.
+        landing["cleanup_warning"] = (f"{error}; the task is landed, but its isolate was not removed. The next "
+                                      "round or finish checks the isolate again and stops if the isolate is "
+                                      "still there")
+    return landing
+
+
+def land_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
+    """Verify in the isolate, land, record the ledger. Returns the landing receipt."""
     worktree = Path(str(state["worktree"]))
     task_id = str(state["task_id"])
     task_file = str(state["task_file"])
@@ -780,7 +797,6 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
         ledger = isolation.git_output(worktree, "rev-parse", f"{landing}^") == str(state["member_base"])
         if ledger:
             build_state.verify_record(str(primary), command, landing, "pass", execution=execution, member=member)
-        isolation.retire_member_task(primary, member, task_id)
         return {"task": task_id, "commit": str(landed["commit"]), "mode": "member",
                 "landing": landing, "verify": execution, "regressions": reruns, **superseded,
                 "ledger": ledger}
@@ -791,7 +807,6 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
     ledger = isolation.git_output(primary, "rev-parse", f"{commit}^") == base
     if ledger:
         build_state.verify_record(str(primary), command, commit, "pass", execution=execution)
-    isolation.retire(primary, worktree, state.get("task_branch") or None, False)
     return {"task": task_id, "commit": commit, "mode": landed["mode"], "verify": execution,
             "regressions": reruns, **superseded, "ledger": ledger}
 
@@ -809,6 +824,11 @@ def recover_report(primary: Path, project_dir: str, receipt: Dict[str, object]) 
     report = isolation.recover(primary, Path(project_dir) / "tasks")
     receipt["steps"].append({"script": "isolation.py recover", "result": report})
     if report["verdict"] == "block":
+        blocked = [task for task in report["tasks"] if task["verdict"] == "block"]
+        if blocked and all(task.get("leftover") for task in blocked):
+            # Every blocked task is landed: the stop names only the isolates to remove, and the build stays active.
+            raise DriverStop("; ".join(LEFTOVER_ISOLATE.format(task["task_id"], task["leftover"])
+                                       for task in blocked), recover=blocked)
         raise DriverStop(RECOVERY_BLOCKED, recover=report)
     return report
 
@@ -944,7 +964,7 @@ class Round:
             self.receipt["steps"].append({"script": "isolation.recover_member_landing", "task": journal.stem,
                                           "result": result})
             if result["state"] == "landed":
-                isolation.retire_member_task(self.primary, str(result["member"]), journal.stem)
+                self.retire_member(str(result["member"]), journal.stem, str(result["landing"]))
                 retired_members.add(journal.stem)
         report = recover_report(self.primary, self.project_dir, self.receipt)
         for task in report["tasks"]:
@@ -973,15 +993,35 @@ class Round:
                     recover=task,
                 )
             if verdict == "recovered" and task.get("member") and task.get("task_id") not in retired_members:
-                isolation.retire_member_task(self.primary, str(task["member"]), str(task["task_id"]))
+                self.retire_member(str(task["member"]), str(task["task_id"]), str(task["landing"]))
             if verdict == "recovered" and worktree and worktree["clean"] and task.get("task_branch"):
                 isolation.retire(self.primary, Path(str(worktree["path"])),
                                  str(task["task_branch"]), False)
-            elif (verdict == "recovered" and worktree is None and task.get("task_branch")) or (
-                    verdict == "resume" and (task.get("landing_retry") or task.get("dispatch_retry"))):
-                # ponytail: interrupted retirements and retries stay with the parent's documented
+            elif verdict == "recovered" and worktree is None and task.get("task_branch"):
+                # The isolate is gone and the landing is proven: retire proves the branch, then deletes it.
+                isolation.retire(self.primary, None, str(task["task_branch"]), True, str(task["commit"]))
+            elif verdict == "resume" and (task.get("landing_retry") or task.get("dispatch_retry")):
+                # ponytail: interrupted retries stay with the parent's documented
                 # procedure; failed/blocked reconciliation surfaces through ready's typed error.
                 raise DriverStop(f"task {task.get('task_id')} needs recovery: {verdict}", recover=task)
+
+    def retire_member(self, member: str, task_id: str, landing: str) -> None:
+        """Retire a landed member task's sidecar; a proven leftover of it is a stop that names only its path."""
+        checkout, project, _ = isolation._member_context(self.primary, member)
+        sidecar = isolation.sidecar_root(checkout, "task", f"{project}-{task_id}")
+        branch = f"refs/heads/{isolation.TASK_BRANCH_PREFIX}{project}-{task_id}"
+        tip = isolation.run_git(checkout, "rev-parse", "--verify", "--quiet", branch)
+        commits = [landing, *tip.stdout.split()]
+        try:
+            isolation.retire_member_task(self.primary, member, task_id)
+        except isolation.RemovalError as error:
+            # Missing files are a removal that stopped part way; every other state keeps the refusal.
+            if not (isolation.only_missing_files(sidecar)
+                    or isolation.holds_only_landed_files(checkout, sidecar, commits)):
+                raise
+            raise DriverStop(LEFTOVER_ISOLATE.format(task_id, sidecar), cleanup_error=str(error))
+        if isolation.holds_only_landed_files(checkout, sidecar, commits):
+            raise DriverStop(LEFTOVER_ISOLATE.format(task_id, sidecar))
 
     # settle exited children ---------------------------------------------
 
@@ -1268,7 +1308,7 @@ class Round:
                 continue
             prepared = self.runner("prepare-task", head, task["id"], round_size)
             isolate = prepared[0]["result"]
-            sidecar = prepared[1]["result"] if len(prepared) > 1 else None
+            sidecar = prepared[-1]["result"] if len(prepared) > 1 else None  # the isolate-verify step is last
             worktree = Path(str(isolate["worktree"]))
             isolation.activate_task(worktree, head, task["id"], f"build_{task['id'].lower()}",
                                     task["task_file"], isolate["task_branch"])
@@ -2503,6 +2543,10 @@ def main(argv=None) -> int:
                 if native and native["base"] != records[0].get("base"):
                     records = []
                 else:
+                    if (native and records[0]["outcome"] == "blocked" and records[0].get("native")
+                            and not records[0].get("command")):
+                        # A failed finish leaves a host-dispatched task active at its base: finish may run again.
+                        update_state(records[0], outcome=None, reason=None)
                     native = None
             if arguments.task_id in current.proven:
                 commit = current.proven[arguments.task_id]

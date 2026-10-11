@@ -97,6 +97,25 @@ class IsolationTests(unittest.TestCase):
             self.assertTrue((project / "archive/001-old/research/.claude/.cc-writes").is_dir())
             self.assertFalse((project / "archive/002-now/research/.claude").exists())
 
+    def test_cli_refuses_a_ref_or_short_sha_and_names_git_rev_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            for value in ("HEAD", base[:12]):
+                for arguments in (
+                    ("isolate-verify", "--base", value, "--name", "probe"),
+                    ("checkpoint", "--expected-head", value, "--subject", "build: probe",
+                     "--body", "Why: probe", "--allow-path", ".project/STATE.md"),
+                ):
+                    with self.subTest(value=value, command=arguments[0]):
+                        result = self.run_cli(arguments[0], "--repo", str(repo), *arguments[1:])
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn(f"must be a full 40-character SHA: {value}", result.stderr)
+                        self.assertIn("git rev-parse", result.stderr)
+            self.assertEqual(git(repo, "rev-parse", "HEAD"), base)
+            self.assertEqual(git(repo, "branch", "--list", "gsd-path-verify/*"), "")
+
     def test_serial_isolate_uses_bound_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "repo"
@@ -3503,6 +3522,101 @@ class RecoverTests(unittest.TestCase):
                 self.assertEqual(report["base"], self.base)
                 self.assertIsNone(report["task_branch"])
                 self.assertEqual(report["worktree"]["path"], str(self.repo.resolve()))
+
+    def test_landed_task_with_a_partly_removed_isolate_names_only_the_leftover_path(self) -> None:
+        source = self.land_parallel(b"print('hello')\n")
+        landed = git(self.repo, "rev-parse", "HEAD")
+        reason = f"task landed at {landed}; remove its leftover isolate: {source}"
+        # A failed removal first deletes files, then also the Git link of the isolate.
+        for removed in ("src/app.py", ".git"):
+            (source / removed).unlink()
+            with self.subTest(removed=removed):
+                report = self.recover()
+                self.assertEqual(
+                    (report["verdict"], report["reason"], report["leftover"], report["commit"]),
+                    ("block", reason, str(source), landed),
+                )
+
+    def assert_keeps_block(self, reason: str) -> None:
+        report = self.recover()
+        self.assertEqual(report["verdict"], "block")
+        self.assertIn(reason, report["reason"])
+        self.assertNotIn("remove", report["reason"])
+        self.assertNotIn("leftover", report)
+
+    def test_landed_isolate_on_another_branch_keeps_the_branch_block(self) -> None:
+        source = self.land_parallel(b"print('hello')\n")
+        git(source, "checkout", "-q", "-b", "scratch")
+        (source / "notes.txt").write_bytes(b"not landed\n")
+
+        self.assert_keeps_block("sidecar is on scratch, expected gsd-path-task/T001")
+
+    def test_landed_isolate_path_of_another_repository_keeps_the_repository_block(self) -> None:
+        source = self.land_parallel(b"print('hello')\n")
+        git(self.repo, "worktree", "remove", "--force", str(source))
+        source.mkdir()
+        git(source, "init", "-q")
+
+        self.assert_keeps_block(f"sidecar belongs to another repository: {source}")
+
+    def test_landed_isolate_path_that_is_a_file_keeps_the_ownership_block(self) -> None:
+        source = self.land_parallel(b"print('hello')\n")
+        git(self.repo, "worktree", "remove", "--force", str(source))
+        source.write_bytes(b"not a directory\n")
+
+        self.assert_keeps_block(f"sidecar path is not an owned worktree: {source}")
+
+    def test_landed_isolate_with_a_gitignored_file_and_a_missing_file_keeps_the_dirty_block(self) -> None:
+        source = self.land_parallel(b"print('hello')\n")
+        with (self.repo / ".git/info/exclude").open("a", encoding="utf-8") as exclude:
+            exclude.write("*.log\n")
+        (source / "unsaved.log").write_bytes(b"work that Git does not have\n")
+        (source / "src/app.py").unlink()
+        self.assertEqual(git(source, "status", "--porcelain", "--untracked-files=all"), "D src/app.py")
+
+        self.assert_keeps_block("proven task retains a dirty worktree")
+        self.assertEqual((source / "unsaved.log").read_bytes(), b"work that Git does not have\n")
+
+    def test_partly_removed_landed_isolate_with_content_git_does_not_have_keeps_its_block(self) -> None:
+        source = self.land_parallel(b"print('hello')\n")
+        (source / ".git").unlink()
+        states = {
+            "untracked": (source / "notes.txt", b"not landed\n"),
+            "modified": (source / "src/app.py", b"print('changed')\n"),
+        }
+        for state, (path, content) in states.items():
+            with self.subTest(state=state):
+                before = path.read_bytes() if path.exists() else None
+                path.write_bytes(content)
+                self.assert_keeps_block("invalid sidecar worktree")
+                path.unlink() if before is None else path.write_bytes(before)
+        self.assertEqual(self.recover()["leftover"], str(source))
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "needs POSIX permissions")
+    def test_partly_removed_landed_isolate_that_cannot_be_read_keeps_its_block(self) -> None:
+        source = self.land_parallel(b"print('hello')\n")
+        (source / ".git").unlink()
+        (source / "src").chmod(0)
+        self.addCleanup((source / "src").chmod, 0o755)
+
+        self.assert_keeps_block("invalid sidecar worktree")
+
+    def test_done_task_without_a_proven_landing_keeps_the_invalid_isolate_block(self) -> None:
+        expected = isolation.sidecar_root(self.repo.resolve(), "task", "T001")
+        expected.mkdir(parents=True)
+        self.write_task(
+            "done",
+            self.base,
+            agent="coder",
+            worktree=str(expected),
+            task_branch="gsd-path-task/T001",
+        )
+
+        report = self.recover()
+
+        self.assertEqual(report["verdict"], "block")
+        self.assertIn("invalid sidecar worktree", report["reason"])
+        self.assertNotIn("leftover", report)
 
     def test_partial_sidecar_path_blocks_recovery(self) -> None:
         expected = isolation.sidecar_root(self.repo.resolve(), "task", "T001")

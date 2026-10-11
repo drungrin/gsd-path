@@ -23,7 +23,7 @@ inputs, receipt handling, and entry conditions are owned by the
 | `gate-plan` | Git HEAD; optional lookahead project directory | Pending discussion, intent coverage, brief paths, and panel configuration checked in order. |
 | `approve-plan` | Owner approval and `--expected-head <reviewed full SHA>` | Plan gates followed by the existing journaled approval checkpoint. |
 | `lint-round` | Git HEAD; optional `--project-dir .project/next` | Task brief checks against HEAD, then plan handoff checks. |
-| `prepare-task` | `--expected-head <clean base> --task-id <id> --round-size <ready task count>` | Canonical task isolation; serial work also gets a verification sidecar before the primary becomes dirty. |
+| `prepare-task` | `--expected-head <clean base> --task-id <id> --round-size <ready task count>` | Canonical task isolation; serial work also gets a verification sidecar before the primary becomes dirty. A verification sidecar that an earlier `prepare-task` left for the task is retired first only when it is proven untouched: its branch did not move from its creation base on the bound branch, and it has no tracked change and no untracked or gitignored file. Any other sidecar stays, and the command stops with its path and what was found. |
 | `build-evidence` | `--expected-head <full SHA>` | Canonical landing proof written to `<project-dir>/build/evidence.json` (default: `.project/build/evidence.json`). |
 
 Plan approval recovery remains `pipeline_state.py resume-checkpoint`. Pre-Git
@@ -68,7 +68,7 @@ skeptic attempts under `skeptics/`.
 | `skeptics --repo <root> --wave <N> --cycle <C> --child-command '<cmd>' [--wait <s>] [--child-timeout <s>]` | Step 7 skeptic branch: one read-only skeptic per `skeptic_groups` locator in its own sidecar at the recorded review base, briefed with the criterion, every observation, and the cited tasks verbatim; validate with `review_findings.py`, collect, retire, then rerun the helper. `none` without skeptic groups; `escalate` for structural blockers or the cycle cap. The skeptic files stay uncommitted for the fix-task or ruling checkpoint. |
 | `fix-tasks --repo <root> --wave <N> --cycle <C>` | Step 7 batching: one fix task per `review_findings.py collect` batch with the failed criteria and observations verbatim, lint-checked; `escalate` for structural blockers, skeptic groups, cycle cap, or all-refuted. |
 | `complete --repo <root>` | Completion: clean primary at `build/active` (or a crash-left `build/done`), no unfinished wave, the archive-time review cycle check (`discussion_validate.review_cycle_counts`: contiguous cycles, passing last cycle, panel and skeptic artifacts present); `workflow_run.py build-evidence` at HEAD; `pipeline_state.py transition` to `ship/active` with event `build done; final review pending`; checkpoint `build: complete milestone`. |
-| `finish --repo <root> --task-id <id>` | Recover first; return a proven landing without repeating Verify, or verify, land, record, and retire one returned task. Without a dispatch record, or when the newest record is settled and its base differs from the task's current in-progress base (a native retry after a driver block), read the primary task's in-progress state; if it lacks a recorded base, use the parallel task isolate's state only if that worktree is authorized. A blocked record at the same base still refuses the retry. A deactivated isolate stays blocked. |
+| `finish --repo <root> --task-id <id>` | Recover first; return a proven landing without repeating Verify, or verify, land, record, and retire one returned task. Without a dispatch record, or when the newest record is settled and its base differs from the task's current in-progress base (a native retry after a driver block), read the primary task's in-progress state; if it lacks a recorded base, use the parallel task isolate's state only if that worktree is authorized. A blocked record at the same base still refuses the retry, except a host-dispatched record (no child command) while the task is still in progress at that base: `finish` may run again after a failed Verify. A deactivated isolate stays blocked. |
 | `answer --repo <root> --task-id <id> --answer '<text>'` | Append `Orchestrator answer:` to the isolate's task Log; the next `round` redispatches that isolate. |
 | `status --repo <root>` | Every task's newest dispatch record. |
 
@@ -95,6 +95,13 @@ For `round`, `review`, `panel`, and `skeptics`, when the child process is gone a
 unset, the driver rereads that attempt's state and exit receipt before
 collecting the result or blocking with
 `child wrapper exited without recording a result`.
+A landing is final when the removal of its isolate fails: the receipt reports
+the task as landed with a `cleanup_warning`, and the next `round` or `finish`
+checks the isolate again. When only a leftover of a landed task's isolate
+remains and it holds nothing that Git does not have, the driver stops with
+`task <id> is landed; remove its leftover isolate: <path>`, changes neither
+STATE nor HEAD, and never deletes the path itself. Every other isolate error
+keeps its recovery block.
 Review starts from a clean base. A same-cycle retry may dispatch a missing lens
 at that unchanged base while verified, already-collected review artifacts remain
 uncommitted. Altered artifacts or unrelated changes block recovery.
