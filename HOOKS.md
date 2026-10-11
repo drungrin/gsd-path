@@ -145,8 +145,9 @@ See [UPDATE.md](UPDATE.md).
   `update-ref --stdin`, ownership metadata it cannot read, a working directory
   it cannot track or that does not exist yet, or an `env` wrapper that resets
   or unsets `HOME`, `XDG_CONFIG_HOME`, or a `GIT_*` variable. With such an
-  `env` wrapper, a Git command that is not a built-in command is denied too,
-  because its alias cannot be inspected
+  `env` wrapper, or in a directory that does not exist yet, a Git command that
+  is not a built-in command is denied too, because its alias cannot be
+  inspected
 - shell writes (redirections, `tee`, `cp`, `mv`, `rm`, `sed -i`, ...) that
   target a routing control (`.git`, `.project/STATE.md`, `.project/next`,
   `.gsd-path`) while `.project/STATE.md` exists, or target a product file
