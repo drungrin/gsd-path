@@ -76,7 +76,8 @@ Prints good — found: prints bad, count.py:1 fix: print good
     def land(self, task_id, title, task_file, output, target="count.py"):
         base = run_git(self.repo, "rev-parse", "HEAD")
         isolation.activate_task(self.repo, base, task_id, "coder", task_file, None)
-        (self.repo / target).write_bytes(f"print({output!r})\n".encode("utf-8"))
+        for name in target.split(","):
+            (self.repo / name).write_bytes(f"print({output!r})\n".encode("utf-8"))
         result = subprocess.run([sys.executable, "-B", "count.py"], cwd=self.repo,
                                 capture_output=True, encoding="utf-8", errors="replace", check=True)
         allowed = isolation.task_frontmatter((self.repo / task_file).read_text(encoding="utf-8"))[0]["files"]
@@ -114,6 +115,13 @@ Prints good — found: prints bad, count.py:1 fix: print good
         self.assertEqual(evidence["originals"][0]["commit"], self.original)
         self.assertEqual(evidence["groups"][0]["locator"], "t001_ac1")
         self.assertEqual(evidence["verification"]["entry"]["execution"]["stdout"], "good\n")
+        # One repair right after its review: the receipt has no key of a repair chain or of a member.
+        self.assertEqual(sorted(evidence), ["command", "groups", "head", "originals", "repair", "source", "status",
+                                            "verdict", "verification"])
+        self.assertEqual(evidence["repair"], {"task": "T002", "task_file": self.repair_file, "commit": repair,
+                                              "base": run_git(self.repo, "rev-parse", f"{repair}^"), "files": ["count.py"]})
+        self.assertEqual(evidence["originals"], [{"task": "T001", "commit": self.original, "files": ["count.py"],
+                                                  "base": run_git(self.repo, "rev-parse", f"{self.original}^")}])
         self.assertEqual(run_git(self.repo, "status", "--porcelain"), before)
         self.assertEqual((self.repo / _common.VERIFY_LEDGER_PATH).read_bytes(), ledger)
 
@@ -267,6 +275,38 @@ Criterion: Prints good
         self.assertNotIn("earlier_repairs", evidence)
         self.assertEqual((evidence["verification"]["entry"]["commit"],
                           evidence["verification"]["entry"]["execution"]["stdout"]), (third, "best\n"))
+
+    def later_chain(self, unrelated=None):
+        """T002 changes count.py; the linked T003 changes count.py and late.py; the linked T004 changes count.py.
+
+        `unrelated` names the moment when another task changes late.py, the file that only T003 names.
+        """
+        def other_task(moment):
+            if moment == unrelated:
+                (self.repo / "late.py").write_bytes("print('unrelated')\n".encode("utf-8"))
+                self.commit("work of another task")
+
+        self.finish_repair()
+        other_task("before T003")
+        self.repair("T003", "T002", "better", files="  - count.py\n  - late.py", target="count.py,late.py")
+        self.repair("T004", "T003", "best")
+        other_task("after T004")
+
+    def test_superseded_repair_receipt_names_the_files_of_every_later_linked_repair(self):
+        self.later_chain()
+        result, evidence = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr or evidence)
+        self.assertEqual([item["task"] for item in evidence["later_repairs"]], ["T003", "T004"])
+        self.assertEqual(evidence["chain_files"], ["count.py", "late.py"])
+
+    def test_superseded_repair_gets_no_receipt_when_a_file_of_a_middle_linked_repair_changed(self):
+        for moment in ("before T003", "after T004"):
+            with self.subTest(moment=moment):
+                self.setUp()
+                self.later_chain(unrelated=moment)
+                result, evidence = self.cli()
+                self.assertEqual(result.returncode, 2, evidence)
+                self.assertIn("product changed after", evidence["error"])
 
     def test_superseded_repair_gets_no_receipt_from_an_unlinked_or_unverified_later_change(self):
         expected_errors = {"no dependency": "product changed after", "other finding": "product changed after",

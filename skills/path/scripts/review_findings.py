@@ -738,21 +738,23 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
             if at_base.returncode or at_base.stdout != _read(path, "source review"):
                 raise ReviewFindingsError("source review must be unchanged and precede the repair")
         # A later linked repair supersedes this one: the last one is the product at the tip, and its
-        # landing and its Verify are the evidence.
+        # landing and its Verify are the evidence. The reviewer applies every patch of the chain, so the
+        # files of every later linked repair must also change only through the landings of the chain.
         later = linked_changes(at(repair), tip, files)
+        chain_files = sorted({*files, *(path for link in later or [] for path in link["files"])})
         last = later[-1] if later else repair
         verification = build_state.verify_lookup(
             str(repo), _common.task_verify_command(_read(repo / last["task_file"], "repair task")), at(last), member)
         if not verification["reuse"]:
             raise ReviewFindingsError("repair has no reusable passing Verify at its landing")
-        if later is None or (later and differ(at(last), tip, last["files"])):
+        if later is None or (later and linked_changes(at(repair), tip, chain_files) is None):
             raise ReviewFindingsError("product changed after the repair landing")
         return {
             "status": "ok", "command": "repair-evidence", "head": head,
             "source": {"wave": wave, "cycle": cycle}, "groups": groups,
             "originals": landed, "repair": repair,
             **({"earlier_repairs": [link for link in linked() if link["task"] in earlier]} if earlier else {}),
-            **({"later_repairs": later} if later else {}),
+            **({"later_repairs": later, "chain_files": chain_files} if later else {}),
             "verification": verification,
             "verdict": "evidence-ready; reviewer judges the original unchanged criteria",
         }
