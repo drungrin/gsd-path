@@ -1393,7 +1393,12 @@ def segment_directories(tokens, working_directories, contexts=None):
                 if name not in SHELL_DIRECTORY_VARIABLES
             }
         expanded = expand_environment_parameters(target, tracked, tracked_only=True)
-        if SHELL_PARAMETER_SYNTAX.search(expanded) or CMD_PARAMETER_SYNTAX.search(expanded):
+        # An unquoted empty expansion leaves no word: the shell changes to HOME.
+        if (
+            (target and not expanded)
+            or SHELL_PARAMETER_SYNTAX.search(expanded)
+            or CMD_PARAMETER_SYNTAX.search(expanded)
+        ):
             raise ValueError(
                 f"cd target {target} cannot be resolved by the guard; "
                 "run that command first and cd to the literal result"
@@ -1927,7 +1932,16 @@ def shell_assignment_contexts(tokens, initial=None, working_directories=None):
             values[name] = f"${name}" if conditional else value
         invocation = command_invocation(segment)
         if invocation is not None and invocation[0] in DIRECTORY_CHANGE_COMMANDS:
-            target = directory_change_target(invocation[1])
+            # The same tracked expansion as segment_directories.
+            target = expand_environment_parameters(
+                directory_change_target(invocation[1]),
+                {
+                    name: value
+                    for name, value in contexts[-1].items()
+                    if name not in SHELL_DIRECTORY_VARIABLES
+                },
+                tracked_only=True,
+            )
             directories = (
                 [target] if is_absolute_path(target)
                 else [f"{directory}/{target}" for directory in directories]
@@ -3671,8 +3685,6 @@ def ownership_cwd_is_uncertain(tokens, working_directories=None):
             cdpath_ambiguous = True
         if command in DIRECTORY_CHANGE_COMMANDS:
             target = directory_change_target(arguments)
-            if SHELL_PARAMETER_SYNTAX.search(target):
-                raise ValueError("cd target cannot be resolved by the guard")
             absolute = is_absolute_path(target)
             next_directories = (
                 [target]
@@ -3680,7 +3692,8 @@ def ownership_cwd_is_uncertain(tokens, working_directories=None):
                 else [f"{directory}/{target}" for directory in current_directories]
             )
             if (
-                group_depth > 0
+                SHELL_PARAMETER_SYNTAX.search(target)
+                or group_depth > 0
                 or previous_separator in {"&&", "||", "&"}
                 or next_separator in {"||", "&"}
                 or (previous_separator is not None and "|" in previous_separator)

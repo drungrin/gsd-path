@@ -1836,6 +1836,38 @@ class GuardHookTests(unittest.TestCase):
                     guard_hook.GIT_REASONS["branch"],
                 )
 
+    def test_scoped_deletion_after_a_parameter_cd_stays_denied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            owned = self.init_git_repo(parent / "owned")
+            unrelated = self.init_git_repo(parent / "unrelated")
+            for repo in (owned, unrelated):
+                self.git(repo, "branch", "same-name")
+            (owned / ".project").mkdir()
+            (owned / ".project" / "STATE.md").write_text(
+                "---\nphase: build\nbranch: same-name\n---\n", encoding="utf-8"
+            )
+            for repo in (owned, unrelated):
+                directory = shlex.quote(repo.as_posix())
+                with self.subTest(repo=repo.name):
+                    self.assert_denied_with(
+                        self.bash_in(
+                            parent, f'D={directory}; cd "$D" && git branch -D same-name'
+                        ),
+                        guard_hook.GIT_REASONS["unresolved-target"].format(
+                            action="git branch -D"
+                        ),
+                    )
+                    self.assert_allowed(
+                        self.bash_in(
+                            parent, f'D={directory}; cd "$D" && git -C "$PWD" status --short'
+                        )
+                    )
+            self.assert_denied_with(
+                self.bash_in(parent, "unset D; cd $D && git status"),
+                "cd target $D cannot be resolved by the guard",
+            )
+
     def test_git_ignores_an_alias_for_each_built_in_command_the_guard_skips(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
