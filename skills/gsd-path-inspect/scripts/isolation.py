@@ -2722,8 +2722,11 @@ def _task_branch_proof_error(
 
 
 def only_missing_files(worktree: Path) -> bool:
-    """True when the only difference of a worktree from its HEAD is tracked files that are missing."""
-    status = run_git(worktree, "status", "--porcelain", "--untracked-files=all")
+    """True when the only difference of a worktree from its HEAD is tracked files that are missing.
+
+    An untracked or a gitignored file is content that Git does not have, so it makes this False.
+    """
+    status = run_git(worktree, "status", "--porcelain", "--untracked-files=all", "--ignored=matching")
     lines = status.stdout.splitlines()
     return status.returncode == 0 and bool(lines) and all(line.startswith(" D") for line in lines)
 

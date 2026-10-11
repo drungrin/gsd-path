@@ -3431,6 +3431,17 @@ class RecoverTests(unittest.TestCase):
 
         self.assert_keeps_block(f"sidecar path is not an owned worktree: {source}")
 
+    def test_landed_isolate_with_a_gitignored_file_and_a_missing_file_keeps_the_dirty_block(self) -> None:
+        source = self.land_parallel(b"print('hello')\n")
+        with (self.repo / ".git/info/exclude").open("a", encoding="utf-8") as exclude:
+            exclude.write("*.log\n")
+        (source / "unsaved.log").write_bytes(b"work that Git does not have\n")
+        (source / "src/app.py").unlink()
+        self.assertEqual(git(source, "status", "--porcelain", "--untracked-files=all"), "D src/app.py")
+
+        self.assert_keeps_block("proven task retains a dirty worktree")
+        self.assertEqual((source / "unsaved.log").read_bytes(), b"work that Git does not have\n")
+
     def test_partly_removed_landed_isolate_with_content_git_does_not_have_keeps_its_block(self) -> None:
         source = self.land_parallel(b"print('hello')\n")
         (source / ".git").unlink()

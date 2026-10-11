@@ -1072,6 +1072,8 @@ class DispatchDriverTests(unittest.TestCase):
         warning = receipt["landed"][0]["cleanup_warning"]
         self.assertIn("its isolate was not removed", warning)
         self.assertNotIn("retries", warning)
+        # The warning does not know what the isolate holds, so it gives no removal advice.
+        self.assertNotIn("to remove", warning)
 
         leftover = f"task T001 is landed; remove its leftover isolate: {worktree}"
         state = (root / ".project/STATE.md").read_bytes()

@@ -703,8 +703,8 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
     except isolation.IsolationError as error:
         # The landing is proven, so a failed removal is a warning; Round.recover checks the isolate again.
         landing["cleanup_warning"] = (f"{error}; the task is landed, but its isolate was not removed. The next "
-                                      "round or finish checks the isolate again and stops with the path to "
-                                      "remove if it cannot remove it")
+                                      "round or finish checks the isolate again and stops if the isolate is "
+                                      "still there")
     return landing
 
 

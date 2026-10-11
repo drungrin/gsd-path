@@ -113,7 +113,20 @@ class NativeMemberDispatchTests(unittest.TestCase):
 
         finish = ("dispatch_driver.py", "finish", "--repo", str(self.coordinator), "--task-id", "T001")
         leftover = f"task T001 is landed; remove its leftover isolate: {sidecar}"
+
+        # The live task copy is a gitignored file that Git does not have: Git's refusal stays, and
+        # nothing says to remove the sidecar.
+        copy = sidecar / ".gsd-path-coordinator"
+        self.assertEqual(git(sidecar, "status", "--porcelain", "--untracked-files=all"), "D app.py")
+        refused = call(*finish).stdout
+        self.assertIn("contains modified or untracked files", json.loads(refused)["reason"])
+        self.assertNotIn("remove", refused)
+        self.assertTrue((copy / landing.TASK_FILE).is_file())
+
+        # Without it, only a landed file is missing: the stop names the path.
+        copy.rename(sidecar.parent / "copy-aside")
         self.assertEqual(json.loads(call(*finish).stdout)["reason"], leftover)
+        (sidecar.parent / "copy-aside").rename(copy)
 
         # Content that Git does not have is not a leftover: Git's refusal stays.
         (sidecar / "unknown.txt").write_bytes(b"not landed\n")
