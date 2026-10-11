@@ -1775,6 +1775,38 @@ class PipelineStateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("approve requires --expected-head", result.stderr)
 
+    def test_transition_cli_records_a_ruling_without_a_position_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".project").mkdir()
+            state_path = repo / ".project" / "STATE.md"
+            state_path.write_bytes(
+                state_text(phase="build", status="active", branch="gsd-path/M001").encode("utf-8")
+            )
+            event = "wave 1 cycle 1 all-refuted ruling: Re-run the review cycle"
+            expected = [
+                sys.executable, str(PIPELINE_STATE_SCRIPT.resolve()), "transition", "--repo", str(repo),
+                "--event", event, "--expect-phase", "build", "--expect-status", "active",
+                "--expect-branch", "gsd-path/M001", "--expect-archive", "null",
+            ]
+
+            refused = subprocess.run(expected, capture_output=True, encoding="utf-8", errors="replace", check=False)
+
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn("transition requires at least one changed field", refused.stderr)
+            self.assertIn("--set-status", refused.stderr)
+            self.assertNotIn(event, state_path.read_text(encoding="utf-8"))
+
+            recorded = subprocess.run(
+                [*expected, "--set-phase", "build", "--set-status", "active"],
+                capture_output=True, encoding="utf-8", errors="replace", check=False,
+            )
+
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            state = json.loads(recorded.stdout)["state"]
+            self.assertEqual((state["phase"], state["status"]), ("build", "active"))
+            self.assertIn(event, state_path.read_text(encoding="utf-8"))
+
     def test_approve_cli_refuses_a_ref_or_short_sha_and_names_git_rev_parse(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, expected_head = self._approval_repo(tmp, "plan")
