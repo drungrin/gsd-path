@@ -2536,6 +2536,62 @@ Tasks reviewed: 2
             ):
                 check_handoffs.validate_wave(root, review=relative)
 
+    def test_wave_format_errors_say_what_the_gate_expects(self) -> None:
+        # Issue #392: each message names the rule the reviewer must follow.
+        t001 = "## T001 — Demo task T001: pass\n\n- ✅ The demo command prints hello. — ran hello.py\n\n"
+        t002 = "## T002 — Demo task T002: pass\n\n- ✅ The demo test suite is green. — unittest OK\n\n"
+        blocked = ("Wave verdict: pass", "Wave verdict: blocked")
+        order = "must review exactly T001, T002 in task id order"
+        cases = (
+            ("sections in PLAN table order", [(t001 + t002, t002 + t001)], order),
+            ("blocked review, sections out of order", [blocked, (t001 + t002, t002 + t001)], order),
+            ("blocked review, unknown task", [blocked, ("## T002 — Demo", "## T009 — Demo")], order),
+            (
+                "heading is not the task title",
+                [("## T001 — Demo task T001: pass", "## T001 — The demo task: pass")],
+                "title for T001 differs from task file; expected the exact `title:` value: Demo task T001",
+            ),
+            (
+                "SC evidence without the marker prefix",
+                [("- ✅ hello.py output", "- hello.py output ✅")],
+                "SC1 lacks pass evidence; add a line that starts with `- ✅ ` under its heading",
+            ),
+            (
+                "failed task described without a marker line",
+                [blocked, (t001, "## T001 — Demo task T001: fail\n\nBlocking findings:\n- prints goodbye, hello.py:3\n\n")],
+                "task T001 lacks fail evidence; add a line that starts with `- ❌ ` under its heading",
+            ),
+            (
+                "literal HTML outside backticks",
+                [("— ran hello.py", "— the output has <b>hello</b>")],
+                "task T001 pass evidence still contains the placeholder <b>; replace it with the "
+                "real value, or put literal text such as an HTML tag in backticks",
+            ),
+        )
+        for label, edits, message in cases:
+            with self.subTest(label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_plan_handoff(root)
+                relative = self.write_wave_review(root)
+                review = root / relative
+                text = review.read_text(encoding="utf-8")
+                for old, new in edits:
+                    self.assertIn(old, text)
+                    text = text.replace(old, new)
+                review.write_bytes(text.encode("utf-8"))
+                with self.assertRaises(check_handoffs.HandoffError) as failure:
+                    check_handoffs.validate_wave(root, review=relative)
+                self.assertEqual(str(failure.exception), f"wave-1.cycle1.md {message}")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            relative = self.write_wave_review(root)
+            review = root / relative
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "— ran hello.py", "— the output has `<b>hello</b>`"
+            ).encode("utf-8"))
+            self.assertEqual(check_handoffs.validate_wave(root, review=relative)["verdict"], "pass")
+
     def test_wave_rejects_pass_while_an_owned_sc_failed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

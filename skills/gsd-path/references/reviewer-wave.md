@@ -17,19 +17,16 @@ tasks in this wave as the rubric. For each task:
    criterion. Never use the primary worktree or branch tip as task
    evidence. Do not create or remove Git worktrees yourself.
 4. Mark `pass` or `fail`. Before the evidence separator (` — `), copy the
-   complete task acceptance or interface criterion verbatim, joining wrapped
-   lines with spaces. Do not substitute an AC id or summary: finding grouping
-   binds this text to the task. Give the observed result, `file:line`, and
+   complete task acceptance or interface criterion (see Review file format
+   below). Do not substitute an AC id or summary: finding grouping binds
+   this text to the task. Give the observed result, `file:line`, and
    concrete fix direction for each failure.
 
 Then check each INTENT.md success criterion owned by a task in this wave
 against that same isolated product. In each `### SCn —` heading, copy the
-criterion text exactly as `check_handoffs._success_criteria` stores it from
-INTENT.md `## Success criteria`: indented continuation lines are joined
-with a single space and keep their `- ` list markers in the compared text;
-only whitespace is normalized at the gate. Do not paraphrase or drop
-sub-bullets. Mark `pass` or `fail` with evidence; a failed owned SC blocks
-the wave. Omit the Intent coverage section when no task in the wave owns
+complete criterion text from INTENT.md `## Success criteria` (see Review
+file format below). Mark `pass` or `fail` with evidence; a failed owned SC
+blocks the wave. Omit the Intent coverage section when no task in the wave owns
 an SC. When INTENT.md `## Edge coverage` or `## Prohibitions` has rows for
 an owned SC, judge it against those rulings too: cite each `held-out` edge
 id with its held-out test's recorded output and each `judgment` prohibition
@@ -47,6 +44,30 @@ success criterion for the wave passes.
 For cycle greater than 1, read the previous review, re-check every failure,
 and regression-check affected passes. State when the same criterion fails for
 a different reason. Use only the wave-review template.
+
+### Review file format
+
+`scripts/check_handoffs.py wave` rejects a review file that breaks one of
+these rules, and `scripts/review_findings.py` cannot group a failure whose
+criterion text does not match. Apply the rules before you write the file.
+
+- **Section order.** Put the `## T### —` sections in task id order (T001
+  before T002). The order of the PLAN.md wave table does not apply. A `pass`
+  review has one section for each task of the wave.
+- **Section heading.** Write `## T### — <title>: pass` or `: fail`, where
+  `<title>` is the exact `title:` value of the task file.
+- **Evidence lines.** An evidence line starts with `- ✅ ` for pass or
+  `- ❌ ` for fail. Each task section and each `### SCn —` block needs one
+  or more lines with the marker of its own verdict. A failed task needs a
+  `- ❌ ` criterion line, also when other text describes the failure.
+- **Criterion text.** In a task evidence line and in a `### SCn —` heading,
+  copy every word of the criterion. Join wrapped lines and sub-bullets with
+  one space. You can keep or remove the `- ` markers of the sub-bullets.
+  A changed, added, removed or moved word does not match.
+- **Angle brackets.** Text such as `<b>` or `<path>` outside backticks reads
+  as an unfilled template placeholder and is rejected. Write literal markup
+  and code in backticks inside a sentence, for example: the output has
+  `<b>hello</b>`.
 
 ### Re-review after a proven repair
 

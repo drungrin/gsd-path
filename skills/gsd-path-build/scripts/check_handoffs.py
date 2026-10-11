@@ -161,7 +161,7 @@ def _reject_placeholder(value: str, label: str) -> None:
     if placeholder is not None:
         raise HandoffError(
             f"{label} still contains the placeholder {placeholder.group(0)}; "
-            "replace it with the real value"
+            "replace it with the real value, or put literal text such as an HTML tag in backticks"
         )
 
 
@@ -2048,25 +2048,28 @@ def validate_wave_evidence(
     if enforce_plan_tasks:
         if reviewed_tasks != expected_tasks:
             raise HandoffError(
-                f"{name} must review exactly {', '.join(expected_tasks)} in plan order"
+                f"{name} must review exactly {', '.join(expected_tasks)} in task id order"
             )
     else:
         unknown = [task_id for task_id in reviewed_tasks if task_id not in expected_tasks]
         if unknown:
             raise HandoffError(
-                f"{name} must review exactly {', '.join(expected_tasks)} in plan order"
+                f"{name} must review exactly {', '.join(expected_tasks)} in task id order"
             )
         plan_order = [task_id for task_id in expected_tasks if task_id in reviewed_tasks]
         if reviewed_tasks != plan_order:
             raise HandoffError(
-                f"{name} must review exactly {', '.join(expected_tasks)} in plan order"
+                f"{name} must review exactly {', '.join(expected_tasks)} in task id order"
             )
     task_verdicts = []
     for heading_index, heading in task_headings:
         task_id = heading.group("task")
         expected_title = _normalize_ws(_task_scalar(tasks[task_id], task_id, "title"))
         if _normalize_ws(heading.group("title")) != expected_title:
-            raise HandoffError(f"{name} title for {task_id} differs from task file")
+            raise HandoffError(
+                f"{name} title for {task_id} differs from task file; "
+                f"expected the exact `title:` value: {expected_title}"
+            )
         end = next(
             (
                 index
@@ -2083,7 +2086,10 @@ def validate_wave_evidence(
             if line.strip().startswith(f"- {marker} ")
         ]
         if not evidence:
-            raise HandoffError(f"{name} task {task_id} lacks {verdict} evidence")
+            raise HandoffError(
+                f"{name} task {task_id} lacks {verdict} evidence; "
+                f"add a line that starts with `- {marker} ` under its heading"
+            )
         for item in evidence:
             item = task_review_observation(item, tasks[task_id])
             _non_placeholder(item, f"{name} task {task_id} {verdict} evidence")
@@ -2153,7 +2159,10 @@ def validate_wave_evidence(
             if line.strip().startswith(f"- {marker} ")
         ]
         if not evidence:
-            raise HandoffError(f"{name} {sc_id} lacks {verdict} evidence")
+            raise HandoffError(
+                f"{name} {sc_id} lacks {verdict} evidence; "
+                f"add a line that starts with `- {marker} ` under its heading"
+            )
         for item in evidence:
             _non_placeholder(item, f"{name} {sc_id} {verdict} evidence")
         verdicts[sc_id] = verdict
