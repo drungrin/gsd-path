@@ -1402,7 +1402,7 @@ class GuardHookTests(unittest.TestCase):
 
     def test_ownership_scope_uses_cd_and_git_c_repository_context(self):
         with tempfile.TemporaryDirectory() as temporary:
-            parent = Path(temporary)
+            parent = Path(temporary).resolve()
             owned = self.init_git_repo(parent / "owned")
             unrelated = self.init_git_repo(parent / "unrelated")
             self.git(owned, "branch", "same-name")
