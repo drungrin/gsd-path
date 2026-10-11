@@ -2237,6 +2237,66 @@ Surfaces: none
                 check_handoffs.validate_plan(root)
             self.assertIn("depends on later-wave T001", str(failure.exception))
 
+    def test_plan_accepts_supersedes_only_for_an_earlier_wave_task_that_shares_a_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            wave = ("\n## Wave {0} — replace\n\nGoal: Replace the demo behavior.\nReview depth: full\n\n"
+                    "| Task | Title | Deps | Files |\n|------|-------|------|-------|\n")
+            self.write_plan_coverage(
+                root,
+                task_rows=(
+                    "| T001 | Demo task T001 | — | src/app.py |\n"
+                    "| T002 | Demo task T002 | — | tests/test_app.py |\n"
+                    "| T003 | Demo task T003 | — | src/app.py |\n"
+                    + wave.format(2)
+                    + "| T004 | Demo task T004 | — | src/app.py |\n"
+                    "| T005 | Demo task T005 | — | src/other.py |\n"
+                    + wave.format(3)
+                    + "| T006 | Demo task T006 | — | src/app.py |"
+                ),
+            )
+            self.write_coverage_task(root, "T003", "- None", files="src/app.py")
+            self.write_coverage_task(root, "T005", "- None", wave=2, files="src/other.py")
+            self.write_coverage_task(root, "T006", "- None", wave=3, files="src/app.py")
+
+            def add_field(task_id: str, line: str) -> None:
+                path = root / f".project/tasks/{task_id}-demo.md"
+                path.write_bytes(path.read_text(encoding="utf-8").replace(
+                    "files:\n", f"{line}\nfiles:\n").encode("utf-8"))
+
+            add_field("T003", "repo: api")  # the same path in another repository
+
+            def supersede(value: str) -> None:
+                self.write_coverage_task(root, "T004", "- None", wave=2, files="src/app.py")
+                add_field("T004", f"supersedes: {value}")
+
+            for value, problem in (
+                ("[T999]", "T004 supersedes unknown task T999"),
+                ("[T005]", "T004 supersedes T005, which is not in an earlier wave"),
+                ("[T006]", "T004 supersedes T006, which is not in an earlier wave"),
+                ("[T004]", "T004 supersedes T004, which is not in an earlier wave"),
+                ("[T003]", "T004 supersedes T003, which is in another repo"),
+                ("[T002]", "T004 supersedes T002, which shares no declared file with it"),
+                ("[T001, T002]", "T004 supersedes T002, which shares no declared file with it"),
+                ("T001", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("none", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("-", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("—", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("[none]", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("[T1]", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("[T001, T001]", "T004 supersedes must be a list of different task ids, for example [T001]"),
+            ):
+                supersede(value)
+                with self.assertRaises(check_handoffs.HandoffError, msg=value) as failure:
+                    check_handoffs.validate_plan(root)
+                self.assertEqual(str(failure.exception), problem)
+
+            supersede("[T001]")
+            self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 6)
+            supersede("\n  - T001")  # the block list form that `deps` and `files` accept
+            self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 6)
+
     def test_plan_rejects_dependency_cycles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

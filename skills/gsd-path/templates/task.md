@@ -11,6 +11,7 @@ task_branch: null   # orchestrator-owned: gsd-path-task/<id> while parallel; nul
 # Optional explicit dispatch overrides: model: <advertised slug|inherit>
 # effort: <advertised effort|inherit>
 # repo: <member>    # multi-repo only: the MEMBERS.md member this task changes; omit for the coordinator
+# supersedes: [<task id>]  # only when INTENT requires it: earlier-wave tasks whose behavior this task replaces; retires their Verify
 files:              # every file this task may touch — dispatch checks overlap
   - <path>
 ---

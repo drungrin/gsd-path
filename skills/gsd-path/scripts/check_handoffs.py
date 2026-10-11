@@ -1539,6 +1539,25 @@ def _validate_task_graph(
             if _task_wave(tasks[dependency], dependency) > wave:
                 raise HandoffError(f"{task_id} depends on later-wave {dependency}")
 
+    # `supersedes` retires the regression Verify of an earlier task: the same overlap rule selects both.
+    for task_id, text in tasks.items():
+        superseded = _strict_frontmatter(text, task_id).get("supersedes", [])
+        if (
+            not isinstance(superseded, list)
+            or any(not re.fullmatch(r"T\d{3}", item) for item in superseded)
+            or len(superseded) != len(set(superseded))
+        ):
+            raise HandoffError(f"{task_id} supersedes must be a list of different task ids, for example [T001]")
+        for earlier in superseded:
+            if earlier not in tasks:
+                raise HandoffError(f"{task_id} supersedes unknown task {earlier}")
+            if task_waves[earlier] >= task_waves[task_id]:
+                raise HandoffError(f"{task_id} supersedes {earlier}, which is not in an earlier wave")
+            if task_repos[earlier] != task_repos[task_id]:
+                raise HandoffError(f"{task_id} supersedes {earlier}, which is in another repo")
+            if not set(task_files[earlier]) & set(task_files[task_id]):
+                raise HandoffError(f"{task_id} supersedes {earlier}, which shares no declared file with it")
+
     for index, left in enumerate(task_ids):
         for right in task_ids[index + 1 :]:
             if task_waves[left] != task_waves[right] or task_repos[left] != task_repos[right]:
