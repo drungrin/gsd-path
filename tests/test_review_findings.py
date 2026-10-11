@@ -365,6 +365,25 @@ class GroupingTest(unittest.TestCase):
         self.assertEqual(result["groups"][0]["locator"], "t001_ac2")
 
 
+class FixBatchTest(unittest.TestCase):
+    def test_a_declared_directory_and_a_path_below_it_share_a_fix_batch(self):
+        # Fix batches become same-wave repair tasks, so they follow the plan overlap rule.
+        groups = [{"locator": f"t00{n}_ac1", "tasks": [f"T00{n}"]} for n in (1, 2, 3)]
+        tasks = {
+            "T001": {"files": ["fixtures/set"]},
+            "T002": {"files": ["fixtures/set/a.json"]},
+            "T003": {"files": ["fixtures/setx.json"]},
+        }
+        self.assertEqual(
+            review_findings._fix_batches(groups, tasks),
+            [
+                {"locators": ["t001_ac1", "t002_ac1"],
+                 "files": ["fixtures/set", "fixtures/set/a.json"]},
+                {"locators": ["t003_ac1"], "files": ["fixtures/setx.json"]},
+            ],
+        )
+
+
 class SkepticSelectionTest(unittest.TestCase):
     def test_skeptics_off_sends_groups_to_fix(self):
         fixture = Fixture(self, skeptics="off")
@@ -553,6 +572,43 @@ class CapAndConfigTest(unittest.TestCase):
     def test_config_defaults_when_keys_absent(self):
         config = review_findings.parse_config("## Config\n\n- review_panel: off\n\n## Wave 1 — x\n")
         self.assertEqual(config, {"max_review_cycles": 3, "finding_skeptics": "off", "wave_budget": "none"})
+
+
+class FixBatchRepoTest(unittest.TestCase):
+    """SC1 fails for its owners T001 and T002, and T001 also fails its own criterion."""
+
+    def batches(self, t001_repo, t002_repo, t002_files):
+        fixture = Fixture(self, skeptics="off")
+        for name, task_id, files, repo in (("T001-parse-input.md", "T001", "src/parser.py", t001_repo),
+                                           ("T002-render-output.md", "T002", t002_files, t002_repo)):
+            text = TASK.format(id=task_id, title="Task", files=f"  - {files}", interface="None", owned="SC1",
+                               ac1="Parses CSV rows", ac2="Rejects malformed rows")
+            write(fixture.project / "tasks" / name,
+                  text.replace("files:\n", f"repo: {repo}\nfiles:\n", 1) if repo else text)
+        fixture.lens("contract", t001_fails=["Parses CSV rows — found: no, parser.py:1"],
+                     sc1_fails=["Parser accepts CSV — found: TSV only, parser.py:3"])
+        fixture.lens("adversarial", verdict="pass")
+        code, result = fixture.run()
+        self.assertEqual(code, 0, result)
+        self.assertEqual({group["locator"]: group["tasks"] for group in result["groups"]},
+                         {"sc1": ["T001", "T002"], "t001_ac1": ["T001"]})
+        return result["fix_batches"]
+
+    def test_same_relative_path_in_two_repos_gives_one_batch_per_repo(self):
+        self.assertEqual(self.batches(None, "web", "src/parser.py"), [
+            {"locators": ["sc1"], "files": ["src/parser.py"], "repo": "web"},
+            {"locators": ["sc1", "t001_ac1"], "files": ["src/parser.py"]},
+        ])
+
+    def test_file_overlap_merges_batches_inside_a_member(self):
+        self.assertEqual(self.batches("web", '"web"', "src/render.py"), [
+            {"locators": ["sc1", "t001_ac1"], "files": ["src/parser.py", "src/render.py"], "repo": "web"},
+        ])
+
+    def test_coordinator_batches_keep_their_shape(self):
+        self.assertEqual(self.batches(None, None, "src/render.py"), [
+            {"locators": ["sc1", "t001_ac1"], "files": ["src/parser.py", "src/render.py"]},
+        ])
 
 
 if __name__ == "__main__":

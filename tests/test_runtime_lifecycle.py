@@ -98,6 +98,49 @@ class RuntimeLifecycleTests(unittest.TestCase):
                                 cwd=self.repo, capture_output=True, encoding="utf-8", errors="replace")
         self.assertIn("selected isolation runtime", result.stderr)
 
+    def doctor_failures(self):
+        return [item["text"] for item in install.doctor(SOURCE, [], lambda _: self.root, self.repo)
+                if item["level"] in ("fail", "warn") and "runtime" in item["text"]]
+
+    def test_selected_runtime_delivers_review_findings_and_task_context(self):
+        source = self.root / "selected-source"
+        shutil.copytree(SOURCE / "scripts", source / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy2(SOURCE / "package.json", source / "package.json")
+        common = source / "scripts/_common.py"
+        common.write_bytes(common.read_bytes() + b"\nraise RuntimeError('selected _common runtime')\n")
+        self.provision()
+        install.runtime_store.operate(source, self.repo, "upgrade")
+        runtime = install.status_runtime.resolve_runtime(self.repo)
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX")}
+        for helper, arguments in (
+                ("task_context.py", ["--task", str(self.repo / "README.md")]),
+                ("review_findings.py", ["repair-evidence", "--wave", "1", "--cycle", "1", "--task", "T001"])):
+            with self.subTest(helper=helper):
+                result = subprocess.run(
+                    [sys.executable, "-X", "pycache_prefix=", str(runtime / helper), "--repo", str(self.repo), *arguments],
+                    cwd=self.repo, env=environment, capture_output=True, encoding="utf-8", errors="replace")
+                self.assertIn("selected _common runtime", result.stderr)
+                self.assertFalse((runtime / "__pycache__").exists())
+        self.assertEqual(self.doctor_failures(), [])
+
+    def test_older_runtime_without_build_helpers_stays_valid_until_upgrade(self):
+        added = ("review_findings.py", "task_context.py")
+        older = tuple(name for name in install.runtime_store.RUNTIME_FILES if name not in added)
+        with mock.patch.object(install.runtime_store, "RUNTIME_FILES", older):
+            self.provision()
+        before = self.pin()
+        runtime = install.status_runtime.resolve_runtime(self.repo)
+        self.assertEqual([name for name in added if (runtime / name).exists()], [])
+        install.install(SOURCE, [], project=self.repo, migrate_legacy=False, update=True)
+        self.assertEqual(self.pin(), before)
+        self.assertEqual(self.doctor_failures(), [])
+        self.assertEqual(self.runtime_command("--runtime-upgrade").returncode, 0)
+        self.assertNotEqual(self.pin()["digest"], before["digest"])
+        upgraded = install.status_runtime.resolve_runtime(self.repo)
+        self.assertEqual([name for name in added if not (upgraded / name).is_file()], [])
+        self.assertTrue(runtime.is_dir())
+
     def test_native_guard_missing_runtime_blocks_protected_edit(self):
         self.provision()
         install.refresh_hooks(SOURCE, self.repo, True, selected=["claude"], initialize=True)

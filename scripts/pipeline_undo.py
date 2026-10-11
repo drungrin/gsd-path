@@ -22,6 +22,7 @@ from datetime import date
 # Runtime helpers must not modify their immutable installation.
 sys.dont_write_bytecode = True
 import tempfile
+import traceback
 from pathlib import Path, PurePosixPath
 from typing import Optional, Sequence
 
@@ -53,7 +54,7 @@ def _load_pipeline_modules():
     try:
         from scripts import archive_milestone, isolation, pipeline_git, pipeline_state, state_checkpoint
         return archive_milestone, isolation, pipeline_git, pipeline_state, state_checkpoint
-    except ModuleNotFoundError as error:
+    except ImportError as error:  # a foreign `scripts` package
         if error.name not in {
             "scripts",
             "scripts.archive_milestone",
@@ -62,6 +63,13 @@ def _load_pipeline_modules():
             "scripts.pipeline_state",
             "scripts.state_checkpoint",
         }:
+            raise
+        # A plain ImportError raised while a `scripts` module loaded is not a
+        # foreign package. A missing module falls back, as before.
+        if not isinstance(error, ModuleNotFoundError) and any(
+            frame.f_globals.get("__name__", "").startswith("scripts.")
+            for frame, _ in traceback.walk_tb(error.__traceback__)
+        ):
             raise
         shared = Path(__file__).resolve().parents[2] / "gsd-path" / "scripts"
         sys.path.insert(0, str(shared))
@@ -772,14 +780,15 @@ def _member_undo_parent(repo: Path, member: str, landing: str) -> str:
     bound = entry["branch"]
     if _run_git(checkout, "rev-parse", f"refs/heads/{bound}").stdout.strip() != landing:
         raise UndoError(f"member {member} {bound} moved past this landing")
-    _require_member_unpublished(checkout, member, landing, bound)
+    _require_member_unpublished(repo, checkout, member, landing, bound)
     return _run_git(checkout, "rev-parse", f"{landing}^").stdout.strip()
 
 
-def _require_member_unpublished(checkout: Path, member: str, landing: str, bound: str) -> None:
-    for ref, where in (("refs/remotes/origin/main", "origin/main"), (f"refs/remotes/origin/{bound}", f"origin/{bound}")):
+def _require_member_unpublished(repo: Path, checkout: Path, member: str, landing: str, bound: str) -> None:
+    for branch in (isolation.member_default_branch(repo, member), bound):
+        ref = f"refs/remotes/origin/{branch}"
         if _run_git(checkout, "merge-base", "--is-ancestor", landing, ref, check=False).returncode == 0:
-            raise UndoError(f"member {member} landing is already on {where}")
+            raise UndoError(f"member {member} landing is already on origin/{branch}")
 
 
 def _require_no_member_landing_journal(repo: Path) -> None:
@@ -794,7 +803,7 @@ def _undo_member_landing(repo: Path, transaction: dict[str, object]) -> None:
     checkout, _, entry = isolation._member_context(repo, member)
     tip = _run_git(checkout, "rev-parse", f"refs/heads/{entry['branch']}").stdout.strip()
     if tip == transaction["member_parent"]:
-        _require_member_unpublished(checkout, member, str(transaction["landing"]), entry["branch"])
+        _require_member_unpublished(repo, checkout, member, str(transaction["landing"]), entry["branch"])
         return
     if tip != transaction["landing"]:
         raise UndoError(f"member {member} bound branch moved during undo")
@@ -861,7 +870,7 @@ def classify_undo(repo: Path) -> dict[str, object]:
             [f"an in-progress helper journal exists ({names}); resume that transaction first"]
         )
     if git.get("ancestor_of_origin_main"):
-        return _blocked(["HEAD is an ancestor of origin/main; undo would rewrite shipped history"])
+        return _blocked(["HEAD is an ancestor of the origin default branch; undo would rewrite shipped history"])
 
     product = _product_dirty(dirty)
     if product:
@@ -1081,7 +1090,7 @@ def _require_unpublished_reset(repo: Path, expected_branch: str) -> None:
     if git.get("published"):
         raise UndoError("HEAD became published on its recorded remote branch")
     if git.get("ancestor_of_origin_main"):
-        raise UndoError("HEAD became published through origin/main")
+        raise UndoError("HEAD became published through the origin default branch")
 
 
 def _remove_untracked_tree(repo: Path, relative: str) -> None:

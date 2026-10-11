@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from typing import Optional, Tuple
 
-from scripts import check_handoffs
+from scripts import check_handoffs, pipeline_state
 
 
 RESEARCH_HEAD = "a" * 40
@@ -1796,6 +1796,85 @@ The task implements the demo.
                 check_handoffs.validate_roadmap(root)
             self.assertIn("M001 is missing Surfaces", str(failure.exception))
 
+    def test_roadmap_gate_runs_only_where_a_roadmap_or_boundary_reslice_is_legal(self) -> None:
+        for phase, status, legal in (
+            ("roadmap", "active", True),
+            ("inspect", "active", True),
+            ("define", "active", True),
+            ("inspect", "done", False),
+            ("define", "done", False),
+            ("plan", "active", False),
+            ("build", "active", False),
+        ):
+            with self.subTest(phase=phase, status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_state(root, phase, status)
+                self.write(root, ".project/ROADMAP.md", ROADMAP)
+                if legal:
+                    self.assertEqual(check_handoffs.validate_roadmap(root)["milestones"], ["M001"])
+                    continue
+                with self.assertRaises(check_handoffs.HandoffError) as failure:
+                    check_handoffs.validate_roadmap(root)
+                self.assertIn(f"found {phase}/{status}", str(failure.exception))
+
+    def test_roadmap_gate_rejects_define_reentered_after_intent_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            git(root, "init", "-b", "gsd-path/M001")
+            git(root, "config", "user.email", "test@example.test")
+            git(root, "config", "user.name", "Test")
+            self.write_state(root, "plan", "active")
+            self.write(root, ".project/ROADMAP.md", ROADMAP)
+            self.write(root, ".project/intent/INTENT.md", "# Approved\n")
+            self.write(root, ".project/plan/PLAN.md", "# Draft\n")
+            git(root, "add", ".project")
+            git(root, "commit", "-q", "-m", "approved intent")
+            pipeline_state.transition_state(
+                root,
+                {"phase": "plan", "status": "active", "branch": "gsd-path/M001", "archive": None},
+                {"phase": "define", "status": "active"},
+                "plan intent corrections requested",
+            )
+
+            with self.assertRaises(check_handoffs.HandoffError) as failure:
+                check_handoffs.validate_roadmap(root)
+            self.assertIn("after intent approval", str(failure.exception))
+
+    def test_define_reslice_that_removes_a_surface_reaches_the_plan_gate(self) -> None:
+        # Issue #362: the owner rules one surface out of the active milestone.
+        wide = ROADMAP.replace(
+            "Surfaces: Demo web app", "Surfaces: Demo web app, X page",
+        ).replace("- First capability\n", "- First capability\n- X page publishing\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            git(root, "init", "-b", "gsd-path/M001")
+            git(root, "config", "user.email", "test@example.test")
+            git(root, "config", "user.name", "Test")
+            self.write_state(root, "define", "active")
+            self.write(root, ".project/ROADMAP.md", wide)
+            git(root, "add", ".project")
+            git(root, "commit", "-q", "-m", "milestone started")
+            self.write(root, ".project/ROADMAP.before-reslice.md", wide)
+            self.write(root, ".project/ROADMAP.md", ROADMAP)
+            self.assertEqual(check_handoffs.validate_roadmap(root)["milestones"], ["M001"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                approved = pipeline_state.main([
+                    "approve", "--repo", str(root), "--kind", "roadmap-reslice",
+                    "--milestone", "demo", "--expected-head", git_output(root, "rev-parse", "HEAD"),
+                ])
+            self.assertEqual(approved, 0)
+            self.assertEqual(git_output(root, "show", "HEAD:.project/ROADMAP.md"), ROADMAP.strip())
+
+            self.write_plan_handoff(root)
+            self.write_intent_criteria(root, surfaces="Demo web app")
+            self.write_plan_coverage(root, surface_contract=SURFACE_CONTRACT)
+            self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 2)
+            # The same plan fails against the entry before the re-slice.
+            self.write(root, ".project/ROADMAP.md", wide)
+            with self.assertRaises(check_handoffs.HandoffError) as failure:
+                check_handoffs.validate_plan(root)
+            self.assertIn("INTENT.md Surfaces do not match ROADMAP.md demo", str(failure.exception))
+
     def test_roadmap_rejects_repeated_surfaces_within_one_milestone(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1949,7 +2028,73 @@ Surfaces: none
 
             with self.assertRaises(check_handoffs.HandoffError) as failure:
                 check_handoffs.validate_plan(root)
-            self.assertIn("same-wave file overlap", str(failure.exception))
+            self.assertEqual(
+                str(failure.exception),
+                "same-wave file overlap between T001 and T002: src/app.py",
+            )
+
+    def write_plan_pair(
+        self, root: Path, left: str, right: str, *, deps: str = "[]", repo: str = ""
+    ) -> None:
+        """Write a Wave 1 plan: T001 declares `left`, T002 declares `right`."""
+        self.write_plan_handoff(root)
+        self.write_plan_coverage(
+            root,
+            task_rows=(
+                f"| T001 | Demo task T001 | — | {left} |\n"
+                f"| T002 | Demo task T002 | {deps.strip('[]') or '—'} | {right} |\n"
+            ),
+        )
+        self.write_coverage_task(root, "T001", "- SC1", files=left)
+        self.write_coverage_task(
+            root,
+            "T002",
+            "- SC2",
+            acceptance="1. The demo test suite is green.",
+            deps=deps,
+            files=right,
+        )
+        if repo:
+            path = root / ".project/tasks/T002-demo.md"
+            path.write_bytes(
+                path.read_text(encoding="utf-8")
+                .replace("files:", f"repo: {repo}\nfiles:", 1)
+                .encode("utf-8")
+            )
+
+    def test_plan_rejects_a_declared_directory_and_a_path_below_it(self) -> None:
+        for child in ("fixtures/set/a.json", "fixtures/set/deep/b.json"):
+            with self.subTest(child=child), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_plan_pair(root, child, "fixtures/set")
+
+                with self.assertRaises(check_handoffs.HandoffError) as failure:
+                    check_handoffs.validate_plan(root)
+                self.assertEqual(
+                    str(failure.exception),
+                    f"same-wave file overlap between T001 and T002: {child}",
+                )
+
+    def test_plan_allows_a_sibling_of_a_declared_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_pair(root, "fixtures/set", "fixtures/setx.json")
+
+            self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 2)
+
+    def test_plan_allows_a_directory_and_a_path_below_it_in_different_repos(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_pair(root, "fixtures/set", "fixtures/set/a.json", repo="web")
+
+            self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 2)
+
+    def test_plan_allows_a_dependent_path_below_a_declared_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_pair(root, "fixtures/set", "fixtures/set/a.json", deps="[T001]")
+
+            self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 2)
 
     def test_plan_allows_same_wave_overlap_between_landed_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2091,6 +2236,66 @@ Surfaces: none
             with self.assertRaises(check_handoffs.HandoffError) as failure:
                 check_handoffs.validate_plan(root)
             self.assertIn("depends on later-wave T001", str(failure.exception))
+
+    def test_plan_accepts_supersedes_only_for_an_earlier_wave_task_that_shares_a_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            wave = ("\n## Wave {0} — replace\n\nGoal: Replace the demo behavior.\nReview depth: full\n\n"
+                    "| Task | Title | Deps | Files |\n|------|-------|------|-------|\n")
+            self.write_plan_coverage(
+                root,
+                task_rows=(
+                    "| T001 | Demo task T001 | — | src/app.py |\n"
+                    "| T002 | Demo task T002 | — | tests/test_app.py |\n"
+                    "| T003 | Demo task T003 | — | src/app.py |\n"
+                    + wave.format(2)
+                    + "| T004 | Demo task T004 | — | src/app.py |\n"
+                    "| T005 | Demo task T005 | — | src/other.py |\n"
+                    + wave.format(3)
+                    + "| T006 | Demo task T006 | — | src/app.py |"
+                ),
+            )
+            self.write_coverage_task(root, "T003", "- None", files="src/app.py")
+            self.write_coverage_task(root, "T005", "- None", wave=2, files="src/other.py")
+            self.write_coverage_task(root, "T006", "- None", wave=3, files="src/app.py")
+
+            def add_field(task_id: str, line: str) -> None:
+                path = root / f".project/tasks/{task_id}-demo.md"
+                path.write_bytes(path.read_text(encoding="utf-8").replace(
+                    "files:\n", f"{line}\nfiles:\n").encode("utf-8"))
+
+            add_field("T003", "repo: api")  # the same path in another repository
+
+            def supersede(value: str) -> None:
+                self.write_coverage_task(root, "T004", "- None", wave=2, files="src/app.py")
+                add_field("T004", f"supersedes: {value}")
+
+            for value, problem in (
+                ("[T999]", "T004 supersedes unknown task T999"),
+                ("[T005]", "T004 supersedes T005, which is not in an earlier wave"),
+                ("[T006]", "T004 supersedes T006, which is not in an earlier wave"),
+                ("[T004]", "T004 supersedes T004, which is not in an earlier wave"),
+                ("[T003]", "T004 supersedes T003, which is in another repo"),
+                ("[T002]", "T004 supersedes T002, which shares no declared file with it"),
+                ("[T001, T002]", "T004 supersedes T002, which shares no declared file with it"),
+                ("T001", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("none", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("-", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("—", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("[none]", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("[T1]", "T004 supersedes must be a list of different task ids, for example [T001]"),
+                ("[T001, T001]", "T004 supersedes must be a list of different task ids, for example [T001]"),
+            ):
+                supersede(value)
+                with self.assertRaises(check_handoffs.HandoffError, msg=value) as failure:
+                    check_handoffs.validate_plan(root)
+                self.assertEqual(str(failure.exception), problem)
+
+            supersede("[T001]")
+            self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 6)
+            supersede("\n  - T001")  # the block list form that `deps` and `files` accept
+            self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 6)
 
     def test_plan_rejects_dependency_cycles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2602,6 +2807,59 @@ Tasks reviewed: 2
                 ).encode("utf-8"))
                 with self.assertRaisesRegex(check_handoffs.HandoffError, "placeholder"):
                     check_handoffs.validate_wave(root, review=relative)
+
+    def test_wave_command_checks_evidence_when_a_task_repeats_a_criterion_number(self) -> None:
+        # Issue #374: landed task bytes are frozen, so a repeated number must
+        # not stop the review gate. The plan gate still rejects the number.
+        script = Path(__file__).resolve().parents[1] / "scripts/check_handoffs.py"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            self.write_coverage_task(
+                root, "T001", "- SC1",
+                acceptance=(
+                    "1. The demo command prints hello.\n"
+                    "2. The demo keeps its log.\n"
+                    "2. The demo exits zero."
+                ),
+            )
+
+            def run(phase: str, *arguments: str) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [sys.executable, "-B", str(script), phase, "--repo", str(root), *arguments],
+                    capture_output=True, encoding="utf-8", errors="replace",
+                )
+
+            planned = run("plan")
+            self.assertNotEqual(planned.returncode, 0, planned.stdout)
+            self.assertIn("repeated numbered item 2", planned.stderr)
+
+            relative = self.write_wave_review(root)
+            review = root / relative
+            old = "- ✅ The demo command prints hello. — ran hello.py"
+            observed = (
+                f"{old}\n"
+                "- ✅ The demo keeps its log. — log has 3 lines\n"
+                "- ✅ The demo exits zero. — exit status 0"
+            )
+            original = review.read_text(encoding="utf-8")
+            review.write_bytes(original.replace(old, observed).encode("utf-8"))
+            passed = run("wave", "--review", relative)
+            self.assertEqual(passed.returncode, 0, passed.stderr)
+            for criterion in ("The demo keeps its log.", "The demo exits zero."):
+                for evidence, reason in (
+                    (criterion, "evidence is empty"),
+                    (f"{criterion} — none", "evidence is empty"),
+                    (f"{criterion} — <observed result>", "placeholder"),
+                ):
+                    with self.subTest(evidence=evidence):
+                        review.write_bytes(
+                            original.replace(old, f"{observed}\n- ✅ {evidence}").encode("utf-8")
+                        )
+                        failed = run("wave", "--review", relative)
+                        self.assertNotEqual(failed.returncode, 0, failed.stdout)
+                        self.assertIn(f"{relative.rsplit('/', 1)[1]} task T001", failed.stderr)
+                        self.assertIn(reason, failed.stderr)
 
     def test_wave_rejects_placeholder_task_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

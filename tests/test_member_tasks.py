@@ -115,6 +115,30 @@ class MemberTaskBriefTests(unittest.TestCase):
                                        verify="test -f src/app.py"))
         self.assertEqual(self.problems(), "")
 
+    def test_member_task_paths_resolve_at_the_recorded_default_branch(self) -> None:
+        # A master member. Its origin/main is an older remote branch without the file.
+        api = self.coordinator.parent / "api"
+        git(self.coordinator.parent, "init", "-q", "-b", "master", str(api))
+        git(api, "commit", "-q", "--allow-empty", "-m", "old")
+        git(api, "update-ref", "refs/remotes/origin/main", "HEAD")
+        (api / "src").mkdir()
+        (api / "src" / "api.py").write_bytes("on master\n".encode("utf-8"))
+        git(api, "add", "-A")
+        git(api, "commit", "-q", "-m", "add api")
+        git(api, "remote", "add", "origin", "https://github.com/acme/api.git")
+        git(api, "update-ref", "refs/remotes/origin/master", "HEAD")
+        git(api, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+        subprocess.run([sys.executable, str(MEMBERS), "add", "--repo", str(self.coordinator),
+                        "--name", "api", "--checkout", str(api)],
+                       encoding="utf-8", errors="replace", capture_output=True, check=True)
+
+        self.write("T001", member_task("T001", "src/new.py", "Follow `src/api.py` in the member.",
+                                       repo="api", verify="test -f src/api.py"))
+        self.assertEqual(self.problems(), "")
+
+        git(api, "update-ref", "-d", "refs/remotes/origin/master")
+        self.assertIn("member api is unavailable: member requires refs/remotes/origin/master", self.problems())
+
     def test_member_task_paths_do_not_resolve_in_the_coordinator(self) -> None:
         self.write("T001", member_task("T001", "src/app.py", "Read `lib/server.py` first.",
                                        verify="test -f lib/server.py"))
@@ -151,6 +175,26 @@ class MemberTaskBriefTests(unittest.TestCase):
 
         result = check_task_briefs.validate_plan_task_briefs(self.coordinator, self.head, ".project")
         self.assertEqual(result["tasks"], 1)
+
+    def test_landed_task_may_name_a_review_file_that_build_recovery_moved(self) -> None:
+        review = ".project/review/wave-4.cycle4.contract.md"
+        _member_base, task = self.prepare_landed_member_task()
+        context = f"Follow `src/app.py` and fix the findings of `{review}`."
+        self.write("T001", task.replace("Follow `src/app.py`.", context))
+        (self.coordinator / review).parent.mkdir()
+        (self.coordinator / review).write_bytes("# Review\n".encode("utf-8"))
+        check_task_briefs.validate_plan_task_briefs(self.coordinator, self.head, ".project")
+        # prepare-build-recovery sets the old reviews aside.
+        (self.coordinator / ".project" / "review").rename(self.coordinator / ".project" / "plan" / "review")
+        result = check_task_briefs.validate_plan_task_briefs(self.coordinator, self.head, ".project")
+        self.assertEqual(result["tasks"], 1)
+        # A task that is not landed is still checked before its dispatch.
+        self.write("T002", member_task("T002", "src/next.py", context.replace("src/app.py", "src/next.py"),
+                                       verify="test -f src/next.py"))
+        with self.assertRaises(check_task_briefs.BriefError) as raised:
+            check_task_briefs.validate_plan_task_briefs(self.coordinator, self.head, ".project")
+        self.assertEqual(str(raised.exception),
+                         f"T002: ## Context names a path missing at the layer base: {review}")
 
     def test_invalid_landed_member_bases_are_rejected_by_both_plan_validators(self) -> None:
         member_base, task = self.prepare_landed_member_task()
