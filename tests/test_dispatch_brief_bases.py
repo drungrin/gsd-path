@@ -184,6 +184,42 @@ class DispatchBriefBasesTests(unittest.TestCase):
         self.assert_diagnostic(self.lint("--project-dir", ".project"),
                                "T002:", "missing at the layer base: fixtures/policy.json")
 
+    def test_landed_task_may_be_the_only_owner_of_an_interface_contract(self) -> None:
+        track = ".project/next"
+        self.plan(track)
+        self.task("T001", track=track, status="done", base=self.historical,
+                  contract="- `old_total() -> int` returns the sum.")
+        self.task("T002", track=track, wave=2)
+        self.assert_passes(self.lint("--project-dir", track), 2)
+        state_checkpoint._validate_plan_briefs(self.repo, "plan", track)
+
+    def test_pending_task_still_needs_a_shared_interface_contract_beside_a_landed_one(self) -> None:
+        track = ".project/next"
+        self.plan(track)
+        self.task("T001", track=track, status="done", base=self.historical,
+                  contract="- `old_total() -> int` returns the sum.")
+        self.task("T002", track=track, wave=2,
+                  contract="- `new_total() -> int` returns the sum.")
+        result = self.lint("--project-dir", track)
+        self.assert_diagnostic(result, "T002: interface contract is not shared by any other task")
+        self.assertNotIn("T001:", result.stderr)
+        with self.assertRaisesRegex(state_checkpoint.PipelineStateError,
+                                    "T002: interface contract is not shared"):
+            state_checkpoint._validate_plan_briefs(self.repo, "plan", track)
+
+    def test_pending_interface_contract_is_shared_with_a_landed_task(self) -> None:
+        self.plan()
+        self.task("T001", status="done", base=self.historical, contract=POLICY_CONTRACT,
+                  files=("fixtures/policy.json",))
+        self.task("T002", wave=2, deps=("T001",), contract=POLICY_CONTRACT)
+        self.assert_passes(self.lint(), 2)
+
+    def test_done_status_without_a_plan_does_not_excuse_an_unshared_interface_contract(self) -> None:
+        self.task("T001", track="loose", status="done", base=self.historical,
+                  contract="- `old_total() -> int` returns the sum.")
+        self.assert_diagnostic(self.lint("--tasks-dir", "loose/tasks"),
+                               "T001: interface contract is not shared by any other task")
+
     def test_loose_tasks_and_tracks_without_a_plan_keep_layer_base_lint(self) -> None:
         for track, tasks_dir, has_plan in (
             ("loose", "loose/tasks", False),
