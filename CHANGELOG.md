@@ -11,6 +11,144 @@ app and the daemon have their own file,
 [daemon/app/CHANGELOG.md](daemon/app/CHANGELOG.md). Release bookkeeping and
 test-only changes are not listed; the Git history has them.
 
+## [1.6.0] - 2026-10-12
+
+### Added
+- let a later task supersede an earlier task and retire its Verify
+- document the default branch record of a member
+- member paths read the default branch that MEMBERS.md records
+- record the default branch of a member in MEMBERS.md
+- add --uninstall to the skill installers
+- expose default_branch to the router and document the rule
+- refuse members under a coordinator whose default branch is not main
+- status, promotion and the git guard follow STATE default_branch
+- integrate and validate on the default branch that STATE records
+- bind milestones at the default branch that STATE records
+- record the origin default branch in STATE at initialization
+
+### Changed
+- make each checkpoint commit different in the stale sidecar test
+- record 1.6.0 live release evidence
+- prepare 1.6.0 minor candidate
+- Merge main into fix/issue-392-wave-review-validator
+- Merge main into fix/issue-393-helper-papercuts
+- Merge main into fix/issue-357-regression-verify
+- Merge main into fix/issue-358-multi-repo-batches
+- Merge main into fix/issue-390-build-helpers-runtime
+- state the repair base-to-landing rule in build-native.md
+- document supersedes gate rule in plan skill
+- describe finish retry, stale Verify sidecar, leftover isolate
+- document retired Verify key in RUNTIME.md
+- name per-repo batching in review_findings docstring
+- correct task_review_observation docstring after marker-tolerant matching
+- state the wave review format rules and name them in the gate errors
+- Document alias denial in directories that do not exist
+- a done task brief with a deleted Context path does not fail later lint
+- Document directory overlap rule in planner brief
+- prove the issue 374 fixes through the real commands
+- prove a define re-slice that removes a surface reaches the plan gate
+- Merge remote-tracking branch 'origin/main' into fix/issue-344-scope-destructive-git-guards
+- correct fix-tasks carried rule in RUNTIME.md
+- document regression Verify at landing in RUNTIME.md
+- point stale Python-installer flag lists to README
+- say how more than one person can work on a project
+- show host proof tiers in README and QUICK
+- Document literal attestation limit for declared directories
+- Align coder file-scope rule with declared-directory landing
+- add contributing guide, security policy, and issue forms
+- style: fix assignment spacing in round lint test
+- prove round lint accepts dependency-supplied contract paths
+- bind the next milestone after a direct ship on a master default
+- Add GitHub Actions workflow for Discord changelog
+- update release notes for v1.5.0
+- quote portable repository paths in shell fixture
+
+### Fixed
+- plan gate reads a declared directory when it checks supersedes
+- give no removal advice for an isolate that holds a gitignored file
+- replace a stale Verify sidecar only when it is proven untouched
+- check the chain files from the repair base, not from the repair landing
+- read update-ref, branch and worktree targets as Git does
+- deny scoped deletions when the guard cannot prove the repository
+- link review repairs by finding, not by criterion text alone
+- give a superseding task the protective role of the task it supersedes
+- check the files of every later linked repair before a chain receipt
+- name only the leftover isolate when a landed task could not be cleaned up
+- make only sub-bullet line markers optional in a criterion quote
+- give a receipt to a chain of review repairs on the same files
+- report a landed task as landed when the removal of its isolate fails
+- deliver review_findings and task_context through the project runtime
+- prove a member review repair in the member repository
+- match a quoted criterion without the list markers of its sub-bullets
+- let finish run again after a failed serial Verify, and prepare-task replace a stale Verify sidecar
+- accept a review repair whose files are not in its fix batch
+- report unreviewed earlier waves in ready and prove repair-wave order
+- say how to record a Log event when a transition changes no field
+- tell the user how to get the full SHA when a ref is refused
+- name the differing identity field when a model policy record does not match
+- a review cycle replaces an older one only with a valid wave verdict
+- land tasks that share an earlier task one at a time
+- list worktrees on Git versions without worktree list -z
+- keep tracked cd targets valid with the scoped deletion rules
+- keep ordinary Git commands allowed with env and in new directories
+- accept an unset base milestone only for a closed build recovery
+- keep review evidence checks when a criterion number repeats
+- keep the fallback for a missing bundled helper module
+- git guard uses main when STATE has no default_branch
+- do not skip an earlier Verify because its text is in the own Verify
+- treat a declared directory and a path below it as overlapping files
+- accept a default branch that starts with origin/ at ship
+- re-raise an import error from inside a bundled helper module
+- keep a blocked review cycle until a newer cycle has a verdict
+- keep the cap exemption when a cap line carries the template comment
+- run earlier-wave Verify at landing when a task edits the same files
+- keep each review repair in one repo and lint landed briefs as history
+- give a repeat finding its next repair and ignore repairs of a replaced review
+- land files under a declared files directory
+- let a define-entered re-slice amend the active roadmap entry
+- keep wave reviews when a plan repair changes only caps or dependency notes
+- drop superseded review cycles from the dashboard attention list
+- load bundled helpers when a foreign `scripts` package is importable
+- tolerate repeated criterion numbers and unset recovery base milestone
+- chain an existing Git hook instead of refusing the hook install
+- accept external-landing proof when the forge deletes the bound branch
+- fail early on a non-main default and document external-landing
+- cover all parameter syntaxes in scoped deletion
+- fail closed on literal parameter target ambiguity
+- scope destructive Git cleanup to Path-owned targets
+
+### Other
+- Resolve macOS temp path in ownership scope test fixture
+- Check unfolded and folded readings of process substitutions
+- Fold process substitutions; count only real earlier Git commands
+- Check each reading of inexact Git commands; limit descriptor denial
+- Split separator-joined redirections; read attached printf -v name
+- Strip shell redirections before Git detection; keep alias words
+- Both Windows failures have one cause, and it is a test defect, not a product defect. The fix is one line in `tests/test_member_native.py`; it is not committed. **Cause.** The failing assertion is the second leftover check in `test_next_finish_names_only_the_leftover_sidecar_of_a_landed_member_task` (line 136). The test's `attempt()` helper writes `app.py` with `write_text("v2\n")`, which is `v2\r\n` on Windows, and CI runs with `core.autocrlf=false`, so the landed blob is CRLF. The test then wrote the file back with `write_bytes(b"v2\n")`. On Windows those bytes are not the landed blob, so the driver correctly gave no "remove its leftover isolate" stop and reported `landed`, and the test raised `KeyError: 'reason'`. **Invariant.** A test that puts a "landed" file back must write the same bytes that were landed, on every platform. This was the only place in the branch's new tests that broke it: the sibling leftover tests in `test_dispatch_driver.py` and `test_isolation.py` pass on Windows. **Fix.** The restore now uses the same `write_text("v2\n", encoding="utf-8")` call as `attempt()`. No product code changed, so no generated copies needed a sync. **Verification (macOS only; no Windows run was possible here).** - `python3 -m unittest tests.test_member_native`: 6 tests pass. - With `Path.write_text` patched to write CRLF for `app.py` (to emulate Windows), the original test fails with the same `KeyError: 'reason'` at line 136, and the fixed test passes
+- Read redirections and Git context names as the shell does
+- list a part as retired only when dropped; document it
+- record each retired part of a fix-task Verify
+- retire copied Verify in fix tasks; restore _task_deps
+- Prefer exact criterion quote; join any-indent sub-bullets
+- give the leftover-isolate stop only after a content check
+- Cause: both Windows checks fail in one test only, `test_gsd_path_text_in_a_path_does_not_make_a_worktree_path_owned` (18 subtest failures = 6 targets x 3 pipeline states). The test put a native path, not quoted, into a Bash command. On Windows the path has backslashes, Bash word splitting removes them (`C:\Users\x` becomes `C:Usersx`), and the guard correctly answers "needs a literal target". The guard code is correct; the test was not cross-platform. Invariant: a test that puts a filesystem path into a shell command must quote it, so the guard sees the same path on each OS. Fix (tests/test_guard_hook.py only, no change to scripts/guard_hook.py): - The two commands in the failing test now use `shlex.quote(str(target))`, the convention the file already uses in other tests. - Same edit at the two sibling sites in `test_forced_worktree_remove_checks_registered_path_and_owner` (`{task_worktree}`, `{managed}`). They passed on Windows only because `assert_denied` accepts any denial reason, so they did not test ownership there. - No other unquoted path interpolation into a `worktree remove` command exists in tests/test_guard_hook.py, tests/test_guard_hook_windows.py or tests/test_git_guard.py. Verification: the two changed tests pass locally on macOS (2 tests, OK). A check with `shlex.split` on a sample Windows path shows the unquoted form loses the backslashes and the quoted form keeps them. Not verified: an actual Windows run; that needs the next CI run. The full test suite was not run, because only two test methods changed. Changes are in the working tree, not committed
+- restore the exact-heading repair marker test method
+- align plan gate supersedes with runtime; trim reviewer rule
+- match em-dash criteria in review_findings; correct placeholder message
+- leave landed repair waves out of unreviewed_waves
+- scope guard built-ins and worktree ownership correctly
+- void wave reviews on any review_panel line change
+- Cause: the PR's new test `test_validate_refuses_a_default_branch_that_cannot_be_recorded` (tests/test_members.py) wrote a MEMBERS.md row with `Checkout: /x`. On Windows `/x` is not an absolute path, so `members.py validate` stopped at the earlier check (`Checkout must be absolute`) and never reached the `Default branch` check. All 3 subtests failed on both Windows jobs (3.9 and 3.12, shard 2). The product code is correct. Invariant: a test row that targets one validation rule must be valid for every earlier rule on every OS. Sites checked in the changed area: - `test_validate_refuses_a_default_branch_that_cannot_be_recorded`: violated, fixed. - `repeated default branch` case in `test_validate_refuses_malformed_members_file` (also added by this PR, also uses `/x`): holds. It asserts only `MEMBERS.md` in stderr and passed on Windows. Not changed. Fix (1 line, test only): the row now uses `Checkout: {self.root / 'web'}`, which is absolute on each OS. This is the same pattern as the existing row at tests/test_members.py:190. Verification (macOS, local): - `python3 -m unittest tests.test_members -k default_branch`: 6 tests, OK. - Mutation check: with the `valid_default_branch` check in scripts/members.py disabled, the test fails with `failures=3`. The mutation was reverted; only tests/test_members.py is changed. - Not run on Windows locally. The Windows result depends on the next CI run. The change is not committed. The test-writer and ponytail skills were not invoked for this one-line test edit
+- drop dash from cap value class, allow cost caps
+- compare Config as raw text except cap values
+- accept member-create rerun on row without default branch
+- All 4 failing checks have one cause: the two new tests `test_land_staging_failure_reports_git_stderr` and `test_checkpoint_staging_failure_reports_git_stderr` in `tests/test_isolation.py` ("IsolationError not raised"). The fix is a test-only change in the helper `refuse_crlf_staging`; the product code is correct and is not changed. Root cause: the helper made `git add` fail with repository config `core.autocrlf=input` + `core.safecrlf=true`. The CI test runner (`scripts/dev/py.mjs`) sets `core.autocrlf=false` through `GIT_CONFIG_*` environment variables, and the environment overrides repository config. Thus on CI git did no CRLF conversion, `git add` passed, and no error was raised. The tests passed with plain `python3 -m unittest`, which is why the failure was not seen before the push. This is not an OS or git-version problem (Linux and Windows failed the same way). Invariant: a test that needs `git add` to fail must not depend on a git setting that the test runner overrides. The helper is the one shared boundary; only these two tests use it. No other test in this change sets `core.autocrlf`. Fix: the helper now writes `* text eol=lf` to `.git/info/attributes` (an attribute overrides `core.autocrlf`, and the file is outside the work tree, so it adds no pending path) and keeps `core.safecrlf=true`. The assertions are unchanged: they still require the error to end with git's stderr ("CRLF would be replaced by LF") and HEAD to stay at the base. Verification: - Reproduced the CI failure locally through `node scripts/dev/py.mjs` before the fix (2 failures). - After the fix the two tests pass through `node scripts/dev/py.mjs`, with plain `python3`, and with `core.autocrlf=true` forced through the environment. - Full `tests/test_isolation.py` through the CI runner: 155 tests, 1 failure. That failure is `RecoverTests.test_serial_task_recovers_after_only_project_bookkeeping_commits` (blocked subtest: verdict 'none', expected 'reconcile'). It also fails when run alone, it does not use the changed helper, the test and the recover code are not in this PR's diff, and CI reported only the two staging tests as failures. I did not change it. It looks like a local-environment difference (local git is 2.54, CI is 2.55), but I did not find its cause. Not run: the full repository suite and the Windows jobs (CI owns those)
+- identify replaced-review repairs by history, not name
+- split cap lines like the Config parser
+- state Codex native hook needs trust in README
+- keep cap lines with comment markers under Config guard
+- correct canonical-file rule in CONTRIBUTING.md
+- journal recovery_reviews so resumed approvals report dropped reviews
 ## [1.5.0] - 2026-10-09
 
 ### Added
