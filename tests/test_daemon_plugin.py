@@ -147,8 +147,14 @@ class ArgvTests(unittest.TestCase):
         self.assertIn("--hooks", argv)
         self.assertNotIn("--all", argv)
 
+    def pinned_project(self):
+        project = Path(self.tmp.name) / "pinned"
+        (project / ".gsd-path").mkdir(parents=True, exist_ok=True)
+        (project / ".gsd-path" / "runtime.json").write_bytes(b"{}\n")
+        return project
+
     def test_update_project(self):
-        self.manager.update_project("/tmp/proj", dry_run=True)
+        self.manager.update_project(self.pinned_project(), dry_run=True)
         argv = self.argv()
         self.assertIn("--runtime-upgrade", argv)
         self.assertIn("--project", argv)
@@ -161,12 +167,23 @@ class ArgvTests(unittest.TestCase):
         self.assertIn("--runtime-migrate", self.argv())
         self.assertNotIn("--runtime-upgrade", self.argv())
 
+    def test_update_project_without_a_project_install_names_the_install_command(self):
+        project = Path(self.tmp.name) / "fresh"
+        project.mkdir()
+        self.manager.git_runner = FakeRunner([(1, "", "the source refresh must not run")])
+        result = self.manager.update_project(project)
+        self.assertFalse(result["ok"])
+        self.assertIn("GSD Path is not set up in this project.", result["error"])
+        self.assertIn(f'npx @opengsd/gsd-path --<agent> --project "{project}"', result["error"])
+        self.assertEqual(self.runner.calls, [])
+        self.assertEqual(self.manager.git_runner.calls, [])
+
     def test_updates_refresh_source_and_surface_fetch_failure(self):
         for scope in ("global", "project"):
             with self.subTest(scope=scope):
                 self.runner.calls.clear()
                 self.manager.git_runner = FakeRunner([(1, "", "source fetch failed")])
-                result = (self.manager.update_project("/tmp/proj") if scope == "project"
+                result = (self.manager.update_project(self.pinned_project()) if scope == "project"
                           else self.manager.update_global())
                 self.assertFalse(result["ok"])
                 self.assertIn("source fetch failed", result["error"])

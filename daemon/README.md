@@ -418,9 +418,14 @@ VERSION-stamp probes plus the update-check cache, never a source refresh; see
 - Runtime enrichment: `pending_answers`, `next_skill`, `handoff`. The project
   detail page displays the runtime handoff outcome and next action.
 - `workflow`: `{state, label, reason?}` is the shared browser/tray presentation.
-  State is `active`, `blocked`, `shipped`, or `unverified`. Only runtime
+  State is `active`, `blocked`, `shipped`, `unverified`, or `idle`. Only runtime
   integration proof permits `shipped`; an archive path alone does not. Older
-  payloads without this field display **Unverified**.
+  payloads without this field display **Unverified**. Without a runtime
+  payload, `label` and `reason` say why: **Not set up** (`unverified`; the
+  project has no project install, and the reason names the install command),
+  **Not started** (`idle`; the install is present and `.project/STATE.md` does
+  not exist yet), or **Unverified** (the launcher failed; the reason carries
+  the last line of its error output).
 - Dashboard detail:
   - `reviews` — `[{file, kind, verdict, cycle, depth, note}]` parsed from
     `.project/review/*.md` (`kind` is `wave`, `final`, `gap`,

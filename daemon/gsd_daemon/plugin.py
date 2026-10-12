@@ -25,6 +25,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .config import resolve_config_path
 from . import release_source, subprocess_platform
+from .probe import not_set_up
 
 DEFAULT_REPO = "https://github.com/open-gsd/gsd-path.git"
 ENV_HOME = "GSD_DAEMON_HOME"
@@ -654,6 +655,11 @@ class PluginManager:
         return self._run_installer("install-project", tail)
 
     def update_project(self, root, dry_run: bool = False) -> dict:
+        project = str(Path(os.path.abspath(os.path.expanduser(str(root)))))
+        hooks_dir = Path(project) / HOOKS_DIRECTORY
+        if not os.path.lexists(hooks_dir / "runtime.json") and not os.path.lexists(hooks_dir / "runtime"):
+            # Nothing to update: the runtime actions need a project install first.
+            return {"ok": False, "error": not_set_up(project), "stdout_tail": "", "argv": []}
         local_source = False
         if (self.src_dir / ".git").exists():
             rc, changed, error = self.git_runner(["git", "-C", str(self.src_dir), "status", "--porcelain"])
@@ -664,7 +670,6 @@ class PluginManager:
             refresh = self.refresh_source(ttl_hours=0)
             if not refresh["refreshed"]:
                 return {"ok": False, "error": refresh["error"], "stdout_tail": "", "argv": []}
-        project = str(Path(os.path.abspath(os.path.expanduser(str(root)))))
         tail = ["--runtime-migrate" if self._legacy_runtime(Path(project)) else "--runtime-upgrade", "--project", project]
         if dry_run:
             tail.append("--dry-run")

@@ -19,6 +19,10 @@ describe("filters", () => {
     expect(filterCounts([old, blocked]).map((f) => [f.key, f.count])).toEqual([
       ["all", 2], ["active", 0], ["blocked", 1], ["shipped", 0], ["unverified", 1]]);
   });
+  it("puts a project with no milestone after the projects in progress", () => {
+    const idle = { ...building, repository: "aaa-new", workflow: { state: "idle" as const, label: "Not started" } };
+    expect(visibleProjects([shipped, idle, building], "all", "").map(nameOf)).toEqual(["gsd-path", "aaa-new", "done-thing"]);
+  });
   it("shows only the projects in the chosen state, in board order", () => {
     expect(names("all")).toEqual(["atlas", "field-notes", "gsd-path", "done-thing"]);
     expect(names("active")).toEqual(["field-notes", "gsd-path"]);
@@ -36,6 +40,12 @@ describe("filters", () => {
 });
 
 describe("boardRow", () => {
+  it("says why a project with no milestone has no status", () => {
+    const idle = { ...building, attention: [], workflow: { state: "idle" as const, label: "Not started", reason: "No milestone has started yet." } };
+    const row = boardRow(idle, NOW);
+    expect([row.state, row.label, row.note]).toEqual(["idle", "Not started", "No milestone has started yet."]);
+    expect(boardRow({ ...blocked, attention: [] }, NOW).note).toBe(""); // only the idle state falls back to the reason
+  });
   it("shows the milestone, phase, tasks and usage of a project in build", () => {
     expect(boardRow(building, NOW)).toEqual({
       root: "/work/gsd-path", name: "gsd-path", tone: "warn", path: "/work/gsd-path",

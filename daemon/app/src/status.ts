@@ -32,7 +32,7 @@ export type Project = {
   git?: { branch?: string | null; head?: string | null; dirty?: boolean | null } | null;
   pending_answers?: Record<string, unknown>[];
   handoff?: { outcome?: string; next?: string } | null;
-  workflow?: { state: "active" | "blocked" | "shipped" | "unverified"; label: string; reason?: string };
+  workflow?: { state: "active" | "blocked" | "shipped" | "unverified" | "idle"; label: string; reason?: string };
   last_activity_iso?: string | null;
   reviews?: { file: string; kind: string; verdict: string | null; cycle: number | null; depth: string | null; note: string | null }[];
   criteria?: { id: string | null; text: string | null; verdict: string | null }[] | null;
@@ -68,8 +68,9 @@ export const stateLabel = (p: Project) => p.workflow?.label ?? "Unverified";
 /** Health comes from the daemon; older payloads get a local guess. */
 export const healthOf = (p: Project) => p.health || (p.status === "blocked" ? "red" : "green");
 export const healthTone = (p: Project): Tone => ({ red: "bad", amber: "warn" } as Record<string, Tone>)[healthOf(p)] ?? "ok";
-/** The daemon's attention labels: why a project is not green. */
-export const reasons = (p: Project) => (p.attention ?? []).map((item) => item.label).filter(Boolean).join(" · ");
+/** The daemon's attention labels: why a project is not green. An idle project has none, so it shows why it has no status. */
+export const reasons = (p: Project) => (p.attention ?? []).map((item) => item.label).filter(Boolean).join(" · ")
+  || (stateOf(p) === "idle" && p.workflow?.reason) || "";
 
 /** Eight cells: done before the current phase; a shipped project fills all. */
 export function phaseCells(p: Project): Cell[] {
@@ -135,7 +136,7 @@ export function spendCell(slot: SpendSlot | null | undefined): { cost: string; t
 /** The daemon's own scan interval; 5 seconds is its default. */
 export const pollMs = (status: Status | null) => (status?.daemon?.poll_seconds ?? 5) * 1000;
 
-const STATE_RANK = { blocked: 0, unverified: 1, active: 1, shipped: 2 };
+const STATE_RANK = { blocked: 0, unverified: 1, active: 1, shipped: 2, idle: 2 };
 
 /** Board order: blocked, then in progress, then shipped; by name within each. */
 export const sortProjects = (projects: Project[]) => [...projects].sort((a, b) =>

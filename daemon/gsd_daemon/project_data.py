@@ -39,9 +39,11 @@ def project_records(watcher, raw_root):
     listing = file_index(root)
     usage, usage_source = _records(root, '.project/build/usage.jsonl')
     ledger, ledger_source = _records(root, '.project/build/verify-ledger.jsonl')
+    runtime = project.status_source == 'runtime'
+    # Without a runtime payload, the workflow result says why: not set up, not started or unverified.
     sources = [usage_source, ledger_source,
-               {'path': '.gsd-path/status_runtime.py', 'status': 'loaded' if project.status_source == 'runtime' else 'unverified',
-                'detail': 'Runtime status' if project.status_source == 'runtime' else 'Parsed-file fallback; runtime status was not verified.'}]
+               {'path': '.gsd-path/status_runtime.py', 'status': 'loaded' if runtime else project.workflow.get('label', 'Unverified').lower(),
+                'detail': 'Runtime status' if runtime else project.workflow.get('reason') or 'Parsed-file fallback; runtime status was not verified.'}]
     activity = []
     try:
         lines = resolve_history_path().read_text(encoding='utf-8').splitlines()

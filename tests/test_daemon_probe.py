@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "daemon"))
 
 SOURCE = Path(__file__).resolve().parents[1]
 
-from gsd_daemon import probe
+from gsd_daemon import probe, project_data
 from gsd_daemon.model import ProjectStatus
 
 STATE_FULL = """---
@@ -115,6 +115,12 @@ print(json.dumps({
     "pending_answers": [{"id": "Q001"}],
     "next_skill": "gsd-path-ship",
 }))
+"""
+
+# What the real launcher does in a project that has no .project/STATE.md yet.
+NO_STATE_LAUNCHER = """import sys
+print("error: project directory must be real: .project", file=sys.stderr)
+raise SystemExit(1)
 """
 
 
@@ -554,6 +560,50 @@ class DeclaredRuntimeTests(unittest.TestCase):
         status = probe.probe_project(self.root)
         self.assertEqual(status.status_source, "parse-only")
         self.assertEqual(status.workflow["state"], "unverified")
+
+    def runtime_row(self, status: ProjectStatus) -> dict:
+        """The runtime line of the project page's "Data coverage" table."""
+        watcher = SimpleNamespace(projects={status.root: status},
+                                  sessions=SimpleNamespace(records_for=lambda root: []))
+        sources = project_data.project_records(watcher, status.root)["sources"]
+        return next(row for row in sources if row["path"] == ".gsd-path/status_runtime.py")
+
+    def test_project_without_a_project_install_is_not_set_up(self) -> None:
+        fresh = self.root.parent / "fresh"
+        fresh.mkdir()
+        status = probe.probe_project(fresh)
+        reason = status.workflow["reason"]
+        self.assertEqual((status.workflow["state"], status.workflow["label"]), ("unverified", "Not set up"))
+        self.assertIn("GSD Path is not set up in this project.", reason)
+        self.assertIn(f'npx @opengsd/gsd-path --<agent> --project "{fresh}"', reason)
+        self.assertEqual(status.attention, [{"kind": "unverified", "label": reason, "ref": None}])
+        self.assertEqual(status.health, "amber")
+        row = self.runtime_row(status)
+        self.assertEqual((row["status"], row["detail"]), ("not set up", reason))
+
+    def test_installed_project_without_a_milestone_is_not_started(self) -> None:
+        fresh = self.root.parent / "fresh"
+        (fresh / ".gsd-path").mkdir(parents=True)
+        (fresh / ".gsd-path" / "status_runtime.py").write_bytes(NO_STATE_LAUNCHER.encode("utf-8"))
+        status = probe.probe_project(fresh)
+        self.assertEqual(status.workflow, {"state": "idle", "label": "Not started",
+                                           "reason": "No milestone has started yet."})
+        self.assertEqual(status.attention, [])
+        self.assertEqual(status.health, "green")
+        row = self.runtime_row(status)
+        self.assertEqual((row["status"], row["detail"]), ("not started", "No milestone has started yet."))
+
+    def test_broken_runtime_keeps_the_launcher_hint(self) -> None:
+        make_declared_runtime(self.root, self.home)
+        shutil.rmtree(self.home / ".gsd-path" / "runtimes")
+        status = probe.probe_project(self.root)
+        reason = status.workflow["reason"]
+        self.assertEqual((status.workflow["state"], status.workflow["label"]), ("unverified", "Unverified"))
+        self.assertTrue(reason.startswith("Runtime validation is unavailable. Runtime test ("), reason)
+        self.assertIn("Run gsd-path --runtime-restore --project", reason)
+        self.assertEqual(status.attention[-1], {"kind": "unverified", "label": reason, "ref": None})
+        row = self.runtime_row(status)
+        self.assertEqual((row["status"], row["detail"]), ("unverified", reason))
 
 
 WAVE_REVIEW = """# Review — wave 1, cycle 1

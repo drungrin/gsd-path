@@ -144,6 +144,7 @@ class WorkflowProjectionTests(unittest.TestCase):
             (project / 'STATE.md').write_bytes(state_text(phase='ship', status='active',
                 archive='.project/archive/001-first').encode("utf-8"))
             status = probe.probe_project(repo)
-            self.assertEqual(status.to_dict().get('workflow', {}).get('label'), 'Unverified')
+            workflow = status.to_dict().get('workflow', {})
+            self.assertEqual((workflow.get('state'), workflow.get('label')), ('unverified', 'Not set up'))
             self.assertEqual(status.phase, 'ship')
             self.assertEqual(status.health, 'amber')
