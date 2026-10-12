@@ -1,6 +1,7 @@
 import argparse
 import importlib
 import io
+import itertools
 import json
 import os
 import re
@@ -1248,9 +1249,13 @@ class DispatchDriverTests(unittest.TestCase):
         self.fixture(root, deps_t002="[T001]")
         sidecar = dispatch_driver.isolation.sidecar_root(root.resolve(), "verify", "task-t001-verify")
 
+        checkpoints = itertools.count(1)
+
         def prepare_after_checkpoint() -> subprocess.CompletedProcess:
+            # A different line for each checkpoint: two equal commits made in the same second
+            # have one identity, and the sidecar base would then still be on the bound branch.
             dispatch_driver.append_log(root / ".project/tasks/T001-demo.md",
-                                       "- 2026-10-10 — orchestrator: repaired the Verify command")
+                                       f"- 2026-10-10 — orchestrator: Verify repair {next(checkpoints)}")
             run_git(root, "commit", "-qam", "build: repair T001 Verify")
             return subprocess.run(
                 [sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"), "prepare-task",
