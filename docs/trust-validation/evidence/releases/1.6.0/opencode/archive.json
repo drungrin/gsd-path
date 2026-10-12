@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "opencode",
+  "run_id": "ses_ed2f6c019ffeVfXlsKsW2HIAnC",
+  "result": "pass",
+  "step": "archive",
+  "command": "python3 -B /Users/jeremymcspadden/.gsd-path/runtimes/422149915eaa779af7d78bdc37475d61a05bea09a92c443c3e38f63f2f77d199/archive_milestone.py validate --repo \"$PWD\"",
+  "output": "{\"archive\": \".project/archive/001-count-cli\", \"commit\": \"1cfff79f30b8aed3337bae6a95301adc7eab35a1\"}\n",
+  "archive_path": ".project/archive/001-count-cli",
+  "validation_exit_code": 0
+}

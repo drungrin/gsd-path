@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "kimi",
+  "run_id": "session_3bebfc6c-573d-4d77-8576-1e9f6ce16559",
+  "result": "pass",
+  "step": "task-landing",
+  "command": "python3 -B /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/kimi/quick/repo/.kimi-code/skills/gsd-path/scripts/dispatch_driver.py finish --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/kimi/quick/repo --task-id T001",
+  "output": "commit c352eebc37c4c42a694102d29ff806aca1b4c02c\nAuthor:     Feature Evaluation <evaluation@example.invalid>\nAuthorDate: Sun Oct 11 17:47:01 2026 -0500\nCommit:     Feature Evaluation <evaluation@example.invalid>\nCommitDate: Sun Oct 11 17:47:01 2026 -0500\n\n    T001: Extend count.py with the full CLI contract and real-CLI tests\n    \n    Task: .project/tasks/T001-count-cli-contract.md\n    Base: c899fe758c73d5df2b507ac1235d98e6b095a09a\n    Files:\n    - .project/tasks/T001-count-cli-contract.md\n    - count.py\n    - tests/test_count_cli.py\n\n .project/tasks/T001-count-cli-contract.md | 47 ++++++++++++++--\n count.py                                  | 42 +++++++++++++-\n tests/test_count_cli.py                   | 91 +++++++++++++++++++++++++++++++\n 3 files changed, 173 insertions(+), 7 deletions(-)",
+  "fixture_bundle": "kimi/fixture.bundle",
+  "run_manifest": ".project/archive/001-count-cli/trust-run-manifest.json",
+  "fixture_base_commit": "c899fe758c73d5df2b507ac1235d98e6b095a09a",
+  "task_branch": "gsd-path-verify/task-t001-verify",
+  "task_worktree": "/Users/jeremymcspadden/.gsd-path/projects/b435d17400ce50c4cfb562b10c96d6488c7003f8dfb35b7baaa1f1ca4e5bbc7f/cb0d2f53f57c5eb762099c217fad739442a5319fb5fb0afb1581bc3bed05bde5/verify/task-t001-verify",
+  "landing_commit": "c352eebc37c4c42a694102d29ff806aca1b4c02c",
+  "isolation_mode": "serial",
+  "isolation_note": "A one-task wave uses the helper's serial mode: the coder worked on the bound branch in the primary worktree at the recorded base, and the named branch and worktree are the isolated Task Verify sidecar created for this task and retired after landing."
+}

@@ -1,0 +1,14 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "claude",
+  "run_id": "3b0b4fae-5e05-4517-8552-43fe11617a31",
+  "result": "pass",
+  "step": "install",
+  "command": "node /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/claude/plugin/scripts/install.mjs --claude --local --project /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/claude/quick/repo --hooks --no-color",
+  "output": "\u2726 GSD Path installer v1.6.0\n  project install into /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/claude/quick/repo\n\n  \u2713 claude: installed 16 skills to /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/claude/quick/repo/.claude/skills\n  \u2713 project: copied AGENTS.md, WORKFLOW.md, .gsd-path/status_runtime.py, .gsd-path/runtime.json, .claude/CLAUDE.md, .gsd-path/guard_hook.py, .gsd-path/git_guard.py, .claude/settings.json, .git/hooks/pre-commit, .git/hooks/commit-msg, .git/hooks/pre-push to /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/claude/quick/repo\n\n  Done. Restart active agent sessions, then invoke the router explicitly.",
+  "host_version": "Claude Code 2.1.294",
+  "install_root": ".claude/skills",
+  "candidate": "2aad06114ebf7d4b88ba70d3de63627e4c238c2f",
+  "package_version": "1.6.0",
+  "exit_code": 0
+}

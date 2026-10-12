@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "grok",
+  "run_id": "01a12d08-3294-7ba3-883a-2d4ca255de8a",
+  "result": "pass",
+  "step": "task-landing",
+  "command": "python3 -B /Users/jeremymcspadden/.gsd-path/runtimes/422149915eaa779af7d78bdc37475d61a05bea09a92c443c3e38f63f2f77d199/model_policy.py release \\\n  --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo \\\n  --scope gsd-path-M001/active \\\n  --assignment build_T001 \\\n  --role coder \\\n  --record /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo/.git/gsd-path/model-selection/gsd-path-M001/active/build_T001.json \\\n  --terminal-result 'subagent 01a12d2e-42e5-7443-abfa-4aa1ab3c76cb exit 0; status completed; output ready' && echo \"---FINISH---\" && python3 -B /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo/.grok/skills/gsd-path/scripts/dispatch_driver.py finish \\\n  --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo \\\n  --task-id T001",
+  "output": "commit be5428dc824cfbca3686f21a3053b47db5fe0102\nAuthor:     Feature Evaluation <evaluation@example.invalid>\nAuthorDate: Sun Oct 11 18:02:14 2026 -0500\nCommit:     Feature Evaluation <evaluation@example.invalid>\nCommitDate: Sun Oct 11 18:02:14 2026 -0500\n\n    T001: Add JSON widget counts and CLI tests\n    \n    Task: .project/tasks/T001-widget-count.md\n    Base: 903cc88bc1bc59d8dc67d4296bcb04369cc78bdb\n    Files:\n    - .project/tasks/T001-widget-count.md\n    - count.py\n    - test_count.py\n\n .project/tasks/T001-widget-count.md |  17 ++++--\n count.py                            |  30 ++++++++++-\n test_count.py                       | 103 ++++++++++++++++++++++++++++++++++++\n 3 files changed, 145 insertions(+), 5 deletions(-)",
+  "fixture_bundle": "grok/fixture.bundle",
+  "run_manifest": ".project/archive/001-widget-count/trust-run-manifest.json",
+  "fixture_base_commit": "903cc88bc1bc59d8dc67d4296bcb04369cc78bdb",
+  "task_branch": "gsd-path-verify/task-t001-verify",
+  "task_worktree": "/Users/jeremymcspadden/.gsd-path/projects/2ea67079c7f15829c61d69e171bd8694db933640ae0ef1c36fd882abc716f35c/3def73a6124fcf9565b156b901504647151b95e1aac630030f779a02dcccb4ea/verify/task-t001-verify",
+  "landing_commit": "be5428dc824cfbca3686f21a3053b47db5fe0102",
+  "isolation_mode": "serial",
+  "isolation_note": "A one-task wave uses the helper's serial mode: the coder worked on the bound branch in the primary worktree at the recorded base, and the named branch and worktree are the isolated Task Verify sidecar created for this task and retired after landing."
+}

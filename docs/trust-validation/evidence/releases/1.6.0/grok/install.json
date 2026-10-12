@@ -1,0 +1,14 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "grok",
+  "run_id": "01a12d08-3294-7ba3-883a-2d4ca255de8a",
+  "result": "pass",
+  "step": "install",
+  "command": "node /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/plugin/scripts/install.mjs --grok --local --project /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo --hooks --no-color",
+  "output": "\u2726 GSD Path installer v1.6.0\n  project install into /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo\n\n  \u2713 grok: installed 16 skills to /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo/.grok/skills\n  \u2713 project: copied AGENTS.md, WORKFLOW.md, .gsd-path/status_runtime.py, .gsd-path/runtime.json, .gsd-path/guard_hook.py, .gsd-path/git_guard.py, .git/hooks/pre-commit, .git/hooks/commit-msg, .git/hooks/pre-push to /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo\n\n  Done. Restart active agent sessions, then invoke the router explicitly.",
+  "host_version": "Grok CLI 1.0.50",
+  "install_root": ".grok/skills",
+  "candidate": "2aad06114ebf7d4b88ba70d3de63627e4c238c2f",
+  "package_version": "1.6.0",
+  "exit_code": 0
+}

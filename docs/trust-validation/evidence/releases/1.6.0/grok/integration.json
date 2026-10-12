@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "grok",
+  "run_id": "01a12d08-3294-7ba3-883a-2d4ca255de8a",
+  "result": "pass",
+  "step": "integration",
+  "command": "python3 -B -c '\nimport hashlib, os\nfrom pathlib import Path\nprimary = Path(\"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo\").resolve()\ncommon_rel = os.popen(\"git rev-parse --git-common-dir\").read().strip()\ncommon = (primary / common_rel).resolve()\ndef ident(path):\n    return hashlib.sha256(os.fsencode(path)).hexdigest()\nroot = Path.home() / \".gsd-path\" / \"projects\"\nworkspace = root / ident(common) / ident(primary)\nprint(\"predicted\", workspace / \"integrate\" / \"M001\")\nlegacy = primary.parent / \".repo-gsd-path-integrate-M001\"\nprint(\"legacy_exists\", legacy.exists(), legacy)\nprint(\"receipt_before\", (common / \"gsd-path\" / \"workspaces\" / f\"{ident(primary)}.json\").is_file())\n' && python3 -B /Users/jeremymcspadden/.gsd-path/runtimes/422149915eaa779af7d78bdc37475d61a05bea09a92c443c3e38f63f2f77d199/archive_milestone.py integrate --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/repo --slug widget-count",
+  "output": "predicted /Users/jeremymcspadden/.gsd-path/projects/2ea67079c7f15829c61d69e171bd8694db933640ae0ef1c36fd882abc716f35c/3def73a6124fcf9565b156b901504647151b95e1aac630030f779a02dcccb4ea/integrate/M001\nlegacy_exists False /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/grok/quick/.repo-gsd-path-integrate-M001\nreceipt_before False\n{\"archive\": \".project/archive/001-widget-count\", \"base\": \"b151afe71abdfcb29f46a530847ce3664a228b55\", \"commit\": \"c062cdc85f055445352221f2bf0446446a6e4982\", \"integrate\": \"b151afe71abdfcb29f46a530847ce3664a228b55\", \"landing\": \"b151afe71abdfcb29f46a530847ce3664a228b55\", \"mode\": \"direct\", \"tag\": \"milestone/001-widget-count\"}\n",
+  "fixture_bundle": "grok/fixture.bundle",
+  "run_manifest": ".project/archive/001-widget-count/trust-run-manifest.json",
+  "ship_commit": "c062cdc85f055445352221f2bf0446446a6e4982",
+  "bound_branch": "gsd-path/M001",
+  "default_branch": "main",
+  "pre_integration_default_commit": "0120442d099f95d2073b562bcde123758cba7ce6",
+  "integration_commit": "b151afe71abdfcb29f46a530847ce3664a228b55",
+  "milestone_tag": "milestone/001-widget-count"
+}

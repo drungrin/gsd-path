@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "antigravity",
+  "run_id": "ed3e9b9d-97af-4425-be8e-82ad396443f7",
+  "result": "pass",
+  "step": "integration",
+  "command": "python3 -B /Users/jeremymcspadden/.gsd-path/runtimes/422149915eaa779af7d78bdc37475d61a05bea09a92c443c3e38f63f2f77d199/archive_milestone.py integrate --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.0-2aad0611/antigravity/quick/repo --slug extend-count",
+  "output": "{\"archive\": \".project/archive/001-extend-count\", \"base\": \"0e558fbb87c45f28d9a958991d168b9d6bed03be\", \"commit\": \"a3f5ae24a5483ef450f1cb7824da291a397a8193\", \"integrate\": \"0e558fbb87c45f28d9a958991d168b9d6bed03be\", \"landing\": \"0e558fbb87c45f28d9a958991d168b9d6bed03be\", \"mode\": \"direct\", \"tag\": \"milestone/001-extend-count\"}\r\n",
+  "fixture_bundle": "antigravity/fixture.bundle",
+  "run_manifest": ".project/archive/001-extend-count/trust-run-manifest.json",
+  "ship_commit": "a3f5ae24a5483ef450f1cb7824da291a397a8193",
+  "bound_branch": "gsd-path/M001",
+  "default_branch": "main",
+  "pre_integration_default_commit": "8fa196b020d50b7e0ccf2615f692966e404abd9d",
+  "integration_commit": "0e558fbb87c45f28d9a958991d168b9d6bed03be",
+  "milestone_tag": "milestone/001-extend-count"
+}
