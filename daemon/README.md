@@ -315,7 +315,10 @@ discards those edits. A clone left by an earlier daemon version is not used
 unless `plugin_repo` is set.
 
 Project updates invoke `--runtime-upgrade`, or `--runtime-migrate` for legacy
-runtime directories; see
+runtime directories. A project with no project install (no
+`.gsd-path/runtime.json` and no legacy runtime directory) is not updated:
+Update returns an error that names the install command, before any source
+refresh or installer run. See
 [project runtime versions](../DOCS.md#project-runtime-versions) for version
 selection and legacy migration, and [Dashboard feedback](../UPDATE.md#update-the-project-runtime-and-guard-hooks)
 for the displayed controls and results. Every installer operation (argv, exit code,
@@ -478,7 +481,7 @@ JSON at `~/.gsd-path/daemon.json` (override with `--config` or the
 
 - `parents` — folders scanned for gsd-path projects (absolute paths).
 - `excludes` — paths skipped during scanning (exact path or prefix).
-- `max_depth` — how deep below each parent to look for `.project/STATE.md`.
+- `max_depth` — how deep below each parent to look for projects.
 - `poll_seconds` — watcher poll interval.
 - `notify` — desktop notifications for phase changes, blocks, pending answers.
 - `history` — append events to `~/.gsd-path/history.jsonl` (both `serve` and the Python tray record changes after their startup scan)
