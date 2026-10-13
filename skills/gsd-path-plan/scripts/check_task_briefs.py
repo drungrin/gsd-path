@@ -481,6 +481,9 @@ def validate_task_briefs(
     for shape, task_ids in contracts.items():
         if len(task_ids) == 1:
             task_id = next(iter(task_ids))
+            # A landed brief is history: a later repair may reword the bullet in its partner.
+            if task_id in (landed_bases or {}):
+                continue
             problems.append(
                 f"{task_id}: interface contract is not shared by any other task: {shape}"
             )
