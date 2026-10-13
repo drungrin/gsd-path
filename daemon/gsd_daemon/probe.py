@@ -143,6 +143,14 @@ def is_project_root(root: Union[str, Path]) -> bool:
     return state.get("pipeline") == PIPELINE_MARKER
 
 
+def is_not_started(root: Union[str, Path]) -> bool:
+    """A project install is present and no milestone has written STATE.md."""
+    base = Path(root)
+    return not (base / ".project" / "STATE.md").exists() and (
+        (base / ".gsd-path" / "status_runtime.py").is_file()
+        or (base / ".gsd-path" / "runtime" / "pipeline_state.py").is_file())
+
+
 def parse_task_file(path: Union[str, Path]) -> Optional[TaskSummary]:
     try:
         text = Path(path).read_text(encoding="utf-8")

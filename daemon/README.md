@@ -2,7 +2,8 @@
 
 A progress-monitoring daemon and cross-platform tray app for GSD Path
 projects. It watches one or more folders for
-directories containing a `.project/STATE.md` with `pipeline: gsd-path/v2`,
+directories containing a `.project/STATE.md` with `pipeline: gsd-path/v2`
+(or a project install with no `.project/STATE.md` yet, shown as **Not started**),
 parses the pipeline state (phase, status, tasks, waves, roadmap, lookahead
 milestone), enriches it with git info and — when available — the project's
 bundled runtime status, and surfaces everything through a CLI, a localhost

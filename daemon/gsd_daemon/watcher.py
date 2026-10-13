@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import threading
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from . import discovery, probe, sessions
 from .config import Config, resolve_config_path
@@ -24,7 +24,7 @@ class Watcher:
     def __init__(self, config: Config, probe_hook: Optional[Callable[[str], None]] = None):
         self.config = config
         self.projects: Dict[str, ProjectStatus] = {}
-        self._mtimes: Dict[str, Optional[float]] = {}
+        self._mtimes: Dict[str, Tuple[Optional[float], ...]] = {}
         self._probe_hook = probe_hook
         self.sessions = sessions.SessionIndex(sessions.expand_session_dirs(config.session_dirs), config.prices,
                                               cache_path=resolve_config_path().parent / "sessions-index.json")
@@ -34,9 +34,13 @@ class Watcher:
         events: List[Event] = []
         current: Dict[str, ProjectStatus] = {}
         for root in roots:
-            mtime = probe.tree_mtime(Path(root) / ".project")
+            # The project install decides the workflow status and changes
+            # without touching .project, so it is part of the cache key.
+            mtime = (probe.tree_mtime(Path(root) / ".project"),
+                     probe.tree_mtime(Path(root) / ".gsd-path" / "status_runtime.py"),
+                     probe.tree_mtime(Path(root) / ".gsd-path" / "runtime.json"))
             old = self.projects.get(root)
-            if old is not None and mtime is not None and self._mtimes.get(root) == mtime:
+            if old is not None and any(mtime) and self._mtimes.get(root) == mtime:
                 current[root] = old
                 continue
             status = self._probe(root)

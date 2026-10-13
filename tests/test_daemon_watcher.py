@@ -41,6 +41,12 @@ def make_project(root: Path, phase: str = "build", status: str = "active") -> Pa
     return root
 
 
+def install_launcher(root: Path) -> None:
+    # A project install whose runtime does not answer.
+    (root / ".gsd-path").mkdir(parents=True, exist_ok=True)
+    (root / ".gsd-path" / "status_runtime.py").write_bytes(b"raise SystemExit('error: no runtime')\n")
+
+
 def touch(root: Path) -> None:
     # mtime granularity guard: ensure the next mutation lands on a newer mtime
     time.sleep(0.02)
@@ -148,6 +154,27 @@ class WatcherTests(unittest.TestCase):
             STATE.format(phase="ship", status="active").encode("utf-8"))
         watcher.poll_once()
         self.assertEqual(calls, [str(self.project), str(self.project)])
+
+    def test_reprobes_after_project_install(self) -> None:
+        make_project(self.project)
+        watcher = self.watcher()
+        watcher.poll_once()
+        self.assertEqual(watcher.projects[str(self.project)].workflow["label"], "Not set up")
+        install_launcher(self.project)
+        watcher.poll_once()
+        self.assertEqual(watcher.projects[str(self.project)].workflow["label"], "Unverified")
+
+    def test_installed_project_with_no_milestone_is_not_started(self) -> None:
+        install_launcher(self.project)
+        calls = []
+        watcher = self.watcher(probe_hook=calls.append)
+        watcher.poll_once()
+        watcher.poll_once()
+        status = watcher.projects[str(self.project)]
+        self.assertEqual(status.workflow, {"state": "idle", "label": "Not started",
+                                           "reason": "No milestone has started yet."})
+        self.assertEqual(status.attention, [])
+        self.assertEqual(calls, [str(self.project)])
 
 
 if __name__ == "__main__":

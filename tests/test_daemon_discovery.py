@@ -107,6 +107,19 @@ class DiscoveryTests(unittest.TestCase):
         (stray / "STATE.md").write_bytes(STATE_V2.encode("utf-8"))
         self.assertEqual(self.scan(), [])
 
+    def test_lists_installed_project_with_no_state_file(self) -> None:
+        idle = self.parent / "idle"
+        (idle / ".gsd-path").mkdir(parents=True)
+        (idle / ".gsd-path" / "status_runtime.py").write_bytes(b"")
+        (self.parent / "plain").mkdir()
+        self.assertEqual(self.scan(), [str(idle)])
+
+    def test_installed_folder_does_not_hide_project_below_it(self) -> None:
+        (self.parent / ".gsd-path").mkdir()
+        (self.parent / ".gsd-path" / "status_runtime.py").write_bytes(b"")
+        project = make_project(self.parent / "alpha")
+        self.assertEqual(self.scan(), [str(project)])
+
 
 class WorktreeDedupTests(unittest.TestCase):
     def setUp(self) -> None:
