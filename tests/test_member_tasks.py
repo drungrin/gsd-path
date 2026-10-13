@@ -105,10 +105,10 @@ class MemberTaskBriefTests(unittest.TestCase):
              f"{member_base}^{{commit}}"], capture_output=True, check=False,
         )
         self.assertNotEqual(coordinator_has_member_base.returncode, 0)
-        with self.assertRaisesRegex(check_task_briefs.BriefError,
-                                    "path missing at the layer base: src/app.py"):
-            check_task_briefs.validate_task_briefs(
-                self.coordinator, self.head, landed_bases={"T001": self.head})
+
+    def scope_under_a_member_base_file(self, task: str) -> None:
+        # `src/app.py` is a file only at the recorded member base: the member tip removed it.
+        self.write("T001", task.replace("  - src/new.py", "  - src/app.py/child.py"))
 
     def test_member_task_paths_resolve_in_the_member(self) -> None:
         self.write("T001", member_task("T001", "src/new.py", "Follow `src/app.py` in the member.",
@@ -164,17 +164,25 @@ class MemberTaskBriefTests(unittest.TestCase):
         check_task_briefs.validate_task_briefs(self.coordinator, self.head, landed_bases={"T001": old})
 
     def test_plan_checkpoint_uses_a_landed_members_recorded_member_base(self) -> None:
-        member_base, _task = self.prepare_landed_member_task()
+        member_base, task = self.prepare_landed_member_task()
         self.assert_coordinator_base_misses_member_history(member_base)
 
         state_checkpoint._validate_plan_briefs(self.coordinator, "plan", ".project")
+        self.scope_under_a_member_base_file(task)
+        with self.assertRaisesRegex(pipeline_state.PipelineStateError,
+                                    "non-directory ancestor src/app.py at the layer base"):
+            state_checkpoint._validate_plan_briefs(self.coordinator, "plan", ".project")
 
     def test_plan_task_gate_uses_a_landed_members_recorded_member_base(self) -> None:
-        member_base, _task = self.prepare_landed_member_task()
+        member_base, task = self.prepare_landed_member_task()
         self.assert_coordinator_base_misses_member_history(member_base)
 
         result = check_task_briefs.validate_plan_task_briefs(self.coordinator, self.head, ".project")
         self.assertEqual(result["tasks"], 1)
+        self.scope_under_a_member_base_file(task)
+        with self.assertRaisesRegex(check_task_briefs.BriefError,
+                                    "non-directory ancestor src/app.py at the layer base"):
+            check_task_briefs.validate_plan_task_briefs(self.coordinator, self.head, ".project")
 
     def test_landed_task_may_name_a_review_file_that_build_recovery_moved(self) -> None:
         review = ".project/review/wave-4.cycle4.contract.md"

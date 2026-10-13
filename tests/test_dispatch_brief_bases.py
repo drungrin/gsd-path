@@ -175,14 +175,35 @@ class DispatchBriefBasesTests(unittest.TestCase):
         self.task("T002", wave=2, context="Read `fixtures/policy.json`.")
         self.assert_diagnostic(self.lint(), "T002:", "missing at the layer base: fixtures/policy.json")
 
-    def test_landed_tasks_receive_no_dependency_file_allowance(self) -> None:
+    def test_landed_brief_naming_an_absent_path_does_not_block_a_patch_plan(self) -> None:
+        # Issue #408: a landed brief cannot be edited, so its paths must not block approval.
+        track = ".project/next"
+        self.plan(track)
+        self.task("T001", track=track, status="done", base=self.historical,
+                  context="Measured against `before-dbg/SimplT.Core.dll`.",
+                  verify="python3 src/t001.py\npython3 scratch/out.py")
+        self.task("T002", track=track, wave=2)
+        self.assert_passes(self.lint("--project-dir", track), 2)
+        state_checkpoint._validate_plan_briefs(self.repo, "plan", track)
+
+    def test_pending_brief_beside_a_landed_one_still_names_only_present_paths(self) -> None:
         self.plan()
         self.task("T001", status="done", base=self.historical,
-                  files=("fixtures/policy.json",))
-        self.task("T002", wave=2, deps=("T001",), status="done", base=self.historical,
-                  context="Read `fixtures/policy.json`.")
+                  context="Measured against `before-dbg/SimplT.Core.dll`.")
+        self.task("T002", wave=2, context="Read `scratch/out.dll`.",
+                  verify="python3 src/t002.py\npython3 scratch/out.py")
+        result = self.lint("--project-dir", ".project")
+        self.assert_diagnostic(result,
+                               "T002: ## Context names a path missing at the layer base: scratch/out.dll",
+                               "T002: ## Verify names a path missing at the layer base: scratch/out.py")
+        self.assertNotIn("T001:", result.stderr)
+
+    def test_landed_brief_keeps_its_file_scope_check(self) -> None:
+        self.plan()
+        self.task("T001", status="done", base=self.historical,
+                  files=("src/app.py/child.py",))
         self.assert_diagnostic(self.lint("--project-dir", ".project"),
-                               "T002:", "missing at the layer base: fixtures/policy.json")
+                               "T001: files entry src/app.py/child.py has non-directory ancestor")
 
     def test_landed_task_may_be_the_only_owner_of_an_interface_contract(self) -> None:
         track = ".project/next"

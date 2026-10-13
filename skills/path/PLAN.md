@@ -263,8 +263,9 @@ as stated in Lookahead mode.
 
    Before approval, the helper validates the task graph and brief paths.
    Pending briefs may reference files supplied by transitive dependencies.
-   Landed briefs use their recorded historical base, with no dependency-file
-   allowance, so later file changes do not invalidate immutable briefs.
+   A landed brief is immutable history: the helper checks its `files` scope
+   at the recorded historical base and does not check the paths that its
+   prose and Verify name.
    This applies to plan re-approval too; the dispatch CLI remains HEAD-only
    with no overrides.
 
