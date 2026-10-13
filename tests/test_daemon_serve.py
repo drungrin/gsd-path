@@ -211,6 +211,43 @@ class ServeTests(unittest.TestCase):
         result = subprocess.run([node, "--check", path], capture_output=True, encoding="utf-8", errors="replace")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_dashboard_sorts_idle_project_with_shipped(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available")
+        status, _content_type, body = self.get("/")
+        self.assertEqual(status, 200)
+        scripts = re.findall(r"<script>([\s\S]*?)</script>", body.decode("utf-8"))
+        self.assertEqual(len(scripts), 1)
+        projects = [
+            {"root": "/w/m-idle", "repository": "m-idle", "workflow": {"state": "idle", "label": "Not started"}},
+            {"root": "/w/alpha-shipped", "repository": "alpha-shipped", "workflow": {"state": "shipped", "label": "Shipped"}},
+            {"root": "/w/zeta-blocked", "repository": "zeta-blocked", "workflow": {"state": "blocked", "label": "Blocked"}},
+        ]
+        prelude = """
+const element = () => ({dataset: {}, style: {}, innerHTML: "", open: false, addEventListener() {},
+  querySelector() { return null; }, querySelectorAll() { return []; }, appendChild() {}, focus() {}});
+const stage = element();
+globalThis.document = Object.assign(element(), {getElementById: () => stage, documentElement: element(), body: element(), activeElement: null});
+globalThis.window = Object.assign(globalThis, {scrollX: 0, scrollY: 0, scrollTo() {}, addEventListener() {}});
+globalThis.location = {hash: ""};
+globalThis.history = {replaceState() {}, pushState() {}};
+globalThis.fetch = () => new Promise(() => {});
+globalThis.setInterval = () => 0;
+"""
+        probe = (
+            "\ndelete stage.dataset.readingKey;\nDATA = {schema: 1, generated_at: null, projects: %s};\nrender();\n"
+            "const html = stage.innerHTML;\n"
+            "console.log(JSON.stringify(DATA.projects.map(p => p.repository).sort((a, b) => html.indexOf(a) - html.indexOf(b))));\n"
+        ) % json.dumps(projects)
+        with tempfile.NamedTemporaryFile("wb", suffix=".js", delete=False) as handle:
+            handle.write((prelude + scripts[0] + probe).encode("utf-8"))
+            path = handle.name
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        result = subprocess.run([node, path], capture_output=True, encoding="utf-8", errors="replace", timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["zeta-blocked", "alpha-shipped", "m-idle"])
+
     def test_not_found(self) -> None:
         status, content_type, body = self.get("/nope")
         self.assertEqual(status, 404)

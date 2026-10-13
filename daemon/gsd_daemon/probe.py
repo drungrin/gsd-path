@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from . import gitinfo, subprocess_platform
 from .history import resolve_history_path
@@ -141,6 +141,14 @@ def parse_state_file(path: Union[str, Path]) -> dict:
 def is_project_root(root: Union[str, Path]) -> bool:
     state = parse_state_file(Path(root) / ".project" / "STATE.md")
     return state.get("pipeline") == PIPELINE_MARKER
+
+
+def is_not_started(root: Union[str, Path]) -> bool:
+    """A project install is present and no milestone has written STATE.md."""
+    base = Path(root)
+    return not (base / ".project" / "STATE.md").exists() and (
+        (base / ".gsd-path" / "status_runtime.py").is_file()
+        or (base / ".gsd-path" / "runtime" / "pipeline_state.py").is_file())
 
 
 def parse_task_file(path: Union[str, Path]) -> Optional[TaskSummary]:
@@ -624,7 +632,8 @@ def tree_mtime(path: Union[str, Path]) -> Optional[float]:
     return latest
 
 
-def _run_status_command(command: List[str]) -> Optional[dict]:
+def _run_status_command(command: List[str]) -> Tuple[Optional[dict], str]:
+    """The status payload, or None and the last line the command wrote to stderr."""
     try:
         # The daemon's own interpreter: python3 is usually absent on Windows,
         # where process start and git are also slow enough to need the margin.
@@ -637,29 +646,46 @@ def _run_status_command(command: List[str]) -> Optional[dict]:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None, ""
     if result.returncode != 0:
-        return None
+        return None, ((result.stderr or "").strip().splitlines() or [""])[-1]
     try:
         payload = json.loads(result.stdout)
     except ValueError:
-        return None
+        return None, ""
     if not isinstance(payload, dict) or payload.get("schema") != RUNTIME_STATUS_SCHEMA:
-        return None
-    return payload
+        return None, ""
+    return payload, ""
 
 
-def _runtime_status(root: str) -> Optional[dict]:
+def not_set_up(root: Union[str, Path]) -> str:
+    """What the user reads when a project has no project install."""
+    return ("GSD Path is not set up in this project. Run: "
+            f'npx @opengsd/gsd-path --<agent> --project "{root}" (for example --opencode).')
+
+
+def _runtime_status(root: str) -> Tuple[Optional[dict], Optional[dict]]:
+    """The runtime payload, or None and the workflow result that says why."""
     # Current installs pin a shared runtime and proxy status through the
     # project launcher, which resolves the declaration exactly like the
     # status command does. Unmigrated projects keep the per-project runtime.
     launcher = Path(root) / ".gsd-path" / "status_runtime.py"
-    if launcher.is_file():
-        return _run_status_command([sys.executable, "-B", str(launcher), "--repo", root])
     runtime = Path(root) / ".gsd-path" / "runtime" / "pipeline_state.py"
-    if not runtime.is_file():
-        return None
-    return _run_status_command([sys.executable, "-B", str(runtime), "status", "--repo", root])
+    if launcher.is_file():
+        command = [sys.executable, "-B", str(launcher), "--repo", root]
+    elif runtime.is_file():
+        command = [sys.executable, "-B", str(runtime), "status", "--repo", root]
+    else:
+        return None, {"state": "unverified", "label": "Not set up", "reason": not_set_up(root)}
+    payload, error = _run_status_command(command)
+    if payload is not None:
+        return payload, None
+    # ponytail: a file check, not the error text. A broken runtime in a project
+    # with no milestone shows as not started until STATE.md exists.
+    if not (Path(root) / ".project" / "STATE.md").exists():
+        return None, {"state": "idle", "label": "Not started", "reason": "No milestone has started yet."}
+    return None, {"state": "unverified", "label": "Unverified",
+                  "reason": " ".join(filter(None, ["Runtime validation is unavailable.", error]))}
 
 
 def _activity_time(status: ProjectStatus) -> Optional[datetime]:
@@ -830,9 +856,9 @@ def probe_project(root: Union[str, Path], enrich: bool = True) -> ProjectStatus:
     )
 
     runtime_pending: Optional[List[dict]] = None
-    payload = None
+    payload = gap = None
     if enrich:
-        payload = _runtime_status(root)
+        payload, gap = _runtime_status(root)
         if payload is not None:
             runtime_state = payload.get("state")
             if isinstance(runtime_state, dict):
@@ -852,7 +878,7 @@ def probe_project(root: Union[str, Path], enrich: bool = True) -> ProjectStatus:
                     status.git["dirty"] = bool(status.git["dirty"])
             status.status_source = "runtime"
     status.answers = _collect_answers(project_dir / "discuss" / "ANSWERS.md", runtime_pending)
-    status.workflow = workflow_projection(payload)
+    status.workflow = gap or workflow_projection(payload)
     status.attention = compute_attention(status)
     if status.workflow["state"] == "unverified":
         status.attention.append({"kind": "unverified", "label": status.workflow["reason"], "ref": None})

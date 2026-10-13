@@ -5,7 +5,7 @@ import re
 import subprocess
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from .probe import is_project_root
+from .probe import is_not_started, is_project_root
 from .gitinfo import _git
 from . import subprocess_platform
 
@@ -77,7 +77,9 @@ def _dedupe_worktrees(roots: List[str]) -> List[str]:
     groups: Dict[str, List[str]] = {}
     for root in roots:
         groups.setdefault(os.path.normcase(_git_common_dir(root) or root), []).append(root)
-    return [min(members, key=_dedupe_rank) for members in groups.values()]
+    # A started project wins over a not-started install in the same repository.
+    return [min(members, key=lambda root: (not is_project_root(root), _dedupe_rank(root)))
+            for members in groups.values()]
 
 
 def scan(parents: Iterable[str], excludes: Iterable[str] = (), max_depth: int = 6) -> List[str]:
@@ -99,6 +101,7 @@ def _walk(current: str, depth: int, max_depth: int,
     if is_project_root(current):
         found.append(current)
         return
+    before = len(found)
     try:
         entries = sorted(os.scandir(current), key=lambda entry: entry.name)
     except OSError:
@@ -113,3 +116,7 @@ def _walk(current: str, depth: int, max_depth: int,
         if name in SKIP_DIRS or name.startswith("."):
             continue
         _walk(entry.path, depth + 1, max_depth, excluded, found)
+    # A project install with no milestone is listed as "Not started", but only
+    # when no project is below it, so it never hides a started project.
+    if len(found) == before and is_not_started(current):
+        found.append(current)

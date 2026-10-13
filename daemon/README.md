@@ -2,7 +2,8 @@
 
 A progress-monitoring daemon and cross-platform tray app for GSD Path
 projects. It watches one or more folders for
-directories containing a `.project/STATE.md` with `pipeline: gsd-path/v2`,
+directories containing a `.project/STATE.md` with `pipeline: gsd-path/v2`
+(or a project install with no `.project/STATE.md` yet, shown as **Not started**),
 parses the pipeline state (phase, status, tasks, waves, roadmap, lookahead
 milestone), enriches it with git info and — when available — the project's
 bundled runtime status, and surfaces everything through a CLI, a localhost
@@ -314,7 +315,10 @@ discards those edits. A clone left by an earlier daemon version is not used
 unless `plugin_repo` is set.
 
 Project updates invoke `--runtime-upgrade`, or `--runtime-migrate` for legacy
-runtime directories; see
+runtime directories. A project with no project install (no
+`.gsd-path/runtime.json` and no legacy runtime directory) is not updated:
+Update returns an error that names the install command, before any source
+refresh or installer run. See
 [project runtime versions](../DOCS.md#project-runtime-versions) for version
 selection and legacy migration, and [Dashboard feedback](../UPDATE.md#update-the-project-runtime-and-guard-hooks)
 for the displayed controls and results. Every installer operation (argv, exit code,
@@ -418,9 +422,14 @@ VERSION-stamp probes plus the update-check cache, never a source refresh; see
 - Runtime enrichment: `pending_answers`, `next_skill`, `handoff`. The project
   detail page displays the runtime handoff outcome and next action.
 - `workflow`: `{state, label, reason?}` is the shared browser/tray presentation.
-  State is `active`, `blocked`, `shipped`, or `unverified`. Only runtime
+  State is `active`, `blocked`, `shipped`, `unverified`, or `idle`. Only runtime
   integration proof permits `shipped`; an archive path alone does not. Older
-  payloads without this field display **Unverified**.
+  payloads without this field display **Unverified**. Without a runtime
+  payload, `label` and `reason` say why: **Not set up** (`unverified`; the
+  project has no project install, and the reason names the install command),
+  **Not started** (`idle`; the install is present and `.project/STATE.md` does
+  not exist yet), or **Unverified** (the launcher failed; the reason carries
+  the last line of its error output).
 - Dashboard detail:
   - `reviews` — `[{file, kind, verdict, cycle, depth, note}]` parsed from
     `.project/review/*.md` (`kind` is `wave`, `final`, `gap`,
@@ -472,7 +481,7 @@ JSON at `~/.gsd-path/daemon.json` (override with `--config` or the
 
 - `parents` — folders scanned for gsd-path projects (absolute paths).
 - `excludes` — paths skipped during scanning (exact path or prefix).
-- `max_depth` — how deep below each parent to look for `.project/STATE.md`.
+- `max_depth` — how deep below each parent to look for projects.
 - `poll_seconds` — watcher poll interval.
 - `notify` — desktop notifications for phase changes, blocks, pending answers.
 - `history` — append events to `~/.gsd-path/history.jsonl` (both `serve` and the Python tray record changes after their startup scan)
