@@ -239,8 +239,8 @@ class MemberLandingTests(unittest.TestCase):
         self.assertEqual(self.bound_tip(), self.member_base)
         self.assertFalse(self.journal().exists())
 
-    def land_directory_task(self, changed: str):
-        """Land T002, which declares the directory `fixtures/set`, with one changed file."""
+    def land_directory_task(self, *changed: str):
+        """Land T002, which declares the directory `fixtures/set`, with the changed files."""
         task_file = ".project/tasks/T002-add.md"
         task = TASK.replace("T001", "T002").replace("Change app", "Add fixtures").replace(
             "app.py", "fixtures/set")
@@ -250,8 +250,9 @@ class MemberLandingTests(unittest.TestCase):
         base = git(self.coordinator, "rev-parse", "HEAD")
         sidecar = Path(isolation.isolate_member_task(self.coordinator, "web", "T002")["worktree"])
         isolation.activate_member_task(self.coordinator, "web", "T002", "coder", task_file, base)
-        (sidecar / changed).parent.mkdir(parents=True, exist_ok=True)
-        (sidecar / changed).write_bytes(b"{}\n")
+        for name in changed:
+            (sidecar / name).parent.mkdir(parents=True, exist_ok=True)
+            (sidecar / name).write_bytes(b"{}\n")
         return task_file, isolation.land_member(
             self.coordinator, "web", "T002", "Add fixtures", task_file, base, self.member_base)
 
@@ -265,6 +266,49 @@ class MemberLandingTests(unittest.TestCase):
             self.coordinator, [self.coordinator / task_file], ".project/tasks", result["commit"])
         self.assertEqual([(task["verdict"], task["landing"]) for task in proven["tasks"]],
                          [("recovered", result["landing"])])
+
+    def test_member_landing_keeps_the_change_set_off_each_command_line(self) -> None:
+        # Windows refuses a command line above 32 KiB (#412), so no git command
+        # may grow with the number of changed files.
+        names = [f"fixtures/set/{letter}.json" for letter in "abc"]
+        commands = []
+        run_git = isolation.run_git
+
+        def record(repo, *arguments, **options):
+            commands.append(" ".join(arguments))
+            return run_git(repo, *arguments, **options)
+
+        with mock.patch.object(isolation, "run_git", side_effect=record):
+            _, result = self.land_directory_task(*names)
+
+        self.assertEqual(
+            [command for command in commands if sum(name in command for name in names) > 1], [])
+        self.assertEqual(
+            git(self.bound, "log", "-1", "--format=%B", result["landing"]),
+            f"T002: Add fixtures\n\nTask: .project/tasks/T002-add.md\nBase: {self.member_base}\n"
+            f"Contract: {git(self.coordinator, 'rev-parse', result['commit'] + '^')}\nFiles:\n"
+            + "\n".join(f"- {name}" for name in names),
+        )
+
+    def test_member_source_commit_stages_a_directory_replaced_by_a_file(self) -> None:
+        repo = self.root / "plain"
+        git(self.root, "init", "-q", "-b", "main", str(repo))
+        (repo / "set" / "node").mkdir(parents=True)
+        (repo / "set" / "node" / "child").write_bytes(b"v1\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "init")
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "set" / "node" / "child").unlink()
+        (repo / "set" / "node").rmdir()
+        (repo / "set" / "node").write_bytes(b"v2\n")
+
+        source = isolation._commit_member_source(
+            repo, {"member_base": base, "base": base, "task_file": TASK_FILE, "subject": "T001: Change app"},
+            {"set"})
+
+        self.assertEqual(
+            git(repo, "diff-tree", "--no-commit-id", "--name-status", "-r", "--no-renames", source).splitlines(),
+            ["A\tset/node", "D\tset/node/child"])
 
     def test_member_sibling_of_a_declared_directory_is_refused(self) -> None:
         with self.assertRaisesRegex(isolation.IsolationError, "undeclared paths: fixtures/setx.json"):
