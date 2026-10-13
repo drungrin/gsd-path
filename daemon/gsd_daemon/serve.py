@@ -590,7 +590,7 @@ async function loadActivity() {
 }
 
 /* ---- milestone stack: done / here / ahead from ROADMAP.md, STATE.md and next/STATE.md ---- */
-const STATE_RANK = {blocked: 0, unverified: 1, active: 1, shipped: 2};
+const STATE_RANK = {blocked: 0, unverified: 1, active: 1, shipped: 2, idle: 2};
 const stateOf = p => p.workflow?.state || "unverified";
 const stateLabel = p => p.workflow?.label || "Unverified";
 const isDoneMilestone = m => m.status === "shipped" || m.status === "archived" || !!m.archive;
