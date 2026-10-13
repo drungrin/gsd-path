@@ -366,6 +366,91 @@ class IsolationTests(unittest.TestCase):
             self.assertIn("- src/app.py", body)
             self.assertEqual(git(repo, "rev-parse", "HEAD"), result["commit"])
 
+    def swap_file_and_directory(self, repo: Path, before: str, after: str) -> None:
+        """Replace the tracked file `before` with the file `after`; one is below the other."""
+        (repo / before).unlink()
+        if before.startswith(after + "/"):
+            (repo / after).rmdir()
+        self.write(repo, after, "the replacement holds other text\n")
+
+    def test_serial_land_stages_a_file_and_directory_swap(self) -> None:
+        # One `git add` for each path fails here: the first call drops the
+        # other path from the index, and then its pathspec matches no file.
+        for before, after in (("src/set/node/child", "src/set/node"), ("src/set/node", "src/set/node/child")):
+            with self.subTest(before=before), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                self.init_bound_repo(repo)
+                self.write(repo, before, "base\n")
+                self.write(repo, ".project/tasks/T001.md", TASK_FILE.replace("src/app.py", "src/set"))
+                git(repo, "add", "-A")
+                git(repo, "commit", "-q", "-m", "declare the set")
+                base = git(repo, "rev-parse", "HEAD")
+                isolation.isolate_task(repo, base, "T001", 1)
+                self.swap_file_and_directory(repo, before, after)
+
+                result = isolation.land(
+                    repo, repo, base, "T001", "add greeting", ".project/tasks/T001.md", ["src/set"],
+                )
+
+                self.assertEqual(
+                    git(repo, "diff-tree", "--no-commit-id", "--name-status", "-r", "--no-renames",
+                        result["commit"]).splitlines(),
+                    sorted(["M\t.project/tasks/T001.md", f"A\t{after}", f"D\t{before}"],
+                           key=lambda line: line.split("\t")[1]),
+                )
+                self.assertEqual(git(repo, "status", "--porcelain"), "")
+
+    @unittest.skipIf(os.name == "nt", "a Windows file name cannot hold a colon")
+    def test_land_staging_takes_each_path_as_a_literal_name(self) -> None:
+        # `:!b` is the exclude magic of a pathspec: in one `git add` it removes `b`.
+        # The result must not depend on a global pathspec setting of the user.
+        for setting in ("GIT_NOGLOB_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_LITERAL_PATHSPECS"):
+            with self.subTest(setting=setting), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                self.init_bound_repo(repo)
+                for name in (":!b", "b"):
+                    self.write(repo, name, "base\n")
+                git(repo, "add", "-A")
+                git(repo, "commit", "-q", "-m", "names")
+                base = git(repo, "rev-parse", "HEAD")
+                for name in (":!b", "b"):
+                    self.write(repo, name, "changed\n")
+
+                with mock.patch.dict(os.environ, {setting: "1"}):
+                    commit, _, _ = isolation.commit_allowed_changes(
+                        repo, base, "T001: change the names", {":!b", "b"}, "Task: none")
+
+                self.assertEqual(
+                    git(repo, "show", "--name-only", "--format=", commit).splitlines(), [":!b", "b"])
+
+    def test_checkpoint_stages_a_file_and_directory_swap(self) -> None:
+        for before, after in ((".project/research/node/child", ".project/research/node"),
+                              (".project/research/node", ".project/research/node/child")):
+            with self.subTest(before=before), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                self.init_bound_repo(repo)
+                self.write(repo, before, "base\n")
+                git(repo, "add", "-A")
+                git(repo, "commit", "-q", "-m", "research")
+                base = git(repo, "rev-parse", "HEAD")
+                self.swap_file_and_directory(repo, before, after)
+
+                result = isolation.checkpoint(
+                    repo, base, "plan: build plan approved", "Why: approved plan checkpoint\nMilestone: M001",
+                    [".project"],
+                )
+
+                self.assertEqual(result["paths"], sorted([before, after]))
+                self.assertEqual(
+                    git(repo, "diff-tree", "--no-commit-id", "--name-status", "-r", "--no-renames",
+                        result["commit"]).splitlines(),
+                    sorted([f"A\t{after}", f"D\t{before}"], key=lambda line: line.split("\t")[1]),
+                )
+                self.assertEqual(git(repo, "status", "--porcelain"), "")
+
     def serial_land_with_gitignore(self, repo: Path, gitignore: str) -> dict:
         task = TASK_FILE.replace("  - src/app.py\n", "  - src/app.py\n  - .gitignore\n")
         self.write(repo, ".project/tasks/T001.md", task)
@@ -1251,7 +1336,7 @@ class IsolationTests(unittest.TestCase):
             self.write(repo, "src/app.py", "print('done')\r\n")
             with self.assertRaisesRegex(
                 isolation.IsolationError,
-                r"could not stage src/app\.py: .*CRLF would be replaced by LF",
+                r"could not stage the change set: .*CRLF would be replaced by LF in src/app\.py",
             ):
                 isolation.land(
                     repo, repo, base, "T001", "add greeting", ".project/tasks/T001.md", ["src/app.py"]
@@ -1267,7 +1352,7 @@ class IsolationTests(unittest.TestCase):
             self.write(repo, ".project/STATE.md", "roadmap done\r\n")
             with self.assertRaisesRegex(
                 isolation.IsolationError,
-                r"could not stage \.project/STATE\.md: .*CRLF would be replaced by LF",
+                r"could not stage the change set: .*CRLF would be replaced by LF in \.project/STATE\.md",
             ):
                 isolation.checkpoint(
                     repo, base, "roadmap: program roadmap approved",
