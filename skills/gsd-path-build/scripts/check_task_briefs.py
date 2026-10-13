@@ -387,7 +387,9 @@ def _lint_task(
                     )
                     break
 
-    for name in PROSE_SECTIONS:
+    # A landed brief is history that nobody can edit: only an unlanded brief must name present paths.
+    landed = task_id in (landed_bases or {})
+    for name in () if landed else PROSE_SECTIONS:
         body = sections.get(name)
         if body is None or not _clean(body):
             continue
@@ -400,8 +402,6 @@ def _lint_task(
                 and token not in supplied
                 and not _supplied_contract(repo, path, token)
                 and not _pipeline_workspace_file(repo, path, token)
-                # A landed brief is history: the pipeline moves its own files (build recovery, archive) later.
-                and not (task_id in (landed_bases or {}) and _pipeline_workspace_path(repo, path, token))
                 and not _base_exists(git_root, base, token)
             ):
                 problems.append(f"## {name} names a path missing at the layer base: {token}")
@@ -411,7 +411,7 @@ def _lint_task(
         block = VERIFY_BLOCK_PATTERN.search(verify_body)
         if block is None or not block.group("block").strip():
             problems.append("## Verify must contain a non-empty fenced bash block")
-        else:
+        elif not landed:
             for token in _verify_tokens(
                 block.group("block"),
                 repo=repo,
@@ -448,9 +448,10 @@ def validate_task_briefs(
 
     Plain lint uses the layer base without overrides. Plan approval and dispatch
     supply transitive dependency files for unlanded tasks and resolved historical
-    bases for landed tasks, whose immutable briefs must survive later file changes.
+    bases for landed tasks. A landed brief is immutable: its `files` scope is
+    checked at that base, and the paths its prose and Verify name are not checked.
     The caller validates the task graph and landed metadata before supplying
-    these mappings; landed tasks receive no dependency-file allowance.
+    these mappings.
     """
 
     resolved_base = _resolve_base(root, base)
@@ -595,7 +596,6 @@ def plan_validation_bases(
                 )
             except IsolationError as error:
                 raise BriefError(f"{task_id} landed task has invalid historical base: {error}") from error
-            dependency_files[task_id] = set()
     except check_handoffs.HandoffError as error:
         raise BriefError(str(error)) from error
     return tasks, dependency_files, landed_bases
