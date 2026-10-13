@@ -12,7 +12,7 @@ the default offline suite.
 | **Node.js** | 18.17 | 18 and 20 matrix | `node --test` installer/wizard suite |
 | **npm** | ships with Node | latest on runner | lockfile install via `npm ci` |
 | **Python** | 3.9 | 3.12 (Windows: 3.9 and 3.12) | stdlib `unittest` only for the core gate; found as `python3`, `python`, or `py -3` (`GSD_PATH_PYTHON` overrides) |
-| **git** | any recent | ubuntu-latest and windows-latest defaults | worktree/isolation tests need git 2.30+ |
+| **git** | any recent | ubuntu-latest and windows-latest defaults | worktree/isolation tests need git 2.31+ |
 | **bash** (Windows only) | Git for Windows | windows-latest default | Verify commands run in Git for Windows' `bash.exe`, never the System32 WSL launcher (`GSD_PATH_BASH` overrides) |
 
 The `windows` CI job runs the same gate natively on `windows-latest` with
@@ -166,7 +166,7 @@ Tray extras (`pystray`, `Pillow`) are optional; tests mock or skip when absent.
 | --- | --- |
 | `node: command not found` or version &lt; 18.17 | Install Node 18.17+ (nvm/fnm/system) |
 | `python3` missing or &lt; 3.9 | Install Python 3.9+; CI uses 3.12 |
-| `git` errors in isolation tests | Ensure git ≥ 2.30; configure `user.name` / `user.email` for manual work |
+| `git` errors in isolation tests | Ensure git ≥ 2.31; configure `user.name` / `user.email` for manual work |
 | `sync_skill_resources.py --check` fails | Run `python3 scripts/sync_skill_resources.py` and commit generated copies |
 | `npm ci` fails | Use the repo's `package-lock.json`; do not delete the lockfile |
 | Tests hang with ResourceWarning subprocess | Usually transient; re-run. If persistent, check for orphaned `git`/`python` children |
