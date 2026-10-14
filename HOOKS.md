@@ -374,8 +374,8 @@ These local hooks cover pushes made by plain Git and clients that invoke
 Git with hooks enabled. Creating a PR from an already published ref does not
 run the pre-push hook. A branch cut from `main` carrying `shipped/done` passes;
 if `main` instead carries an unshipped bound state, pushes of branches carrying
-that state remain blocked until the milestone records are repaired through the
-pipeline.
+that state remain blocked, except owner-authorized commits, until the
+milestone records are repaired through the pipeline.
 
 ## GitHub-side gate
 
