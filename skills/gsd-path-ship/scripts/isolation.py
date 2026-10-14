@@ -1219,9 +1219,17 @@ def _commit_member_source(sidecar: Path, journal: Dict[str, object], allowed: Se
         undeclared = undeclared_paths(sidecar, member_base, pending, allowed)
         if undeclared:
             raise IsolationError("undeclared paths: " + ", ".join(undeclared))
-        git_output(sidecar, "add", "-A", "--", *sorted(pending))
         body = member_commit_body(str(journal["task_file"]), sorted(pending), member_base, str(journal["base"]))
-        git_output(sidecar, "commit", "-q", "-m", str(journal["subject"]), "-m", body.strip())
+        # The paths and the body grow with the change set, so both go through
+        # stdin: a Windows command line holds about 32 KiB.
+        for arguments, text in (
+            (("add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"),
+             "".join(f"{path}\0" for path in sorted(pending))),
+            (("commit", "-q", "-F", "-"), _commit_message(str(journal["subject"]), body)),
+        ):
+            result = run_git(sidecar, *arguments, input=text)
+            if result.returncode != 0:
+                raise IsolationError((result.stderr or result.stdout).strip() or "git command failed")
     source = current_sha(sidecar)
     if source == member_base:
         raise IsolationError("no changes to land")
@@ -1703,6 +1711,17 @@ def ignored_legacy_ledger(repo: Path) -> bool:
     return run_git(repo, "check-ignore", "-q", "--no-index", "--", VERIFY_LEDGER_PATH).returncode == 0
 
 
+def _commit_message(subject: str, body: str) -> str:
+    """The message for `git commit -F -`.
+
+    A landing body lists every changed path. As a `-m` argument it can exceed
+    the Windows command-line limit, so the message goes through stdin. Like
+    `-m`, the message ends its last line.
+    """
+    message = f"{subject}\n\n{body}"
+    return message if message.endswith("\n") else message + "\n"
+
+
 def _commit_pending(
     repo: Path, pending: Set[str], subject: str, body: str, forced: Set[str] = frozenset()
 ) -> str:
@@ -1723,7 +1742,7 @@ def _commit_pending(
     )
     if staged != pending:
         raise IsolationError("staged paths do not match the uncommitted change set")
-    committed = run_git(repo, "commit", "-q", "-m", subject, "-m", body)
+    committed = run_git(repo, "commit", "-q", "-F", "-", input=_commit_message(subject, body))
     if committed.returncode != 0:
         raise IsolationError((committed.stderr or committed.stdout).strip() or "commit failed")
     return current_sha(repo)
@@ -1804,13 +1823,13 @@ def commit_allowed_changes(
         raise IsolationError("could not clear the index before landing")
     _stage_paths(repo, "-A", staging)
     staged = _split_paths(
-        git_output(repo, "diff", "--cached", "--name-only", "--relative")
+        git_output(repo, "diff", "--no-renames", "--cached", "--name-only", "--relative")
     )
     if staged != staging:
         raise IsolationError("staged paths do not match the uncommitted change set")
     verified_tree = git_output(repo, "write-tree")
     verified_delta = _tree_delta(repo, base, verified_tree)
-    committed = run_git(repo, "commit", "-q", "-m", subject, "-m", body)
+    committed = run_git(repo, "commit", "-q", "-F", "-", input=_commit_message(subject, body))
     if committed.returncode != 0:
         raise IsolationError(
             (committed.stderr or committed.stdout).strip() or "commit failed"

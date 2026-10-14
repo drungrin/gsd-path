@@ -2625,6 +2625,80 @@ class IsolationTests(unittest.TestCase):
                 git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/"),
             )
 
+    # Above the process argument limit of every supported platform (#412):
+    # Windows 32 KiB per command, Linux 128 KiB per argument, macOS 1 MiB in all.
+    OVERSIZED_BODY = "Task: .project/tasks/T001.md\nFiles:\n" + "- src/removed.py\n" * 130000
+
+    def test_commit_pending_takes_a_body_above_the_argument_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.init_bound_repo(root)
+            self.write(root, "src/app.py", "print('changed')\n")
+
+            commit = isolation._commit_pending(
+                root, {"src/app.py"}, "T001: change", self.OVERSIZED_BODY
+            )
+
+            self.assertEqual(commit, git(root, "rev-parse", "HEAD"))
+            self.assertEqual(
+                git(root, "log", "-1", "--format=%B"),
+                "T001: change\n\n" + self.OVERSIZED_BODY.strip(),
+            )
+
+    def test_landing_commit_takes_a_body_above_the_argument_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = self.init_bound_repo(root)
+            self.write(root, "src/app.py", "print('changed')\n")
+
+            commit, _, _ = isolation.commit_allowed_changes(
+                root, base, "T001: change", {"src/app.py"}, self.OVERSIZED_BODY
+            )
+
+            self.assertEqual(commit, git(root, "rev-parse", "HEAD"))
+            self.assertEqual(
+                git(root, "log", "-1", "--format=%B"),
+                "T001: change\n\n" + self.OVERSIZED_BODY.strip(),
+            )
+
+    def test_commit_message_ends_its_last_line_as_a_message_argument_does(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.init_bound_repo(root)
+            git(root, "config", "commit.cleanup", "verbatim")
+            self.write(root, "src/app.py", "print('changed')\n")
+
+            isolation._commit_pending(root, {"src/app.py"}, "T001: change", "Files:\n- src/app.py")
+
+            raw = subprocess.run(
+                ("git", "-C", str(root), "cat-file", "commit", "HEAD"), capture_output=True, check=True
+            ).stdout
+            self.assertTrue(raw.endswith(b"\n\nT001: change\n\nFiles:\n- src/app.py\n"), raw)
+
+    def test_serial_land_accepts_a_delete_with_a_similar_add(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            self.init_bound_repo(repo)
+            task = TASK_FILE.replace("  - src/app.py\n", "  - src/app.py\n  - src/main.py\n")
+            self.write(repo, ".project/tasks/T001.md", task)
+            git(repo, "commit", "-q", "-am", "declare the new name")
+            git(repo, "config", "diff.renames", "true")
+            base = git(repo, "rev-parse", "HEAD")
+            isolation.isolate_task(repo, base, "T001", 1)
+            (repo / "src/app.py").rename(repo / "src/main.py")
+
+            result = isolation.land(
+                repo, repo, base, "T001", "add greeting", ".project/tasks/T001.md",
+                ["src/app.py", "src/main.py"],
+            )
+
+            self.assertEqual(
+                git(repo, "diff-tree", "--no-commit-id", "--name-status", "-r",
+                    "--no-renames", result["commit"]).splitlines(),
+                ["M\t.project/tasks/T001.md", "D\tsrc/app.py", "A\tsrc/main.py"],
+            )
+
 
 class RecoverTests(unittest.TestCase):
     TASK = (
