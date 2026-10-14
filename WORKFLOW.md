@@ -612,9 +612,9 @@ and requires the remote default to be the recorded
 - `pull-request` requires `gh` authentication for GitHub.com and a GitHub.com
   origin. Path publishes the exact ship commit and creates or reuses the one
   eligible PR to `main` with a GSD Path credit footer. It returns
-  `awaiting-merge` until a human GitHub user merges it with a merge commit; Path
-  never enables auto-merge or merges the PR. After validation, Path creates the
-  annotated milestone tag. The [ship contract](skills/gsd-path-ship/SKILL.md)
+  `awaiting-merge` until a human GitHub user merges it with a merge commit or a
+  rebase merge; Path never enables auto-merge or merges the PR. After
+  validation, Path creates the annotated milestone tag. The [ship contract](skills/gsd-path-ship/SKILL.md)
   owns the candidate, provenance, topology, publication, and recovery rules.
 - `external-landing` is for an origin that is not GitHub.com, such as GitLab,
   Gitea, or GitHub Enterprise Server, where a merge request is the only route
