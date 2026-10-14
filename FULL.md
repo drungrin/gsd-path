@@ -322,9 +322,9 @@ approve **Archive and ship**, the archive transaction begins:
 - `MANIFEST.md` records contents and ship metadata
 - One **ship commit** (subject `ship: M00N — <slug>`) touches only `.project/`
 - Ship then either merges `gsd-path/M00N` onto `main` directly or opens a
-  GitHub PR and waits for you to merge it with a merge commit. Path-created PRs
-  include a GSD Path credit footer.
-- After the two-parent merge validates, Path tags `milestone/<NNN>-<slug>`
+  GitHub PR and waits for you to merge it with a merge commit or a rebase
+  merge. Path-created PRs include a GSD Path credit footer.
+- After the landing validates, Path tags `milestone/<NNN>-<slug>`
 - Archives are **read-only** — guard hooks enforce this if installed
 
 Direct integration is the project default. Before build, ask the router to set

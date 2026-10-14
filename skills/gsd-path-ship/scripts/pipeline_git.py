@@ -484,7 +484,12 @@ def _require_tag_integration_proof(
         "1",
         landing,
     ).stdout.split()
-    if len(parents) != 3 or parents[2] != ship:
+    rebased = (
+        mode == "pull-request"
+        and len(parents) == 2
+        and _common.rebase_landing_problem(repo, ship, landing) is None
+    )
+    if not rebased and (len(parents) != 3 or parents[2] != ship):
         raise PipelineGitError(f"{mode} integration proof has invalid merge topology")
     first_parent = _run_git(repo, "rev-list", "--first-parent", base).stdout.splitlines()
     if landing not in first_parent:
@@ -694,6 +699,7 @@ def retire_previous_branch(
     expected_sha: str,
     *,
     allow_remote_absent: bool = False,
+    rebased: bool = False,
 ) -> None:
     """Delete an integrated previous bound branch, locally and on origin.
 
@@ -741,7 +747,8 @@ def retire_previous_branch(
     if _ref_exists(repo, tracking_ref):
         _run_git(repo, "update-ref", "-d", tracking_ref)
     if _ref_exists(repo, local_ref):
-        _run_git(repo, "branch", "-d", previous_branch)
+        # A rebased ship is not an ancestor of HEAD, so -d would refuse it.
+        _run_git(repo, "branch", "-D" if rebased else "-d", previous_branch)
 
 
 def _retire_members(repo: Path, ship_sha: str) -> None:
@@ -840,9 +847,15 @@ def bind_next_milestone_branch(
         landing_sha,
         check=False,
     )
-    if integrated.returncode == 1:
+    # A forge rebase merge lands copies of the ship commits (#418); the
+    # pull-request milestone tag must then prove the landing.
+    rebased = (
+        integrated.returncode == 1
+        and _common.rebase_landing_problem(repo, ship_sha, landing_sha) is None
+    )
+    if integrated.returncode == 1 and not rebased:
         raise PipelineGitError("milestone landing does not contain the ship commit")
-    if integrated.returncode != 0:
+    if integrated.returncode not in (0, 1):
         detail = integrated.stderr.strip() or integrated.stdout.strip()
         raise PipelineGitError(f"could not verify milestone landing: {detail}")
     landing_integrated = _run_git(
@@ -858,7 +871,7 @@ def bind_next_milestone_branch(
     if landing_integrated.returncode != 0:
         detail = landing_integrated.stderr.strip() or landing_integrated.stdout.strip()
         raise PipelineGitError(f"could not verify integrated branch: {detail}")
-    if allow_remote_absent:
+    if allow_remote_absent or rebased:
         proven_landing = _require_tag_integration_proof(
             repo,
             ship_sha,
@@ -994,6 +1007,7 @@ def bind_next_milestone_branch(
         allow_remote_absent=(
             allow_remote_absent or journal["stage"] in {"switched", "retired"}
         ),
+        rebased=rebased,
     )
     _retire_members(repo, ship_sha)
     journal["stage"] = "retired"

@@ -1047,6 +1047,102 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(dirty_retry.returncode, 1)
             self.assertIn("primary worktree is not clean", dirty_retry.stderr)
 
+    def test_bind_next_accepts_tagged_rebase_merge_landing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin = Path(tmp) / "origin.git"
+            default_checkout = Path(tmp) / "repo"
+            primary = Path(tmp) / "repo-gsd-path"
+            run_git(Path(tmp), "init", "--bare", "-b", "main", str(origin))
+            run_git(Path(tmp), "init", "-b", "main", str(default_checkout))
+            run_git(default_checkout, "config", "user.name", "GSD Path Test")
+            run_git(default_checkout, "config", "user.email", "test@example.com")
+            (default_checkout / "product.txt").write_bytes(b"base\n")
+            run_git(default_checkout, "add", "product.txt")
+            run_git(default_checkout, "commit", "-m", "base")
+            run_git(default_checkout, "remote", "add", "origin", str(origin))
+            run_git(default_checkout, "push", "-u", "origin", "main")
+            run_git(default_checkout, "worktree", "add", "-b", "gsd-path/M001", str(primary), "main")
+            project = primary / ".project"
+            project.mkdir()
+            (project / "STATE.md").write_bytes(
+                b"---\npipeline: gsd-path/v2\nproject: demo\nmilestone: first\nphase: shipped\n"
+                b"status: done\nbranch: gsd-path/M001\narchive: .project/archive/001-first/\n"
+                b"integration_default: pull-request\nintegration: pull-request\n"
+                b"integration_source: default\n---\n\n# Project State\n\n## Log\n"
+            )
+            run_git(primary, "add", ".project/STATE.md")
+            run_git(primary, "commit", "-m", "ship: M001 — first",
+                    "-m", "Archive: .project/archive/001-first/\nReviewed-HEAD: base")
+            m001_ship = run_git(primary, "rev-parse", "HEAD").stdout.strip()
+            run_git(primary, "push", "origin", "gsd-path/M001")
+
+            # A forge rebase merge: main moved, then the ship commit is replayed onto it.
+            (default_checkout / "upstream.txt").write_bytes(b"upstream\n")
+            run_git(default_checkout, "add", "upstream.txt")
+            run_git(default_checkout, "commit", "-m", "upstream")
+            run_git(default_checkout, "cherry-pick", m001_ship)
+            landing = run_git(default_checkout, "rev-parse", "HEAD").stdout.strip()
+            run_git(default_checkout, "push", "origin", "main")
+
+            bind_next = [
+                sys.executable, str(PIPELINE_GIT), "bind-next", "--repo", str(primary),
+                "--branch", "gsd-path/M002", "--previous-branch", "gsd-path/M001",
+                "--ship", m001_ship, "--remote-default", "origin/main",
+                "--base", landing, "--landing", landing,
+            ]
+            run_git(primary, "fetch", "origin")
+            untagged = subprocess.run(bind_next, capture_output=True, encoding="utf-8", errors="replace")
+            self.assertEqual(untagged.returncode, 1)
+            self.assertIn("pull-request integration proof", untagged.stderr)
+
+            run_git(
+                default_checkout, "tag", "-a", "milestone/001-first", landing, "-m",
+                "milestone 001-first\n\nMode: pull-request\n"
+                "Pull-Request: https://github.com/open-gsd/demo/pull/7\n"
+                f"Ship: {m001_ship}\nLanding: {landing}",
+            )
+            run_git(default_checkout, "push", "origin", "milestone/001-first")
+            run_git(primary, "fetch", "origin", "--tags")
+
+            result = subprocess.run(bind_next, capture_output=True, encoding="utf-8", errors="replace")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["landing"], landing)
+            self.assertEqual(run_git(primary, "branch", "--show-current").stdout.strip(), "gsd-path/M002")
+            for repo in (primary, origin):
+                retired = subprocess.run(
+                    ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", "refs/heads/gsd-path/M001"],
+                    capture_output=True,
+                )
+                self.assertEqual(retired.returncode, 1, f"gsd-path/M001 not retired in {repo}")
+            # The router re-reads the retired journal and must accept the rebase landing too.
+            routed = pipeline_state.route_state(primary)
+            self.assertEqual(routed["route"]["action"], "resume-next-handoff", routed)
+
+    def test_rebase_landing_tree_must_match_when_main_did_not_move(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            run_git(repo, "init", "-b", "main")
+            run_git(repo, "config", "user.name", "GSD Path Test")
+            run_git(repo, "config", "user.email", "test@example.com")
+            (repo / "f.txt").write_bytes(b"base\n")
+            run_git(repo, "add", "f.txt")
+            run_git(repo, "commit", "-m", "base")
+
+            def commit_on_base(branch: str, text: bytes) -> str:
+                run_git(repo, "switch", "-q", "-c", branch, "main")
+                (repo / "f.txt").write_bytes(text)
+                run_git(repo, "commit", "-q", "-am", branch)
+                return run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            ship = commit_on_base("ship", b"base\na = 1\n")
+            replay = commit_on_base("replay", b"base\na = 1\n")
+            spaced = commit_on_base("spaced", b"base\na =  1\n")
+            self.assertIsNone(pipeline_git._common.rebase_landing_problem(repo, ship, replay))
+            self.assertEqual(
+                pipeline_git._common.rebase_landing_problem(repo, ship, spaced),
+                "rebased tree differs from the ship tree",
+            )
+
     def test_bind_next_rejects_direct_state_with_forged_pr_tag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             origin = Path(tmp) / "origin.git"

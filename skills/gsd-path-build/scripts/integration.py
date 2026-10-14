@@ -845,6 +845,8 @@ def require_pull_request_merge(
     merge_commit: str,
     ship_commit: str,
     remote_default: str,
+    *,
+    allow_rebase: bool = False,
 ) -> None:
     resolved = optional_ref(project, merge_commit)
     if resolved != merge_commit:
@@ -853,9 +855,16 @@ def require_pull_request_merge(
         run_git(project, "rev-list", "--parents", "-n", "1", merge_commit),
         "inspect pull-request merge parents",
     ).split()
-    if len(parents) != 3:
+    if allow_rebase and len(parents) == 2:
+        problem = _common.rebase_landing_problem(project, ship_commit, merge_commit)
+        if problem is not None:
+            raise ArchiveError(
+                "pull-request integration must use a two-parent merge commit "
+                f"or a rebase merge of the ship commits: {problem}"
+            )
+    elif len(parents) != 3:
         raise ArchiveError("pull-request integration must use a two-parent merge commit")
-    if parents[2] != ship_commit:
+    elif parents[2] != ship_commit:
         raise ArchiveError("pull-request merge second parent is not the ship commit")
     first_parent = archive_milestone.require_git_success(
         run_git(project, "rev-list", "--first-parent", remote_default),
@@ -1026,7 +1035,9 @@ def integrate_pull_request(
         merge_commit,
     )
     remote_default = refresh_origin(project)["remote_default"]
-    require_pull_request_merge(project, merge_commit, ship_commit, remote_default)
+    require_pull_request_merge(
+        project, merge_commit, ship_commit, remote_default, allow_rebase=True
+    )
     pull = update_pull_request_body(
         repository,
         pull,
@@ -1473,7 +1484,9 @@ def validate_integrated(
             pull["number"],
             merge_commit,
         )
-        require_pull_request_merge(project, merge_commit, ship_commit, remote_default)
+        require_pull_request_merge(
+            project, merge_commit, ship_commit, remote_default, allow_rebase=True
+        )
         require_annotated_tag(
             project,
             tag_ref,
