@@ -351,6 +351,22 @@ such as `rm -rf scratch` passes the archive check; other guard rules still apply
   without `STATE.md` passes on an ordinary ref. An absent bound ref passes
   deletion. The authorized publisher is `archive_milestone.py integrate`;
   the hook checks ref updates, not which client initiated them
+- **allows** an owner-approved push of unshipped work, such as a task
+  branch that CI must measure before the task can finish. The owner records
+  the exact commit for the exact branch, then pushes it:
+
+  ```bash
+  git update-ref refs/gsd-path/authorizations/<project>/push/refs/heads/<branch> <commit>
+  ```
+
+  `<project>` is the `project` field in that commit's `STATE.md`. The hook
+  accepts the push only at that commit; a later commit, such as one that
+  removes the measurement inputs, needs its own record. Bound `gsd-path/M###`
+  refs, the default branch, and tags never accept an authorization. The
+  authorization accepts every push of that commit to that branch until the
+  owner removes it with `git update-ref -d <same ref>`. Deleting the remote
+  branch afterwards needs no authorization. Only the owner records an
+  authorization; an agent asks the owner for one
 - **allows** adding files to archive during the ship transaction, before the
   branch closes
 
@@ -358,8 +374,8 @@ These local hooks cover pushes made by plain Git and clients that invoke
 Git with hooks enabled. Creating a PR from an already published ref does not
 run the pre-push hook. A branch cut from `main` carrying `shipped/done` passes;
 if `main` instead carries an unshipped bound state, pushes of branches carrying
-that state remain blocked until the milestone records are repaired through the
-pipeline.
+that state remain blocked, except owner-authorized commits, until the
+milestone records are repaired through the pipeline.
 
 ## GitHub-side gate
 

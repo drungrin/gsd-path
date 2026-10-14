@@ -69,6 +69,11 @@ PUBLICATION_HINT = (
     "(STATE shipped/done) through archive_milestone.py integrate; findings during "
     "ship reopen through the patch plan (see SHIP.md)"
 )
+AUTHORIZED_PUSH_HINT = (
+    "an owner-approved push of one exact commit to a branch other than the bound "
+    "or default branch needs refs/gsd-path/authorizations/<project>/push/<ref> "
+    "at that commit (see HOOKS.md)"
+)
 LEGACY_STATE_FIELDS = {
     "pipeline",
     "project",
@@ -621,12 +626,23 @@ def pre_push_violations(lines):
             continue
         state = state_at(local_sha)
         owed = unshipped_bound_branch(state) if state is not None else None
-        if owed is not None:
+        if owed is not None and not authorized_publication(state, remote_ref, local_sha):
             found.append(
                 f"{remote_ref} <- {local_sha[:12]} carries unshipped {owed} work "
-                f"({state.get('phase')}/{state.get('status')}); {PUBLICATION_HINT}"
+                f"({state.get('phase')}/{state.get('status')}); {PUBLICATION_HINT}; "
+                f"{AUTHORIZED_PUSH_HINT}"
             )
     return found
+
+
+def authorized_publication(state, remote_ref, sha):
+    """The owner authorized this exact commit on this one non-default branch."""
+    project = state.get("project")
+    if not isinstance(project, str) or not members.NAME_RE.fullmatch(project):
+        return False
+    if not remote_ref.startswith("refs/heads/") or remote_ref == f"refs/heads/{default_branch()}":
+        return False
+    return members.authorized(repo_root(), project, "push", remote_ref, sha)
 
 
 def is_ship_commit(subject):

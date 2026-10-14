@@ -454,7 +454,8 @@ approves.
 - You cannot share a milestone in progress through the remote. With
   [guard hooks](HOOKS.md) installed, the pre-push hook refuses `gsd-path/M00N`
   before its ship commit. It also refuses any other branch that carries the
-  unfinished state. Hooks are optional and local to each clone. A clone
+  unfinished state, unless the owner authorizes that exact commit (see
+  [HOOKS.md](HOOKS.md)). Hooks are optional and local to each clone. A clone
   without hooks has no such check.
 
 **Do not**
