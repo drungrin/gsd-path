@@ -1669,6 +1669,25 @@ def committed_paths_since(repo: Path, base: str) -> Set[str]:
     )
 
 
+def _stage_paths(repo: Path, mode: str, paths: Set[str]) -> None:
+    """Stage `paths` with one `git add`.
+
+    One call for each path fails when a file replaces a tracked directory: the
+    first call drops the files below the directory from the index, and then
+    their pathspecs match no file. The `./` prefix stops pathspec magic, so a
+    name such as `:!b` cannot exclude another path of the set. Git names the
+    path in its error text.
+    """
+    if not paths:
+        return
+    added = run_git(
+        repo, "add", mode, "--pathspec-from-file=-", "--pathspec-file-nul",
+        input="".join(f"./{path}\0" for path in sorted(paths)),
+    )
+    if added.returncode != 0:
+        raise IsolationError(f"could not stage the change set: {added.stderr.strip()}")
+
+
 def ignored_legacy_ledger(repo: Path) -> bool:
     """True when a verify ledger absent from HEAD is hidden by an ignore rule.
 
@@ -1690,11 +1709,8 @@ def _commit_pending(
     reset = run_git(repo, "reset", "-q", "HEAD")
     if reset.returncode != 0:
         raise IsolationError("could not clear the index before commit")
-    for path in sorted(pending):
-        mode = "-f" if path in forced else "-A"
-        added = run_git(repo, "add", mode, "--", path)
-        if added.returncode != 0:
-            raise IsolationError(f"could not stage {path}: {added.stderr.strip()}")
+    _stage_paths(repo, "-A", pending - forced)
+    _stage_paths(repo, "-f", pending & forced)
     staged = _split_paths(
         git_output(
             repo,
@@ -1786,10 +1802,7 @@ def commit_allowed_changes(
     reset = run_git(repo, "reset", "-q", "HEAD")
     if reset.returncode != 0:
         raise IsolationError("could not clear the index before landing")
-    for path in sorted(staging):
-        added = run_git(repo, "add", "-A", "--", path)
-        if added.returncode != 0:
-            raise IsolationError(f"could not stage {path}: {added.stderr.strip()}")
+    _stage_paths(repo, "-A", staging)
     staged = _split_paths(
         git_output(repo, "diff", "--cached", "--name-only", "--relative")
     )
