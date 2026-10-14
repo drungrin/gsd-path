@@ -136,8 +136,9 @@ bundles this file; spawned agents follow their role brief instead.
   for the current STATE.branch milestone must be an ancestor of origin/main;
   if it is not, that milestone's integration is incomplete and control routes
   to ship, not build. Direct mode requires the matching canonical `integrate:`
-  commit; PR mode requires tag metadata and a two-parent merge whose second
-  parent is the ship commit. A null branch returns
+  commit; PR mode requires tag metadata and either a two-parent merge whose
+  second parent is the ship commit or a proven rebase merge of the ship
+  commits. A null branch returns
   to the router; build never creates, selects, switches, or rebinds it.
 - The ship phase makes exactly one commit on the bound branch — the
   `.project/`-only ship commit recording

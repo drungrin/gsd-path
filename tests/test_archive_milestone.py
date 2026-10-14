@@ -5469,6 +5469,83 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
 
             self.assertFalse(any("PATCH" in arguments for arguments in requests))
 
+    def rebase_merge(self, repo: Path, ship_sha: str, *, moved: bool, forge: bool = False) -> str:
+        """Land copies of main..ship on origin main the way a forge rebase merge does (#418)."""
+        base = self.git(repo, "rev-parse", "origin/main").stdout.strip()
+        commits = self.git(repo, "rev-list", "--reverse", f"{base}..{ship_sha}").stdout.split()
+        work = repo.parent / "rebase"
+        self.git(repo, "worktree", "add", "-q", "--detach", str(work), base)
+        env = {**os.environ, "GIT_COMMITTER_DATE": "2030-01-01T00:00:00Z"}
+
+        def git(*args: str) -> None:
+            done = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=work, env=env,
+                                  encoding="utf-8", capture_output=True, check=False)
+            self.assertEqual(done.returncode, 0, done.stderr)
+
+        if moved:
+            (work / "upstream.txt").write_bytes(b"upstream\n")
+            git("add", "upstream.txt")
+            git("commit", "-q", "-m", "upstream change")
+        git("cherry-pick", *commits)
+        if forge:
+            (work / "forged.txt").write_bytes(b"forged\n")
+            git("add", "forged.txt")
+            git("commit", "-q", "--amend", "--no-edit")
+        landing = self.git(work, "rev-parse", "HEAD").stdout.strip()
+        self.git(repo, "worktree", "remove", "--force", str(work))
+        self.git(repo, "push", "-q", "origin", f"{landing}:refs/heads/main")
+        self.git(repo, "push", "-q", "origin", "--delete", "gsd-path/M001")
+        return landing
+
+    def integrate_rebase_merge(self, *, moved: bool, forge: bool = False) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repo = root / "primary"
+            repo.mkdir()
+            self.make_publishable_bound_repo(repo, root / "origin.git")
+            self.enable_pull_request_integration(repo)
+            archive_name, ship_sha = self.ship_canonical_bound(repo)
+            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            landing = self.rebase_merge(repo, ship_sha, moved=moved, forge=forge)
+            self.assertNotEqual(landing, ship_sha)
+            pull = self.merged_pull_request(ship_sha, landing)
+
+            def github():
+                return (
+                    mock.patch.object(integration, "github_repository", return_value="open-gsd/demo"),
+                    mock.patch.object(integration, "run_command", side_effect=self.github_api([pull])),
+                )
+
+            repository, command = github()
+            with repository, command:
+                if forge:
+                    with self.assertRaisesRegex(
+                        archive_milestone.ArchiveError,
+                        "rebase merge of the ship commits: rebased commits do not replay",
+                    ):
+                        integration.integrate(repo, "demo")
+                    self.assertEqual(self.git(repo, "tag", "--list").stdout, "")
+                    return
+                result = integration.integrate(repo, "demo")
+            self.assertEqual(result["mode"], "pull-request")
+            self.assertEqual(result["landing"], landing)
+            tag = self.git(repo, "for-each-ref", "--format=%(contents)", f"refs/tags/milestone/{archive_name}")
+            self.assertIn(f"Ship: {ship_sha}\nLanding: {landing}", tag.stdout)
+
+            repository, command = github()
+            with repository, command:
+                validated = integration.validate_integrated(repo, "demo")
+            self.assertEqual(validated["landing"], landing)
+
+    def test_pull_request_integration_accepts_rebase_merge(self) -> None:
+        self.integrate_rebase_merge(moved=False)
+
+    def test_pull_request_integration_accepts_rebase_merge_after_main_moved(self) -> None:
+        self.integrate_rebase_merge(moved=True)
+
+    def test_pull_request_integration_rejects_rebase_landing_with_other_changes(self) -> None:
+        self.integrate_rebase_merge(moved=True, forge=True)
+
     def reject_remote_ref(self, remote: Path, ref: str) -> Path:
         hook = remote / "hooks" / "pre-receive"
         hook.write_bytes(

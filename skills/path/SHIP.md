@@ -341,13 +341,18 @@ The persisted `STATE.archive` field is the transaction identity.
      PR is open, the helper returns `status: awaiting-merge`. Present
      **Outcome**, link
      the returned PR as **Review**, and state in **Next** that the user must
-     merge it with GitHub's merge-commit method. Stop this ship invocation;
-     Path never enables auto-merge or merges the PR. On rerun after a human
-     GitHub user merges it, the helper requires the PR head to remain the ship
-     commit and its landing to be a two-parent merge with that ship commit as
-     second parent on `origin/main` first-parent history. It then writes and
-     pushes the annotated milestone tag containing the PR URL, ship SHA, and
-     landing SHA. A closed unmerged PR, squash, rebase, merge queue, moved
+     merge it with GitHub's merge-commit or rebase method. Stop this ship
+     invocation; Path never enables auto-merge or merges the PR. On rerun after
+     a human GitHub user merges it, the helper requires the PR head to remain
+     the ship commit and its landing to be on `origin/main` first-parent
+     history as either a two-parent merge with that ship commit as second
+     parent, or a rebase merge: the last of a first-parent run of single-parent
+     commits whose `git patch-id --stable` values match, in order, the
+     non-merge commits from the landing to the ship commit (with equal trees
+     when `main` did not move). It then writes and pushes the annotated
+     milestone tag containing the PR URL, ship SHA, and landing SHA. A
+     milestone that was rebase-merged before this support existed recovers by
+     rerunning ship. A closed unmerged PR, squash, merge queue, moved
      head, duplicate PR, or non-GitHub.com origin blocks. The remote bound
      branch may be absent after a valid merge because GitHub may auto-delete it.
    - `external-landing` is for an origin where Path cannot open the review

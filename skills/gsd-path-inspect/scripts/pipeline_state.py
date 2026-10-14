@@ -1024,7 +1024,9 @@ def _bind_next_journal_recovery(
     )
     if resolved_landing.returncode != 0 or resolved_landing.stdout.strip() != landing:
         raise PipelineStateError("bind-next journal landing is not an existing full SHA")
-    if not _is_ancestor(repo, ship, landing):
+    if not _is_ancestor(repo, ship, landing) and _common.rebase_landing_problem(
+        repo, ship, landing
+    ) is not None:
         raise PipelineStateError("bind-next journal landing does not contain ship")
     if not _is_ancestor(repo, landing, base):
         raise PipelineStateError("bind-next journal landing is not an ancestor of base")

@@ -465,7 +465,8 @@ an atomic close across repos.
 Shipping moves milestone artifacts into `archive/` with a MANIFEST. It then
 either merges the milestone's `gsd-path/M00N` branch into `main` directly or
 opens/reuses a GitHub PR and waits for its user-controlled merge. Path reports
-shipped only after a two-parent merge and the milestone tag validate. Before
+shipped only after the landing (a two-parent merge, or a proven GitHub rebase
+merge of the PR) and the milestone tag validate. Before
 any next-milestone files change, the router binds
 a new `gsd-path/M00N` at the updated `origin/main`. `STATE.md`, `REPOSITORY.md`,
 `LESSONS.md`, `next/`, and the program artifacts (`CHARTER.md`, `ROADMAP.md`,

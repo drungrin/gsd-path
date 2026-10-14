@@ -139,7 +139,7 @@ full-repo suite on a tiny edit outrank the phase brief.
   canonical contents, carry-forward, and manifest pass the bundled precommit
   validator; report shipped only after the exact `.project/`-only ship commit
   passes the postcommit validator and `validate-integrated` proves the
-  two-parent integration merge, its tag, and its ancestry on origin/main —
+  integration landing, its tag, and its ancestry on origin/main —
   while integration is pending the router routes back to ship instead of
   reporting shipped or starting the next milestone.
 

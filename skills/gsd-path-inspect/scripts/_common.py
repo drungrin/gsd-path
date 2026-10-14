@@ -361,6 +361,49 @@ def run_git(
     return _run_exact(git_command(repo, *arguments), input=input)
 
 
+def _patch_ids(repo: Path, commits: Sequence[str]) -> list[Optional[str]]:
+    """`git patch-id --stable` per commit, in order; None for an empty commit."""
+    log = run_git(repo, "log", "--no-walk=unsorted", "-p", "--binary", "--no-color",
+                  "--no-ext-diff", *commits)
+    if log.returncode != 0:
+        raise ValueError("could not read commit patches")
+    ids = run_git(repo, "patch-id", "--stable", input=log.stdout)
+    if ids.returncode != 0:
+        raise ValueError("could not compute patch ids")
+    by_commit = {commit: patch for patch, commit in (line.split() for line in ids.stdout.splitlines())}
+    return [by_commit.get(commit) for commit in commits]
+
+
+def rebase_landing_problem(repo: Path, ship: str, landing: str) -> Optional[str]:
+    """Why landing is not a forge rebase merge of ship, or None when it is (#418).
+
+    A rebase merge replays ship's own commits onto the default branch. Proof:
+    the first-parent run that ends at landing has one non-merge commit per
+    non-merge commit of landing..ship, with equal patch ids in the same order;
+    when that run starts at ship's fork point, landing's tree equals ship's.
+    """
+    listed = run_git(repo, "rev-list", "--reverse", "--topo-order", "--no-merges", f"{landing}..{ship}")
+    if listed.returncode != 0:
+        return "could not list the ship commits"
+    originals = listed.stdout.split()
+    if not originals:
+        return "landing already contains the ship commit"
+    walked = run_git(repo, "rev-list", "--first-parent", "--parents", "-n", str(len(originals)), landing)
+    rows = [line.split() for line in walked.stdout.splitlines()][::-1]
+    if walked.returncode != 0 or len(rows) != len(originals) or any(len(row) != 2 for row in rows):
+        return "landing is not a linear run of rebased commits"
+    try:
+        if _patch_ids(repo, originals) != _patch_ids(repo, [row[0] for row in rows]):
+            return "rebased commits do not replay the ship commits in order"
+    except ValueError as error:
+        return str(error)
+    fork = run_git(repo, "merge-base", ship, landing).stdout.strip()
+    trees = run_git(repo, "rev-parse", f"{ship}^{{tree}}", f"{landing}^{{tree}}").stdout.split()
+    if rows[0][1] == fork and (len(trees) != 2 or trees[0] != trees[1]):
+        return "rebased tree differs from the ship tree"
+    return None
+
+
 def git_command(repo: Path, *arguments: str) -> tuple[str, ...]:
     """Git argv for repo, including WSL drvfs workarounds when needed."""
     return ("git", "-C", str(repo), *git_drvfs_config_flags(repo), *arguments)

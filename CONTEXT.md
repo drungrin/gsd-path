@@ -18,12 +18,13 @@ records shipped state, final reviews, and the archive.
 _Avoid_: ship merge, integrate commit
 
 **Milestone tag**:
-An annotated tag `milestone/<NNN>-<slug>` pointing at the integration merge.
+An annotated tag `milestone/<NNN>-<slug>` pointing at the integration landing.
 Ship creates it at close and pushes it to origin. It names that close.
 _Avoid_: release, GitHub Release, lightweight tag
 
 **Integration**:
-The two-parent merge that puts the ship commit onto the remote default `main`.
+The landing that puts the ship commit onto the remote default `main`: a
+two-parent merge, or in `pull-request` mode also a proven GitHub rebase merge.
 In `direct` mode, Path creates it with subject
 `integrate: M00N — merge gsd-path/M00N into main`. In `pull-request` mode,
 GitHub creates it after a user merges the Path-owned PR. In `external-landing`
