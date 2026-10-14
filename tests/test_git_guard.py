@@ -1150,6 +1150,33 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.assertEqual(1, malformed.returncode)
         self.assertIn("inspection failed", malformed.stderr)
 
+    def test_pre_push_accepts_owner_authorized_commit_on_one_non_default_branch(self):
+        unfinished = self.enter_build()
+        later = self.write_state("build", "blocked")
+        zero = git_guard.NULL_SHA
+        task = "refs/heads/gsd-path-task/T039"
+        for ref in ("refs/heads/main", "refs/heads/gsd-path/M002", "refs/tags/v1"):
+            self.git("update-ref", f"refs/gsd-path/authorizations/demo/push/{ref}", unfinished)
+        before = self.run_pre_push(f"HEAD {unfinished} {task} {zero}")
+        self.assertEqual(1, before.returncode, before.stderr)
+        self.assertIn("refs/gsd-path/authorizations/<project>/push/<ref>", before.stderr)
+        self.git("update-ref", f"refs/gsd-path/authorizations/demo/push/{task}", unfinished)
+        cases = (
+            (f"HEAD {unfinished} {task} {zero}", None),
+            (f"HEAD {later} {task} {unfinished}", "carries unshipped"),
+            (f"HEAD {unfinished} refs/heads/gsd-path-task/T040 {zero}", "carries unshipped"),
+            (f"HEAD {unfinished} refs/heads/main {zero}", "carries unshipped"),
+            (f"HEAD {unfinished} refs/heads/gsd-path/M002 {zero}", "moves gsd-path/M002"),
+            (f"HEAD {unfinished} refs/tags/v1 {zero}", "carries unshipped"),
+            (f"(delete) {zero} {task} {unfinished}", None),
+        )
+        for line, expected in cases:
+            with self.subTest(line=line):
+                result = self.run_pre_push(line)
+                self.assertEqual(0 if expected is None else 1, result.returncode, result.stderr)
+                if expected:
+                    self.assertIn(expected, result.stderr)
+
     def test_pre_push_rejects_malformed_shas_and_missing_objects(self):
         ref = "refs/heads/x"
         for local_sha, remote_sha in (
