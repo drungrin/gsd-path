@@ -1,6 +1,16 @@
 name: Discord changelog
 
 on:
+  # Releases created with GITHUB_TOKEN do not trigger release events.
+  # release.yml calls this workflow explicitly after publishing.
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+    secrets:
+      DISCORD_CHANGELOG_WEBHOOK:
+        required: true
   release:
     types:
       - published
@@ -17,9 +27,12 @@ permissions:
 jobs:
   discord-changelog:
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Post release changelog to Discord
         env:

@@ -30,6 +30,8 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -163,3 +165,13 @@ jobs:
               --notes-file "$notes_file" \
               --verify-tag
           fi
+
+  discord-changelog:
+    needs: publish
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-discord-changelog.yml
+    with:
+      release_tag: ${{ needs.publish.outputs.release_tag }}
+    secrets:
+      DISCORD_CHANGELOG_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
