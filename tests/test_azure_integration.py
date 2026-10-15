@@ -29,7 +29,7 @@ class AzureIntegrationTests(unittest.TestCase):
         path = self.root / '.project/MEMBERS.md'
         path.write_text(path.read_text().replace('https://github.com/acme/web.git', SSH))
         self.calls, self.pulls = [], []
-        self.bound = 'gsd-path/demo-M001'
+        self.bound = 'feature/demo-milestone-001'
 
     def az(self, *args):
         self.calls.append(args)
@@ -99,12 +99,12 @@ class AzureIntegrationTests(unittest.TestCase):
         self.assertEqual(len(self.pulls), 1)
         self.assertEqual(self.remote_ref('refs/heads/main'), self.main)
         self.assertEqual(self.remote_ref('refs/tags/' + TAG), '')
-        self.assertIn(integration.PR_CREDIT_LINE, self.pulls[0]['description'])
+        self.assertNotIn('prepared with', self.pulls[0]['description'].lower())
 
     def test_completed_pr_is_verified_tagged_and_resumable_even_after_source_deletion(self):
         self.integrate()
         merge = self.complete()
-        git(self.remote, 'update-ref', '-d', 'refs/heads/gsd-path/demo-M001')
+        git(self.remote, 'update-ref', '-d', 'refs/heads/feature/demo-milestone-001')
         result = self.integrate()
         self.assertEqual(result['merge'], merge)
         self.assertEqual(self.remote_ref(f'refs/tags/{TAG}^{{commit}}'), merge)
@@ -131,9 +131,9 @@ class AzureIntegrationTests(unittest.TestCase):
 
     def test_reused_pr_description_is_repaired_before_publication(self):
         self.integrate()
-        self.pulls[0]['description'] = 'description changed outside Path'
+        self.pulls[0]['description'] = 'Human explanation\n\n---\nPR prepared with GSD Path.'
         self.integrate()
-        self.assertTrue(self.pulls[0]['description'].endswith(integration.PR_CREDIT_LINE))
+        self.assertEqual(self.pulls[0]['description'], 'Human explanation')
         self.assertTrue(any(args[1:4] == ('repos', 'pr', 'update') for args in self.calls))
 
 
@@ -170,7 +170,7 @@ class AzureCoordinatorIntegrationTests(unittest.TestCase):
         git(self.root, 'config', 'url.' + str(self.remote) + '.insteadOf', SSH)
         harness.enable_pull_request_integration(self.root)
         archive, self.member_tip = harness.ship_canonical_bound(self.root)
-        self.calls, self.pulls, self.bound = [], [], 'gsd-path/M001'
+        self.calls, self.pulls, self.bound = [], [], 'feature/milestone-001'
         with mock.patch.object(integration, 'run_command', side_effect=self.az):
             waiting = integration.integrate(self.root, 'demo')
             self.assertEqual(waiting['status'], 'awaiting-merge')
@@ -188,7 +188,7 @@ class AzureCoordinatorIntegrationTests(unittest.TestCase):
                 f'Pull-Request: {HTTPS}/pullrequest/7\nShip: {ship}\nLanding: {landing}', landing)
             pipeline_tests.run_git(primary, 'fetch', 'origin', '--tags')
             from scripts import pipeline_git
-            result = pipeline_git._require_tag_integration_proof(primary, ship, landing, 'gsd-path/M001')
+            result = pipeline_git._require_tag_integration_proof(primary, ship, landing, 'feature/milestone-001')
             self.assertEqual(result, landing)
 
 

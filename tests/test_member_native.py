@@ -57,7 +57,7 @@ class NativeMemberDispatchTests(unittest.TestCase):
             copy.write("- coder: changed app.py\n")
         finished = run("dispatch_driver.py", "finish", "--repo", str(self.coordinator), "--task-id", "T001")
         self.assertEqual(finished["landed"][0]["mode"], "member")
-        bound = git(self.member, "rev-parse", "gsd-path/acme-M001")
+        bound = git(self.member, "rev-parse", "feature/acme-milestone-001")
         self.assertEqual(git(self.member, "show", f"{bound}:app.py"), "v2")
         self.assertIn("Member: web", git(self.coordinator, "log", "-1", "--format=%B"))
 
@@ -80,7 +80,7 @@ class NativeMemberDispatchTests(unittest.TestCase):
         self.assertEqual((code, receipt["status"]), (0, "landed"), receipt)
         self.assertEqual(receipt["landed"][0]["mode"], "member")
         self.assertIn("cannot be moved or removed", receipt["landed"][0]["cleanup_warning"])
-        self.assertEqual(git(self.member, "show", "gsd-path/acme-M001:app.py"), "v2")
+        self.assertEqual(git(self.member, "show", "feature/acme-milestone-001:app.py"), "v2")
         self.assertIn("status: done", git(self.coordinator, "show", f"HEAD:{landing.TASK_FILE}"))
         self.assertTrue(sidecar.is_dir())
 
@@ -88,7 +88,7 @@ class NativeMemberDispatchTests(unittest.TestCase):
         again = run("dispatch_driver.py", "finish", "--repo", str(self.coordinator), "--task-id", "T001")
         self.assertEqual(again["status"], "landed", again)
         self.assertFalse(sidecar.exists())
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/task-acme-t001"), "")
 
     def test_next_finish_names_only_the_leftover_sidecar_of_a_landed_member_task(self) -> None:
         import contextlib
@@ -141,7 +141,7 @@ class NativeMemberDispatchTests(unittest.TestCase):
         self.assertEqual(again["status"], "landed", again)
         self.assertNotIn("remove", json.dumps(again))
         self.assertTrue((sidecar / ".gsd-path-coordinator" / landing.TASK_FILE).is_file())
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/task-acme-t001"), "")
 
         # With only landed files left, the stop names the path.
         shutil.rmtree(sidecar / ".gsd-path-coordinator")
@@ -192,16 +192,16 @@ class NativeMemberDispatchTests(unittest.TestCase):
         retired = self.retire("--force")
         self.assertEqual(retired.returncode, 0, retired.stderr)
         self.assertFalse(sidecar.exists())
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/task-acme-t001"), "")
         second = self.attempt("v2\n")
         self.assertNotIn("wrong", Path(second["worktree"]).joinpath("app.py").read_text(encoding="utf-8"))
         finished = run("dispatch_driver.py", "finish", "--repo", str(self.coordinator), "--task-id", "T001")
         self.assertEqual(finished["landed"][0]["mode"], "member")
-        bound = git(self.member, "rev-parse", "gsd-path/acme-M001")
+        bound = git(self.member, "rev-parse", "feature/acme-milestone-001")
         self.assertEqual(git(self.member, "show", f"{bound}:app.py"), "v2")
         record = git(self.coordinator, "show", f"HEAD:{landing.TASK_FILE}")
         self.assertIn("coder: wrote wrong", record)
-        self.assertIn("orchestrator Verify (isolate gsd-path-task/acme-T001): fail", record)
+        self.assertIn("orchestrator Verify (isolate chore/task-acme-t001): fail", record)
 
     def test_forced_retire_reports_a_copy_rewritten_in_place_and_retry_lands(self) -> None:
         active = self.attempt("wrong\n")
@@ -220,7 +220,7 @@ class NativeMemberDispatchTests(unittest.TestCase):
         self.attempt("v2\n")
         finished = run("dispatch_driver.py", "finish", "--repo", str(self.coordinator), "--task-id", "T001")
         self.assertEqual(finished["landed"][0]["mode"], "member")
-        self.assertEqual(git(self.member, "show", "gsd-path/acme-M001:app.py"), "v2")
+        self.assertEqual(git(self.member, "show", "feature/acme-milestone-001:app.py"), "v2")
         self.assertIn("parent: rejected T001", git(self.coordinator, "show", f"HEAD:{landing.TASK_FILE}"))
 
     def test_forced_retire_refuses_until_the_rejection_is_recorded(self) -> None:

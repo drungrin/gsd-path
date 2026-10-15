@@ -57,7 +57,7 @@ def state_text(
     *,
     phase: str = "plan",
     status: str = "done",
-    branch: str = "gsd-path/M001",
+    branch: str = "feature/milestone-001",
     milestone: str = "first",
     archive: str = "null",
 ) -> str:
@@ -113,7 +113,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
             {
                 "action": "resume-promotion",
                 "milestone": "second",
-                "branch": "gsd-path/M002",
+                "branch": "feature/milestone-002",
                 "integrate": landing,
                 "landing": landing,
                 "base": base,
@@ -130,8 +130,8 @@ class PipelineDiagnoseTests(unittest.TestCase):
     def test_handoff_retry_preserves_missing_remote_permission(self) -> None:
         route = {
             "action": "resume-next-handoff",
-            "branch": "gsd-path/M002",
-            "previous_branch": "gsd-path/M001",
+            "branch": "feature/milestone-002",
+            "previous_branch": "feature/milestone-001",
             "ship": "a" * 40,
             "remote_default": "origin/main",
             "base": "b" * 40,
@@ -153,7 +153,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
     def test_healthy_bound_plan_is_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
-            run_git(Path(tmp), "init", "-b", "gsd-path/M001", str(repo))
+            run_git(Path(tmp), "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"
@@ -174,7 +174,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
     def test_branch_mismatch_is_stuck(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
-            run_git(Path(tmp), "init", "-b", "gsd-path/M001", str(repo))
+            run_git(Path(tmp), "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"
@@ -199,7 +199,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
     def test_blocked_undo_transaction_does_not_emit_apply_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
-            run_git(Path(tmp), "init", "-b", "gsd-path/M001", str(repo))
+            run_git(Path(tmp), "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"
@@ -239,7 +239,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
     def test_pending_discussion_disposition_is_stuck(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
-            run_git(Path(tmp), "init", "-b", "gsd-path/M001", str(repo))
+            run_git(Path(tmp), "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"
@@ -286,7 +286,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
     def test_shipment_journal_retry_uses_validated_route_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
-            run_git(Path(tmp), "init", "-b", "gsd-path/M001", str(repo))
+            run_git(Path(tmp), "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"
@@ -332,7 +332,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
     def test_incomplete_artifact_collection_has_exact_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
-            run_git(Path(tmp), "init", "-b", "gsd-path/M001", str(repo))
+            run_git(Path(tmp), "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"
@@ -355,7 +355,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
                         "primary_worktree": str(repo.resolve()),
                         "source_worktree": str(repo.resolve()),
                         "base": head,
-                        "branch": "gsd-path-verify/demo",
+                        "branch": "chore/verify-demo",
                         "source": "artifact.md",
                         "destination": ".project/review/artifact.md",
                         "expected_destination": "base",
@@ -414,7 +414,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
-            run_git(root, "init", "-b", "gsd-path/M001", str(repo))
+            run_git(root, "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"
@@ -436,7 +436,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
                 "worktree",
                 "add",
                 "-b",
-                "gsd-path-verify/demo",
+                "chore/verify-demo",
                 str(verify),
                 "HEAD",
             )
@@ -445,7 +445,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
                 "worktree",
                 "add",
                 "-b",
-                "gsd-path-task/T001",
+                "chore/task-t001",
                 str(dirty),
                 "HEAD",
             )
@@ -455,7 +455,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
                 "worktree",
                 "add",
                 "-b",
-                "gsd-path-integrate/M001",
+                "chore/integrate-m001",
                 str(integrate),
                 "HEAD",
             )
@@ -467,11 +467,11 @@ class PipelineDiagnoseTests(unittest.TestCase):
             retries = [shlex.split(item["retry"]) for item in findings]
 
             retire = next(parts for parts in retries if "retire" in parts)
-            self.assertEqual(retire[retire.index("--branch") + 1], "gsd-path-verify/demo")
+            self.assertEqual(retire[retire.index("--branch") + 1], "chore/verify-demo")
             dirty_finding = next(
                 item
                 for item in findings
-                if item["evidence"].startswith("gsd-path-task/T001 @")
+                if item["evidence"].startswith("chore/task-t001 @")
             )
             self.assertTrue(dirty_finding["retry"].startswith("NEEDS-USER:"))
             integration_retry = next(parts for parts in retries if "integrate" in parts)
@@ -479,14 +479,14 @@ class PipelineDiagnoseTests(unittest.TestCase):
             self.assertEqual(integration_retry[integration_retry.index("--slug") + 1], "first")
 
             run_git(repo, "worktree", "remove", str(integrate))
-            run_git(repo, "branch", "-D", "gsd-path-integrate/M001")
+            run_git(repo, "branch", "-D", "chore/integrate-m001")
             noncanonical = root / "integrate"
             run_git(
                 repo,
                 "worktree",
                 "add",
                 "-b",
-                "gsd-path-integrate/M001",
+                "chore/integrate-m001",
                 str(noncanonical),
                 "HEAD",
             )
@@ -495,7 +495,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
             blocked_finding = next(
                 item
                 for item in blocked["findings"]
-                if item["evidence"].startswith("gsd-path-integrate/M001 @")
+                if item["evidence"].startswith("chore/integrate-m001 @")
             )
             self.assertTrue(blocked_finding["retry"].startswith("NEEDS-USER:"))
 
@@ -636,7 +636,7 @@ class PipelineDiagnoseTests(unittest.TestCase):
     def test_cli_diagnose_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
-            run_git(Path(tmp), "init", "-b", "gsd-path/M001", str(repo))
+            run_git(Path(tmp), "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"

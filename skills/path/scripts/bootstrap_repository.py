@@ -120,7 +120,7 @@ def request_from_arguments(arguments: argparse.Namespace) -> BootstrapRequest:
         visibility=arguments.visibility,
         default_checkout=str(checkout),
         worktree=str(worktree),
-        branch="gsd-path/M001",
+        branch="feature/milestone-001",
         description=arguments.description,
         reuse_empty_worktree=arguments.reuse_empty_worktree,
     )

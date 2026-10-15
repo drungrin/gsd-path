@@ -67,7 +67,7 @@ class RecoveryBaseMilestoneProofTest(unittest.TestCase):
     def state(
         milestone,
         *,
-        branch: str = "gsd-path/M001",
+        branch: str = "feature/milestone-001",
         phase: str = "build",
         status: str = "blocked",
     ):
@@ -101,7 +101,7 @@ class RecoveryBaseMilestoneProofTest(unittest.TestCase):
         )
 
     def test_a_branch_mismatch_never_proves_even_with_an_unset_base(self) -> None:
-        before = self.state(None, branch="gsd-path/M002")
+        before = self.state(None, branch="feature/milestone-002")
         current = self.state("terra-dome")
         self.assertFalse(
             build_recovery._recovery_base_proves_milestone(

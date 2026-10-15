@@ -1887,7 +1887,7 @@ def validate_roadmap(
 
 def _integrated_members(root: Path, state: Dict[str, str]) -> Set[str]:
     """Members this milestone already closed; a new task for one would need a second merge."""
-    match = re.fullmatch(r"gsd-path/M(\d{3,})", state.get("branch") or "")
+    match = re.fullmatch(r"feature/milestone-(\d{3,})", state.get("branch") or "")
     common = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
                             capture_output=True, text=True, check=False)
     if match is None or common.returncode != 0:

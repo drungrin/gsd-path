@@ -38,14 +38,14 @@ class BuildReentryTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.repo = Path(temporary.name)
-        git(self.repo, "init", "-b", "gsd-path/M001")
+        git(self.repo, "init", "-b", "feature/milestone-001")
         git(self.repo, "config", "user.email", "test@example.test")
         git(self.repo, "config", "user.name", "Test")
         self.project = self.repo / ".project"
         for directory in ("plan", "tasks", "intent", "review"):
             (self.project / directory).mkdir(parents=True)
         (self.project / "STATE.md").write_bytes(state_text(
-            phase="build", status="blocked", milestone="demo", branch="gsd-path/M001",
+            phase="build", status="blocked", milestone="demo", branch="feature/milestone-001",
         ).encode("utf-8"))
         (self.project / "intent/INTENT.md").write_bytes(
             "# Intent\n\nLane: quick\n\n## Success criteria\n\n- SC1: The demo behavior holds.\n".encode("utf-8")
@@ -383,7 +383,7 @@ class BuildReentryTests(unittest.TestCase):
         self.reopen("define")
         failure = self.cli(
             "transition", "--expect-phase", "define", "--expect-status", "active",
-            "--expect-branch", "gsd-path/M001", "--expect-archive", "null",
+            "--expect-branch", "feature/milestone-001", "--expect-archive", "null",
             "--expect-milestone", "demo", "--set-status", "done", "--set-milestone", "different",
             "--event", "milestone intent approved", success=False,
         )
@@ -499,7 +499,7 @@ class BuildReentryTests(unittest.TestCase):
         ):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
-                git(repo, "init", "-b", "gsd-path/M001")
+                git(repo, "init", "-b", "feature/milestone-001")
                 git(repo, "config", "user.email", "test@example.test")
                 git(repo, "config", "user.name", "Test")
                 project = repo / ".project"
@@ -507,7 +507,7 @@ class BuildReentryTests(unittest.TestCase):
                     (project / directory).mkdir(parents=True)
                 (project / "STATE.md").write_bytes(state_text(
                     phase="build", status="blocked", milestone="demo",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"))
                 (project / "intent/INTENT.md").write_bytes(
                     "# Intent\n\nLane: quick\n\n## Success criteria\n\n"
@@ -526,7 +526,7 @@ class BuildReentryTests(unittest.TestCase):
                 result = subprocess.run([
                     sys.executable, "-B", str(SCRIPT), "transition", "--repo", str(repo),
                     "--expect-phase", "build", "--expect-status", "blocked",
-                    "--expect-branch", "gsd-path/M001", "--expect-archive", "null",
+                    "--expect-branch", "feature/milestone-001", "--expect-archive", "null",
                     "--set-phase", phase, "--set-status", "active", "--event", event,
                 ], capture_output=True, encoding="utf-8", errors="replace")
                 self.assertEqual(result.returncode, 0, result.stderr)

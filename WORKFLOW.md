@@ -122,7 +122,7 @@ contract owns shell cases.
 
 An explicit request to create a GitHub repository enters a pre-initialization
 gate. Resolve and preview the GitHub owner/name, visibility, normal default
-checkout, `gsd-path/M001` branch, and a distinct linked-worktree path.
+checkout, `feature/milestone-001` branch, and a distinct linked-worktree path.
 Create no repository, checkout, worktree, pipeline state, journal, or preview
 file until the user approves every target; present the pre-creation review
 inline from the bootstrap helper's read-only `preview` result. An existing
@@ -164,7 +164,7 @@ For a newly initialized existing Git repository, the state router returns
 `bind-initial` while `STATE.branch` is null. The router fetches the recorded
 [default branch](#default-branch) (`origin/main` in this document),
 runs `pipeline_git.py bind-initial` with that exact SHA, and records the
-returned `gsd-path/M00N` binding through `pipeline_state.py transition` before
+returned `feature/milestone-00n` binding through `pipeline_state.py transition` before
 entering inspect or define. Build consumes this binding and never creates or
 selects the milestone branch.
 
@@ -559,8 +559,8 @@ The record does not change after initialization. Bind, integrate, validate,
 promotion, and the git guard read it. When the forge default no longer agrees
 with the record, integration stops with `remote default must be <recorded>`.
 A lookahead `next/STATE.md` must carry the same `default_branch` as the active
-state, or promotion stops. Names in the reserved `gsd-path/`,
-`gsd-path-integrate/`, and `gsd-path-task/` namespaces, and names with `#` or
+state, or promotion stops. Names in the reserved `feature/milestone-`,
+`chore/integrate-`, and `chore/task-` namespaces, and names with `#` or
 a quote character, cannot be recorded.
 
 In a multi-repo project, each repository has its own record. The coordinator
@@ -602,9 +602,9 @@ Ship fetches origin, refreshes `origin/HEAD`, mirrors published milestone tags,
 and requires the remote default to be the recorded
 [default branch](#default-branch). It then follows the locked mode:
 
-- `direct` creates a temporary named worktree (`gsd-path-integrate/M00N`) at
+- `direct` creates a temporary named worktree (`chore/integrate-m00n`) at
   the fetched remote-default SHA and merges the ship commit with `--no-ff`
-  under subject `integrate: M00N — merge gsd-path/M00N into main`. A clean
+  under subject `integrate: M00N — merge feature/milestone-00n into main`. A clean
   merge is pushed to `main`; a conflict is aborted and surfaced to the user.
   Path never resolves it automatically. The bound branch and annotated
   `milestone/<NNN>-<slug>` tag are then published, and the temporary worktree
@@ -613,7 +613,7 @@ and requires the remote default to be the recorded
   `azure-devops` extension for an Azure DevOps Services origin. Authenticate
   the matching CLI; SSH authentication for Git alone is insufficient.
   Path publishes the exact ship commit and creates or reuses the one
-  eligible PR to `main` with a GSD Path credit footer. It returns
+  eligible PR to `main` without tool attribution or credit footers. It returns
   `awaiting-merge` until the user completes the PR. GitHub accepts a merge
   commit or a proven rebase merge; Azure requires **Merge (no fast-forward)**
   and refuses auto-complete and policy bypass. Path never enables auto-merge
@@ -632,7 +632,7 @@ and requires the remote default to be the recorded
   creates the annotated milestone tag.
 
 Ship leaves the primary worktree and `STATE.branch` on the shipped local
-`gsd-path/M00N`; the router owns the later branch handoff. NNN always comes
+`feature/milestone-00n`; the router owns the later branch handoff. NNN always comes
 from the persisted `STATE.archive` sequence. Integration is pending from the
 ship commit until the selected mode's merge and tag proof passes. The ship
 commit is the crash-recovery transaction id. Resume is idempotent: direct mode

@@ -54,14 +54,14 @@ class WindowsGuardPathTests(unittest.TestCase):
         git = ["git", "-C", str(self.repo), "-c", "user.name=Guard test",
                "-c", "user.email=guard-test@example.invalid"]
         subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "initial"], check=True)
-        for branch in ("ordinary", "gsd-path/M001"):
+        for branch in ("ordinary", "feature/milestone-001"):
             subprocess.run([*git, "branch", branch], check=True)
         prefix = f"cd {msys(self.repo)} && git"
         base = [str(self.base)]
         self.assertIsNone(guard_hook.command_denial(f"{prefix} status", base))
         self.assertIsNone(guard_hook.command_denial(f"{prefix} branch -D ordinary", base))
         self.assertEqual(
-            guard_hook.command_denial(f"{prefix} branch -D gsd-path/M001", base),
+            guard_hook.command_denial(f"{prefix} branch -D feature/milestone-001", base),
             guard_hook.GIT_REASONS["branch"],
         )
         # Bash rejects two cd operands and stays where it is.

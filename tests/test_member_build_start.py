@@ -12,10 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 MEMBERS = ROOT / "scripts" / "members.py"
 STATE = (
     "---\npipeline: gsd-path/v2\nproject: acme\nmilestone: demo\nphase: plan\nstatus: done\n"
-    "branch: gsd-path/M001\narchive: null\n---\n\n# Project State\n\n## Log\n\n- 2026-09-27 — plan — plan approved\n"
+    "branch: feature/milestone-001\narchive: null\n---\n\n# Project State\n\n## Log\n\n- 2026-09-27 — plan — plan approved\n"
 )
 TASK = "---\nid: {id}\ntitle: T\nwave: 1\ndeps: []\nstatus: pending\n{repo}files:\n  - {path}\n---\n# {id}\n"
-EXPECT = {"phase": "plan", "status": "done", "branch": "gsd-path/M001", "archive": None}
+EXPECT = {"phase": "plan", "status": "done", "branch": "feature/milestone-001", "archive": None}
 CHANGES = {"phase": "build", "status": "active"}
 
 
@@ -30,7 +30,7 @@ class MemberBuildStartTests(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve()
         self.coordinator = self.root / "acme"
         (self.coordinator / ".project" / "tasks").mkdir(parents=True)
-        git(self.root, "init", "-q", "-b", "gsd-path/M001", str(self.coordinator))
+        git(self.root, "init", "-q", "-b", "feature/milestone-001", str(self.coordinator))
         (self.coordinator / ".project" / "STATE.md").write_bytes(STATE.encode("utf-8"))
         git(self.coordinator, "add", "-A")
         git(self.coordinator, "commit", "-q", "-m", "init")
@@ -69,7 +69,7 @@ class MemberBuildStartTests(unittest.TestCase):
 
     def branch(self, name: str):
         found = git(self.repos[name], "rev-parse", "--verify", "--quiet",
-                    "refs/heads/gsd-path/acme-M001", check=False)
+                    "refs/heads/feature/acme-milestone-001", check=False)
         return found.stdout.strip() or None
 
     def origin_main(self, name: str) -> str:
@@ -85,8 +85,8 @@ class MemberBuildStartTests(unittest.TestCase):
         self.assertEqual(self.lock(), {
             "schema": "gsd-path/member-lock/v1",
             "members": [
-                {"name": "sdk", "branch": "gsd-path/acme-M001", "base": self.origin_main("sdk")},
-                {"name": "docs", "branch": "gsd-path/acme-M001", "base": self.origin_main("docs")},
+                {"name": "sdk", "branch": "feature/acme-milestone-001", "base": self.origin_main("sdk")},
+                {"name": "docs", "branch": "feature/acme-milestone-001", "base": self.origin_main("docs")},
             ],
         })
         self.assertEqual(self.branch("sdk"), self.origin_main("sdk"))
@@ -115,7 +115,7 @@ class MemberBuildStartTests(unittest.TestCase):
         self.start()
 
         self.assertEqual(self.lock()["members"],
-                         [{"name": "api", "branch": "gsd-path/acme-M001", "base": master}])
+                         [{"name": "api", "branch": "feature/acme-milestone-001", "base": master}])
         self.assertEqual(self.branch("api"), master)
 
     def test_coordinator_only_plan_writes_no_lock_and_no_branches(self) -> None:
@@ -191,14 +191,14 @@ class MemberBuildStartTests(unittest.TestCase):
 
     def test_existing_unused_member_branch_is_reused(self) -> None:
         self.tasks("web")
-        git(self.repos["web"], "branch", "gsd-path/acme-M001", "refs/remotes/origin/main")
+        git(self.repos["web"], "branch", "feature/acme-milestone-001", "refs/remotes/origin/main")
         self.start()
         self.assertEqual(self.lock()["members"][0]["base"], self.origin_main("web"))
 
     def test_member_branch_with_unlocked_work_blocks_build_start(self) -> None:
         self.tasks("web")
         web = self.repos["web"]
-        git(web, "checkout", "-q", "-b", "gsd-path/acme-M001")
+        git(web, "checkout", "-q", "-b", "feature/acme-milestone-001")
         (web / "stray.py").write_bytes("x".encode("utf-8"))
         git(web, "add", "-A")
         git(web, "commit", "-q", "--no-verify", "-m", "stray")
@@ -213,7 +213,7 @@ class MemberBuildStartTests(unittest.TestCase):
         self.start()
         base = self.lock()["members"][0]["base"]
         web = self.repos["web"]
-        git(web, "checkout", "-q", "gsd-path/acme-M001")
+        git(web, "checkout", "-q", "feature/acme-milestone-001")
         (web / "landed.py").write_bytes("x".encode("utf-8"))
         git(web, "add", "-A")
         git(web, "commit", "-q", "--no-verify", "-m", "landed")

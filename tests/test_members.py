@@ -39,7 +39,7 @@ def git(repo: Path, *arguments: str) -> str:
 
 
 def write_state(root: Path, project: str, phase: str, status: str = "active",
-                milestone: str = "demo", branch: str = "gsd-path/M001",
+                milestone: str = "demo", branch: str = "feature/milestone-001",
                 archive: str = "null") -> None:
     (root / ".project").mkdir(exist_ok=True)
     (root / ".project" / "STATE.md").write_bytes(
@@ -159,8 +159,8 @@ class MemberTests(unittest.TestCase):
         self.assertEqual(self.run_members("validate").returncode, 0)
 
     def test_add_refuses_a_member_default_branch_that_path_reserves(self) -> None:
-        self.assert_refused(self.add("web", self.make_member("web", default="gsd-path/M001")),
-                            "member default branch 'gsd-path/M001' cannot be recorded")
+        self.assert_refused(self.add("web", self.make_member("web", default="feature/milestone-001")),
+                            "member default branch 'feature/milestone-001' cannot be recorded")
 
     def test_add_refuses_a_default_branch_that_was_not_fetched(self) -> None:
         web = self.make_member("web", default="master")
@@ -283,9 +283,9 @@ class MemberTests(unittest.TestCase):
 
     def test_add_refuses_colliding_member_branch_or_tag(self) -> None:
         cases = {
-            "branch": ("branch", "gsd-path/acme-M001"),
-            "task": ("branch", "gsd-path-task/acme-T001"),
-            "remote": ("update-ref", "refs/remotes/origin/gsd-path/acme-M002"),
+            "branch": ("branch", "feature/acme-milestone-001"),
+            "task": ("branch", "chore/task-acme-t001"),
+            "remote": ("update-ref", "refs/remotes/origin/feature/acme-milestone-002"),
             "tag": ("tag", "milestone/acme-001-demo"),
         }
         for label, (command, ref) in cases.items():
@@ -299,16 +299,16 @@ class MemberTests(unittest.TestCase):
 
     def test_add_ignores_member_refs_named_for_other_coordinators(self) -> None:
         member = self.make_member("web")
-        git(member, "branch", "gsd-path/M001")
+        git(member, "branch", "feature/milestone-001")
         git(member, "tag", "milestone/001-demo")
-        git(member, "branch", "gsd-path/acmex-M001")
+        git(member, "branch", "feature/acmex-milestone-001")
         result = self.add("web", member)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_validate_and_repair_allow_refs_path_created_during_build(self) -> None:
         member = self.joined()
-        git(member, "branch", "gsd-path/acme-M001")
-        git(member, "branch", "gsd-path-task/acme-T001")
+        git(member, "branch", "feature/acme-milestone-001")
+        git(member, "branch", "chore/task-acme-t001")
         git(member, "tag", "milestone/acme-001-demo")
         for command in ("validate", "repair"):
             result = self.run_members(command)
@@ -316,7 +316,7 @@ class MemberTests(unittest.TestCase):
 
     def test_add_still_refuses_refs_path_creates_on_members(self) -> None:
         member = self.make_member("web")
-        git(member, "branch", "gsd-path/acme-M001")
+        git(member, "branch", "feature/acme-milestone-001")
         git(member, "tag", "milestone/acme-001-demo")
         self.assert_refused(self.add("web", member), "collide with coordinator")
 
@@ -404,7 +404,7 @@ class MemberTests(unittest.TestCase):
     def test_validate_refuses_a_default_branch_that_cannot_be_recorded(self) -> None:
         path = self.coordinator / ".project" / "MEMBERS.md"
         row = f"# Members\n\n## web\nCheckout: {self.root / 'web'}\nRemote: https://github.com/a/b\nIntegration: default\n"
-        for value in (" gsd-path/M001", " a b", ""):
+        for value in (" feature/milestone-001", " a b", ""):
             with self.subTest(value):
                 path.write_bytes(f"{row}Default branch:{value}\n".encode("utf-8"))
                 result = self.run_members("validate")
@@ -662,7 +662,7 @@ class MembersArtifactTests(unittest.TestCase):
     def test_ship_verification_accepts_members_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary).resolve()
-            git(repo, "init", "-q", "-b", "gsd-path/M001")
+            git(repo, "init", "-q", "-b", "feature/milestone-001")
             write_state(repo, "acme", "ship")
             (repo / ".project" / "MEMBERS.md").write_bytes("# Members\n".encode("utf-8"))
             commit_all(repo)
@@ -675,7 +675,7 @@ class MembersArtifactTests(unittest.TestCase):
     def test_ship_verification_prunes_empty_host_claude_dir(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary).resolve()
-            git(repo, "init", "-q", "-b", "gsd-path/M001")
+            git(repo, "init", "-q", "-b", "feature/milestone-001")
             write_state(repo, "acme", "ship")
             commit_all(repo)
             head = git(repo, "rev-parse", "HEAD")
@@ -690,7 +690,7 @@ class MembersArtifactTests(unittest.TestCase):
     def test_ship_verification_skips_ignored_untracked_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary).resolve()
-            git(repo, "init", "-q", "-b", "gsd-path/M001")
+            git(repo, "init", "-q", "-b", "feature/milestone-001")
             write_state(repo, "acme", "ship")
             (repo / ".gitignore").write_bytes(".DS_Store\n".encode("utf-8"))
             commit_all(repo)

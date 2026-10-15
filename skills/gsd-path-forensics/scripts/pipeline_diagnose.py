@@ -175,8 +175,8 @@ undo_preview = pipeline_undo.preview
 
 
 DIAGNOSE_SCHEMA = "gsd-path/diagnose/v1"
-ISOLATION_WORKTREE_PREFIXES = ("gsd-path-task/", "gsd-path-verify/")
-INTEGRATION_WORKTREE_PREFIX = "gsd-path-integrate/"
+ISOLATION_WORKTREE_PREFIXES = ("chore/task-", "chore/verify-")
+INTEGRATION_WORKTREE_PREFIX = "chore/integrate-"
 
 
 class DiagnoseError(RuntimeError):

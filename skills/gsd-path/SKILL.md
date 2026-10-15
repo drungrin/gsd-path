@@ -88,7 +88,7 @@ GitHub repository and no owned `.project/STATE.md` is active for that request.
 1. Resolve the repository name and normalized project slug. Obtain the GitHub
    owner, one supported visibility (`public`, `private`, or `internal`), and a
    local workspace when absent; do not infer account ownership or visibility.
-   Derive `gsd-path/M001` as the branch. The default checkout is
+   Derive `feature/milestone-001` as the branch. The default checkout is
    `<resolved-workspace>/<repo-name>`; propose the distinct sibling
    `<resolved-workspace>/<repo-name>-gsd-path` as the linked worktree. When
    the user prefers a managed primary, offer an explicit path below
@@ -261,7 +261,7 @@ or a member marker by hand.
   repository is a member and of which coordinator.
 
 Build locks the members that tasks name and works in Path-owned member
-branches `gsd-path/<project>-M00N`. Ship runs `close-members` after preflight
+branches `feature/<project>-milestone-001`. Ship runs `close-members` after preflight
 to merge each member in lock order, then ships the coordinator.
 
 ## Transaction recovery first
@@ -523,7 +523,7 @@ Log, then:
   python3 <absolute-bundled-pipeline-state.py> promote-next \
     --repo <absolute-primary-root> \
     --milestone <next-slug> \
-    --branch gsd-path/M00N \
+    --branch feature/milestone-00n \
     --base <exact-current-remote-default-sha> \
     --landing <exact-milestone-merge-sha>
   ```
@@ -542,7 +542,7 @@ Log, then:
   Then call `pipeline_state.py transition`, expecting the complete
   `shipped/done` state including its previous branch and archive, and set
   `phase: inspect`, `status: active`, `milestone` to the selected pending slug,
-  `branch: gsd-path/M00N`, and `archive: null`. The event records the returned
+  `branch: feature/milestone-00n`, and `archive: null`. The event records the returned
   base and integration SHA. Route to the bundled [inspect contract](INSPECT.md)
   so the changed codebase is rescanned before milestone define. When every
   entry is terminal (`shipped` or `abandoned`),
@@ -550,7 +550,7 @@ Log, then:
   and stop.
 - **Single milestone** (no ROADMAP.md): use the same guarded transition from
   the complete previous `shipped/done` state to `phase: inspect`, `status:
-  active`, `milestone: null`, `branch: gsd-path/M00N`, and `archive: null`.
+  active`, `milestone: null`, `branch: feature/milestone-00n`, and `archive: null`.
   Record the returned base and integration SHA in its event.
   The project is now brownfield, so inspect rescans current code and docs.
 

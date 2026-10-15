@@ -240,7 +240,7 @@ dispatch contract and perform steps 1–5 by hand.
    The runner also creates a named verification sidecar at this clean base
    before dispatch. Retain both helper results in the dispatch evidence.
    For a coordinator task, parallel (`N>=2`) creates a named
-   `gsd-path-task/<id>` branch and linked worktree at that base; never a
+   `chore/task-<id>` branch and linked worktree at that base; never a
    detached HEAD. Record dispatch through
    `python3 <absolute isolation.py> activate-task --repo <returned worktree>
    --base <recorded base> --task-id <id> --agent build_<id> --task-file

@@ -318,15 +318,15 @@ flowchart TD
     AB --> RM
     S -->|"approved → archive + ship commit"| MG["direct merge or user-merged PR + tag"]
     MG -->|"validate-integrated passes"| A["shipped"]
-    A -->|"another program milestone → bind next gsd-path/M00N"| MI
-    A -->|"single-milestone restart → bind next gsd-path/M00N"| I
+    A -->|"another program milestone → bind next feature/milestone-00n"| MI
+    A -->|"single-milestone restart → bind next feature/milestone-00n"| I
     A -->|"program complete"| PC["stop"]
 ```
 
 Starting in an empty folder without Git leaves that folder unchanged until
 repository setup. The router asks whether to create a new GitHub repository or
 use an existing repository. For a new repository, approve the exact owner/name,
-visibility, default-checkout path, `gsd-path/M001` branch, and linked-worktree
+visibility, default-checkout path, `feature/milestone-001` branch, and linked-worktree
 path before creation. The starting folder is proposed as the linked worktree,
 with a distinct default checkout beside it, so the agent keeps working where
 it started. Only an approved empty directory can be reused; nonempty folders
@@ -335,7 +335,7 @@ setup. See the [repository setup procedure](WORKFLOW.md#new-github-repository-cr
 
 For an existing Git repository, initialization writes STATE.md first. Before
 entering inspect or define, the router fetches `origin/main`, creates or adopts
-`gsd-path/M001` there, and records the binding in state. Build only uses that
+`feature/milestone-001` there, and records the binding in state. Build only uses that
 recorded milestone branch; it never creates or selects one. See the
 [phase workflow](WORKFLOW.md#phase-0--inspect-gsd-path-inspect).
 
@@ -355,7 +355,7 @@ advance past an unresolved required follow-up.
   wrong map dies in the first minute.
 - Task isolation and landing go through `isolation.py`: named branches only,
   never a detached HEAD. A serial dispatch round works on the bound branch;
-  a parallel round gets `gsd-path-task/<id>`.
+  a parallel round gets `chore/task-<id>`.
 - Dispatch streams: a dependent task starts the moment its dependencies
   land, never idling behind unrelated in-flight tasks. Task landing
   stays serial and every Verify reruns in the isolated worktree.
@@ -387,9 +387,28 @@ a directory listing.
 **Quick lane** (tiny scope) may skip research/decide — see [FULL.md](FULL.md).
 
 For an explicit new-GitHub request, the router previews the owner, visibility,
-default checkout, `gsd-path/M001` branch, and sibling linked worktree. A
+default checkout, `feature/milestone-001` branch, and sibling linked worktree. A
 journaled helper performs the approved creation and safely resumes a matching
 partial remote/clone/worktree transaction; the default checkout stays clean.
+
+## Git metadata
+
+Generated branch names follow the purpose-based [Conventional Branch](https://conventionalbranch.org) convention:
+
+| Role | Example |
+| --- | --- |
+| Milestone | `feature/milestone-001` |
+| Member milestone | `feature/example-milestone-001` |
+| Temporary task | `chore/task-t001` |
+| Temporary verification | `chore/verify-wave-1` |
+| Temporary integration | `chore/integrate-m001` |
+
+Names are lowercase and contain no framework or tool prefix. PR titles and
+bodies describe the change and its integration metadata without credits,
+generated-by statements, or session links. Reusing a PR removes legacy
+attribution while preserving its human-written content. Commit guards reject
+tool-attribution trailers. The supported client settings disable automatic
+commit and PR attribution, including installs without optional guard hooks.
 
 ## Multi-repo milestones
 
@@ -426,7 +445,7 @@ the field means `main`. See [default branch](WORKFLOW.md#default-branch).
 - The planner gives each member task `repo: <member>`; one task changes one
   repo. Project Verify runs from the coordinator and reaches a member as
   `../<member>`.
-- Build works in Path-owned member branches `gsd-path/<project>-M00N` and
+- Build works in Path-owned member branches `feature/<project>-milestone-001` and
   records each member landing in the coordinator. The final review names each
   member's reviewed HEAD.
 - Ship closes members in order before the coordinator: `close-members` merges
@@ -496,12 +515,12 @@ an atomic close across repos.
 ```
 
 Shipping moves milestone artifacts into `archive/` with a MANIFEST. It then
-either merges the milestone's `gsd-path/M00N` branch into `main` directly or
+either merges the milestone's `feature/milestone-00n` branch into `main` directly or
 opens/reuses a GitHub PR and waits for its user-controlled merge. Path reports
 shipped only after the landing (a two-parent merge, or a proven GitHub rebase
 merge of the PR) and the milestone tag validate. Before
 any next-milestone files change, the router binds
-a new `gsd-path/M00N` at the updated `origin/main`. `STATE.md`, `REPOSITORY.md`,
+a new `feature/milestone-00n` at the updated `origin/main`. `STATE.md`, `REPOSITORY.md`,
 `LESSONS.md`, `next/`, and the program artifacts (`CHARTER.md`, `ROADMAP.md`,
 top-level `SYNTHESIS.md`) remain active project metadata.
 

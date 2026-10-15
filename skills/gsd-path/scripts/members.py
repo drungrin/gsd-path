@@ -44,7 +44,7 @@ GITHUB_REMOTE_RE = re.compile(
 )
 # Member-side Path refs carry the coordinator name, so they cannot collide with
 # a member's own Path history.
-MEMBER_BRANCH_FORMATS = ("gsd-path/{}-", "gsd-path-task/{}-", "gsd-path-verify/{}-", "gsd-path-integrate/{}-")
+MEMBER_BRANCH_FORMATS = ("feature/{}-milestone-", "chore/task-{}-", "chore/verify-{}-", "chore/integrate-{}-")
 MEMBER_TAG_FORMAT = "refs/tags/milestone/{}-"
 # The coordinator records one authorization per (ref, object) before it
 # publishes a member Path ref; member pre-push accepts only a matching one.
@@ -331,7 +331,7 @@ def check_member(
             raise MembersError(f"member has an active milestone: {state.milestone}")
     if refuse_reserved_refs:
         prefixes = member_ref_prefixes(coordinator_name) + tuple(
-            "refs/remotes/origin/" + branch.format(coordinator_name) for branch in MEMBER_BRANCH_FORMATS
+            "refs/remotes/origin/" + branch.format(_common.branch_slug(coordinator_name)) for branch in MEMBER_BRANCH_FORMATS
         )
         refs = _git(checkout, "for-each-ref", "--format=%(refname)").splitlines()
         colliding = [ref for ref in refs if ref.startswith(prefixes)]
@@ -385,7 +385,7 @@ def require_origin_branch(checkout: Path, branch: str) -> str:
 def member_ref_prefixes(project: str) -> tuple[str, ...]:
     """Ref prefixes a member repo reserves for the coordinator named `project`."""
     return tuple(
-        "refs/heads/" + branch.format(project) for branch in MEMBER_BRANCH_FORMATS
+        "refs/heads/" + branch.format(_common.branch_slug(project)) for branch in MEMBER_BRANCH_FORMATS
     ) + (MEMBER_TAG_FORMAT.format(project),)
 
 
@@ -464,7 +464,7 @@ def lock_build_members(coordinator: Path) -> Optional[list[dict[str, str]]]:
     bound = _common.BOUND_BRANCH_RE.fullmatch(state.branch or "")
     if bound is None:
         raise MembersError(f"coordinator branch is not a bound branch: {state.branch}")
-    branch = f"gsd-path/{state.project}-M{bound.group(1)}"
+    branch = f"feature/{_common.branch_slug(state.project)}-milestone-{bound.group(1)}"
     previous = {}
     if lock_path.is_file():
         previous = {entry["name"]: entry for entry in json.loads(lock_path.read_text(encoding="utf-8"))["members"]}

@@ -56,7 +56,34 @@ def utf8_stdio() -> None:
 utf8_stdio()
 
 PIPELINE_MARKER = "gsd-path/v2"
-BOUND_BRANCH_RE = re.compile(r"^gsd-path/M(\d{3,})$")
+BOUND_BRANCH_RE = re.compile(r"^feature/milestone-(\d{3,})$")
+
+
+def branch_slug(value: str) -> str:
+    """A lowercase Conventional Branch description without tool attribution."""
+    result = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+    if not result:
+        raise ValueError("branch description must contain letters or digits")
+    return result
+
+
+TOOL_ATTRIBUTION_RE = re.compile(
+    r"^.*(?:(?:generated|prepared|created|authored|written|assisted|made)\s+(?:by|with|using)"
+    r"|co-authored-by:|(?:disclaimer|attribution|credit|session(?:\s+link)?)\s*:)"
+    r".*\b(?:gsd(?:[- ]path)?|claude|codex|openai|anthropic|copilot|cursor|opencode|gemini"
+    r"|deepseek|qwen|kimi|muse|gpt|chatgpt|aider|windsurf|llm|ai)\b.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def without_tool_attribution(text: str) -> str:
+    """Remove attribution lines from a reused PR while keeping its human content."""
+    if not TOOL_ATTRIBUTION_RE.search(text):
+        return text
+    lines = [line for line in text.splitlines() if not TOOL_ATTRIBUTION_RE.search(line)]
+    while lines and (not lines[-1].strip() or lines[-1].strip() == "---"):
+        lines.pop()
+    return "\n".join(lines)
 
 FIELD_PATTERN = re.compile(r"^(?P<key>[a-z_]+):\s*(?P<value>.*)$")
 INLINE_LIST_PATTERN = re.compile(r"^\[(?P<body>.*)\]$")
@@ -165,7 +192,11 @@ def project_ignore_error(repo: Path) -> Optional[str]:
 _DEFAULT_BRANCH_RE = re.compile(
     r"[^\s#\"'\\~^:?*\[\x00-\x1f\x7f-][^\s#\"'\\~^:?*\[\x00-\x1f\x7f]*"
 )
-_RESERVED_BRANCH_PREFIXES = ("gsd-path/", "gsd-path-integrate/", "gsd-path-task/")
+_RESERVED_BRANCH_PREFIXES = (
+    "feature/milestone-", "chore/integrate-", "chore/task-", "chore/verify-",
+    # Old pinned runtimes may still own these refs; never use them for new work.
+    "gsd-path/", "gsd-path-integrate/", "gsd-path-task/", "gsd-path-verify/",
+)
 
 
 def valid_default_branch(name: str) -> bool:

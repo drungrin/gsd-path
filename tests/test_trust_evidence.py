@@ -207,7 +207,7 @@ class TrustEvidenceTests(unittest.TestCase):
                     evidence_host
                 ],
                 "task_branch": task_branches[evidence_host],
-                "bound_branch": "gsd-path/M001",
+                "bound_branch": "feature/milestone-001",
                 "default_branch": "main",
                 "milestone_tag": f"milestone/{archive_directory.name}",
                 "artifacts": artifact_paths,
@@ -242,7 +242,7 @@ class TrustEvidenceTests(unittest.TestCase):
         ship_result = builder.commit_ship(repository, archive_directory)
         self.assertEqual(0, ship_result.returncode, ship_result.stderr)
         ship = git("rev-parse", "HEAD")
-        bound_branch = "gsd-path/M001"
+        bound_branch = "feature/milestone-001"
         milestone_tag = f"milestone/{archive_directory.name}"
         integration_worktree = repository.parent / f".{host}-gsd-path-integrate-M001"
         invalid_ship = bool(
@@ -1140,7 +1140,7 @@ class TrustEvidenceTests(unittest.TestCase):
         evidence["output"] += (
             f"\nworktree {fixture['integration_worktree']}\n"
             f"HEAD {fixture['integration']}\n"
-            "branch refs/heads/gsd-path-integrate/M001\n"
+            "branch refs/heads/chore/integrate-m001\n"
         )
         worktrees.write_bytes((json.dumps(evidence) + "\n").encode("utf-8"))
         self.commit_receipts()
@@ -1157,7 +1157,7 @@ class TrustEvidenceTests(unittest.TestCase):
         worktrees = self.artifact("alpha", "worktrees")
         evidence = json.loads(worktrees.read_text(encoding="utf-8"))
         evidence["output"] = evidence["output"].replace(
-            "branch refs/heads/gsd-path/M001", "bare"
+            "branch refs/heads/feature/milestone-001", "bare"
         )
         worktrees.write_bytes((json.dumps(evidence) + "\n").encode("utf-8"))
         self.commit_receipts()

@@ -55,7 +55,7 @@ project: demo
 milestone: demo
 phase: plan
 status: active
-branch: gsd-path/M001
+branch: feature/milestone-001
 archive: null
 ---
 """.encode("utf-8"),
@@ -81,7 +81,7 @@ archive: null
             state = repo / ".project" / "STATE.md"
             state.write_bytes(
                 state.read_text(encoding="utf-8").replace(
-                    "branch: gsd-path/M001", "branch: main"
+                    "branch: feature/milestone-001", "branch: main"
                 ).encode("utf-8"),
             )
 

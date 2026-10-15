@@ -85,9 +85,9 @@ bundles this file; spawned agents follow their role brief instead.
   `recover` reports it as `attested`, never as a proven landing. Attestation
   matches the declared files literally: work that is only below a declared
   directory can land but cannot be attested.
-- All pipeline work for a milestone lives on `gsd-path/M00N` (M001, M002,
+- All pipeline work for a milestone lives on `feature/milestone-00n` (M001, M002,
   …) bound in STATE.branch. The next milestone binds a new unused
-  `gsd-path/M00N` at the remote default after the previous ship integrates.
+  `feature/milestone-00n` at the remote default after the previous ship integrates.
   Integration at ship is the only path from the bound branch to the default
   branch — either Path's direct merge or a Path-owned PR merged by the user.
   The bound branch never receives merges or back-merges and is never the
@@ -114,7 +114,7 @@ bundles this file; spawned agents follow their role brief instead.
   changes, the router calls the bundled `scripts/pipeline_git.py bind-next`
   helper with the previous bound branch, exact ship SHA, and exact current
   `origin/main` SHA. The helper moves the clean primary worktree to the new
-  unused `gsd-path/M00N` branch at that SHA without moving the previous
+  unused `feature/milestone-00n` branch at that SHA without moving the previous
   branch or entering the default checkout, then retires the integrated
   previous branch — deleted locally and on origin; the ship commit stays
   reachable from the integration merge and its annotated tag. The router
@@ -131,7 +131,7 @@ bundles this file; spawned agents follow their role brief instead.
 - Build adopts the branch recorded in STATE.branch, never whatever is current
   when a recorded branch exists. A new-GitHub REPOSITORY.md proves the
   default checkout and first bound branch; later milestones may rebind
-  `gsd-path/M00N` without rewriting that artifact. Build ignores older
+  `feature/milestone-00n` without rewriting that artifact. Build ignores older
   milestone ship and integrate commits inherited through main. A ship commit
   for the current STATE.branch milestone must be an ancestor of origin/main;
   if it is not, that milestone's integration is incomplete and control routes
@@ -145,7 +145,7 @@ bundles this file; spawned agents follow their role brief instead.
   STATE.md, the final-review artifacts, and the archive — and additionally
   owns the integration leg. Direct mode creates and pushes one `--no-ff` merge
   onto `main` with subject
-  `integrate: M00N — merge gsd-path/M00N into main`. Pull-request mode creates
+  `integrate: M00N — merge feature/milestone-00n into main`. Pull-request mode creates
   or reuses one GitHub.com or Azure DevOps Services PR and waits for the user
   to merge it. GitHub uses `gh`; Azure uses `az` with the `azure-devops`
   extension and requires a no-fast-forward merge without auto-complete or
@@ -161,6 +161,11 @@ bundles this file; spawned agents follow their role brief instead.
   bookkeeping commit through `pipeline_state.py promote-next` when promoting a
   lookahead track at a milestone boundary. Every other commit belongs to the
   orchestrator.
+- Git branches follow the purpose-based Conventional Branch grammar: lowercase
+  descriptions under `feature/` or `chore/`, never tool or vendor prefixes.
+  Commit messages and PR titles/bodies must not contain tool attribution,
+  generated-by disclaimers, session links, or model/tool co-author trailers.
+  PR reuse removes existing attribution while preserving human-written content.
 - Reviewers verify and block; they never fix. A block names the criterion,
   observed result, evidence location, and concrete fix direction. An optional
   review panel is advisory: the canonical reviewer remains the only wave
@@ -198,7 +203,7 @@ bundles this file; spawned agents follow their role brief instead.
 
 - Create a GitHub repository only from an explicit user request followed by an
   approval of the exact owner/name, visibility, default-checkout path,
-  `gsd-path/M001` branch, and linked primary-worktree path. Before the
+  `feature/milestone-001` branch, and linked primary-worktree path. Before the
   external action produces an artifact, present those proposed targets as the
   inline **Review** surface using the active router's preview contract.
   Do not write a

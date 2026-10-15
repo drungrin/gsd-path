@@ -127,7 +127,7 @@ STATUS_STATE_FIELDS = frozenset(
 STATUS_INTEGRATION_MODES = frozenset({"direct", "pull-request", "external-landing"})
 STATUS_INTEGRATION_SOURCES = frozenset({"default", "milestone"})
 STATUS_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-STATUS_BRANCH = re.compile(r"^gsd-path/M(\d{3,})$")
+STATUS_BRANCH = re.compile(r"^feature/milestone-(\d{3,})$")
 STATUS_ARCHIVE = re.compile(r"^\.project/archive/(\d{3,})-([a-z0-9][a-z0-9-]*)/?$")
 STATUS_TRANSITIONS = {
     "inspect": frozenset({"inspect", "define"}),
@@ -160,7 +160,8 @@ def _claude_guard_entry(interpreter: str) -> dict:
 def claude_hooks_settings(interpreter: str) -> str:
     return (
         json.dumps(
-            {"hooks": {"PreToolUse": [_claude_guard_entry(interpreter)]}},
+            {"hooks": {"PreToolUse": [_claude_guard_entry(interpreter)]},
+             "attribution": {"commit": "", "pr": "", "sessionUrl": False}},
             indent=2,
         )
         + "\n"
@@ -1273,19 +1274,13 @@ def _project_destinations(
         destinations.append(
             (project / ".claude" / "CLAUDE.md", None, CLAUDE_BRIDGE, False)
         )
+        settings = (claude_hooks_settings(interpreter) if hooks else
+                    json.dumps({"attribution": {"commit": "", "pr": "", "sessionUrl": False}}, indent=2) + "\n")
+        destinations.append((project / ".claude" / "settings.json", None, settings, False))
     if hooks:
         for name in GUARD_SCRIPTS:
             destinations.append(
                 (project / HOOKS_DIRECTORY / name, None, runtime_store.guard_launcher(name), False)
-            )
-        if "claude" in selected:
-            destinations.append(
-                (
-                    project / ".claude" / "settings.json",
-                    None,
-                    claude_hooks_settings(interpreter),
-                    False,
-                )
             )
         if "codex" in selected:
             destinations.append(
@@ -1317,10 +1312,11 @@ def _native_settings_mergers(
     project: Path, selected: Sequence[str], hooks: bool
 ) -> Mapping[Path, Callable[[Path, str], str]]:
     mergers = {}
+    if "claude" in selected:
+        mergers[project / ".claude" / "settings.json"] = (
+            _merged_claude_settings if hooks else _merged_claude_attribution_settings)
     if not hooks:
         return mergers
-    if "claude" in selected:
-        mergers[project / ".claude" / "settings.json"] = _merged_claude_settings
     if "codex" in selected:
         mergers[project / ".codex" / "hooks.json"] = _merged_codex_settings
     if "cursor" in selected:
@@ -2062,7 +2058,15 @@ def _merged_nested_hook_settings(settings: Path, managed_entry: dict) -> str:
 
 
 def _merged_claude_settings(settings: Path, interpreter: str) -> str:
-    return _merged_nested_hook_settings(settings, _claude_guard_entry(interpreter))
+    merged = json.loads(_merged_nested_hook_settings(settings, _claude_guard_entry(interpreter)))
+    merged["attribution"] = {"commit": "", "pr": "", "sessionUrl": False}
+    return json.dumps(merged, indent=2) + "\n"
+
+
+def _merged_claude_attribution_settings(settings: Path, interpreter: str) -> str:
+    merged = _parsed_managed_settings(settings)
+    merged["attribution"] = {"commit": "", "pr": "", "sessionUrl": False}
+    return json.dumps(merged, indent=2) + "\n"
 
 
 def _merged_codex_settings(settings: Path, interpreter: str) -> str:

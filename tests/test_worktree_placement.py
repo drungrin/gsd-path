@@ -73,7 +73,7 @@ class WorktreePlacementTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GSD_PATH_WORKTREE_ROOT": str(moved)}):
             self.assertEqual(
                 isolation.sidecar_root(self.repo, "task", "T003"),
-                Path(kept["worktree"]).parent / "T003",
+                Path(kept["worktree"]).parent / "t003",
             )
         isolation.retire(self.repo, Path(kept["worktree"]), kept["task_branch"], False)
 

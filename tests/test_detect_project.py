@@ -128,7 +128,7 @@ class DetectProjectTests(unittest.TestCase):
             self.assertEqual(self.recorded_default(repo), "main")
 
     def test_initialize_refuses_a_default_branch_state_cannot_hold(self) -> None:
-        for branch in ("gsd-path/M001", "we#ird"):
+        for branch in ("feature/milestone-001", "we#ird"):
             with self.subTest(branch=branch), tempfile.TemporaryDirectory() as temporary:
                 repo = Path(temporary)
                 result = self.initialize_with_remote_default(repo, branch)
@@ -2392,7 +2392,7 @@ class PromoteLookaheadTests(unittest.TestCase):
         self.git(repo, "config", "user.email", "dev@example.test")
         self.git(repo, "config", "user.name", "Dev")
         self.git(repo, "commit", "-q", "--allow-empty", "-m", "base")
-        self.git(repo, "switch", "-q", "-c", "gsd-path/M001")
+        self.git(repo, "switch", "-q", "-c", "feature/milestone-001")
         project = repo / ".project"
         archive = project / "archive" / "001-first" / "research"
         archive.mkdir(parents=True)
@@ -2405,7 +2405,7 @@ project: demo
 milestone: first
 phase: shipped
 status: done
-branch: gsd-path/M001
+branch: feature/milestone-001
 archive: .project/archive/001-first
 ---
 
@@ -2471,16 +2471,16 @@ archive: null
             ".project/archive/001-first",
             ship,
             "main",
-            "gsd-path/M001",
+            "feature/milestone-001",
         )
         self.git(
             repo,
             "merge",
             "-q",
             "--no-ff",
-            "gsd-path/M001",
+            "feature/milestone-001",
             "-m",
-            "integrate: M001 — merge gsd-path/M001 into main",
+            "integrate: M001 — merge feature/milestone-001 into main",
             "-m",
             archive_milestone.integrate_commit_body(*integration_body),
         )
@@ -2501,7 +2501,7 @@ archive: null
             "refs/remotes/origin/HEAD",
             "refs/remotes/origin/main",
         )
-        self.git(repo, "switch", "-q", "-c", "gsd-path/M002", integrate)
+        self.git(repo, "switch", "-q", "-c", "feature/milestone-002", integrate)
         return integrate
 
     def project_snapshot(self, project: Path) -> dict[str, bytes]:
@@ -2559,7 +2559,7 @@ Integrated: null
             self.assertEqual(
                 json.loads(result.stdout),
                 {
-                    "branch": "gsd-path/M002",
+                    "branch": "feature/milestone-002",
                     "id": "M002",
                     "milestone": "second-choice",
                     "status": "selected",
@@ -2602,7 +2602,7 @@ archive: null
 
         result = promote_lookahead.select_track_branch(roadmap, track_state)
 
-        self.assertEqual(result["branch"], "gsd-path/M002")
+        self.assertEqual(result["branch"], "feature/milestone-002")
         with self.assertRaisesRegex(
             promote_lookahead.LookaheadError,
             "next eligible milestone M002",
@@ -2713,7 +2713,7 @@ Integrated: null
                 True,
             )
 
-            self.assertEqual(result["branch"], "gsd-path/M002")
+            self.assertEqual(result["branch"], "feature/milestone-002")
             self.assertEqual(result["base"], integrate)
             self.git(repo, "restore", ".project/ROADMAP.md")
             self.git(repo, "commit", "-q", "--allow-empty", "-m", "new base")
@@ -2753,7 +2753,7 @@ Integrated: null
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             integrate = self.setup_repo(repo)
-            for name in ("origin/gsd-path/M001", "origin/a..b", "upstream/main", "origin/-x"):
+            for name in ("origin/feature/milestone-001", "origin/a..b", "upstream/main", "origin/-x"):
                 with self.subTest(name=name), self.assertRaisesRegex(
                     promote_lookahead.LookaheadError, "remote default must be an origin branch"
                 ):

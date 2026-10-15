@@ -79,8 +79,8 @@ rule; never invoke an explicit-only sibling skill yourself.
   default. Its local default ref may lag origin as integrations advance the
   remote default — that lag is not a violation, and the checkout is never
   entered or updated. The artifact's `GSD Path branch` is the first bound
-  branch (`gsd-path/M001`); after a shipped milestone STATE.branch may be a
-  later `gsd-path/M00N` created at the then-current remote-default SHA. Adopt
+  branch (`feature/milestone-001`); after a shipped milestone STATE.branch may be a
+  later `feature/milestone-00n` created at the then-current remote-default SHA. Adopt
   the proven worktree and default checkout; do not parse STATE log prose or
   create another primary worktree.
 - With the dispatch driver, let `round` perform the entry transition below.

@@ -68,9 +68,9 @@ else:
         from scripts import worktree_paths
 
 
-TASK_BRANCH_PREFIX = "gsd-path-task/"
+TASK_BRANCH_PREFIX = "chore/task-"
 TASK_AUTHORIZATION_PREFIX = "refs/gsd-path/task-authorizations/"
-VERIFY_BRANCH_PREFIX = "gsd-path-verify/"
+VERIFY_BRANCH_PREFIX = "chore/verify-"
 DISCUSSION_PATHS = frozenset(
     {".project/discuss/DIALOGUE.md", ".project/discuss/ANSWERS.md"}
 )
@@ -137,7 +137,7 @@ def require_bound(repo: Path) -> str:
     branch = require_attached(repo)
     if not is_bound_branch(branch):
         raise IsolationError(
-            f"primary branch must be canonical gsd-path/M00N, found {branch}"
+            f"primary branch must be canonical feature/milestone-00n, found {branch}"
         )
     return branch
 
@@ -175,7 +175,7 @@ def common_git_dir(repo: Path) -> Path:
 
 def sidecar_root(primary: Path, kind: str, name: str, *, pin: bool = False) -> Path:
     try:
-        return worktree_paths.worktree_path(primary, kind, name, pin=pin)
+        return worktree_paths.worktree_path(primary, kind, _common.branch_slug(name) if kind in {"task", "verify"} else name, pin=pin)
     except (ValueError, OSError) as error:
         raise IsolationError(str(error)) from error
 
@@ -199,7 +199,11 @@ def validate_name(name: str, label: str) -> str:
 
 
 def task_branch_name(task_id: str) -> str:
-    return f"{TASK_BRANCH_PREFIX}{validate_task_id(task_id)}"
+    return f"{TASK_BRANCH_PREFIX}{_common.branch_slug(validate_task_id(task_id))}"
+
+
+def member_task_branch_name(project: str, task_id: str) -> str:
+    return TASK_BRANCH_PREFIX + _common.branch_slug(project + "-" + validate_task_id(task_id))
 
 
 def task_authorization_ref(task_id: str) -> str:
@@ -208,14 +212,20 @@ def task_authorization_ref(task_id: str) -> str:
 
 def _delete_task_authorization(primary: Path, branch: str) -> None:
     if branch.startswith(TASK_BRANCH_PREFIX):
-        task_id = validate_task_id(branch.removeprefix(TASK_BRANCH_PREFIX))
-        deleted = run_git(
-            primary, "update-ref", "-d", task_authorization_ref(task_id)
-        )
+        slug = branch.removeprefix(TASK_BRANCH_PREFIX)
+        refs = git_output(primary, "for-each-ref", "--format=%(refname)",
+                          TASK_AUTHORIZATION_PREFIX + "*").splitlines()
+        matches = [ref for ref in refs
+                   if _common.branch_slug(ref.removeprefix(TASK_AUTHORIZATION_PREFIX)) == slug]
+        if len(matches) > 1:
+            raise IsolationError("task branch has ambiguous authorizations")
+        if not matches:
+            return
+        deleted = run_git(primary, "update-ref", "-d", matches[0])
         if deleted.returncode != 0:
             detail = deleted.stderr.strip() or deleted.stdout.strip()
             raise IsolationError(
-                detail or f"could not clear task authorization for {task_id}"
+                detail or f"could not clear task authorization for {slug}"
             )
 
 
@@ -241,11 +251,6 @@ def authorized_task_worktree(worktree: Path, bound_branch: str) -> bool:
         ):
             return False
         head = current_sha(worktree)
-        authorization = run_git(
-            worktree, "rev-parse", "--verify", task_authorization_ref(task_id)
-        )
-        if authorization.returncode != 0 or authorization.stdout.strip() != head:
-            return False
         matches = []
         tasks_dir = worktree / ".project" / "tasks"
         if tasks_dir.is_symlink() or tasks_dir.resolve() != tasks_dir:
@@ -254,11 +259,19 @@ def authorized_task_worktree(worktree: Path, bound_branch: str) -> bool:
             if task_path.is_symlink() or not task_path.is_file():
                 return False
             fields, error = task_frontmatter(task_path.read_text(encoding="utf-8"))
-            if error is None and fields is not None and fields.get("id") == task_id:
-                matches.append(fields)
+            if error is None and fields is not None:
+                candidate = fields.get("id")
+                if (isinstance(candidate, str) and TASK_ID_RE.fullmatch(candidate)
+                        and _common.branch_slug(candidate) == task_id):
+                    matches.append(fields)
         if len(matches) != 1:
             return False
         fields = matches[0]
+        authorization = run_git(
+            worktree, "rev-parse", "--verify", task_authorization_ref(str(fields["id"]))
+        )
+        if authorization.returncode != 0 or authorization.stdout.strip() != head:
+            return False
         agent = fields.get("agent")
         return (
             fields.get("status") == "in-progress"
@@ -273,7 +286,7 @@ def authorized_task_worktree(worktree: Path, bound_branch: str) -> bool:
 
 
 def verify_branch_name(name: str) -> str:
-    return f"{VERIFY_BRANCH_PREFIX}{validate_name(name, 'verify name')}"
+    return f"{VERIFY_BRANCH_PREFIX}{_common.branch_slug(validate_name(name, 'verify name'))}"
 
 
 def relative_posix(path: str) -> str:
@@ -738,7 +751,7 @@ def member_bound_checkout(coordinator: Path, member: str) -> Dict[str, object]:
     """Path's own checkout of a locked member's bound branch, outside the team's checkout."""
     checkout, _, entry = _member_context(coordinator, member)
     branch = entry["branch"]
-    destination = sidecar_root(checkout, "bound", branch.removeprefix("gsd-path/"), pin=True)
+    destination = sidecar_root(checkout, "bound", branch.removeprefix("feature/"), pin=True)
     holders = [path for path, ref in _registered_worktrees(checkout).items() if ref == f"refs/heads/{branch}"]
     if holders and holders != [destination.resolve()]:
         raise IsolationError(f"{branch} is checked out outside Path's workspace: {holders[0]}")
@@ -773,7 +786,7 @@ def isolate_member_task(coordinator: Path, member: str, task_id: str) -> Dict[st
     checkout, project, _ = _member_context(coordinator, member)
     member_base = current_sha(bound_checkout)
     name = f"{project}-{task_id}"
-    branch = f"{TASK_BRANCH_PREFIX}{name}"
+    branch = f"{TASK_BRANCH_PREFIX}{_common.branch_slug(name)}"
     destination = sidecar_root(checkout, "task", name, pin=True)
     create_named_worktree(checkout, branch, destination, member_base, bound=str(bound["branch"]))
     return {
@@ -836,7 +849,7 @@ def retire_member_task(
     """
     checkout, project, entry = _member_context(coordinator, member)
     name = f"{project}-{validate_task_id(task_id)}"
-    ref = f"refs/heads/{TASK_BRANCH_PREFIX}{name}"
+    ref = f"refs/heads/{TASK_BRANCH_PREFIX}{_common.branch_slug(name)}"
     tip = run_git(checkout, "rev-parse", "--verify", "--quiet", ref)
     # Landed commits arrive on the bound branch by cherry-pick, so compare patches.
     cherry = run_git(checkout, "cherry", f"refs/heads/{entry['branch']}", ref) if tip.returncode == 0 else None
@@ -891,7 +904,8 @@ def _member_hook_configs(coordinator: Path) -> Dict[str, str]:
                        f'"& \'{windows_interpreter}\' \'{windows_guard}\'"')
     formats = {
         ".claude/settings.json": {"hooks": {"PreToolUse": [
-            {"matcher": ".*", "hooks": [{"type": "command", "command": command}]}]}},
+            {"matcher": ".*", "hooks": [{"type": "command", "command": command}]}]},
+            "attribution": {"commit": "", "pr": "", "sessionUrl": False}},
         ".codex/hooks.json": {"hooks": {"PreToolUse": [
             {"matcher": ".*", "hooks": [{"type": "command", "command": command,
                                             "commandWindows": command_windows}]}]}},
@@ -901,8 +915,13 @@ def _member_hook_configs(coordinator: Path) -> Dict[str, str]:
     configs = {}
     for relative, content in formats.items():
         installed = coordinator / relative
-        if installed.is_file() and not installed.is_symlink() and "guard_hook.py" in installed.read_text(encoding="utf-8"):
+        if not installed.is_file() or installed.is_symlink():
+            continue
+        text = installed.read_text(encoding="utf-8")
+        if "guard_hook.py" in text:
             configs[relative] = json.dumps(content, indent=2) + "\n"
+        elif relative == ".claude/settings.json":
+            configs[relative] = json.dumps({"attribution": {"commit": "", "pr": "", "sessionUrl": False}}, indent=2) + "\n"
     return configs
 
 
@@ -935,7 +954,7 @@ def _write_member_hook_configs(coordinator: Path, checkout: Path, sidecar: Path)
 def ensure_member_hooks(coordinator: Path, member: str, task_id: str) -> None:
     checkout, project, _ = _member_context(coordinator, member)
     sidecar = sidecar_root(checkout, "task", f"{project}-{validate_task_id(task_id)}")
-    branch = f"{TASK_BRANCH_PREFIX}{project}-{task_id}"
+    branch = member_task_branch_name(project, task_id)
     if require_attached(sidecar) != branch:
         raise IsolationError(f"member task sidecar is not on its task branch: {sidecar}")
     _write_member_hook_configs(coordinator, checkout, sidecar)
@@ -990,7 +1009,7 @@ def activate_member_task(
         raise IsolationError("task activation file must stay under .project/tasks/")
     checkout, project, entry = _member_context(coordinator, member)
     sidecar = sidecar_root(checkout, "task", f"{project}-{validate_task_id(task_id)}")
-    branch = f"{TASK_BRANCH_PREFIX}{project}-{task_id}"
+    branch = member_task_branch_name(project, task_id)
     if require_attached(sidecar) != branch:
         raise IsolationError(f"member task sidecar is not on its task branch: {sidecar}")
     member_base = current_sha(sidecar)
@@ -1037,7 +1056,7 @@ def retained_member_task(
 ) -> Optional[Dict[str, object]]:
     """Inspect an interrupted member isolate before another dispatch uses its name."""
     checkout, project, _ = _member_context(coordinator, member)
-    branch = f"{TASK_BRANCH_PREFIX}{project}-{validate_task_id(task_id)}"
+    branch = member_task_branch_name(project, task_id)
     sidecar = sidecar_root(checkout, "task", f"{project}-{task_id}")
     tip = run_git(checkout, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").stdout.strip()
     authorization = run_git(checkout, "rev-parse", "--verify", "--quiet",
@@ -1106,7 +1125,7 @@ def _member_copy_text(journal: Dict[str, object], coordinator: Path) -> str:
             "in-progress", journal["base"], journal["member_base"]):
         raise IsolationError("member task copy is not the activated task for this landing")
     if (fields.get("worktree"), fields.get("task_branch")) != (
-            str(sidecar), f"{TASK_BRANCH_PREFIX}{project}-{journal['task_id']}"):
+            str(sidecar), member_task_branch_name(project, str(journal["task_id"]))):
         raise IsolationError("member task copy is not the activated task for this landing")
     return text
 
@@ -1331,7 +1350,7 @@ def land_member(
         checkout, project, _ = _member_context(coordinator, member)
         bound = Path(member_bound_checkout(coordinator, member)["checkout"])
         sidecar = sidecar_root(checkout, "task", f"{project}-{task_id}")
-        if require_attached(sidecar) != f"{TASK_BRANCH_PREFIX}{project}-{task_id}":
+        if require_attached(sidecar) != member_task_branch_name(project, task_id):
             raise IsolationError(f"member task sidecar is not on its task branch: {sidecar}")
         resolved_base = require_commit(coordinator, require_full_sha(base))
         contract_title, allowed = _member_contract(coordinator, resolved_base, task_file, member)
@@ -1465,7 +1484,7 @@ def isolate_member_verify(coordinator: Path, sidecar: Path) -> Dict[str, Dict[st
         for item in entries:
             checkout, project, entry = _member_context(coordinator, item["name"])
             tip = git_output(checkout, "rev-parse", "--verify", f"refs/heads/{entry['branch']}^{{commit}}")
-            branch = f"{VERIFY_BRANCH_PREFIX}{project}-{entry['name']}"
+            branch = verify_branch_name(project + "-" + str(entry["name"]))
             destination = sidecar.parent / entry["name"]
             create_named_worktree(checkout, branch, destination, tip, bound=entry["branch"])
             created[entry["name"]] = {"checkout": str(checkout), "worktree": str(destination),
@@ -2976,7 +2995,7 @@ def _recover_unfinished_member_task(coordinator: Path, task_id: str, member: str
         checkout, project, _ = _member_context(coordinator, member)
     except IsolationError as error:
         return {"verdict": "block", "reason": str(error)}
-    branch = f"{TASK_BRANCH_PREFIX}{project}-{task_id}"
+    branch = member_task_branch_name(project, task_id)
     retained = run_git(checkout, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
     if retained:
         return {"verdict": "resume", "member": member, "task_branch": None, "worktree": None,
@@ -3532,7 +3551,7 @@ def recover(primary: Path, tasks_dir: Path) -> Dict[str, object]:
         }
     history = _first_parent_history(primary, bound)
     branches = set(
-        git_output(primary, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{TASK_BRANCH_PREFIX}").splitlines()
+        git_output(primary, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{TASK_BRANCH_PREFIX}*").splitlines()
     )
     tasks = [
         _recover_task(primary, path, history, branches, head, bound)
@@ -3565,7 +3584,7 @@ def verify_landed_task_files(
             primary,
             "for-each-ref",
             "--format=%(refname:short)",
-            f"refs/heads/{TASK_BRANCH_PREFIX}",
+            f"refs/heads/{TASK_BRANCH_PREFIX}*",
         ).splitlines()
     )
     tasks = []

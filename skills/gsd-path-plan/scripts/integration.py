@@ -71,9 +71,6 @@ else:
     from archive_milestone import ArchiveError
 
 
-PR_CREDIT_LINE = (
-    "PR prepared with [GSD Path](https://github.com/open-gsd/gsd-path)."
-)
 GITHUB_HOST = "github.com"
 PullRequestRepository = Union[str, azure_repos.Repository]
 
@@ -185,7 +182,7 @@ def optional_ref(project: Path, ref: str) -> Optional[str]:
 
 def integration_names(project: Path, archive_name: str, *, pin: bool = False) -> tuple[str, Path]:
     identifier = milestone_id(milestone_number(archive_name))
-    branch = f"gsd-path-integrate/{identifier}"
+    branch = f"chore/integrate-{identifier.lower()}"
     try:
         worktree = worktree_paths.worktree_path(project, "integrate", identifier, pin=pin)
     except (ValueError, OSError) as error:
@@ -753,10 +750,7 @@ def find_pull_request(
 def pull_request_body(
     archive_path: str, ship_commit: str, branch: str, base: str = "main"
 ) -> str:
-    return (
-        f"{integrate_commit_body(archive_path, ship_commit, base, branch)}"
-        f"\n\n---\n{PR_CREDIT_LINE}"
-    )
+    return integrate_commit_body(archive_path, ship_commit, base, branch)
 
 
 def update_pull_request_body(
@@ -773,15 +767,19 @@ def update_pull_request_body(
         else pull_request_body(archive_path, ship_commit, branch, base)
     )
     current = pull.get("body")
-    if isinstance(current, str) and current.rstrip().endswith(PR_CREDIT_LINE):
-        return pull
+    if isinstance(current, str) and current.strip():
+        clean = _common.without_tool_attribution(current)
+        if clean == current:
+            return pull
+        if clean.strip():
+            expected = clean
     if isinstance(repository, azure_repos.Repository):
         updated = azure_call(azure_repos.update_body, repository, pull["number"], expected)
         if updated["number"] != pull["number"]:
             raise ArchiveError("updated Azure pull request names a different id")
         require_pull_request_identity(repository, updated, branch, ship_commit, base)
         if updated.get("body") != expected:
-            raise ArchiveError("updated Azure pull request is missing the credit footer")
+            raise ArchiveError("updated Azure pull request body does not match the sanitized content")
         return updated
     response = github_api_json(
         f"repos/{repository}/pulls/{pull['number']}",
@@ -793,7 +791,7 @@ def update_pull_request_body(
     updated = require_pull_request_shape(response)
     require_pull_request_identity(repository, updated, branch, ship_commit, base)
     if updated.get("body") != expected:
-        raise ArchiveError("updated pull request is missing the credit footer")
+        raise ArchiveError("updated pull request body does not match the sanitized content")
     return updated
 
 
@@ -1497,9 +1495,9 @@ def validate_integrated(
     if ship_subject_text != ship_subject(archive_name):
         raise ArchiveError("current milestone ship commit subject is not canonical")
     if not is_bound_branch(bound_branch):
-        raise ArchiveError(f"bound branch {bound_branch!r} is not gsd-path/M00N")
+        raise ArchiveError(f"bound branch {bound_branch!r} is not feature/milestone-00n")
     if is_bound_branch(bound_branch) and bound_branch != expected_branch:
-        expected_milestone = expected_branch.removeprefix("gsd-path/")
+        expected_milestone = expected_branch.removeprefix("feature/milestone-")
         raise ArchiveError(
             f"bound branch {bound_branch} does not match archive milestone {expected_milestone}"
         )
@@ -1735,7 +1733,7 @@ def _member_names(coordinator: Path, member: str, archive_path: str) -> tuple[Pa
         raise ArchiveError(str(error)) from error
     archive_name = PurePosixPath(archive_path).name
     identifier = milestone_id(milestone_number(archive_name))
-    bound = f"gsd-path/{project}-{identifier}"
+    bound = f"feature/{_common.branch_slug(project)}-milestone-{int(identifier[1:]):03d}"
     subject = f"integrate: {project} {identifier} — merge {bound} into {default}"
     return checkout, project, bound, subject, f"milestone/{project}-{archive_name}", default
 
@@ -1794,7 +1792,7 @@ def _require_member_merge(checkout: Path, commit: str, subject: str, body: str, 
 def _create_member_merge(checkout: Path, project: str, archive_path: str, subject: str, body: str,
                          reviewed_head: str, origin_main: str) -> str:
     identifier = milestone_id(milestone_number(PurePosixPath(archive_path).name))
-    branch = f"gsd-path-integrate/{project}-{identifier}"
+    branch = f"chore/integrate-{_common.branch_slug(project)}-{identifier.lower()}"
     try:
         worktree = worktree_paths.worktree_path(checkout, "integrate", f"{project}-{identifier}", pin=True)
     except (ValueError, OSError) as error:
@@ -1895,7 +1893,7 @@ def integrate_member(coordinator: Path, member: str, archive_path: str, reviewed
             run_git(checkout, "update-ref", f"refs/remotes/origin/tags/{tag_name}", tag_object),
             "refresh member milestone-tag ref")
     identifier = milestone_id(milestone_number(PurePosixPath(archive_path).name))
-    delete_integration_branch(checkout, f"gsd-path-integrate/{project}-{identifier}", merge)
+    delete_integration_branch(checkout, f"chore/integrate-{_common.branch_slug(project)}-{identifier.lower()}", merge)
     return validate_member_integrated(coordinator, member, archive_path, reviewed_head)
 
 
@@ -1912,11 +1910,11 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
         _publish_member_bound(checkout, project, member, bound, reviewed_head)
         if pull is None:
             pull = create_provider_pull_request(repository, bound, default, subject,
-                                                f"{body}\n\n---\n{PR_CREDIT_LINE}", reviewed_head)
+                                                body, reviewed_head)
         else:
             pull = update_pull_request_body(
                 repository, pull, archive_path, reviewed_head, bound,
-                f"{body}\n\n---\n{PR_CREDIT_LINE}", default,
+                body, default,
             )
         require_pull_request_merge_provenance(repository, pull["number"])
         return {"status": "awaiting-merge", "mode": "pull-request", "member": member,
@@ -1929,7 +1927,7 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
     require_pull_request_merge(checkout, merge, reviewed_head, f"origin/{default}")
     pull = update_pull_request_body(
         repository, pull, archive_path, reviewed_head, bound,
-        f"{body}\n\n---\n{PR_CREDIT_LINE}", default,
+        body, default,
     )
     message = member_pull_request_tag_message(tag_name, pull["html_url"], reviewed_head, merge)
     tag_object, tag_published = ensure_integration_tag(checkout, tag_name, merge, message)
@@ -2011,7 +2009,7 @@ def retire_member(coordinator: Path, member: str, archive_path: str, reviewed_he
     if holder is not None:
         try:
             expected = worktree_paths.worktree_path(
-                checkout, "bound", bound.removeprefix("gsd-path/")
+                checkout, "bound", bound.removeprefix("feature/")
             ).resolve()
         except (ValueError, OSError) as error:
             raise ArchiveError(str(error)) from error

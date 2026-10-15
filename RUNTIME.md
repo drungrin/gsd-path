@@ -50,7 +50,7 @@ deterministic loop so the orchestrating model only supplies judgment. `round`
 and `finish` run recovery against Git and the task files before processing
 dispatch records under the Git common directory
 (`gsd-path/dispatch/<milestone slug>/<task>/attempt-N/`). The milestone slug
-replaces `/` in the bound branch with `-` (for example, `gsd-path/M001`
+replaces `/` in the bound branch with `-` (for example, `feature/milestone-001`
 becomes `gsd-path-M001`). `answer` and `status`
 read the newest attempt records. Records are keyed by the bound branch, so a
 new milestone starts with no attempts and the previous milestone's records

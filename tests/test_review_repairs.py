@@ -27,7 +27,7 @@ class RepairEvidenceTests(unittest.TestCase):
         run_git(self.repo, "init", "-q")
         run_git(self.repo, "config", "user.name", "Test")
         run_git(self.repo, "config", "user.email", "test@example.com")
-        run_git(self.repo, "switch", "-q", "-c", "gsd-path/M001")
+        run_git(self.repo, "switch", "-q", "-c", "feature/milestone-001")
         self.project = self.repo / ".project"
         for directory in ("tasks", "plan", "review"):
             (self.project / directory).mkdir(parents=True, exist_ok=True)

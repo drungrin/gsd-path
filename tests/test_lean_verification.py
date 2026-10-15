@@ -189,7 +189,7 @@ Walkthrough:
             "        output = subprocess.check_output([sys.executable, 'hello.py'], text=True)\n"
             "        self.assertEqual(output, 'hello\\n')\n".encode("utf-8")
         )
-        git(root, "init", "-q", "-b", "gsd-path/M001")
+        git(root, "init", "-q", "-b", "feature/milestone-001")
         # Finish automatic housekeeping before TemporaryDirectory removes Git objects.
         git(root, "config", "gc.autoDetach", "false")
         git(root, "config", "user.email", "test@example.test")

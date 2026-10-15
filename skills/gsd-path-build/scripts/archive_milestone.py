@@ -582,7 +582,7 @@ def resolved_archive_target(
 ) -> Path:
     branch = parsed_state.branch
     if not isinstance(branch, str) or not is_bound_branch(branch):
-        raise ArchiveError("STATE.branch must be a canonical gsd-path/M00N branch")
+        raise ArchiveError("STATE.branch must be a canonical feature/milestone-00n branch")
     expected_number = milestone_number(branch)
     configured = parsed_state.archive
     entries = archive_sequence_entries(project)

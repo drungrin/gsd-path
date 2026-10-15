@@ -684,7 +684,7 @@ def _member_status(repo: Path, state: Mapping[str, object]) -> Optional[list]:
     if lock is None:
         return None
     closed = {}
-    match = re.fullmatch(r"gsd-path/M(\d{3,})", str(state.get("branch") or ""))
+    match = re.fullmatch(r"feature/milestone-(\d{3,})", str(state.get("branch") or ""))
     if match is not None:
         common = Path(_run_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
         closed = {row["name"]: row.get("status") for row in members.milestone_member_close(common, int(match.group(1)))}
@@ -859,7 +859,7 @@ def _selected_initial_branch(project: Path, state: PipelineState) -> str:
         milestone_id, slug = active[0]
         if state.milestone is not None and state.milestone != slug:
             raise PipelineStateError("STATE.milestone does not match active roadmap entry")
-        return f"gsd-path/{milestone_id}"
+        return f"feature/milestone-{int(milestone_id[1:]):03d}"
 
     archive = project / "archive"
     numbers: list[int] = []
@@ -879,7 +879,7 @@ def _selected_initial_branch(project: Path, state: PipelineState) -> str:
                 raise PipelineStateError(f"archive root has invalid entry: {child}")
             numbers.append(int(match.group(1)))
     number = max(numbers) + 1 if numbers else 1
-    return f"gsd-path/M{number:03d}"
+    return f"feature/milestone-{number:03d}"
 
 
 def _route_result(

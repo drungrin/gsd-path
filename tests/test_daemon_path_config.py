@@ -24,8 +24,8 @@ class DashboardConfigTests(unittest.TestCase):
         self.home = Path(self.tmp.name).resolve()
         self.repo = self.home / 'project'
         (self.repo / '.project').mkdir(parents=True)
-        subprocess.run(['git', 'init', '-b', 'gsd-path/M001', str(self.repo)], check=True, capture_output=True)
-        (self.repo / '.project/STATE.md').write_bytes(state_text(phase='define', status='active', branch='gsd-path/M001').encode("utf-8"))
+        subprocess.run(['git', 'init', '-b', 'feature/milestone-001', str(self.repo)], check=True, capture_output=True)
+        (self.repo / '.project/STATE.md').write_bytes(state_text(phase='define', status='active', branch='feature/milestone-001').encode("utf-8"))
         env = patch.dict(os.environ, {'HOME': str(self.home), 'USERPROFILE': str(self.home)})
         env.start()
         self.addCleanup(env.stop)

@@ -24,11 +24,11 @@ class PathConfigTests(unittest.TestCase):
         self.home = Path(self.tmp.name)
         self.repo = self.home / 'repo'
         self.repo.mkdir()
-        subprocess.run(['git', 'init', '-b', 'gsd-path/M001', str(self.repo)],
+        subprocess.run(['git', 'init', '-b', 'feature/milestone-001', str(self.repo)],
                        check=True, capture_output=True)
         (self.repo / '.project').mkdir()
         self.state = self.repo / '.project/STATE.md'
-        self.state.write_bytes(state_text(phase='define', status='active', branch='gsd-path/M001').encode("utf-8"))
+        self.state.write_bytes(state_text(phase='define', status='active', branch='feature/milestone-001').encode("utf-8"))
         self.env = patch.dict(os.environ, {'HOME': str(self.home), 'USERPROFILE': str(self.home)})
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -65,7 +65,7 @@ class PathConfigTests(unittest.TestCase):
         self.cli('set', 'integration', 'pull-request')
         shown = self.cli('show')
         self.assertEqual(shown['settings']['integration']['value'], 'pull-request')
-        self.state.write_bytes(state_text(phase='build', status='active', branch='gsd-path/M001').encode("utf-8"))
+        self.state.write_bytes(state_text(phase='build', status='active', branch='feature/milestone-001').encode("utf-8"))
         before = self.state.read_bytes()
         self.assertIn('locked', self.cli('set', 'integration', 'pull-request', ok=False)['error'])
         self.assertEqual(self.state.read_bytes(), before)
@@ -121,11 +121,11 @@ class PathConfigTests(unittest.TestCase):
     def test_closed_branch_remains_locked_if_live_state_is_rewritten(self):
         from scripts.pipeline_git import ship_subject
         self.state.write_bytes(state_text(phase='shipped', status='done', milestone='demo',
-                              branch='gsd-path/M001', archive='.project/archive/001-demo').encode("utf-8"))
+                              branch='feature/milestone-001', archive='.project/archive/001-demo').encode("utf-8"))
         for args in [('add', '.'), ('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
                                   'commit', '-m', ship_subject('001-demo'))]:
             subprocess.run(['git', '-C', str(self.repo), *args], check=True, capture_output=True)
-        self.state.write_bytes(state_text(phase='define', status='active', branch='gsd-path/M001').encode("utf-8"))
+        self.state.write_bytes(state_text(phase='define', status='active', branch='feature/milestone-001').encode("utf-8"))
         before = self.state.read_bytes()
         for key, value in [('integration', 'pull-request'), ('review_panel', 'detected'),
                            ('models.roles.coder.model', 'example')]:
@@ -138,7 +138,7 @@ class PathConfigTests(unittest.TestCase):
         from scripts.bootstrap_repository import BootstrapRequest, render_state
         self.profile({'integration': 'pull-request'})
         request = BootstrapRequest(str(self.home), 'owner', 'demo', 'private',
-                                   str(self.repo), str(self.repo), 'gsd-path/M001', None)
+                                   str(self.repo), str(self.repo), 'feature/milestone-001', None)
         text = render_state(ROOT / 'skills/gsd-path/templates/state.md', request)
         self.assertIn('integration_default: pull-request', text)
         self.assertIn('integration: pull-request', text)

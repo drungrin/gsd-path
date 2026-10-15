@@ -88,7 +88,7 @@ def repo_with_collect_journal(
     root: Path, *, stage: str, previous_primary: bool = False
 ) -> Path:
     repo = root / "repo"
-    run_git(root, "init", "-b", "gsd-path/M001", str(repo))
+    run_git(root, "init", "-b", "feature/milestone-001", str(repo))
     project = repo / ".project"
     project.mkdir()
     (project / "STATE.md").write_bytes(
@@ -96,7 +96,7 @@ def repo_with_collect_journal(
             milestone="first",
             phase="build",
             status="active",
-            branch="gsd-path/M001",
+            branch="feature/milestone-001",
         ).encode("utf-8"),
     )
     run_git(repo, "add", ".project/STATE.md")
@@ -125,7 +125,7 @@ def repo_with_collect_journal(
                 ),
                 "source_worktree": str(repo.resolve()),
                 "base": head,
-                "branch": "gsd-path-verify/demo",
+                "branch": "chore/verify-demo",
                 "source": "artifact.md",
                 "destination": ".project/review/artifact.md",
                 "expected_destination": None,
@@ -175,14 +175,14 @@ class PipelineStateTests(unittest.TestCase):
     def test_authorized_task_worktree_routes_build_but_not_over_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path-task/T001")
+            run_git(repo, "init", "-b", "chore/task-t001")
             project = repo / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
                 state_text(
                     phase="build",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
             with mock.patch.object(
@@ -234,7 +234,7 @@ class PipelineStateTests(unittest.TestCase):
                 self.assertEqual(state.default_branch, name)
 
     def test_state_rejects_unusable_default_branch(self) -> None:
-        for name in ("gsd-path/M001", "gsd-path-integrate/M001", "-main", "a..b",
+        for name in ("feature/milestone-001", "chore/integrate-m001", "-main", "a..b",
                      "main.lock", "main/", "null", "ma:in"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 with self.assertRaisesRegex(
@@ -264,15 +264,15 @@ class PipelineStateTests(unittest.TestCase):
     def test_transition_keeps_and_cannot_set_default_branch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             (repo / ".project").mkdir()
             path = repo / ".project" / "STATE.md"
             path.write_bytes(state_text(
-                phase="plan", status="active", branch="gsd-path/M001",
+                phase="plan", status="active", branch="feature/milestone-001",
                 default_branch="master",
             ).encode("utf-8"))
             expected = {"phase": "plan", "status": "active",
-                        "branch": "gsd-path/M001", "archive": None}
+                        "branch": "feature/milestone-001", "archive": None}
 
             with self.assertRaisesRegex(pipeline_state.PipelineStateError, "unsupported"):
                 pipeline_state.transition_state(
@@ -320,7 +320,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_configure_integration_updates_default_and_milestone_before_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             project = repo / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
@@ -328,7 +328,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="plan",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
 
@@ -379,7 +379,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_explicit_milestone_override_survives_matching_default_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             project = repo / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
@@ -387,7 +387,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="plan",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
 
@@ -404,7 +404,7 @@ class PipelineStateTests(unittest.TestCase):
         for phase, status in positions:
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
-                run_git(repo, "init", "-b", "gsd-path/M001")
+                run_git(repo, "init", "-b", "feature/milestone-001")
                 project = repo / ".project"
                 project.mkdir()
                 archive = (
@@ -415,7 +415,7 @@ class PipelineStateTests(unittest.TestCase):
                         milestone="first",
                         phase=phase,
                         status=status,
-                        branch="gsd-path/M001",
+                        branch="feature/milestone-001",
                         archive=archive,
                     ).encode("utf-8"),
                 )
@@ -431,7 +431,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_lookahead_cannot_change_project_integration_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             next_project = repo / ".project" / "next"
             next_project.mkdir(parents=True)
             state_path = next_project / "STATE.md"
@@ -460,7 +460,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_transition_cannot_bypass_integration_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             project = repo / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
@@ -468,7 +468,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="plan",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                     integration_default="direct",
                     integration="direct",
                 ).encode("utf-8"),
@@ -483,7 +483,7 @@ class PipelineStateTests(unittest.TestCase):
                     {
                         "phase": "plan",
                         "status": "active",
-                        "branch": "gsd-path/M001",
+                        "branch": "feature/milestone-001",
                         "archive": None,
                         "integration": "direct",
                     },
@@ -504,7 +504,7 @@ class PipelineStateTests(unittest.TestCase):
 
             self.assertEqual(validated["status"], "valid")
             self.assertEqual(routed["route"]["action"], "bind-initial")
-            self.assertEqual(routed["route"]["branch"], "gsd-path/M001")
+            self.assertEqual(routed["route"]["branch"], "feature/milestone-001")
 
     def test_status_reports_bind_initial_before_git_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -516,7 +516,7 @@ class PipelineStateTests(unittest.TestCase):
             status = pipeline_state.status_state(repo)
 
             self.assertEqual("bind-initial", status["route"]["action"])
-            self.assertEqual("gsd-path/M001", status["route"]["branch"])
+            self.assertEqual("feature/milestone-001", status["route"]["branch"])
             self.assertEqual(
                 {
                     "branch": None,
@@ -541,9 +541,9 @@ class PipelineStateTests(unittest.TestCase):
             repo = Path(tmp)
             fixture = DiscussionRecordTests()
             fixture.make_repo(repo)
-            run_git(repo, "checkout", "-b", "gsd-path/M001")
+            run_git(repo, "checkout", "-b", "feature/milestone-001")
             state = repo / ".project/STATE.md"
-            state.write_bytes(state_text(phase="define", status="done", branch="gsd-path/M001").encode("utf-8"))
+            state.write_bytes(state_text(phase="define", status="done", branch="feature/milestone-001").encode("utf-8"))
             intent = repo / ".project/intent/INTENT.md"
             intent.parent.mkdir()
             intent.write_bytes("# Intent\n\nLane: standard\n".encode("utf-8"))
@@ -562,13 +562,13 @@ class PipelineStateTests(unittest.TestCase):
                 with self.assertRaisesRegex(pipeline_state.PipelineStateError, "pending discussion"):
                     pipeline_state.transition_state(
                         repo,
-                        {"phase": "define", "status": "done", "branch": "gsd-path/M001", "archive": None},
+                        {"phase": "define", "status": "done", "branch": "feature/milestone-001", "archive": None},
                         {"phase": "research", "status": "active"},
                         "research started",
                     )
                 self.assertEqual(state.read_bytes(), before)
 
-            state.write_bytes(state_text(phase="decide", status="done", branch="gsd-path/M001").encode("utf-8"))
+            state.write_bytes(state_text(phase="decide", status="done", branch="feature/milestone-001").encode("utf-8"))
             synthesis = repo / ".project/research/SYNTHESIS.md"
             synthesis.parent.mkdir(exist_ok=True)
             synthesis.write_bytes(SETTLED_SYNTHESIS.encode("utf-8"))
@@ -577,7 +577,7 @@ class PipelineStateTests(unittest.TestCase):
             self.assertEqual(result["route"]["phase"], "plan")
             entered = pipeline_state.transition_state(
                 repo,
-                {"phase": "decide", "status": "done", "branch": "gsd-path/M001", "archive": None},
+                {"phase": "decide", "status": "done", "branch": "feature/milestone-001", "archive": None},
                 {"phase": "plan", "status": "active"},
                 "planning started",
             )
@@ -586,7 +586,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_status_reports_route_without_mutating(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"
@@ -597,7 +597,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="plan",
                     status="done",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
             (project / "intent" / "INTENT.md").write_bytes(
@@ -623,13 +623,13 @@ class PipelineStateTests(unittest.TestCase):
             origin = root / "origin.git"
             subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
             repo = root / "repo"
-            run_git(root, "init", "-b", "gsd-path/M001", str(repo))
+            run_git(root, "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             project = repo / ".project"
             (project / "intent").mkdir(parents=True)
             (project / "STATE.md").write_bytes(
-                state_text(milestone="first", branch="gsd-path/M001").encode("utf-8"),
+                state_text(milestone="first", branch="feature/milestone-001").encode("utf-8"),
             )
             (project / "intent" / "INTENT.md").write_bytes(
                 "# Intent — first\n\nLane: quick\n".encode("utf-8")
@@ -638,11 +638,11 @@ class PipelineStateTests(unittest.TestCase):
             run_git(repo, "commit", "-m", "fixture: published ancestor")
             published = run_git(repo, "rev-parse", "HEAD").stdout.strip()
             run_git(repo, "remote", "add", "origin", str(origin))
-            run_git(repo, "push", "-u", "origin", "gsd-path/M001")
+            run_git(repo, "push", "-u", "origin", "feature/milestone-001")
             (repo / "later.txt").write_bytes("later\n".encode("utf-8"))
             run_git(repo, "add", "later.txt")
             run_git(repo, "commit", "-m", "fixture: later remote tip")
-            run_git(repo, "push", "origin", "gsd-path/M001")
+            run_git(repo, "push", "origin", "feature/milestone-001")
             run_git(repo, "reset", "--hard", published)
 
             self.assertTrue(pipeline_state.status_state(repo)["git"]["published"])
@@ -700,7 +700,7 @@ class PipelineStateTests(unittest.TestCase):
             origin = root / "origin.git"
             subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
             repo = root / "repo"
-            run_git(root, "init", "-b", "gsd-path/M001", str(repo))
+            run_git(root, "init", "-b", "feature/milestone-001", str(repo))
             project = repo / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
@@ -708,7 +708,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="build",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
             run_git(repo, "add", ".project/STATE.md")
@@ -723,7 +723,7 @@ class PipelineStateTests(unittest.TestCase):
                 "fixture",
             )
             run_git(repo, "remote", "add", "origin", str(origin))
-            run_git(repo, "push", "-u", "origin", "gsd-path/M001")
+            run_git(repo, "push", "-u", "origin", "feature/milestone-001")
             original = pipeline_state._run_git
 
             def fail_ancestry(path, *arguments, **kwargs):
@@ -751,7 +751,7 @@ class PipelineStateTests(unittest.TestCase):
                 routed = pipeline_state.route_state(repo)
 
                 self.assertEqual(routed["route"]["action"], "bind-initial")
-                self.assertEqual(routed["route"]["branch"], "gsd-path/M001")
+                self.assertEqual(routed["route"]["branch"], "feature/milestone-001")
 
     def test_validate_rejects_unowned_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -770,7 +770,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_validate_rejects_m000_branch_and_archive(self) -> None:
         cases = (
             (
-                state_text(branch="gsd-path/M000"),
+                state_text(branch="feature/milestone-000"),
                 "invalid branch",
             ),
             (
@@ -778,7 +778,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="shipped",
                     status="done",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                     archive=".project/archive/000-first/",
                 ),
                 "invalid archive",
@@ -830,7 +830,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_validate_enforces_lookahead_context(self) -> None:
         cases = (
             (
-                state_text(branch="gsd-path/M002"),
+                state_text(branch="feature/milestone-002"),
                 "lookahead branch and archive must be null",
             ),
             (
@@ -905,7 +905,7 @@ class PipelineStateTests(unittest.TestCase):
             next_root = project / "next"
             (next_root / "intent").mkdir(parents=True)
             (project / "STATE.md").write_bytes(
-                state_text(milestone="first", phase="build", status="active", branch="gsd-path/M001").encode("utf-8"),
+                state_text(milestone="first", phase="build", status="active", branch="feature/milestone-001").encode("utf-8"),
             )
             (next_root / "STATE.md").write_bytes(
                 state_text(milestone="second", phase="define", status="done").encode("utf-8"),
@@ -949,7 +949,7 @@ class PipelineStateTests(unittest.TestCase):
             result = pipeline_state.route_state(repo)
 
             self.assertEqual(result["route"]["action"], "bind-initial")
-            self.assertEqual(result["route"]["branch"], "gsd-path/M002")
+            self.assertEqual(result["route"]["branch"], "feature/milestone-002")
 
     def test_decide_transition_refuses_invalid_synthesis_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -957,16 +957,16 @@ class PipelineStateTests(unittest.TestCase):
             project = repo / ".project"
             (project / "research").mkdir(parents=True)
             state = project / "STATE.md"
-            state.write_bytes(state_text(phase="decide", status="active", branch="gsd-path/M001").encode("utf-8"))
+            state.write_bytes(state_text(phase="decide", status="active", branch="feature/milestone-001").encode("utf-8"))
             synthesis = project / "research/SYNTHESIS.md"
             valid = SETTLED_SYNTHESIS
-            expected = {"phase": "decide", "status": "active", "branch": "gsd-path/M001", "archive": None}
+            expected = {"phase": "decide", "status": "active", "branch": "feature/milestone-001", "archive": None}
             for phase, status, changes, event in (
                 ("decide", "active", {"status": "done"}, "synthesis validated"),
                 ("decide", "done", {"phase": "plan", "status": "active"}, "planning started"),
             ):
                 with self.subTest(status=status):
-                    state.write_bytes(state_text(phase=phase, status=status, branch="gsd-path/M001").encode("utf-8"))
+                    state.write_bytes(state_text(phase=phase, status=status, branch="feature/milestone-001").encode("utf-8"))
                     before = state.read_bytes()
                     synthesis.write_bytes(valid.replace("## Decisions\n- None", "## Decisions\nNone. All choices are settled.").encode("utf-8"))
                     expected["status"] = status
@@ -986,7 +986,7 @@ class PipelineStateTests(unittest.TestCase):
         )
         incomplete = head + "| E1 | SC1 | none | dismissed | static |\n"
         complete = incomplete + "| E2 | SC2 | none | dismissed | static |\n"
-        expected = {"phase": "define", "status": "active", "branch": "gsd-path/M001", "archive": None}
+        expected = {"phase": "define", "status": "active", "branch": "feature/milestone-001", "archive": None}
         changes = {"status": "done"}
         event = "intent approved"
         with tempfile.TemporaryDirectory() as tmp:
@@ -995,7 +995,7 @@ class PipelineStateTests(unittest.TestCase):
             (project / "intent").mkdir(parents=True)
             state = project / "STATE.md"
             intent = project / "intent/INTENT.md"
-            active = state_text(phase="define", status="active", branch="gsd-path/M001").encode("utf-8")
+            active = state_text(phase="define", status="active", branch="feature/milestone-001").encode("utf-8")
             state.write_bytes(active)
 
             intent.write_bytes(("# Intent\n\n" + criteria + "\n" + incomplete).encode("utf-8"))
@@ -1037,11 +1037,11 @@ class PipelineStateTests(unittest.TestCase):
                     "branch": None,
                     "archive": None,
                 },
-                {"branch": "gsd-path/M002"},
+                {"branch": "feature/milestone-002"},
                 "router bound initial milestone",
             )
 
-            self.assertEqual(result["state"]["branch"], "gsd-path/M002")
+            self.assertEqual(result["state"]["branch"], "feature/milestone-002")
             changed = state_path.read_text(encoding="utf-8")
             self.assertIn("router bound initial milestone", changed)
             with self.assertRaisesRegex(
@@ -1071,7 +1071,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_text(
                     phase="plan",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
 
@@ -1084,7 +1084,7 @@ class PipelineStateTests(unittest.TestCase):
                     {
                         "phase": "plan",
                         "status": "active",
-                        "branch": "gsd-path/M001",
+                        "branch": "feature/milestone-001",
                         "archive": None,
                     },
                     {
@@ -1099,7 +1099,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_text(
                     phase="plan",
                     status="done",
-                    branch="gsd-path/M002",
+                    branch="feature/milestone-002",
                 ).encode("utf-8"),
             )
             with self.assertRaisesRegex(
@@ -1111,7 +1111,7 @@ class PipelineStateTests(unittest.TestCase):
                     {
                         "phase": "plan",
                         "status": "done",
-                        "branch": "gsd-path/M002",
+                        "branch": "feature/milestone-002",
                         "archive": None,
                     },
                     {"phase": "build", "status": "active"},
@@ -1122,7 +1122,7 @@ class PipelineStateTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         repo = Path(temporary.name)
-        run_git(repo, "init", "-b", "gsd-path/M001")
+        run_git(repo, "init", "-b", "feature/milestone-001")
         run_git(repo, "config", "user.name", "GSD Path Test")
         run_git(repo, "config", "user.email", "test@example.com")
         project = repo / ".project"
@@ -1132,7 +1132,7 @@ class PipelineStateTests(unittest.TestCase):
             state_text(
                 phase="plan",
                 status=status,
-                branch="gsd-path/M001",
+                branch="feature/milestone-001",
             ).encode("utf-8"),
         )
         (project / "intent/INTENT.md").write_bytes(
@@ -1150,7 +1150,7 @@ class PipelineStateTests(unittest.TestCase):
             {
                 "phase": "plan",
                 "status": "active",
-                "branch": "gsd-path/M001",
+                "branch": "feature/milestone-001",
                 "archive": None,
             },
             {"phase": "define", "status": "active"},
@@ -1175,7 +1175,7 @@ class PipelineStateTests(unittest.TestCase):
             {
                 "phase": "plan",
                 "status": "blocked",
-                "branch": "gsd-path/M001",
+                "branch": "feature/milestone-001",
                 "archive": None,
             },
             {"phase": "define", "status": "active"},
@@ -1194,7 +1194,7 @@ class PipelineStateTests(unittest.TestCase):
                 {
                     "phase": "plan",
                     "status": "active",
-                    "branch": "gsd-path/M001",
+                    "branch": "feature/milestone-001",
                     "archive": None,
                 },
                 {"phase": "define", "status": "active"},
@@ -1212,7 +1212,7 @@ class PipelineStateTests(unittest.TestCase):
             {
                 "phase": "plan",
                 "status": "active",
-                "branch": "gsd-path/M001",
+                "branch": "feature/milestone-001",
                 "archive": None,
             },
             {"phase": "define", "status": "active"},
@@ -1264,14 +1264,14 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="second",
                     phase="ship",
                     status="active",
-                    branch="gsd-path/M002",
+                    branch="feature/milestone-002",
                     archive=".project/archive/002-second/",
                 ).encode("utf-8"),
             )
             expected = {
                 "phase": "ship",
                 "status": "active",
-                "branch": "gsd-path/M002",
+                "branch": "feature/milestone-002",
                 "archive": ".project/archive/002-second/",
             }
             with self.assertRaisesRegex(
@@ -1307,7 +1307,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="build",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
 
@@ -1321,7 +1321,7 @@ class PipelineStateTests(unittest.TestCase):
                         "phase": "build",
                         "status": "active",
                         "milestone": "first",
-                        "branch": "gsd-path/M001",
+                        "branch": "feature/milestone-001",
                         "archive": None,
                     },
                     {"milestone": "renamed"},
@@ -1337,7 +1337,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_text(
                     phase="define",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
 
@@ -1346,7 +1346,7 @@ class PipelineStateTests(unittest.TestCase):
                 {
                     "phase": "define",
                     "status": "active",
-                    "branch": "gsd-path/M001",
+                    "branch": "feature/milestone-001",
                     "archive": None,
                 },
                 {"phase": "roadmap", "status": "active"},
@@ -1386,7 +1386,7 @@ class PipelineStateTests(unittest.TestCase):
                 milestone="first",
                 phase="build",
                 status="active",
-                branch="gsd-path/M001",
+                branch="feature/milestone-001",
                 archive=".project/archive/001-first/",
                 integration_default="direct",
                 integration="pull-request",
@@ -1397,7 +1397,7 @@ class PipelineStateTests(unittest.TestCase):
                 "phase": "build",
                 "status": "active",
                 "milestone": "first",
-                "branch": "gsd-path/M001",
+                "branch": "feature/milestone-001",
                 "archive": ".project/archive/001-first/",
             }
             changes = {
@@ -1447,7 +1447,7 @@ class PipelineStateTests(unittest.TestCase):
                         "--milestone",
                         "second",
                         "--branch",
-                        "gsd-path/M002",
+                        "feature/milestone-002",
                         "--integrate",
                         "a" * 40,
                         "--base",
@@ -1471,7 +1471,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="second",
                     phase="shipped",
                     status="done",
-                    branch="gsd-path/M002",
+                    branch="feature/milestone-002",
                     archive=".project/archive/002-second/",
                 ).encode("utf-8"),
             )
@@ -1486,14 +1486,14 @@ class PipelineStateTests(unittest.TestCase):
                         "phase": "shipped",
                         "status": "done",
                         "milestone": "second",
-                        "branch": "gsd-path/M002",
+                        "branch": "feature/milestone-002",
                         "archive": ".project/archive/002-second/",
                     },
                     {
                         "phase": "define",
                         "status": "active",
                         "milestone": "third",
-                        "branch": "gsd-path/M002",
+                        "branch": "feature/milestone-002",
                         "archive": None,
                     },
                     "next milestone bound",
@@ -1510,7 +1510,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="shipped",
                     status="done",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                     archive=archive,
                     integration_default="pull-request",
                     integration="direct",
@@ -1521,7 +1521,7 @@ class PipelineStateTests(unittest.TestCase):
                 "phase": "shipped",
                 "status": "done",
                 "milestone": "first",
-                "branch": "gsd-path/M001",
+                "branch": "feature/milestone-001",
                 "archive": archive,
                 "integration": "direct",
             }
@@ -1529,7 +1529,7 @@ class PipelineStateTests(unittest.TestCase):
                 "phase": "inspect",
                 "status": "active",
                 "milestone": "second",
-                "branch": "gsd-path/M002",
+                "branch": "feature/milestone-002",
                 "archive": None,
             }
 
@@ -1555,7 +1555,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="shipped",
                     status="done",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                     archive=archive,
                 ).encode("utf-8"),
             )
@@ -1566,14 +1566,14 @@ class PipelineStateTests(unittest.TestCase):
                     "phase": "shipped",
                     "status": "done",
                     "milestone": "first",
-                    "branch": "gsd-path/M001",
+                    "branch": "feature/milestone-001",
                     "archive": archive,
                 },
                 {
                     "phase": "inspect",
                     "status": "active",
                     "milestone": "second",
-                    "branch": "gsd-path/M002",
+                    "branch": "feature/milestone-002",
                     "archive": None,
                 },
                 "next milestone bound",
@@ -1594,13 +1594,13 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="plan",
                     status="done",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
             expected = {
                 "phase": "plan",
                 "status": "done",
-                "branch": "gsd-path/M001",
+                "branch": "feature/milestone-001",
                 "archive": None,
             }
             with self.assertRaisesRegex(
@@ -1630,12 +1630,12 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="plan",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ),
                 {
                     "phase": "plan",
                     "status": "active",
-                    "branch": "gsd-path/M001",
+                    "branch": "feature/milestone-001",
                     "archive": None,
                 },
                 {"status": "done"},
@@ -1647,13 +1647,13 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="null",
                     phase="roadmap",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ),
                 {
                     "phase": "roadmap",
                     "status": "active",
                     "milestone": None,
-                    "branch": "gsd-path/M001",
+                    "branch": "feature/milestone-001",
                     "archive": None,
                 },
                 {"status": "done", "milestone": "first"},
@@ -1695,7 +1695,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone=milestone,
                     phase=kind,
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 )
                 state_path = project / "STATE.md"
                 state_path.write_bytes(content.encode("utf-8"))
@@ -1712,7 +1712,7 @@ class PipelineStateTests(unittest.TestCase):
                     "--expect-status",
                     "active",
                     "--expect-branch",
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                     "--expect-archive",
                     "null",
                     "--set-status",
@@ -1744,7 +1744,7 @@ class PipelineStateTests(unittest.TestCase):
 
     def _approval_repo(self, tmp: str, kind: str) -> tuple[Path, str]:
         repo = Path(tmp) / "repo"
-        run_git(Path(tmp), "init", "-b", "gsd-path/M001", str(repo))
+        run_git(Path(tmp), "init", "-b", "feature/milestone-001", str(repo))
         run_git(repo, "config", "user.name", "GSD Path Test")
         run_git(repo, "config", "user.email", "test@example.com")
         project = repo / ".project"
@@ -1756,7 +1756,7 @@ class PipelineStateTests(unittest.TestCase):
                 milestone=milestone,
                 phase=phase,
                 status="active",
-                branch="gsd-path/M001",
+                branch="feature/milestone-001",
             ).encode("utf-8"),
         )
         run_git(repo, "add", ".project/STATE.md")
@@ -1881,13 +1881,13 @@ class PipelineStateTests(unittest.TestCase):
             (repo / ".project").mkdir()
             state_path = repo / ".project" / "STATE.md"
             state_path.write_bytes(
-                state_text(phase="build", status="active", branch="gsd-path/M001").encode("utf-8")
+                state_text(phase="build", status="active", branch="feature/milestone-001").encode("utf-8")
             )
             event = "wave 1 cycle 1 all-refuted ruling: Re-run the review cycle"
             expected = [
                 sys.executable, str(PIPELINE_STATE_SCRIPT.resolve()), "transition", "--repo", str(repo),
                 "--event", event, "--expect-phase", "build", "--expect-status", "active",
-                "--expect-branch", "gsd-path/M001", "--expect-archive", "null",
+                "--expect-branch", "feature/milestone-001", "--expect-archive", "null",
             ]
 
             refused = subprocess.run(expected, capture_output=True, encoding="utf-8", errors="replace", check=False)
@@ -1929,7 +1929,7 @@ class PipelineStateTests(unittest.TestCase):
             project = repo / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
-                state_text(milestone="null", phase="roadmap", status="active", branch="gsd-path/M001").encode("utf-8"),
+                state_text(milestone="null", phase="roadmap", status="active", branch="feature/milestone-001").encode("utf-8"),
             )
 
             result = pipeline_state.transition_state(
@@ -1938,7 +1938,7 @@ class PipelineStateTests(unittest.TestCase):
                     "phase": "roadmap",
                     "status": "active",
                     "milestone": None,
-                    "branch": "gsd-path/M001",
+                    "branch": "feature/milestone-001",
                     "archive": None,
                 },
                 changes={"phase": "inspect", "status": "active", "milestone": "second"},
@@ -1949,7 +1949,7 @@ class PipelineStateTests(unittest.TestCase):
             state = pipeline_state.load_state(repo)[0]
             self.assertEqual(
                 (state.phase, state.status, state.milestone, state.branch),
-                ("inspect", "active", "second", "gsd-path/M001"),
+                ("inspect", "active", "second", "feature/milestone-001"),
             )
 
     def test_plan_approval_rejects_invalid_brief_before_state_or_commit(self) -> None:
@@ -1999,7 +1999,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_plan_approval_uses_historical_bases_and_dependency_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
-            run_git(Path(tmp), "init", "-b", "gsd-path/M001", str(repo))
+            run_git(Path(tmp), "init", "-b", "feature/milestone-001", str(repo))
             run_git(repo, "config", "user.name", "GSD Path Test")
             run_git(repo, "config", "user.email", "test@example.com")
             (repo / "src").mkdir()
@@ -2019,7 +2019,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="first",
                     phase="plan",
                     status="active",
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                 ).encode("utf-8"),
             )
             run_git(repo, "add", ".project/STATE.md")
@@ -2260,13 +2260,13 @@ class PipelineStateTests(unittest.TestCase):
         (repo / "app.py").write_bytes("approved = True\n".encode("utf-8"))
         run_git(repo, "add", "app.py")
         run_git(repo, "commit", "-m", "fixture: milestone base")
-        run_git(repo, "switch", "-c", "gsd-path/M001")
+        run_git(repo, "switch", "-c", "feature/milestone-001")
         (project / "STATE.md").write_bytes(
             state_text(
                 milestone="first",
                 phase="build",
                 status="active",
-                branch="gsd-path/M001",
+                branch="feature/milestone-001",
                 default_branch=recorded,
             ).encode("utf-8"),
         )
@@ -2363,7 +2363,7 @@ class PipelineStateTests(unittest.TestCase):
                 milestone="first",
                 phase="shipped",
                 status="done",
-                branch="gsd-path/M001",
+                branch="feature/milestone-001",
                 archive=".project/archive/001-first/",
                 integration_default="pull-request" if pull_request else None,
                 integration="pull-request" if pull_request else None,
@@ -2382,9 +2382,9 @@ class PipelineStateTests(unittest.TestCase):
             repo,
             "merge",
             "--no-ff",
-            "gsd-path/M001",
+            "feature/milestone-001",
             "-m",
-            f"integrate: M001 — merge gsd-path/M001 into {default}",
+            f"integrate: M001 — merge feature/milestone-001 into {default}",
         )
         integrate = run_git(repo, "rev-parse", "HEAD").stdout.strip()
         run_git(
@@ -2410,7 +2410,7 @@ class PipelineStateTests(unittest.TestCase):
         run_git(repo, "update-ref", f"refs/remotes/origin/{default}", integrate)
         if pull_request:
             run_git(repo, "push", "origin", default, "milestone/001-first")
-        run_git(repo, "switch", "-c", "gsd-path/M002")
+        run_git(repo, "switch", "-c", "feature/milestone-002")
         return repo, integrate
 
     def test_promote_next_moves_track_commits_and_retries_idempotently(self) -> None:
@@ -2420,14 +2420,14 @@ class PipelineStateTests(unittest.TestCase):
             unowned = pipeline_state.route_state(repo)
             self.assertEqual(unowned["route"]["action"], "block")
 
-            journal_path = pipeline_git.bind_next_journal_path(repo, "gsd-path/M002")
+            journal_path = pipeline_git.bind_next_journal_path(repo, "feature/milestone-002")
             pipeline_git._write_bind_next_journal(
                 journal_path,
                 {
                     "schema": pipeline_git.BIND_NEXT_JOURNAL_SCHEMA,
                     "repo": str(repo.resolve()),
-                    "branch": "gsd-path/M002",
-                    "previous_branch": "gsd-path/M001",
+                    "branch": "feature/milestone-002",
+                    "previous_branch": "feature/milestone-001",
                     "ship": integrate,
                     "remote_default": "origin/main",
                     "base": integrate,
@@ -2438,15 +2438,15 @@ class PipelineStateTests(unittest.TestCase):
             )
             handoff = pipeline_state.route_state(repo)
             self.assertEqual(handoff["route"]["action"], "resume-next-handoff")
-            self.assertEqual(handoff["route"]["previous_branch"], "gsd-path/M001")
-            self.assertEqual(handoff["route"]["branch"], "gsd-path/M002")
+            self.assertEqual(handoff["route"]["previous_branch"], "feature/milestone-001")
+            self.assertEqual(handoff["route"]["branch"], "feature/milestone-002")
             self.assertEqual(handoff["route"]["landing"], integrate)
             self.assertTrue(handoff["route"]["allow_remote_absent"])
 
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 integrate,
             )
 
@@ -2460,7 +2460,7 @@ class PipelineStateTests(unittest.TestCase):
                 (state.milestone, state.phase, state.status),
                 ("second", "plan", "done"),
             )
-            self.assertEqual(state.branch, "gsd-path/M002")
+            self.assertEqual(state.branch, "feature/milestone-002")
             self.assertIsNone(
                 pipeline_state.status_state(repo)["journals"]["bind_next"]
             )
@@ -2474,7 +2474,7 @@ class PipelineStateTests(unittest.TestCase):
             retry = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 integrate,
             )
             self.assertEqual(retry["status"], "already-complete")
@@ -2484,12 +2484,12 @@ class PipelineStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo, integrate = self._promotion_repo(tmp, drift=False)
             pipeline_git._write_bind_next_journal(
-                pipeline_git.bind_next_journal_path(repo, "gsd-path/M002"),
+                pipeline_git.bind_next_journal_path(repo, "feature/milestone-002"),
                 {
                     "schema": pipeline_git.BIND_NEXT_JOURNAL_SCHEMA,
                     "repo": str(repo.resolve()),
-                    "branch": "gsd-path/M002",
-                    "previous_branch": "gsd-path/M001",
+                    "branch": "feature/milestone-002",
+                    "previous_branch": "feature/milestone-001",
                     "ship": integrate,
                     "remote_default": "origin/main",
                     "base": integrate,
@@ -2510,16 +2510,16 @@ class PipelineStateTests(unittest.TestCase):
     def test_retired_bind_next_stale_journals_do_not_mask_current_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, integrate = self._promotion_repo(tmp, drift=False)
-            ship = run_git(repo, "rev-parse", "gsd-path/M001").stdout.strip()
-            run_git(repo, "switch", "-c", "gsd-path/M003", integrate)
-            for branch, stage in (("gsd-path/M002", "retired"), ("gsd-path/M003", "switched")):
+            ship = run_git(repo, "rev-parse", "feature/milestone-001").stdout.strip()
+            run_git(repo, "switch", "-c", "feature/milestone-003", integrate)
+            for branch, stage in (("feature/milestone-002", "retired"), ("feature/milestone-003", "switched")):
                 pipeline_git._write_bind_next_journal(
                     pipeline_git.bind_next_journal_path(repo, branch),
                     {
                         "schema": pipeline_git.BIND_NEXT_JOURNAL_SCHEMA,
                         "repo": str(repo.resolve()),
                         "branch": branch,
-                        "previous_branch": "gsd-path/M001",
+                        "previous_branch": "feature/milestone-001",
                         "ship": ship,
                         "remote_default": "origin/main",
                         "base": integrate,
@@ -2531,15 +2531,15 @@ class PipelineStateTests(unittest.TestCase):
             routed = pipeline_state.route_state(repo)
 
             self.assertEqual(routed["route"]["action"], "resume-next-handoff")
-            self.assertEqual(routed["route"]["branch"], "gsd-path/M003")
+            self.assertEqual(routed["route"]["branch"], "feature/milestone-003")
 
             pipeline_git._write_bind_next_journal(
-                pipeline_git.bind_next_journal_path(repo, "gsd-path/M002"),
+                pipeline_git.bind_next_journal_path(repo, "feature/milestone-002"),
                 {
                     "schema": pipeline_git.BIND_NEXT_JOURNAL_SCHEMA,
                     "repo": str(repo.resolve()),
-                    "branch": "gsd-path/M002",
-                    "previous_branch": "gsd-path/M001",
+                    "branch": "feature/milestone-002",
+                    "previous_branch": "feature/milestone-001",
                     "ship": "0" * 40,
                     "remote_default": "origin/main",
                     "base": integrate,
@@ -2556,14 +2556,14 @@ class PipelineStateTests(unittest.TestCase):
     def test_retired_bind_next_missing_target_on_previous_branch_is_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, integrate = self._promotion_repo(tmp, drift=False)
-            ship = run_git(repo, "rev-parse", "gsd-path/M001").stdout.strip()
+            ship = run_git(repo, "rev-parse", "feature/milestone-001").stdout.strip()
             pipeline_git._write_bind_next_journal(
-                pipeline_git.bind_next_journal_path(repo, "gsd-path/M002"),
+                pipeline_git.bind_next_journal_path(repo, "feature/milestone-002"),
                 {
                     "schema": pipeline_git.BIND_NEXT_JOURNAL_SCHEMA,
                     "repo": str(repo.resolve()),
-                    "branch": "gsd-path/M002",
-                    "previous_branch": "gsd-path/M001",
+                    "branch": "feature/milestone-002",
+                    "previous_branch": "feature/milestone-001",
                     "ship": ship,
                     "remote_default": "origin/main",
                     "base": integrate,
@@ -2571,14 +2571,14 @@ class PipelineStateTests(unittest.TestCase):
                     "stage": "retired",
                 },
             )
-            run_git(repo, "switch", "gsd-path/M001")
+            run_git(repo, "switch", "feature/milestone-001")
             with self.assertRaisesRegex(
                 pipeline_state.PipelineStateError,
                 "stage conflicts with previous branch",
             ):
                 pipeline_state.route_state(repo)
 
-            run_git(repo, "branch", "-D", "gsd-path/M002")
+            run_git(repo, "branch", "-D", "feature/milestone-002")
             routed = pipeline_state.route_state(repo)
 
             self.assertEqual(routed["route"]["action"], "run-phase")
@@ -2595,14 +2595,14 @@ class PipelineStateTests(unittest.TestCase):
     def test_retired_bind_next_current_target_still_requires_journal_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, integrate = self._promotion_repo(tmp, drift=False)
-            ship = run_git(repo, "rev-parse", "gsd-path/M001").stdout.strip()
+            ship = run_git(repo, "rev-parse", "feature/milestone-001").stdout.strip()
             pipeline_git._write_bind_next_journal(
-                pipeline_git.bind_next_journal_path(repo, "gsd-path/M002"),
+                pipeline_git.bind_next_journal_path(repo, "feature/milestone-002"),
                 {
                     "schema": pipeline_git.BIND_NEXT_JOURNAL_SCHEMA,
                     "repo": str(repo.resolve()),
-                    "branch": "gsd-path/M002",
-                    "previous_branch": "gsd-path/M001",
+                    "branch": "feature/milestone-002",
+                    "previous_branch": "feature/milestone-001",
                     "ship": ship,
                     "remote_default": "origin/main",
                     "base": integrate,
@@ -2613,7 +2613,7 @@ class PipelineStateTests(unittest.TestCase):
 
             routed = pipeline_state.route_state(repo)
             self.assertEqual(routed["route"]["action"], "resume-next-handoff")
-            self.assertEqual(routed["route"]["branch"], "gsd-path/M002")
+            self.assertEqual(routed["route"]["branch"], "feature/milestone-002")
 
             run_git(repo, "commit", "--allow-empty", "-m", "advance M002")
             with self.assertRaisesRegex(
@@ -2626,15 +2626,15 @@ class PipelineStateTests(unittest.TestCase):
         for stage in ("prepared", "switched"):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as tmp:
                 repo, integrate = self._promotion_repo(tmp, drift=False)
-                ship = run_git(repo, "rev-parse", "gsd-path/M001").stdout.strip()
+                ship = run_git(repo, "rev-parse", "feature/milestone-001").stdout.strip()
                 run_git(repo, "switch", "-c", "feature/elsewhere", integrate)
                 pipeline_git._write_bind_next_journal(
-                    pipeline_git.bind_next_journal_path(repo, "gsd-path/M002"),
+                    pipeline_git.bind_next_journal_path(repo, "feature/milestone-002"),
                     {
                         "schema": pipeline_git.BIND_NEXT_JOURNAL_SCHEMA,
                         "repo": str(repo.resolve()),
-                        "branch": "gsd-path/M002",
-                        "previous_branch": "gsd-path/M001",
+                        "branch": "feature/milestone-002",
+                        "previous_branch": "feature/milestone-001",
                         "ship": ship,
                         "remote_default": "origin/main",
                         "base": integrate,
@@ -2652,17 +2652,17 @@ class PipelineStateTests(unittest.TestCase):
     def test_multiple_prepared_bind_next_journals_still_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, integrate = self._promotion_repo(tmp, drift=False)
-            ship = run_git(repo, "rev-parse", "gsd-path/M001").stdout.strip()
-            run_git(repo, "switch", "gsd-path/M001")
-            run_git(repo, "branch", "-D", "gsd-path/M002")
-            for branch in ("gsd-path/M002", "gsd-path/M003"):
+            ship = run_git(repo, "rev-parse", "feature/milestone-001").stdout.strip()
+            run_git(repo, "switch", "feature/milestone-001")
+            run_git(repo, "branch", "-D", "feature/milestone-002")
+            for branch in ("feature/milestone-002", "feature/milestone-003"):
                 pipeline_git._write_bind_next_journal(
                     pipeline_git.bind_next_journal_path(repo, branch),
                     {
                         "schema": pipeline_git.BIND_NEXT_JOURNAL_SCHEMA,
                         "repo": str(repo.resolve()),
                         "branch": branch,
-                        "previous_branch": "gsd-path/M001",
+                        "previous_branch": "feature/milestone-001",
                         "ship": ship,
                         "remote_default": "origin/main",
                         "base": integrate,
@@ -2686,13 +2686,13 @@ class PipelineStateTests(unittest.TestCase):
             run_git(repo, "commit", "-m", "product: after milestone landing")
             base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
             run_git(repo, "update-ref", "refs/remotes/origin/main", base)
-            run_git(repo, "branch", "-f", "gsd-path/M002", base)
-            run_git(repo, "switch", "gsd-path/M002")
+            run_git(repo, "branch", "-f", "feature/milestone-002", base)
+            run_git(repo, "switch", "feature/milestone-002")
 
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 base,
                 landing,
             )
@@ -2722,7 +2722,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_promote.promote_next(
                     repo,
                     "second",
-                    "gsd-path/M002",
+                    "feature/milestone-002",
                     landing,
                     older_ancestor,
                 )
@@ -2749,7 +2749,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_promote.promote_next(
                     repo,
                     "second",
-                    "gsd-path/M002",
+                    "feature/milestone-002",
                     base,
                     older_ancestor,
                 )
@@ -2776,7 +2776,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_promote.promote_next(
                     repo,
                     "second",
-                    "gsd-path/M002",
+                    "feature/milestone-002",
                     landing,
                 )
 
@@ -2791,7 +2791,7 @@ class PipelineStateTests(unittest.TestCase):
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 landing,
             )
 
@@ -2804,7 +2804,7 @@ class PipelineStateTests(unittest.TestCase):
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 integrate,
             )
 
@@ -2817,7 +2817,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_promote_next_flags_a_task_that_became_a_member_task_after_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, integrate = self._promotion_repo(tmp, drift=False, member_task=True)
-            result = state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+            result = state_promote.promote_next(repo, "second", "feature/milestone-002", integrate)
             self.assertEqual(result["drift"]["class"], "changed")
             self.assertEqual(result["drift"]["task_ids"], ["T002"])
             state, text, _ = pipeline_state.load_state(repo)
@@ -2827,7 +2827,7 @@ class PipelineStateTests(unittest.TestCase):
     def test_promote_next_keeps_coordinator_task_with_repo_context_clean(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, integrate = self._promotion_repo(tmp, drift=False, context_repo_example=True)
-            result = state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+            result = state_promote.promote_next(repo, "second", "feature/milestone-002", integrate)
             self.assertEqual(result["drift"]["class"], "clean")
             state, _, _ = pipeline_state.load_state(repo)
             self.assertEqual((state.phase, state.status), ("plan", "done"))
@@ -2843,7 +2843,7 @@ class PipelineStateTests(unittest.TestCase):
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 integrate,
             )
 
@@ -2862,7 +2862,7 @@ class PipelineStateTests(unittest.TestCase):
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 integrate,
             )
 
@@ -2885,7 +2885,7 @@ class PipelineStateTests(unittest.TestCase):
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 integrate,
             )
 
@@ -2907,7 +2907,7 @@ class PipelineStateTests(unittest.TestCase):
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 integrate,
             )
 
@@ -2931,7 +2931,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_promote.promote_next(
                     repo,
                     "second",
-                    "gsd-path/M002",
+                    "feature/milestone-002",
                     integrate,
                 )
 
@@ -2960,7 +2960,7 @@ class PipelineStateTests(unittest.TestCase):
             shutil.rmtree(repo / ".project")
             run_git(repo, "add", "-A")
             run_git(repo, "commit", "-m", "fixture: current milestone boundary")
-            run_git(repo, "switch", "-c", "gsd-path/M001")
+            run_git(repo, "switch", "-c", "feature/milestone-001")
             current = repo / ".project" / "next"
             (current / "plan").mkdir(parents=True)
             (current / "tasks").mkdir()
@@ -2974,9 +2974,9 @@ class PipelineStateTests(unittest.TestCase):
                 repo,
                 "merge",
                 "--no-ff",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 "-m",
-                "integrate: M001 — merge gsd-path/M001 into main",
+                "integrate: M001 — merge feature/milestone-001 into main",
             )
             integrate = run_git(repo, "rev-parse", "HEAD").stdout.strip()
             candidate = pipeline_state._state_from_text(
@@ -2997,7 +2997,7 @@ class PipelineStateTests(unittest.TestCase):
                     milestone="second",
                     phase="plan",
                     status="done",
-                    branch="gsd-path/M002",
+                    branch="feature/milestone-002",
                 ).encode("utf-8"),
             )
             run_git(repo, "add", "-A", "--", ".project")
@@ -3019,7 +3019,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_promote.promote_next(
                     repo,
                     "second",
-                    "gsd-path/M002",
+                    "feature/milestone-002",
                     integrate,
                 )
 
@@ -3031,7 +3031,7 @@ class PipelineStateTests(unittest.TestCase):
             self.assertEqual(git["origin_main"], integrate)
             self.assertTrue(git["ancestor_of_origin_main"])
 
-            result = state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+            result = state_promote.promote_next(repo, "second", "feature/milestone-002", integrate)
 
             self.assertEqual(result["base"], integrate)
             state = pipeline_state.load_state(repo)[0]
@@ -3054,7 +3054,7 @@ class PipelineStateTests(unittest.TestCase):
                     f"lookahead default_branch does not match the active project: "
                     f"copy `default_branch: {default}`",
                 ):
-                    state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+                    state_promote.promote_next(repo, "second", "feature/milestone-002", integrate)
 
                 self.assertEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), head)
 
@@ -3073,7 +3073,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_promote.promote_next(
                     repo,
                     "second",
-                    "gsd-path/M002",
+                    "feature/milestone-002",
                     integrate,
                 )
 
@@ -3093,7 +3093,7 @@ class PipelineStateTests(unittest.TestCase):
                 state_promote.promote_next(
                     repo,
                     "second",
-                    "gsd-path/M002",
+                    "feature/milestone-002",
                     integrate,
                 )
 
@@ -3112,7 +3112,7 @@ class PipelineStateTests(unittest.TestCase):
                     state_promote.promote_next(
                         repo,
                         "second",
-                        "gsd-path/M002",
+                        "feature/milestone-002",
                         integrate,
                     )
             self.assertTrue((repo / ".project" / "tasks").is_dir())
@@ -3126,7 +3126,7 @@ class PipelineStateTests(unittest.TestCase):
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 integrate,
             )
 
@@ -3148,7 +3148,7 @@ class PipelineStateTests(unittest.TestCase):
                     state_promote.promote_next(
                         repo,
                         "second",
-                        "gsd-path/M002",
+                        "feature/milestone-002",
                         integrate,
                     )
 
@@ -3159,7 +3159,7 @@ class PipelineStateTests(unittest.TestCase):
             result = state_promote.promote_next(
                 repo,
                 "second",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 integrate,
             )
 
@@ -3169,14 +3169,14 @@ class PipelineStateTests(unittest.TestCase):
     def test_record_shipment_is_atomic_and_resumable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             project = repo / ".project"
             project.mkdir()
             (project / "CHARTER.md").write_bytes("# Charter\n".encode("utf-8"))
             (project / "STATE.md").write_bytes(
                 state_text(
                     milestone="first", phase="ship", status="active",
-                    branch="gsd-path/M001", archive=".project/archive/001-first",
+                    branch="feature/milestone-001", archive=".project/archive/001-first",
                 ).encode("utf-8"),
             )
             (project / "ROADMAP.md").write_bytes(
@@ -3218,13 +3218,13 @@ class PipelineStateTests(unittest.TestCase):
     def test_record_shipment_resumes_on_a_later_day(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             project = repo / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
                 state_text(
                     milestone="first", phase="ship", status="active",
-                    branch="gsd-path/M001", archive=".project/archive/001-first",
+                    branch="feature/milestone-001", archive=".project/archive/001-first",
                 ).encode("utf-8"),
             )
             original = pipeline_state._atomic_write
@@ -3261,11 +3261,11 @@ class PipelineStateTests(unittest.TestCase):
     def test_record_shipment_preserves_single_milestone_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             project = repo / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
-                state_text(milestone="first", phase="ship", status="active", branch="gsd-path/M001", archive=".project/archive/001-first").encode("utf-8"),
+                state_text(milestone="first", phase="ship", status="active", branch="feature/milestone-001", archive=".project/archive/001-first").encode("utf-8"),
             )
 
             result = pipeline_state.record_shipment(
@@ -3279,11 +3279,11 @@ class PipelineStateTests(unittest.TestCase):
     def test_record_shipment_rejects_a_tampered_journal_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, "init", "-b", "gsd-path/M001")
+            run_git(repo, "init", "-b", "feature/milestone-001")
             project = repo / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
-                state_text(milestone="first", phase="ship", status="active", branch="gsd-path/M001", archive=".project/archive/001-first").encode("utf-8"),
+                state_text(milestone="first", phase="ship", status="active", branch="feature/milestone-001", archive=".project/archive/001-first").encode("utf-8"),
             )
             original = pipeline_state._atomic_write
 
@@ -3310,12 +3310,12 @@ class PipelineStateTests(unittest.TestCase):
         for case in ("missing", "wrong"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
-                run_git(repo, "init", "-b", "gsd-path/M001")
+                run_git(repo, "init", "-b", "feature/milestone-001")
                 project = repo / ".project"
                 project.mkdir()
                 (project / "CHARTER.md").write_bytes("# Charter\n".encode("utf-8"))
                 (project / "STATE.md").write_bytes(
-                    state_text(milestone="first", phase="ship", status="active", branch="gsd-path/M001", archive=".project/archive/001-first").encode("utf-8"),
+                    state_text(milestone="first", phase="ship", status="active", branch="feature/milestone-001", archive=".project/archive/001-first").encode("utf-8"),
                 )
                 if case == "wrong":
                     (project / "ROADMAP.md").write_bytes(roadmap_text().encode("utf-8"))

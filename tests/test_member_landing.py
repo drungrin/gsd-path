@@ -19,7 +19,7 @@ MEMBERS = ROOT / "scripts" / "members.py"
 GIT_GUARD = ROOT / "scripts" / "git_guard.py"
 STATE = (
     "---\npipeline: gsd-path/v2\nproject: acme\nmilestone: demo\nphase: plan\nstatus: done\n"
-    "branch: gsd-path/M001\narchive: null\n---\n\n# Project State\n\n## Log\n\n- 2026-09-27 — plan — plan approved\n"
+    "branch: feature/milestone-001\narchive: null\n---\n\n# Project State\n\n## Log\n\n- 2026-09-27 — plan — plan approved\n"
 )
 TASK_FILE = ".project/tasks/T001-change.md"
 TASK = (
@@ -45,7 +45,7 @@ class MemberLandingTests(unittest.TestCase):
         self.addCleanup(environment.stop)
         self.coordinator = self.root / "acme"
         (self.coordinator / ".project" / "tasks").mkdir(parents=True)
-        git(self.root, "init", "-q", "-b", "gsd-path/M001", str(self.coordinator))
+        git(self.root, "init", "-q", "-b", "feature/milestone-001", str(self.coordinator))
         (self.coordinator / ".project" / "STATE.md").write_bytes(STATE.encode("utf-8"))
         (self.coordinator / TASK_FILE).write_bytes(TASK.encode("utf-8"))
         git(self.coordinator, "add", "-A")
@@ -66,7 +66,7 @@ class MemberLandingTests(unittest.TestCase):
                        encoding="utf-8", errors="replace", capture_output=True, check=True)
         pipeline_state.transition_state(
             self.coordinator,
-            {"phase": "plan", "status": "done", "branch": "gsd-path/M001", "archive": None},
+            {"phase": "plan", "status": "done", "branch": "feature/milestone-001", "archive": None},
             {"phase": "build", "status": "active"}, "build started")
         git(self.coordinator, "add", "-A")
         git(self.coordinator, "commit", "-q", "-m", "build: start milestone")
@@ -436,23 +436,23 @@ class MemberLandingTests(unittest.TestCase):
 
     def test_recovery_requires_the_coordinator_state_branch(self) -> None:
         self.edit()
-        git(self.coordinator, "checkout", "-q", "-b", "gsd-path/M002")
+        git(self.coordinator, "checkout", "-q", "-b", "feature/milestone-002")
         with self.assertRaisesRegex(isolation.IsolationError, "STATE bound branch"):
             self.land()
         self.assertEqual(self.bound_tip(), self.member_base)
-        git(self.coordinator, "checkout", "-q", "gsd-path/M001")
+        git(self.coordinator, "checkout", "-q", "feature/milestone-001")
         with mock.patch.object(isolation, "_write_member_record", side_effect=RuntimeError("crash")):
             with self.assertRaises(RuntimeError):
                 self.land()
         landing = self.bound_tip()
-        git(self.coordinator, "checkout", "-q", "gsd-path/M002")
+        git(self.coordinator, "checkout", "-q", "feature/milestone-002")
         self.assertEqual(git(self.coordinator, "rev-parse", "HEAD"), self.base)
         with self.assertRaisesRegex(isolation.IsolationError, "STATE bound branch"):
             isolation.recover_member_landing(self.coordinator, "T001")
         self.assertTrue(self.journal().exists())
         self.assertEqual(self.bound_tip(), landing)
         self.assertEqual(git(self.coordinator, "rev-parse", "HEAD"), self.base)
-        git(self.coordinator, "checkout", "-q", "gsd-path/M001")
+        git(self.coordinator, "checkout", "-q", "feature/milestone-001")
         self.assert_landed_once(isolation.recover_member_landing(self.coordinator, "T001"))
 
     def test_crash_after_record_commit_reuses_proven_record(self) -> None:
@@ -534,7 +534,7 @@ class MemberLandingTests(unittest.TestCase):
         guarded = subprocess.run([sys.executable, str(GIT_GUARD), "pre-commit"], cwd=self.bound,
                                  encoding="utf-8", errors="replace", capture_output=True, check=False)
         self.assertNotEqual(guarded.returncode, 0)
-        self.assertIn("gsd-path/acme-M001", guarded.stderr)
+        self.assertIn("feature/acme-milestone-001", guarded.stderr)
         git(self.bound, "reset", "-q", "--hard")
         side = subprocess.run([sys.executable, str(GIT_GUARD), "pre-commit"], cwd=self.sidecar,
                               encoding="utf-8", errors="replace", capture_output=True, check=False)

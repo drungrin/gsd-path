@@ -29,7 +29,7 @@ project: demo
 milestone: demo
 phase: {phase}
 status: {status}
-branch: gsd-path/M001
+branch: feature/milestone-001
 archive: {archive}
 ---
 
@@ -45,7 +45,7 @@ class RouterContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
             subprocess.run(
-                ["git", "init", "-q", "-b", "gsd-path/M001", str(repo)],
+                ["git", "init", "-q", "-b", "feature/milestone-001", str(repo)],
                 check=True,
             )
             project = repo / ".project"

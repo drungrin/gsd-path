@@ -86,7 +86,7 @@ full-repo suite on a tiny edit outrank the phase brief.
   before any requested repository mutation. Treat its JSON as the only route
   authority.
   When `completion.status` is `verified` and `git.branch` is an ordinary
-  branch (not `gsd-path/M###`), requested product work may proceed normally.
+  branch (not `feature/milestone-###`), requested product work may proceed normally.
   Archives and pipeline control files remain protected. Otherwise,
   a plain change request does not authorize work outside the pipeline: make no
   changes and report **Outcome**, link the returned `path` under **Review**, and
@@ -216,6 +216,21 @@ that warning as a lost edit and re-apply it to the canonical path.
 These rules belong to this fork and are separate from the upstream GSD Path
 operating rules above.
 
+The versioning, fork-history, and repository-maintenance rules below apply
+only to this fork's source checkout; they do not change a consuming
+application's version policy or require it to create FORK.md. The Git metadata
+rules also apply to projects that use this fork.
+
+- Generated Git branches follow the purpose-based prefixes and lowercase
+  grammar of https://conventionalbranch.org. Do not put framework, agent,
+  model, or vendor names in branch names, PR titles, or attribution text.
+  Milestones use `feature/milestone-001`; member milestones use
+  `feature/<project>-milestone-001`; temporary task, verify, and integration
+  branches use `chore/task-...`, `chore/verify-...`, and `chore/integrate-...`.
+- Commits and PRs contain only the change description and required technical
+  metadata. Never append framework disclaimers, tool credits, generated-by
+  statements, session links, or model/tool co-author trailers. Sanitize legacy
+  attribution when reusing a PR. Apply this rule to every host and provider.
 - The fork uses `X.Y.Z.N` versions. `X.Y.Z` is the version of the upstream
   source most recently synchronized into the fork; local changes never bump
   those three components. `N` is this fork's revision and increases for each

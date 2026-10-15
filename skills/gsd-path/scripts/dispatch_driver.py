@@ -682,7 +682,7 @@ def state_from_task(primary: Path, task_id: str) -> Dict[str, object]:
             raise DriverStop(f"member task {task_id} has no activated live copy in {sidecar}", task=task_id)
         return {"task_id": task_id, "title": str(live.get("title")), "task_file": copy.relative_to(sidecar).as_posix(),
                 "contract_file": task_file, "files": list(live.get("files") or []), "base": str(live["base"]),
-                "worktree": str(sidecar), "task_branch": f"{isolation.TASK_BRANCH_PREFIX}{project}-{task_id}",
+                "worktree": str(sidecar), "task_branch": isolation.member_task_branch_name(project, task_id),
                 "mode": "member", "member": str(member), "member_base": str(live["member_base"]),
                 "project_root": str(primary), "sidecar": None}
     if fields.get("status") != "in-progress" or not fields.get("base"):

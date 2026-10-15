@@ -189,7 +189,7 @@ class MemberLandingProofTests(unittest.TestCase):
         self.landed()
         isolation.retire_member_task(self.coordinator, "web", "T001")
         self.assertFalse(self.sidecar.exists())
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001"), "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/task-acme-t001"), "")
 
 
 if __name__ == "__main__":

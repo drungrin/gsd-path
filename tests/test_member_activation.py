@@ -26,7 +26,7 @@ class MemberActivationTests(unittest.TestCase):
         text = self.copy().read_text(encoding="utf-8")
         for line in ("status: in-progress", "agent: coder", f"base: {self.base}",
                      f"member_base: {self.member_base}", f"worktree: {self.sidecar}",
-                     "task_branch: gsd-path-task/acme-T001"):
+                     "task_branch: chore/task-acme-t001"):
             self.assertIn(line + "\n", text)
         self.assertEqual(git(self.sidecar, "status", "--porcelain", "--untracked-files=all"), "")
         self.assertEqual(git(self.member, "rev-parse", AUTH), self.member_base)

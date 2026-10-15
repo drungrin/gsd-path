@@ -192,7 +192,7 @@ class BootstrapRepositoryTests(unittest.TestCase):
         self.assertEqual(created.returncode, 0, created.stderr)
         self.assertEqual(
             self.git(worktree, "branch", "--show-current").stdout.strip(),
-            "gsd-path/M001",
+            "feature/milestone-001",
         )
         self.assertEqual(
             self.git(checkout, "branch", "--show-current").stdout.strip(),
@@ -244,7 +244,7 @@ class BootstrapRepositoryTests(unittest.TestCase):
                     visibility="private",
                     default_checkout=str(workspace / "demo"),
                     worktree=str(workspace / "demo-gsd-path"),
-                    branch="gsd-path/M001",
+                    branch="feature/milestone-001",
                     description=None,
                     reuse_empty_worktree=collision in {"nonempty", "symlink"},
                 )
@@ -392,7 +392,7 @@ Primary worktree: <primary-worktree>
                 "add",
                 "-q",
                 "-b",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 str(worktree),
                 base,
             )
@@ -404,10 +404,10 @@ Primary worktree: <primary-worktree>
             self.assertEqual(resumed.returncode, 0, resumed.stderr)
             result = json.loads(resumed.stdout)
             self.assertEqual(result["status"], "complete")
-            self.assertEqual(result["branch"], "gsd-path/M001")
+            self.assertEqual(result["branch"], "feature/milestone-001")
             state = (worktree / ".project" / "STATE.md").read_text(encoding="utf-8")
             binding = (worktree / ".project" / "REPOSITORY.md").read_text(encoding="utf-8")
-            self.assertIn("branch: gsd-path/M001", state)
+            self.assertIn("branch: feature/milestone-001", state)
             self.assertIn(f"Default checkout: {checkout.resolve()}", binding)
             self.assertIn(f"Primary worktree: {worktree.resolve()}", binding)
             self.assertIn("Visibility: private", binding)
@@ -415,7 +415,7 @@ Primary worktree: <primary-worktree>
             self.assertEqual(self.git(checkout, "status", "--porcelain").stdout, "")
             self.assertEqual(
                 self.git(worktree, "branch", "--show-current").stdout.strip(),
-                "gsd-path/M001",
+                "feature/milestone-001",
             )
 
             repeated = self.run_command(*command, cwd=workspace, env=environment)
@@ -532,7 +532,7 @@ Primary worktree: <primary-worktree>
                 "add",
                 "-q",
                 "-b",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 str(worktree),
                 base,
             )

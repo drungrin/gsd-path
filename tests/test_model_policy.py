@@ -259,7 +259,7 @@ class DispatchPolicyTests(unittest.TestCase):
         result = fixture.round(self.root, '--model-capabilities', str(self.caps))
         self.assertEqual(result['status'], 'blocked', result)
         self.assertIn('unavailable', json.dumps(result))
-        self.assertEqual(fixture.branches(self.root), ['gsd-path/M001'])
+        self.assertEqual(fixture.branches(self.root), ['feature/milestone-001'])
         for path in (self.root / '.project/tasks').glob('*.md'):
             fields, _ = dispatch_driver.isolation.task_frontmatter(path.read_text(encoding="utf-8"))
             self.assertEqual(fields['status'], 'pending')
@@ -430,7 +430,7 @@ class DispatchPolicyTests(unittest.TestCase):
         states = dispatch_driver.latest_states(records)
         self.assertEqual({state['base'] for state in states}, {saved['base']})
         self.assertEqual({state['attempt'] for state in states}, {1})
-        self.assertEqual(fixture.branches(self.root), ['gsd-path/M001'])
+        self.assertEqual(fixture.branches(self.root), ['feature/milestone-001'])
 
     def test_rejected_answered_task_does_not_stop_answered_sibling(self):
         from tests.test_dispatch_driver import DispatchDriverTests

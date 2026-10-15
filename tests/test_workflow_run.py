@@ -135,12 +135,12 @@ class WorkflowRunTests(unittest.TestCase):
             self.assertFalse((root / ".project/build/verify-ledger.jsonl").exists())
 
     def fixture(self, root):
-        run_git(root, "init", "-b", "gsd-path/M001")
+        run_git(root, "init", "-b", "feature/milestone-001")
         run_git(root, "config", "user.name", "Test")
         run_git(root, "config", "user.email", "test@example.test")
         test_handoffs.HandoffValidationTests().write_plan_handoff(root)
         state = root / ".project/STATE.md"
-        state.write_bytes(state.read_text(encoding="utf-8").replace("branch: null", "branch: gsd-path/M001").encode("utf-8"))
+        state.write_bytes(state.read_text(encoding="utf-8").replace("branch: null", "branch: feature/milestone-001").encode("utf-8"))
         run_git(root, "add", ".")
         run_git(root, "commit", "-m", "fixture")
         return run_git(root, "rev-parse", "HEAD").stdout.strip()

@@ -321,10 +321,10 @@ approve **Archive and ship**, the archive transaction begins:
   `ROADMAP.md`, top-level `SYNTHESIS.md`) remain active project metadata
 - `MANIFEST.md` records contents and ship metadata
 - One **ship commit** (subject `ship: M00N — <slug>`) touches only `.project/`
-- Ship then either merges `gsd-path/M00N` onto `main` directly or opens a
+- Ship then either merges `feature/milestone-00n` onto `main` directly or opens a
   GitHub or Azure Repos PR and waits for you to merge it. GitHub supports a
   merge commit or a proven rebase merge; Azure requires **Merge (no fast-forward)**.
-  Path-created PRs include a GSD Path credit footer.
+  PRs contain the change and integration metadata without tool attribution.
 - After the landing validates, Path tags `milestone/<NNN>-<slug>`
 - Archives are **read-only** — guard hooks enforce this if installed
 
@@ -337,7 +337,7 @@ that Path returns, and Path then validates the merge and tags it. See
 [integration](WORKFLOW.md#integration).
 
 After `validate-integrated` passes, the next milestone starts clean on a new
-`gsd-path/M00N` cut from `origin/main`. Invoke the router again; brownfield
+`feature/milestone-00n` cut from `origin/main`. Invoke the router again; brownfield
 inspect runs against the now-shipped codebase. In program flow the router
 pulls the next pending roadmap entry and inspects first, then define
 (milestone + brownfield); when every entry is terminal (`shipped` or
@@ -416,7 +416,7 @@ in force; see [the collection helper](scripts/isolation.py).
 ## Working with more than one person
 
 One operator drives a milestone. One checkout holds the bound branch
-`gsd-path/M00N` and the `.project/` state of that milestone. A multi-repo
+`feature/milestone-00n` and the `.project/` state of that milestone. A multi-repo
 milestone does not change this: one coordinator checkout holds the state.
 
 GSD Path does not record or check who approves a gate. The `STATE.md` log
@@ -450,10 +450,10 @@ approves.
   checkout write to the same working tree.
 - The locks do not reach a second clone. Each clone keeps its own `STATE.md`,
   task landings, and approvals. GSD Path does not merge them. Ship stops
-  (`moved or collides`) when `origin` already has `gsd-path/M00N` from another
+  (`moved or collides`) when `origin` already has `feature/milestone-00n` from another
   clone.
 - You cannot share a milestone in progress through the remote. With
-  [guard hooks](HOOKS.md) installed, the pre-push hook refuses `gsd-path/M00N`
+  [guard hooks](HOOKS.md) installed, the pre-push hook refuses `feature/milestone-00n`
   before its ship commit. It also refuses any other branch that carries the
   unfinished state, unless the owner authorizes that exact commit (see
   [HOOKS.md](HOOKS.md)). Hooks are optional and local to each clone. A clone
@@ -463,7 +463,7 @@ approves.
 
 - Do not run the router or a phase skill for one milestone from two clones, or
   from two sessions at the same time.
-- Do not push `gsd-path/M00N` by hand, and do not merge another branch into
+- Do not push `feature/milestone-00n` by hand, and do not merge another branch into
   it.
 - Do not squash or rebase the integration pull request or merge request.
 

@@ -467,7 +467,7 @@ def _validate_ready_metadata(project: Project) -> Dict[str, Mapping[str, object]
                 if Path(task.worktree).resolve() != project.repo:
                     _invalid_state(task, "serial task does not name the primary worktree")
             else:
-                expected = f"gsd-path-task/{task.task_id}"
+                expected = f"chore/task-{_common.branch_slug(task.task_id)}"
                 if task.task_branch != expected or Path(task.worktree).resolve() == project.repo:
                     _invalid_state(task, "parallel task has invalid branch or worktree metadata")
                 previous = seen_branches.setdefault(task.task_branch, task.task_id)

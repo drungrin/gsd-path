@@ -9,7 +9,7 @@ describe("facts", () => {
   it("lists state, health, git and usage", () => {
     expect(facts(building, NOW)).toEqual([
       ["State", "In build"], ["Health", "amber · no activity for 2d"], ["Milestone", "M004"],
-      ["Branch", "gsd-path/M004"], ["Head", "0e9a3b1 · dirty"], ["Integration", "direct"],
+      ["Branch", "feature/milestone-004"], ["Head", "0e9a3b1 · dirty"], ["Integration", "direct"],
       ["Updated", "2d ago"], ["Cost", "$26.10"], ["Turns", "90"],
     ]);
   });

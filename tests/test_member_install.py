@@ -17,7 +17,7 @@ INSTALL = ROOT / "scripts" / "install.py"
 MEMBERS = ROOT / "scripts" / "members.py"
 STATE = (
     "---\npipeline: gsd-path/v2\nproject: {project}\nmilestone: demo\nphase: {phase}\n"
-    "status: {status}\nbranch: gsd-path/M001\narchive: {archive}\n---\n"
+    "status: {status}\nbranch: feature/milestone-001\narchive: {archive}\n---\n"
 )
 GUARD_LAUNCHER = (
     "# gsd-path guard — stable runtime launcher\n"
@@ -119,12 +119,12 @@ class MemberInstallTests(unittest.TestCase):
         self.assertEqual(git(self.member, "status", "--porcelain", "--untracked-files=all").stdout, "")
         committed = self.change()
         self.assertEqual(committed.returncode, 0, committed.stderr)
-        work = self.branch("gsd-path/acme-M001")
-        refused = self.push("gsd-path/acme-M001")
+        work = self.branch("feature/acme-milestone-001")
+        refused = self.push("feature/acme-milestone-001")
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("not authorized", refused.stderr)
-        members.authorize_push(self.member, "acme", "refs/heads/gsd-path/acme-M001", work)
-        allowed = self.push("gsd-path/acme-M001")
+        members.authorize_push(self.member, "acme", "refs/heads/feature/acme-milestone-001", work)
+        allowed = self.push("feature/acme-milestone-001")
         self.assertEqual(allowed.returncode, 0, allowed.stderr)
 
     def test_existing_hooks_are_chained_after_the_guard(self) -> None:

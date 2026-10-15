@@ -32,7 +32,7 @@ def sample_projects():
     ]
     return [
         ProjectStatus(root="/sample/gsd", project="GSD Path", workflow={"state": "active", "label": "In build"}, milestone="daemon", phase="build",
-                      status="active", branch="gsd-path/M004", tasks_done=6, tasks_total=9, current_wave=2,
+                      status="active", branch="feature/milestone-004", tasks_done=6, tasks_total=9, current_wave=2,
                       waves={1: "parsers", 2: "watcher", 3: "tray"}, roadmap_milestones=roadmap,
                       tasks=[TaskSummary(id="T001", title="state parser", wave=1, status="done", files=["daemon/probe.py"]),
                              TaskSummary(id="T005", title="poll loop", wave=2, status="done", files=["daemon/watcher.py", "tests/test_watcher.py"]),
@@ -59,14 +59,14 @@ def sample_projects():
                              "milestones": {"M003": {"turns": 6, "tokens": 1000000, "cost": 1.5}, "M004": {"turns": 84, "tokens": 14100000, "cost": 24.6}},
                              "recent": [{"at": "2026-09-12T14:32:07+00:00", "agent": "$gsd-path-build · T006", "model": "gpt-6-astra", "host": "codex",
                                          "tokens_in": 214830, "tokens_cached": 171200, "tokens_out": 4226, "cost": 0.68, "duration_s": 41.0}]},
-                      time_in_phase_s=3600 * 5, git={"branch": "gsd-path/M004", "head": "0e9a3b1abcdef", "dirty": True},
+                      time_in_phase_s=3600 * 5, git={"branch": "feature/milestone-004", "head": "0e9a3b1abcdef", "dirty": True},
                       next_skill="gsd-path-build"),
         ProjectStatus(root="/sample/atlas'&tab=usage", project="Atlas API", workflow={"state": "blocked", "label": "Blocked"}, milestone="api-v2", phase="ship",
-                      status="blocked", branch="gsd-path/M002", health="red", next_skill="gsd-path-forensics",
+                      status="blocked", branch="feature/milestone-002", health="red", next_skill="gsd-path-forensics",
                       attention=[{"kind": "blocked", "label": "ship blocked", "ref": None}],
                       next_milestone={"milestone": "api-v3", "phase": "define", "status": "pending"}),
         ProjectStatus(root="/sample/notes", project="Field Notes", workflow={"state": "active", "label": "In research"}, milestone="bootstrap", phase="research",
-                      status="active", branch="gsd-path/M001"),
+                      status="active", branch="feature/milestone-001"),
         ProjectStatus(root="/sample/done", project="Done Thing", workflow={"state": "shipped", "label": "Shipped"}, milestone="graph", phase="shipped",
                       status="shipped", archive=".project/archive/001-graph"),
     ]
@@ -390,7 +390,7 @@ class BoardUITests(unittest.TestCase):
                          "Atlas API|Field Notes|GSD Path*|Done Thing")
         page = "document.querySelector('.project')"
         self.assertEqual(self.js(f"[...{page}.querySelectorAll('.facts div')].map(d=>d.querySelector('dt').textContent+'='+d.querySelector('dd').textContent).join('|')"),
-                         "State=In build|Health=amber · no activity for 2d|Milestone=M004|Branch=gsd-path/M004|Head=0e9a3b1 · dirty|Integration=direct|Updated=—|Cost=$26.10|Turns=90")
+                         "State=In build|Health=amber · no activity for 2d|Milestone=M004|Branch=feature/milestone-004|Head=0e9a3b1 · dirty|Integration=direct|Updated=—|Cost=$26.10|Turns=90")
         self.assertEqual(self.js(f"[...{page}.querySelectorAll('.milestones tr.ms')].map(m=>m.classList[1]+':'+m.querySelector('.k').textContent).join('|')"),
                          "done:M003|now:M004|ahead:M005")
         self.assertEqual(self.js(f"[...{page}.querySelectorAll('.phases div')].map(d=>(d.className||'-')+':'+d.title).join('|')"),

@@ -309,7 +309,7 @@ if sys.pycache_prefix != before:
         self.git("add", ".")
         self.git("commit", "-m", "project configuration")
         sidecar = self.root / "sidecar"
-        self.git("worktree", "add", "-b", "gsd-path-verify/runtime", str(sidecar))
+        self.git("worktree", "add", "-b", "chore/verify-runtime", str(sidecar))
         result = subprocess.run(
             [sys.executable, "-B", str(sidecar / ".gsd-path/status_runtime.py"),
              "--repo", str(sidecar), "--runtime-path"], capture_output=True, encoding="utf-8", errors="replace",
@@ -637,7 +637,7 @@ runtime_store.operate(Path(sys.argv[1]), Path(sys.argv[2]), 'migrate')
         (self.repo / ".project/STATE.md").write_bytes(state.encode("utf-8"))
         self.git("add", ".")
         self.git("-c", "core.hooksPath=/dev/null", "commit", "-m", "runtime wiring")
-        for branch in ("gsd-path-task/T001", "gsd-path-verify/check", "gsd-path-integrate/M001"):
+        for branch in ("chore/task-t001", "chore/verify-check", "chore/integrate-m001"):
             with self.subTest(branch=branch):
                 checkout = self.root / branch.replace("/", "-")
                 self.git("worktree", "add", "-b", branch, str(checkout))

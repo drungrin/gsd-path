@@ -26,8 +26,8 @@ _Avoid_: release, GitHub Release, lightweight tag
 The landing that puts the ship commit onto the remote default `main`: a
 two-parent merge, or in `pull-request` mode also a proven GitHub rebase merge.
 In `direct` mode, Path creates it with subject
-`integrate: M00N — merge gsd-path/M00N into main`. In `pull-request` mode,
-GitHub creates it after a user merges the Path-owned PR. In `external-landing`
+`integrate: M00N — merge feature/milestone-001 into main`. In `pull-request` mode,
+GitHub or Azure creates it after a user completes the PR; Azure requires a no-fast-forward merge. In `external-landing`
 mode, the user's forge creates it after the user merges their own merge request
 with the merge message that Path returns.
 _Avoid_: ship, land (unless you mean this)
@@ -52,15 +52,16 @@ _Avoid_: pointer (bare)
 
 **GitHub remote**:
 `origin` whose host is github.com or GitHub Enterprise Server. Pull-request
-integration currently supports GitHub.com only. Every other host, including
-GitLab and Gitea, uses `direct` or `external-landing`.
+integration supports GitHub.com through `gh` and Azure DevOps Services through
+`az`. Other hosts, including GitLab and Gitea, use `direct` or `external-landing`.
 _Avoid_: GitHub (bare, unless you mean the host family), github.com (unless you
 mean that host only)
 
 **Bound branch**:
-The per-milestone `gsd-path/M00N` branch recorded in `STATE.branch`. Pipeline
-commits for that milestone live here. It is never the GitHub default.
-_Avoid_: feature branch, worktree branch, `gsd-path/<project-slug>`
+The per-milestone `feature/milestone-001` branch recorded in `STATE.branch`. Pipeline
+commits for that milestone live here. It follows Conventional Branch naming
+and is never the remote default.
+_Avoid_: worktree branch, tool-branded branch prefixes
 
 **Default branch**:
 The repository's remote default, with any name. Initialization records the

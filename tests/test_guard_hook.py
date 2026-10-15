@@ -54,7 +54,7 @@ class GuardHookTests(unittest.TestCase):
                 "milestone": "demo",
                 "phase": phase,
                 "status": "active",
-                "branch": "gsd-path/M001",
+                "branch": "feature/milestone-001",
                 "archive": None,
                 "integration_default": "direct",
                 "integration": "direct",
@@ -117,10 +117,10 @@ class GuardHookTests(unittest.TestCase):
         """A repository with an ordinary and a Path-owned branch and worktree."""
         repo = self.init_git_repo(root / "repo")
         self.git(repo, "branch", "feature/x")
-        self.git(repo, "branch", "gsd-path/M001")
+        self.git(repo, "branch", "feature/milestone-001")
         self.git(repo, "worktree", "add", "-q", "-b", "plain", str(root / "plain-worktree"))
         self.git(
-            repo, "worktree", "add", "-q", "-b", "gsd-path-task/T001",
+            repo, "worktree", "add", "-q", "-b", "chore/task-t001",
             str(root / "task-worktree"),
         )
         if state is not None:
@@ -1270,10 +1270,10 @@ class GuardHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             repo = self.init_git_repo(Path(temporary) / "repo")
             names = (
-                "gsd-path/M001",
-                "gsd-path-task/T001",
-                "gsd-path-verify/T001",
-                "gsd-path-integrate/T001",
+                "feature/milestone-001",
+                "chore/task-t001",
+                "chore/verify-t001",
+                "chore/integrate-t001",
                 "bound-without-marker",
                 "task/demo",
                 "ordinary",
@@ -1292,10 +1292,10 @@ class GuardHookTests(unittest.TestCase):
                 encoding="utf-8",
             )
             for flag, target in (
-                ("-D", "gsd-path/M001"),
-                ("-df", "gsd-path-task/T001"),
-                ("-fd", "gsd-path-verify/T001"),
-                ("--delete --force", "gsd-path-integrate/T001"),
+                ("-D", "feature/milestone-001"),
+                ("-df", "chore/task-t001"),
+                ("-fd", "chore/verify-t001"),
+                ("--delete --force", "chore/integrate-t001"),
                 ("-D", "bound-without-marker"),
                 ("-D", "task/demo"),
                 ("-D", "ordinary task/demo"),
@@ -1308,7 +1308,7 @@ class GuardHookTests(unittest.TestCase):
     def test_non_path_update_ref_deletes_are_allowed_but_owned_refs_are_blocked(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = self.init_git_repo(Path(temporary) / "repo")
-            for name in ("ordinary", "bound-without-marker", "task/demo", "gsd-path/M001"):
+            for name in ("ordinary", "bound-without-marker", "task/demo", "feature/milestone-001"):
                 self.git(repo, "branch", name)
             project = repo / ".project"
             tasks = project / "tasks"
@@ -1326,7 +1326,7 @@ class GuardHookTests(unittest.TestCase):
                 repo,
                 "symbolic-ref",
                 "refs/heads/path-alias",
-                "refs/heads/gsd-path/M001",
+                "refs/heads/feature/milestone-001",
             )
             self.git(
                 repo, "symbolic-ref", "refs/gsd-path/checkpoint", "refs/heads/ordinary"
@@ -1341,7 +1341,7 @@ class GuardHookTests(unittest.TestCase):
             for ref in (
                 "refs/heads/bound-without-marker",
                 "refs/heads/task/demo",
-                "refs/heads/gsd-path/M001",
+                "refs/heads/feature/milestone-001",
                 "refs/gsd-path/task-authorizations/T001",
                 "refs/heads/path-alias",
             ):
@@ -1395,7 +1395,7 @@ class GuardHookTests(unittest.TestCase):
             )
 
             managed = root / "managed-task"
-            self.git(repo, "worktree", "add", "-q", "-b", "gsd-path-task/T002", str(managed))
+            self.git(repo, "worktree", "add", "-q", "-b", "chore/task-t002", str(managed))
             self.assert_denied(
                 self.bash_in(repo, f"git worktree remove -f -- {shlex.quote(str(managed))}")
             )
@@ -1719,8 +1719,8 @@ class GuardHookTests(unittest.TestCase):
     def test_scoped_cleanup_keeps_ordinary_git_and_path_owned_results(self):
         for label, state in (
             ("no-state", None),
-            ("active", "---\nphase: build\nbranch: gsd-path/M001\n---\n"),
-            ("shipped", "---\nphase: shipped\nbranch: gsd-path/M001\n---\n"),
+            ("active", "---\nphase: build\nbranch: feature/milestone-001\n---\n"),
+            ("shipped", "---\nphase: shipped\nbranch: feature/milestone-001\n---\n"),
         ):
             with self.subTest(state=label), tempfile.TemporaryDirectory() as temporary:
                 repo = self.scoped_cleanup_fixture(Path(temporary).resolve(), state)
@@ -1736,9 +1736,9 @@ class GuardHookTests(unittest.TestCase):
                     with self.subTest(command=command):
                         self.assert_allowed(self.bash_in(repo, command))
                 for command, rule in (
-                    ("git branch -D gsd-path/M001", "branch"),
-                    ("git branch -D gsd-path-task/T001", "branch"),
-                    ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                    ("git branch -D feature/milestone-001", "branch"),
+                    ("git branch -D chore/task-t001", "branch"),
+                    ("git update-ref -d refs/heads/feature/milestone-001", "update-ref"),
                     ("git worktree remove --force ../task-worktree", "worktree"),
                     ("git reset --hard HEAD", "reset"),
                     ("git push --force origin feature/x", "push"),
@@ -1768,7 +1768,7 @@ class GuardHookTests(unittest.TestCase):
             )
             for command in (
                 "env -u HOME git branch -D feature/x",
-                "env -u HOME git branch -D gsd-path/M001",
+                "env -u HOME git branch -D feature/milestone-001",
                 "env -i git update-ref -d refs/heads/feature/x",
                 "env -i git worktree remove --force ../plain-worktree",
                 "env -i git retire feature/x",
@@ -1788,10 +1788,10 @@ class GuardHookTests(unittest.TestCase):
                 "&>/dev/null", ">> out.log", "< /dev/null", "2>&1 | tail -1",
             )
             for delete, owned, rule in (
-                ("git branch -D feature/x", "git branch -D gsd-path/M001", "branch"),
+                ("git branch -D feature/x", "git branch -D feature/milestone-001", "branch"),
                 (
                     "git update-ref -d refs/heads/feature/x",
-                    "git update-ref -d refs/heads/gsd-path/M001",
+                    "git update-ref -d refs/heads/feature/milestone-001",
                     "update-ref",
                 ),
                 (
@@ -1813,7 +1813,7 @@ class GuardHookTests(unittest.TestCase):
                 self.bash_in(repo, "git branch -D 2>/dev/null feature/x")
             )
             self.assert_denied_with(
-                self.bash_in(repo, "git branch -D feature/x 2>/dev/null gsd-path/M001"),
+                self.bash_in(repo, "git branch -D feature/x 2>/dev/null feature/milestone-001"),
                 guard_hook.GIT_REASONS["branch"],
             )
             unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
@@ -1836,17 +1836,17 @@ class GuardHookTests(unittest.TestCase):
             repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
             for owned, plain, rule in (
                 (
-                    "git 2>/dev/null branch -D gsd-path/M001",
+                    "git 2>/dev/null branch -D feature/milestone-001",
                     "git 2>/dev/null branch -D feature/x",
                     "branch",
                 ),
                 (
-                    "2>/dev/null git branch -D gsd-path/M001",
+                    "2>/dev/null git branch -D feature/milestone-001",
                     "2>/dev/null git branch -D feature/x",
                     "branch",
                 ),
                 (
-                    ">/dev/null command git branch -D gsd-path/M001",
+                    ">/dev/null command git branch -D feature/milestone-001",
                     ">/dev/null command git branch -D feature/x",
                     "branch",
                 ),
@@ -1856,12 +1856,12 @@ class GuardHookTests(unittest.TestCase):
                     "worktree",
                 ),
                 (
-                    "git update-ref >/dev/null -d refs/heads/gsd-path/M001",
+                    "git update-ref >/dev/null -d refs/heads/feature/milestone-001",
                     "git update-ref >/dev/null -d refs/heads/feature/x",
                     "update-ref",
                 ),
                 (
-                    "git update-ref >/dev/null refs/heads/gsd-path/M001 " + "0" * 40,
+                    "git update-ref >/dev/null refs/heads/feature/milestone-001 " + "0" * 40,
                     "git update-ref >/dev/null refs/heads/feature/x " + "0" * 40,
                     "update-ref",
                 ),
@@ -1913,8 +1913,8 @@ class GuardHookTests(unittest.TestCase):
             )
             for join in joins:
                 for command, rule in (
-                    ("git branch -D gsd-path/M001", "branch"),
-                    ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                    ("git branch -D feature/milestone-001", "branch"),
+                    ("git update-ref -d refs/heads/feature/milestone-001", "update-ref"),
                     ("git push --force origin feature/x", "push"),
                     ("git reset --hard", "reset"),
                     ("git clean -fd", "clean"),
@@ -1935,31 +1935,31 @@ class GuardHookTests(unittest.TestCase):
             for join in ("true;>/dev/null {}", "true\n>/dev/null {}"):
                 with self.subTest(join=join):
                     self.assert_denied_with(
-                        self.bash_in(repo, join.format("git branch -D gsd-path/M001")),
+                        self.bash_in(repo, join.format("git branch -D feature/milestone-001")),
                         guard_hook.GIT_REASONS["branch"],
                     )
                     self.assert_allowed(
                         self.bash_in(repo, join.format("git branch -D feature/x"))
                     )
             for command in (
-                "git 10>/dev/null branch -D gsd-path/M001",
-                "git {fd}>/dev/null branch -D gsd-path/M001",
+                "git 10>/dev/null branch -D feature/milestone-001",
+                "git {fd}>/dev/null branch -D feature/milestone-001",
                 "git 10>/dev/null push --force origin feature/x",
-                "git update-ref refs/heads/gsd-path/M001 00>/dev/null",
+                "git update-ref refs/heads/feature/milestone-001 00>/dev/null",
                 "command git 10>/dev/null reset --hard",
                 "git branch -D feature/x 10>/dev/null",
                 "git update-ref -d refs/heads/feature/x {fd}>/dev/null",
-                "echo a\\\\;>/dev/null git branch -D gsd-path/M001",
+                "echo a\\\\;>/dev/null git branch -D feature/milestone-001",
                 "echo a\\\\&&>/dev/null git reset --hard",
                 "echo a\\\\;>/dev/null git push --force origin feature/x",
                 "echo a\\\\;>/dev/null git worktree remove --force ../task-worktree",
                 "echo a\\\\\n>/dev/null git clean -fd",
                 "cat <(git push --force origin feature/x)",
-                "cat <(git branch -D gsd-path/M001)",
+                "cat <(git branch -D feature/milestone-001)",
                 "tee >(git reset --hard)",
                 "git diff <(git stash drop) <(git clean -fd)",
-                "cat <(cat <(git update-ref -d refs/heads/gsd-path/M001))",
-                "git branch <(echo) -D gsd-path/M001",
+                "cat <(cat <(git update-ref -d refs/heads/feature/milestone-001))",
+                "git branch <(echo) -D feature/milestone-001",
                 "git branch <(echo) -D feature/x",
                 "git reset <(echo) --hard",
                 "git push <(echo) --force origin feature/x",
@@ -1967,7 +1967,7 @@ class GuardHookTests(unittest.TestCase):
                 "git stash <(echo) drop",
                 "git checkout <(echo) -- .",
                 "git branch <(echo) -m old new",
-                "git update-ref <(echo) -d refs/heads/gsd-path/M001",
+                "git update-ref <(echo) -d refs/heads/feature/milestone-001",
                 "git worktree remove <(echo) --force ../task-worktree",
                 "git reset <(cat <(echo)) >(cat) --hard",
                 "(git reset <(echo)) && git reset <(echo a; echo b) --hard",
@@ -2020,9 +2020,9 @@ class GuardHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
             for command, rule in (
-                ("git branch -D gsd-path/M001", "branch"),
-                ("git branch -D gsd-path-task/T001", "branch"),
-                ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                ("git branch -D feature/milestone-001", "branch"),
+                ("git branch -D chore/task-t001", "branch"),
+                ("git update-ref -d refs/heads/feature/milestone-001", "update-ref"),
                 ("git worktree remove --force ../task-worktree", "worktree"),
                 ("git reset --hard HEAD", "reset"),
                 ("git push --force origin feature/x", "push"),
@@ -2052,8 +2052,8 @@ class GuardHookTests(unittest.TestCase):
     def test_git_alias_words_are_arguments_and_never_redirections(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
-            self.git(repo, "config", "alias.del", "branch -D > gsd-path/M001")
-            self.git(repo, "config", "alias.unref", "update-ref -d > refs/heads/gsd-path/M001")
+            self.git(repo, "config", "alias.del", "branch -D > feature/milestone-001")
+            self.git(repo, "config", "alias.unref", "update-ref -d > refs/heads/feature/milestone-001")
             self.git(repo, "config", "alias.retire", "branch -D")
             for command in (
                 "git del feature/x",
@@ -2065,13 +2065,13 @@ class GuardHookTests(unittest.TestCase):
             self.assert_allowed(self.bash_in(repo, "git retire feature/x"))
             self.assert_allowed(self.bash_in(repo, "git retire feature/x 2>/dev/null"))
             self.assert_denied_with(
-                self.bash_in(repo, "git retire gsd-path/M001 2>/dev/null"),
+                self.bash_in(repo, "git retire feature/milestone-001 2>/dev/null"),
                 guard_hook.GIT_REASONS["branch"],
             )
             # What the guard denies: Git gives the alias words to branch -D.
             subprocess.run(["git", "del", "feature/x"], cwd=repo, capture_output=True)
             branches = self.git(repo, "branch", "--format=%(refname:short)").stdout.split()
-            self.assertNotIn("gsd-path/M001", branches)
+            self.assertNotIn("feature/milestone-001", branches)
 
     def test_git_context_name_counts_only_where_a_command_sets_it(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2136,7 +2136,7 @@ class GuardHookTests(unittest.TestCase):
                     self.assert_allowed(self.bash_in(repo, command))
             self.assert_allowed(self.bash_in(root / "absent", "git status"))
             self.assert_denied_with(
-                self.bash_in(root / "absent", "git branch -D gsd-path/M001"),
+                self.bash_in(root / "absent", "git branch -D feature/milestone-001"),
                 "git target repository cannot be resolved",
             )
             self.assert_denied_with(
@@ -2150,7 +2150,7 @@ class GuardHookTests(unittest.TestCase):
             for command in ("mkdir new && cd new && git STATUS", "env -i git STATUS"):
                 with self.subTest(command=command):
                     self.assert_denied(self.bash_in(repo, command))
-            for target in ("feature/x", "gsd-path/M001"):
+            for target in ("feature/x", "feature/milestone-001"):
                 with self.subTest(target=target):
                     self.assert_denied_with(
                         self.bash_in(repo, f"mkdir new && cd new && git branch -D {target}"),
@@ -2179,8 +2179,8 @@ class GuardHookTests(unittest.TestCase):
     def test_gsd_path_text_in_a_path_does_not_make_a_worktree_path_owned(self):
         for label, state in (
             ("no-state", None),
-            ("active", "---\nphase: build\nbranch: gsd-path/M001\n---\n"),
-            ("shipped", "---\nphase: shipped\nbranch: gsd-path/M001\n---\n"),
+            ("active", "---\nphase: build\nbranch: feature/milestone-001\n---\n"),
+            ("shipped", "---\nphase: shipped\nbranch: feature/milestone-001\n---\n"),
         ):
             with self.subTest(state=label), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve() / "gsd-path"
@@ -2233,7 +2233,7 @@ class GuardHookTests(unittest.TestCase):
                     self.bash_in(repo, "cd /gitbash && git retire feature/x")
                 )
                 self.assert_denied_with(
-                    self.bash_in(repo, "cd /gitbash && git retire gsd-path/M001"),
+                    self.bash_in(repo, "cd /gitbash && git retire feature/milestone-001"),
                     guard_hook.GIT_REASONS["branch"],
                 )
 
@@ -2303,8 +2303,8 @@ class GuardHookTests(unittest.TestCase):
                     with self.subTest(command=command):
                         self.assert_allowed(self.bash_in(repo, command))
                 for command, rule in (
-                    ("git branch -D gsd-path/M001", "branch"),
-                    ("git update-ref -d refs/heads/gsd-path/M001", "update-ref"),
+                    ("git branch -D feature/milestone-001", "branch"),
+                    ("git update-ref -d refs/heads/feature/milestone-001", "update-ref"),
                     ("git worktree remove --force ../task-worktree", "worktree"),
                 ):
                     with self.subTest(command=command):
@@ -2444,12 +2444,12 @@ class GuardHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             repo = self.scoped_cleanup_fixture(Path(temporary).resolve())
             self.git(repo, "branch", "FOO")
-            self.git(repo, "symbolic-ref", "FOO", "refs/heads/gsd-path/M001")
-            self.git(repo, "symbolic-ref", "refs/heads/first", "refs/heads/gsd-path/M001")
+            self.git(repo, "symbolic-ref", "FOO", "refs/heads/feature/milestone-001")
+            self.git(repo, "symbolic-ref", "refs/heads/first", "refs/heads/feature/milestone-001")
             self.git(repo, "symbolic-ref", "refs/heads/second", "refs/heads/first")
             self.git(repo, "symbolic-ref", "refs/heads/plain-alias", "refs/heads/feature/x")
             self.git(repo, "update-ref", "refs/remotes/origin/stale", "HEAD")
-            self.git(repo, "update-ref", "refs/remotes/origin/gsd-path/M001", "HEAD")
+            self.git(repo, "update-ref", "refs/remotes/origin/feature/milestone-001", "HEAD")
             (repo / "README.md").write_text("changed\n", encoding="utf-8")
             self.git(repo, "stash")
             owned = guard_hook.GIT_REASONS["update-ref"]
@@ -2459,7 +2459,7 @@ class GuardHookTests(unittest.TestCase):
             for command in (
                 "git update-ref -d refs/heads/second",
                 "git update-ref -m --no-deref -d refs/heads/second",
-                "git update-ref -d refs/remotes/origin/gsd-path/M001",
+                "git update-ref -d refs/remotes/origin/feature/milestone-001",
                 "git update-ref -d refs/stash",
             ):
                 with self.subTest(command=command):
@@ -2471,7 +2471,7 @@ class GuardHookTests(unittest.TestCase):
                 "git update-ref -d FOO " + "0" * 40,
                 "git update-ref -d HEAD",
                 # -m takes refs/heads/feature/x as its value here.
-                "git update-ref -dm refs/heads/feature/x refs/heads/gsd-path/M001",
+                "git update-ref -dm refs/heads/feature/x refs/heads/feature/milestone-001",
                 "git update-ref -d feature/x",
                 "git update-ref --stdin",
                 "git update-ref --std",
@@ -2480,7 +2480,7 @@ class GuardHookTests(unittest.TestCase):
                     self.assert_denied_with(self.bash_in(repo, command), unresolved)
             # An earlier Git command of the same command line can point a
             # symbolic ref at the Path branch after the guard has read it.
-            repoint = "git symbolic-ref {} refs/heads/gsd-path/M001"
+            repoint = "git symbolic-ref {} refs/heads/feature/milestone-001"
             for command in (
                 repoint.format("refs/heads/plain-alias")
                 + " && git update-ref -d refs/heads/plain-alias",
@@ -2514,7 +2514,7 @@ class GuardHookTests(unittest.TestCase):
                 "---\nphase: build\nbranch: bound\n---\n",
             )
             self.git(repo, "branch", "bound")
-            for name in ("stale", "gsd-path/M001", "bound"):
+            for name in ("stale", "feature/milestone-001", "bound"):
                 self.git(repo, "update-ref", f"refs/remotes/origin/{name}", "HEAD")
             owned = guard_hook.GIT_REASONS["branch"]
             unresolved = guard_hook.GIT_REASONS["unresolved-target"].format(
@@ -2529,12 +2529,12 @@ class GuardHookTests(unittest.TestCase):
                 with self.subTest(command=command):
                     self.assert_allowed(self.bash_in(repo, command))
             for command in (
-                "git branch -rD origin/gsd-path/M001",
+                "git branch -rD origin/feature/milestone-001",
                 "git branch -r -D origin/bound",
                 # --color takes no separate value, so git deletes both names.
-                "git branch -D --color gsd-path/M001 feature/x",
-                "git branch --delete --forc gsd-path/M001",
-                "git branch --del --force gsd-path/M001",
+                "git branch -D --color feature/milestone-001 feature/x",
+                "git branch --delete --forc feature/milestone-001",
+                "git branch --del --force feature/milestone-001",
             ):
                 with self.subTest(command=command):
                     self.assert_denied_with(self.bash_in(repo, command), owned)

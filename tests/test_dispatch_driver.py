@@ -240,7 +240,7 @@ class DispatchDriverTests(unittest.TestCase):
     def fixture(self, root: Path, deps_t002: str = "[]", wave_t002: int = 1,
                 state: tuple = ("build", "active"), files_t002: str = "tests/test_app.py",
                 verify_t001: str = "", verify_t002: str = "") -> str:
-        run_git(root, "init", "-b", "gsd-path/M001")
+        run_git(root, "init", "-b", "feature/milestone-001")
         # Finish automatic housekeeping before TemporaryDirectory removes Git objects.
         run_git(root, "config", "gc.autoDetach", "false")
         run_git(root, "config", "user.name", "Test")
@@ -411,7 +411,7 @@ class DispatchDriverTests(unittest.TestCase):
             if action == "prepare-task":
                 return [{"result": {
                     "worktree": str(self.root / "repair-worktree"),
-                    "task_branch": "gsd-path-task/T003",
+                    "task_branch": "chore/task-t003",
                     "mode": "parallel",
                 }}]
             return []
@@ -528,7 +528,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertIn("T001: Demo task T001", subjects)
         self.assertIn("T002: Demo task T002", subjects)
         self.assertEqual(subjects[0], "build: record dispatch bookkeeping")
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
         self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
         # Only a landing whose parent is the recorded base proves the verified tree.
         ledger = (root / ".project/build/verify-ledger.jsonl").read_text(encoding="utf-8").splitlines()
@@ -537,7 +537,7 @@ class DispatchDriverTests(unittest.TestCase):
         for task in ("T001", "T002"):
             text = (root / f".project/tasks/{task}-demo.md").read_text(encoding="utf-8")
             self.assertIn("status: done", text)
-            self.assertIn("orchestrator Verify (isolate gsd-path-task/", text)
+            self.assertIn("orchestrator Verify (isolate chore/task-", text)
         dispatches = self.driver(root, "status")["dispatches"]
         self.assertEqual([d["outcome"] for d in dispatches], ["landed", "landed"])
 
@@ -548,9 +548,9 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "done", receipt)
         self.assertEqual([item["task"] for item in receipt["landed"]], ["T001", "T002"])
         self.assertTrue(all(item["mode"] == "serial" for item in receipt["landed"]))
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
         text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
-        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): pass", text)
+        self.assertIn("orchestrator Verify (sidecar chore/verify-task-t001-verify): pass", text)
         self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
 
     def test_question_blocks_until_answered_then_redispatches_the_same_isolate(self) -> None:
@@ -602,7 +602,7 @@ class DispatchDriverTests(unittest.TestCase):
         head = self.fixture(root, deps_t002="[T001]")
         task = root / ".project/tasks/T001-demo.md"
         self.assertEqual(self.round(root, "--wait", "60", mode="question")["status"], "question")
-        record = root / ".git/gsd-path/dispatch/gsd-path-M001/T001/attempt-1/state.json"
+        record = root / ".git/gsd-path/dispatch/feature-milestone-001/T001/attempt-1/state.json"
         state = json.loads(record.read_text(encoding="utf-8"))
         state["outcome"] = "redispatched"
         record.write_bytes(json.dumps(state).encode("utf-8"))
@@ -616,7 +616,7 @@ class DispatchDriverTests(unittest.TestCase):
     def test_child_exit_receipt_preserves_parent_state_and_is_loaded_by_status(self) -> None:
         root = self.root
         self.fixture(root)
-        attempt = root / ".git/gsd-path/dispatch/gsd-path-M001/T001/attempt-1"
+        attempt = root / ".git/gsd-path/dispatch/feature-milestone-001/T001/attempt-1"
         attempt.mkdir(parents=True)
         record = attempt / "state.json"
         state = {"task_id": "T001", "worktree": str(root), "pid": 123,
@@ -644,9 +644,9 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertIn("Verify failed", receipt["blocked"][0]["reason"])
         self.assertEqual(receipt["blocked"][0]["execution"]["exit_code"], 1)
         self.assertEqual(self.head(root), head)
-        self.assertNotIn("gsd-path-verify/task-t001-verify", self.branches(root))
+        self.assertNotIn("chore/verify-task-t001-verify", self.branches(root))
         text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
-        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): fail", text)
+        self.assertIn("orchestrator Verify (sidecar chore/verify-task-t001-verify): fail", text)
         again = self.round(root, mode="badverify")
         self.assertEqual(again["status"], "blocked", again)
         self.assertTrue(again["blocked"][0]["reported"])
@@ -678,7 +678,7 @@ class DispatchDriverTests(unittest.TestCase):
             root.resolve(), "verify", "task-t001-verify"
         )
         self.assertFalse(verify_path.exists())
-        self.assertNotIn("gsd-path-verify/task-t001-verify", self.branches(root))
+        self.assertNotIn("chore/verify-task-t001-verify", self.branches(root))
 
         with task_path.open("a", encoding="utf-8") as log:
             log.write("- orchestrator recorded the blocked attempt\n")
@@ -891,8 +891,8 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(self.head(root), head)
         text = (root / ".project/tasks/T002-demo.md").read_text(encoding="utf-8")
         self.assertNotIn("status: done", text)
-        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t002-verify): pass, exit 0", text)
-        self.assertIn("orchestrator regression Verify of T001 (sidecar gsd-path-verify/task-t002-verify): "
+        self.assertIn("orchestrator Verify (sidecar chore/verify-task-t002-verify): pass, exit 0", text)
+        self.assertIn("orchestrator regression Verify of T001 (sidecar chore/verify-task-t002-verify): "
                       "fail, exit 1", text)
         ledger = (root / ".project/build/verify-ledger.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(ledger), 1)  # the wave 1 landing only
@@ -919,7 +919,7 @@ class DispatchDriverTests(unittest.TestCase):
         evidence = json.loads(Path(landed["verify"]["evidence"]).read_text(encoding="utf-8"))
         self.assertEqual(evidence["retired"], landed["retired"])
         text = (root / ".project/tasks/T002-demo.md").read_text(encoding="utf-8")
-        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t002-verify): pass, exit 0", text)
+        self.assertIn("orchestrator Verify (sidecar chore/verify-task-t002-verify): pass, exit 0", text)
         self.assertIn("orchestrator regression Verify of T001 retired: superseded by T002\n", text)
         # Dispatch and landing rewrite the frontmatter; the plan-approved field stays.
         self.assertIn("task_branch: null\nsupersedes: [T001]\nfiles:\n", text)
@@ -969,7 +969,7 @@ class DispatchDriverTests(unittest.TestCase):
         run_git(root, "merge-base", "--is-ancestor", receipt["landed"][0]["commit"], states["T004"]["base"])
         text = (root / ".project/tasks/T004-demo.md").read_text(encoding="utf-8")
         self.assertIn("orchestrator regression Verify of T003 (supersedes T001) "
-                      "(sidecar gsd-path-verify/task-t004-verify): fail, exit 1", text)
+                      "(sidecar chore/verify-task-t004-verify): fail, exit 1", text)
         self.assertIn("orchestrator regression Verify of T001 retired: superseded by T003\n", text)
         # The bound branch still holds the rule of T003: b.py is not changed.
         self.assertEqual(run_git(root, "show", "HEAD:src/b.py").stdout, "raise SystemExit(1)\n")
@@ -1029,7 +1029,7 @@ class DispatchDriverTests(unittest.TestCase):
         text = (root / ".project/tasks/T004-demo.md").read_text(encoding="utf-8")
         self.assertIn("orchestrator regression Verify of T001 retired: superseded by T003\n", text)
         self.assertIn("orchestrator regression Verify of T003 (supersedes T001) "
-                      "(sidecar gsd-path-verify/task-t004-verify): pass, exit 0", text)
+                      "(sidecar chore/verify-task-t004-verify): pass, exit 0", text)
 
     def test_later_wave_task_lands_when_the_earlier_verify_still_passes(self) -> None:
         root = self.root
@@ -1043,7 +1043,7 @@ class DispatchDriverTests(unittest.TestCase):
                          [(["T001"], verify_t001, 0)])
         text = (root / ".project/tasks/T002-demo.md").read_text(encoding="utf-8")
         self.assertIn("status: done", text)
-        self.assertIn("orchestrator regression Verify of T001 (sidecar gsd-path-verify/task-t002-verify): "
+        self.assertIn("orchestrator regression Verify of T001 (sidecar chore/verify-task-t002-verify): "
                       "pass, exit 0", text)
         # The ledger records the task's own command at its landing, never the earlier task's command.
         lookup = dispatch_driver.build_state.verify_lookup
@@ -1166,7 +1166,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["landed"][0]["mode"], "serial")
         self.assertTrue(Path(receipt["landed"][0]["verify"]["evidence"]).is_file())
         self.assertEqual(self.subjects(root)[0], "T001: Demo task T001")
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
         self.assertIn("status: done", (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8"))
 
     def test_finish_recreates_a_deleted_serial_verify_sidecar(self) -> None:
@@ -1193,10 +1193,10 @@ class DispatchDriverTests(unittest.TestCase):
 
         self.assertEqual(receipt["status"], "landed", receipt)
         self.assertEqual(receipt["landed"][0]["mode"], "serial")
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
         self.assertIn("status: done", task.read_text(encoding="utf-8"))
         text = task.read_text(encoding="utf-8")
-        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): pass", text)
+        self.assertIn("orchestrator Verify (sidecar chore/verify-task-t001-verify): pass", text)
 
     def hand_dispatch_serial(self, root: Path, source: str) -> str:
         """prepare-task and activate-task T001 by hand, then write its product file and Log line."""
@@ -1238,11 +1238,11 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual((record["outcome"], record["reason"]), ("landed", None))
         self.assertEqual(dispatch_driver.attempts_used(records, "T001"), 1)
         self.assertEqual(self.subjects(root)[0], "T001: Demo task T001")
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
         text = (root / ".project/tasks/T001-demo.md").read_text(encoding="utf-8")
         self.assertIn("status: done", text)
-        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): fail", text)
-        self.assertIn("orchestrator Verify (sidecar gsd-path-verify/task-t001-verify): pass", text)
+        self.assertIn("orchestrator Verify (sidecar chore/verify-task-t001-verify): fail", text)
+        self.assertIn("orchestrator Verify (sidecar chore/verify-task-t001-verify): pass", text)
 
     def test_prepare_task_replaces_a_clean_verify_sidecar_left_at_an_earlier_base(self) -> None:
         root = self.root
@@ -1280,7 +1280,7 @@ class DispatchDriverTests(unittest.TestCase):
             run_git(sidecar, "commit", "-q", "-m", "work in the Verify sidecar")
 
         def reflog() -> str:
-            return run_git(root, "reflog", "show", "--format=%H", "gsd-path-verify/task-t001-verify").stdout
+            return run_git(root, "reflog", "show", "--format=%H", "chore/verify-task-t001-verify").stdout
 
         states = (
             ("gitignored file", lambda: write("build.log"), "build.log", "uncommitted files"),
@@ -1356,7 +1356,7 @@ class DispatchDriverTests(unittest.TestCase):
         # T002 lands on T001's commit, so its verified tree is not the landed tree: no ledger entry.
         self.assertEqual([first["landed"][0]["ledger"], second["landed"][0]["ledger"]], [True, False])
         self.assertEqual(self.subjects(root)[:2], ["T002: Demo task T002", "T001: Demo task T001"])
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def hand_dispatch_parallel(self, root: Path) -> Path:
         """prepare-task and activate-task T001 by hand in a parallel isolate, then write its product file."""
@@ -1397,7 +1397,7 @@ class DispatchDriverTests(unittest.TestCase):
         again = self.driver(root, "finish", "--task-id", "T001")
         self.assertEqual(again["status"], "landed", again)
         self.assertFalse(worktree.exists())
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def test_next_round_names_only_the_leftover_isolate_of_a_landed_parallel_task(self) -> None:
         root = self.root
@@ -1435,7 +1435,7 @@ class DispatchDriverTests(unittest.TestCase):
         shutil.rmtree(worktree)
         again = self.driver(root, "finish", "--task-id", "T001")
         self.assertEqual(again["status"], "landed", again)
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def test_partly_removed_isolate_of_a_task_that_did_not_land_keeps_the_recovery_block(self) -> None:
         root = self.root
@@ -1510,7 +1510,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "done", receipt)
         landing = next(item for item in receipt["landed"] if item["task"] == "T001")
         self.assertEqual(landing["mode"], "parallel")
-        record = root / ".git/gsd-path/dispatch/gsd-path-M001/T001/attempt-1/state.json"
+        record = root / ".git/gsd-path/dispatch/feature-milestone-001/T001/attempt-1/state.json"
         state = json.loads(record.read_text(encoding="utf-8"))
         self.assertFalse(Path(state["worktree"]).exists())
         state["outcome"] = None
@@ -1552,7 +1552,7 @@ class DispatchDriverTests(unittest.TestCase):
         receipt = self.round(root, "--wait", "60", mode="slow")
         self.assertEqual(receipt["status"], "done", receipt)
         # Simulate an interruption after land but before the record was updated.
-        records = list((root / ".git/gsd-path/dispatch/gsd-path-M001/T001").glob("attempt-*/state.json"))
+        records = list((root / ".git/gsd-path/dispatch/feature-milestone-001/T001").glob("attempt-*/state.json"))
         state = json.loads(records[0].read_text(encoding="utf-8"))
         state["outcome"] = None
         records[0].write_bytes(json.dumps(state).encode("utf-8"))
@@ -1660,7 +1660,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "blocked", receipt)
         self.assertIn("token budget admit", receipt["blocked"][0]["reason"])
         self.assertEqual([item["task"] for item in receipt["landed"]], ["T001"])
-        ledger = json.loads((root / ".git/gsd-path/budget/gsd-path-M001.json").read_text(encoding="utf-8"))
+        ledger = json.loads((root / ".git/gsd-path/budget/feature-milestone-001.json").read_text(encoding="utf-8"))
         self.assertEqual([row["output_tokens"] for row in ledger["observations"].values()], [3])
         # A wider session limit on the same ledger is refused: the policy is fixed per milestone.
         receipt = self.round(root, "--wait", "60", "--task-limit", "3", "--session-limit", "30",
@@ -1683,7 +1683,7 @@ class DispatchDriverTests(unittest.TestCase):
             self.assertEqual(fields["status"], "pending")
             self.assertEqual(task_path.read_bytes(), before)
             self.assertFalse((dispatch_driver.records_root(root) / "T002").exists())
-            self.assertEqual(self.branches(root), ["gsd-path/M001"])
+            self.assertEqual(self.branches(root), ["feature/milestone-001"])
             worktrees = run_git(root, "worktree", "list", "--porcelain").stdout.splitlines()
             self.assertEqual([line for line in worktrees if line.startswith("worktree ")],
                              [f"worktree {root.resolve().as_posix()}"])  # git prints /
@@ -1801,7 +1801,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertIn("Wave verdict: pass", review.read_text(encoding="utf-8"))
         self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review")
         self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
         again = self.review(root, "--wait", "60", default_resources=True)
         self.assertEqual(again["status"], "pass", again)
         self.assertIsNone(again["checkpoint"])
@@ -1819,7 +1819,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertTrue(findings["fix_batches"], findings)
         self.assertEqual(self.head(root), head)
         self.assertIn(".project/review/wave-1.cycle1.md", run_git(root, "status", "--porcelain", "-uall").stdout)
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def test_review_deep_runs_both_lenses(self) -> None:
         root = self.root
@@ -1833,7 +1833,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(sorted(receipt["lenses"]), ["adversarial", "contract"])
         for lens in ("contract", "adversarial"):
             self.assertIn(f"Lens: {lens}", (root / f".project/review/wave-1.cycle1.{lens}.md").read_text(encoding="utf-8"))
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def test_review_resumes_only_missing_deep_lens(self) -> None:
         root = self.root
@@ -1867,7 +1867,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(sorted(receipt["lenses"]), ["adversarial", "contract"])
         self.assertEqual(json.loads(contract_path.read_text(encoding="utf-8"))["pid"], contract_pid)
         self.assertEqual(len(list(contract_path.parent.parent.glob("attempt-*"))), 1)
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def test_review_recovers_validated_collection_after_interruption(self) -> None:
         root = self.root
@@ -2012,7 +2012,7 @@ class DispatchDriverTests(unittest.TestCase):
                     self.assertFalse(state["cleanup_pending"])
                     self.assertIsNone(state["cleanup_error"])
                     self.assertFalse(Path(state["worktree"]).exists())
-                self.assertEqual(self.branches(root), ["gsd-path/M001"])
+                self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def test_review_requires_previous_cycle_evidence(self) -> None:
         root = self.root
@@ -2022,7 +2022,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "blocked", receipt)
         self.assertEqual(receipt["blocked"][0]["reason"],
                          f"previous cycle review is missing: {root.resolve() / '.project/review/wave-1.cycle1.md'}")
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def test_review_refuses_verify_only_and_unlanded_waves(self) -> None:
         root = self.root
@@ -2103,7 +2103,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "blocked", receipt)
         self.assertEqual(receipt["blocked"][0]["helper"], "check_handoffs.py wave")
         self.assertFalse((root / ".project/review/wave-1.cycle1.md").exists())
-        self.assertIn("gsd-path-verify/wave-1-cycle-1", self.branches(root))
+        self.assertIn("chore/verify-wave-1-cycle-1", self.branches(root))
         self.assertTrue(receipt["findings"]["structural_blockers"], receipt["findings"])
 
     def test_fix_tasks_writes_one_task_per_batch_and_the_next_round_lands_it(self) -> None:
@@ -2267,7 +2267,7 @@ class DispatchDriverTests(unittest.TestCase):
             self.assertIn(f"- Criterion locator: {locator}", text)
         self.assertEqual(receipt["findings"]["skeptic_groups"], [])
         self.assertEqual(sorted(receipt["findings"]["fix_groups"]), sorted(locators))
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
         again = self.skeptics(root, "--wait", "60")
         self.assertEqual(again["status"], "done", again)
         self.assertFalse([step for step in again["steps"] if step["script"] == "isolation.py isolate-verify"])
@@ -2416,7 +2416,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "pass", receipt)
         self.assertEqual(set(receipt["families"]), {"gpt", "claude"})
         self.assertFalse(any(item.get("cleanup_pending") for item in panel.states().values()))
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def test_blocked_review_panel_does_not_checkpoint(self) -> None:
         for mode, advertised in (("gpt", "gpt-6-astra,claude-opus"), ("detected", "claude-opus")):
@@ -2586,7 +2586,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertTrue((root / receipt["panel"]).is_file())
         self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review")
         self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
-        self.assertEqual(self.branches(root), ["gsd-path/M001"])
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
     def test_panel_detected_without_cross_model_families_writes_the_skipped_receipt(self) -> None:
         root = self.root

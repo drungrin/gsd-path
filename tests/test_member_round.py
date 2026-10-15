@@ -156,7 +156,7 @@ class MemberRoundTests(unittest.TestCase):
 
     def test_repair_evidence_proves_a_member_repair_in_the_member_repository(self) -> None:
         self.blocked_wave()
-        original = git(self.member, "rev-parse", "gsd-path/demo-M001")
+        original = git(self.member, "rev-parse", "feature/demo-milestone-001")
         landed = self.land_repairs()
         landing = landed["T004"]["landing"]
         code, evidence = self.repair_evidence("T004")
@@ -258,7 +258,7 @@ class MemberRoundTests(unittest.TestCase):
         rows = [json.loads(line) for line in
                 (self.root / ".project" / "build" / "verify-ledger.jsonl").read_text(encoding="utf-8").splitlines()]
         self.assertIn(("web", landed["T002"]["landing"]), [(row.get("repo"), row["commit"]) for row in rows])
-        bound = "gsd-path/demo-M001"
+        bound = "feature/demo-milestone-001"
         self.assertEqual(git(self.member, "show", f"{bound}:tests/test_app.py"), "print('hello')")
         self.assertEqual(git(self.member, "log", "-1", "--format=%s", bound), "T002: Demo task T002")
         record = git(self.root, "show", f"HEAD:{self.task_file}")
@@ -266,7 +266,7 @@ class MemberRoundTests(unittest.TestCase):
         self.assertIn("implemented tests/test_app.py", record)
         self.assertEqual(git(self.root, "show", "HEAD:tests/test_app.py", check=False), "")
         self.assertEqual(git(self.member, "branch", "--show-current"), "main")
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/demo-T002"), "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/task-demo-t002"), "")
 
     def test_failed_member_verify_clears_authorization_and_lands_nothing(self) -> None:
         env_mode = os.environ.get("FAKE_MODE")
@@ -279,7 +279,7 @@ class MemberRoundTests(unittest.TestCase):
         self.assertNotEqual(receipt["status"], "done")
         self.assertEqual(git(self.member, "rev-parse", "--verify", "--quiet",
                              "refs/gsd-path/task-authorizations/demo-T002", check=False), "")
-        self.assertEqual(git(self.member, "rev-parse", "gsd-path/demo-M001"),
+        self.assertEqual(git(self.member, "rev-parse", "feature/demo-milestone-001"),
                          git(self.member, "rev-parse", "main"))
 
     def round_with_mode(self, mode: str, wave: int = 1) -> dict:
@@ -307,7 +307,7 @@ class MemberRoundTests(unittest.TestCase):
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "plan: T003 edits the T002 file in the web member")
         self.assertEqual(self.round()["status"], "done")
-        return git(self.member, "rev-parse", "gsd-path/demo-M001")
+        return git(self.member, "rev-parse", "feature/demo-milestone-001")
 
     def test_member_task_that_breaks_an_earlier_member_verify_is_blocked(self) -> None:
         tip = self.later_member_task()  # T003's own Verify passes; T002's fails
@@ -319,7 +319,7 @@ class MemberRoundTests(unittest.TestCase):
         self.assertEqual(blocked["reason"], "regression Verify of T002 failed in the isolate")
         self.assertEqual(blocked["execution"]["exit_code"], 0)
         self.assertEqual([(item["tasks"], item["exit_code"]) for item in blocked["regressions"]], [(["T002"], 1)])
-        self.assertEqual(git(self.member, "rev-parse", "gsd-path/demo-M001"), tip)  # the member got no landing
+        self.assertEqual(git(self.member, "rev-parse", "feature/demo-milestone-001"), tip)  # the member got no landing
 
     def test_member_task_that_supersedes_the_earlier_member_task_lands_and_keeps_the_field(self) -> None:
         tip = self.later_member_task("repo: web\nsupersedes: [T002]")
@@ -330,7 +330,7 @@ class MemberRoundTests(unittest.TestCase):
         landed = receipt["landed"][0]
         self.assertEqual((landed["task"], landed["regressions"]), ("T003", []))
         self.assertEqual(landed["retired"], [{"task": "T002", "superseded_by": "T003"}])
-        self.assertNotEqual(git(self.member, "rev-parse", "gsd-path/demo-M001"), tip)
+        self.assertNotEqual(git(self.member, "rev-parse", "feature/demo-milestone-001"), tip)
         # Member activation and the coordinator landing rewrite the frontmatter; the field stays.
         text = (self.root / ".project/tasks/T003-demo.md").read_text(encoding="utf-8")
         self.assertIn("status: done", text)

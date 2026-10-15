@@ -22,7 +22,7 @@ from scripts import isolation
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 TODAY = "2026-08-21"
-BRANCH = "gsd-path/M001"
+BRANCH = "feature/milestone-001"
 SLUG = "demo"
 
 
@@ -609,7 +609,7 @@ class FullCycleTests(unittest.TestCase):
             )
             self.assertEqual(retry, integrated)
             integration_branch = git(
-                repo, "show-ref", "--verify", "--quiet", "refs/heads/gsd-path-integrate/M001",
+                repo, "show-ref", "--verify", "--quiet", "refs/heads/chore/integrate-m001",
             )
             self.assertNotEqual(integration_branch.returncode, 0)
             worktrees = git(repo, "worktree", "list", "--porcelain")
@@ -617,12 +617,12 @@ class FullCycleTests(unittest.TestCase):
 
             # --- next milestone binds at integrated main and retires the old branch
             bound = self.gate(
-                "pipeline_git.py", "bind-next", "--repo", str(repo), "--branch", "gsd-path/M002",
+                "pipeline_git.py", "bind-next", "--repo", str(repo), "--branch", "feature/milestone-002",
                 "--previous-branch", BRANCH, "--ship", ship_sha, "--remote-default", "origin/main", "--base", merge_sha,
                 "--landing", merge_sha,
             )
-            self.assertEqual(bound["branch"], "gsd-path/M002")
-            self.assertEqual(git(repo, "branch", "--show-current").stdout.strip(), "gsd-path/M002")
+            self.assertEqual(bound["branch"], "feature/milestone-002")
+            self.assertEqual(git(repo, "branch", "--show-current").stdout.strip(), "feature/milestone-002")
 
             # --- guards hold on shipped history: archive tamper is rejected by pre-commit
             (archive / "MANIFEST.md").write_bytes("tampered\n".encode("utf-8"))

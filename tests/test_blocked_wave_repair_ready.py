@@ -55,7 +55,7 @@ class BlockedWaveRepairReadyTests(unittest.TestCase):
     def ready(self, *tasks: build_state.Task) -> dict:
         project = build_state.Project(
             repo=self.repo,
-            branch="gsd-path/M001",
+            branch="feature/milestone-001",
             head="a" * 40,
             tasks=tasks,
             tasks_dir=self.tasks_dir,

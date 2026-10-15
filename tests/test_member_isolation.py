@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 MEMBERS = ROOT / "scripts" / "members.py"
 STATE = (
     "---\npipeline: gsd-path/v2\nproject: acme\nmilestone: demo\nphase: plan\nstatus: done\n"
-    "branch: gsd-path/M001\narchive: null\n---\n\n# Project State\n\n## Log\n\n- 2026-09-27 — plan — plan approved\n"
+    "branch: feature/milestone-001\narchive: null\n---\n\n# Project State\n\n## Log\n\n- 2026-09-27 — plan — plan approved\n"
 )
 TASK = "---\nid: T001\ntitle: T\nwave: 1\ndeps: []\nstatus: pending\nrepo: web\nfiles:\n  - app.py\n---\n# T001\n"
-BOUND = "gsd-path/acme-M001"
+BOUND = "feature/acme-milestone-001"
 
 
 def git(repo: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -34,7 +34,7 @@ class MemberIsolationTests(unittest.TestCase):
         self.addCleanup(environment.stop)
         self.coordinator = self.root / "acme"
         (self.coordinator / ".project" / "tasks").mkdir(parents=True)
-        git(self.root, "init", "-q", "-b", "gsd-path/M001", str(self.coordinator))
+        git(self.root, "init", "-q", "-b", "feature/milestone-001", str(self.coordinator))
         (self.coordinator / ".project" / "STATE.md").write_bytes(STATE.encode("utf-8"))
         (self.coordinator / ".project" / "tasks" / "T001-t.md").write_bytes(TASK.encode("utf-8"))
         git(self.coordinator, "add", "-A")
@@ -53,7 +53,7 @@ class MemberIsolationTests(unittest.TestCase):
                        encoding="utf-8", errors="replace", capture_output=True, check=True)
         pipeline_state.transition_state(
             self.coordinator,
-            {"phase": "plan", "status": "done", "branch": "gsd-path/M001", "archive": None},
+            {"phase": "plan", "status": "done", "branch": "feature/milestone-001", "archive": None},
             {"phase": "build", "status": "active"}, "build started")
         self.workspace = workspace
 
@@ -143,9 +143,9 @@ class MemberIsolationTests(unittest.TestCase):
         result = isolation.isolate_member_task(self.coordinator, "web", "T001")
         sidecar = Path(result["worktree"])
         self.assertTrue(sidecar.is_relative_to(self.workspace))
-        self.assertEqual(result["task_branch"], "gsd-path-task/acme-T001")
+        self.assertEqual(result["task_branch"], "chore/task-acme-t001")
         self.assertEqual(result["member_base"], tip)
-        self.assertEqual(git(sidecar, "branch", "--show-current").stdout.strip(), "gsd-path-task/acme-T001")
+        self.assertEqual(git(sidecar, "branch", "--show-current").stdout.strip(), "chore/task-acme-t001")
         self.assertEqual(git(sidecar, "rev-parse", "HEAD").stdout.strip(), tip)
         with self.assertRaisesRegex(isolation.IsolationError, "already exists"):
             isolation.isolate_member_task(self.coordinator, "web", "T001")
@@ -162,7 +162,7 @@ class MemberIsolationTests(unittest.TestCase):
         sidecar = Path(result["worktree"])
         isolation.retire_member_task(self.coordinator, "web", "T001")
         self.assertFalse(sidecar.exists())
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001").stdout, "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/task-acme-t001").stdout, "")
         result = isolation.isolate_member_task(self.coordinator, "web", "T001")
         sidecar = Path(result["worktree"])
         (sidecar / "app.py").write_bytes("work\n".encode("utf-8"))
@@ -184,7 +184,7 @@ class MemberIsolationTests(unittest.TestCase):
             with self.assertRaisesRegex(isolation.IsolationError, "cannot delete task ref"):
                 isolation.retire_member_task(self.coordinator, "web", "T001")
         self.assertFalse(Path(result["worktree"]).exists())
-        self.assertNotEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001").stdout, "")
+        self.assertNotEqual(git(self.member, "branch", "--list", "chore/task-acme-t001").stdout, "")
 
     def test_retire_refuses_a_sidecar_on_another_branch(self) -> None:
         result = isolation.isolate_member_task(self.coordinator, "web", "T001")
@@ -194,7 +194,7 @@ class MemberIsolationTests(unittest.TestCase):
             isolation.retire_member_task(self.coordinator, "web", "T001")
         self.assertTrue(sidecar.exists())
         self.assertEqual(git(sidecar, "branch", "--show-current").stdout.strip(), "other")
-        self.assertNotEqual(git(self.member, "branch", "--list", "gsd-path-task/acme-T001").stdout, "")
+        self.assertNotEqual(git(self.member, "branch", "--list", "chore/task-acme-t001").stdout, "")
 
 
 if __name__ == "__main__":

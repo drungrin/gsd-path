@@ -57,7 +57,7 @@ class IsolationTests(unittest.TestCase):
         path.write_bytes(content.encode("utf-8"))
 
     def init_bound_repo(self, root: Path) -> str:
-        git(root, "init", "-b", "gsd-path/M001")
+        git(root, "init", "-b", "feature/milestone-001")
         git(root, "config", "user.email", "test@example.test")
         git(root, "config", "user.name", "Test")
         self.write(root, "src/app.py", "print('base')\n")
@@ -114,7 +114,7 @@ class IsolationTests(unittest.TestCase):
                         self.assertIn(f"must be a full 40-character SHA: {value}", result.stderr)
                         self.assertIn("git rev-parse", result.stderr)
             self.assertEqual(git(repo, "rev-parse", "HEAD"), base)
-            self.assertEqual(git(repo, "branch", "--list", "gsd-path-verify/*"), "")
+            self.assertEqual(git(repo, "branch", "--list", "chore/verify-*"), "")
 
     def test_serial_isolate_uses_bound_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -126,7 +126,7 @@ class IsolationTests(unittest.TestCase):
             self.assertIsNone(result["task_branch"])
             self.assertEqual(result["worktree"], str(repo.resolve()))
             self.assertFalse(result["detached"])
-            self.assertEqual(git(repo, "branch", "--show-current"), "gsd-path/M001")
+            self.assertEqual(git(repo, "branch", "--show-current"), "feature/milestone-001")
             listed = git(repo, "worktree", "list")
             self.assertNotIn("detached", listed)
 
@@ -138,15 +138,15 @@ class IsolationTests(unittest.TestCase):
             first = isolation.isolate_task(repo, base, "T001", 2)
             second = isolation.isolate_task(repo, base, "T002", 2)
             self.assertEqual(first["mode"], "parallel")
-            self.assertEqual(first["task_branch"], "gsd-path-task/T001")
+            self.assertEqual(first["task_branch"], "chore/task-t001")
             self.assertFalse(first["detached"])
             worktree = Path(first["worktree"])
-            self.assertEqual(git(worktree, "branch", "--show-current"), "gsd-path-task/T001")
+            self.assertEqual(git(worktree, "branch", "--show-current"), "chore/task-t001")
             self.assertEqual(git(worktree, "rev-parse", "HEAD"), base)
-            self.assertEqual(git(repo, "branch", "--show-current"), "gsd-path/M001")
+            self.assertEqual(git(repo, "branch", "--show-current"), "feature/milestone-001")
             listed = git(repo, "worktree", "list")
             self.assertNotIn("detached", listed)
-            self.assertIn("gsd-path-task/T002", second["task_branch"])
+            self.assertIn("chore/task-t002", second["task_branch"])
 
     def test_parallel_worktree_authorization_requires_isolation_proof(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -173,11 +173,11 @@ class IsolationTests(unittest.TestCase):
                 .replace("agent: null", "agent: coder")
                 .replace("base: null", f"base: {base}")
                 .replace("worktree: null", f"worktree: {worktree}")
-                .replace("task_branch: null", "task_branch: gsd-path-task/T001").encode("utf-8"),
+                .replace("task_branch: null", "task_branch: chore/task-t001").encode("utf-8"),
             )
 
             self.assertFalse(
-                isolation.authorized_task_worktree(worktree, "gsd-path/M001")
+                isolation.authorized_task_worktree(worktree, "feature/milestone-001")
             )
             task.write_bytes(pending.encode("utf-8"))
             result = isolation.activate_task(
@@ -186,11 +186,11 @@ class IsolationTests(unittest.TestCase):
                 "T001",
                 "coder",
                 ".project/tasks/T001.md",
-                "gsd-path-task/T001",
+                "chore/task-t001",
             )
             self.assertEqual("in-progress", result["status"])
             self.assertTrue(
-                isolation.authorized_task_worktree(worktree, "gsd-path/M001")
+                isolation.authorized_task_worktree(worktree, "feature/milestone-001")
             )
             git(
                 worktree,
@@ -199,7 +199,7 @@ class IsolationTests(unittest.TestCase):
                 isolation.task_authorization_ref("T001"),
             )
             self.assertFalse(
-                isolation.authorized_task_worktree(worktree, "gsd-path/M001")
+                isolation.authorized_task_worktree(worktree, "feature/milestone-001")
             )
             recovered = isolation.activate_task(
                 worktree,
@@ -207,22 +207,22 @@ class IsolationTests(unittest.TestCase):
                 "T001",
                 "coder",
                 ".project/tasks/T001.md",
-                "gsd-path-task/T001",
+                "chore/task-t001",
             )
             self.assertEqual("in-progress", recovered["status"])
             self.assertTrue(
-                isolation.authorized_task_worktree(worktree, "gsd-path/M001")
+                isolation.authorized_task_worktree(worktree, "feature/milestone-001")
             )
             deactivated = isolation.deactivate_task(
-                worktree, "T001", "gsd-path-task/T001"
+                worktree, "T001", "chore/task-t001"
             )
             self.assertEqual("deactivated", deactivated["status"])
             retried = isolation.deactivate_task(
-                worktree, "T001", "gsd-path-task/T001"
+                worktree, "T001", "chore/task-t001"
             )
             self.assertEqual("deactivated", retried["status"])
             self.assertFalse(
-                isolation.authorized_task_worktree(worktree, "gsd-path/M001")
+                isolation.authorized_task_worktree(worktree, "feature/milestone-001")
             )
             self.assertTrue(worktree.exists())
             task.write_bytes(
@@ -231,7 +231,7 @@ class IsolationTests(unittest.TestCase):
                 ).encode("utf-8"),
             )
             self.assertFalse(
-                isolation.authorized_task_worktree(worktree, "gsd-path/M001")
+                isolation.authorized_task_worktree(worktree, "feature/milestone-001")
             )
 
     def test_parallel_isolation_does_not_remove_a_concurrent_worktree(self) -> None:
@@ -306,11 +306,11 @@ class IsolationTests(unittest.TestCase):
             base = self.init_bound_repo(repo)
             result = isolation.isolate_verify(repo, base, "wave-1-cycle-1")
             worktree = Path(result["worktree"])
-            self.assertEqual(result["branch"], "gsd-path-verify/wave-1-cycle-1")
+            self.assertEqual(result["branch"], "chore/verify-wave-1-cycle-1")
             self.assertFalse(result["detached"])
             self.assertEqual(
                 git(worktree, "branch", "--show-current"),
-                "gsd-path-verify/wave-1-cycle-1",
+                "chore/verify-wave-1-cycle-1",
             )
             self.assertNotIn("detached", git(repo, "worktree", "list"))
 
@@ -359,7 +359,7 @@ class IsolationTests(unittest.TestCase):
             )
             self.assertEqual(result["mode"], "serial")
             self.assertEqual(result["subject"], "T001: add greeting")
-            self.assertEqual(git(repo, "branch", "--show-current"), "gsd-path/M001")
+            self.assertEqual(git(repo, "branch", "--show-current"), "feature/milestone-001")
             self.assertEqual(git(repo, "log", "-1", "--format=%s"), "T001: add greeting")
             body = git(repo, "log", "-1", "--format=%b")
             self.assertIn("Task: .project/tasks/T001.md", body)
@@ -800,10 +800,10 @@ class IsolationTests(unittest.TestCase):
             )
             self.assertEqual(result["mode"], "parallel")
             self.assertEqual(git(repo, "log", "-1", "--format=%s"), "T001: add greeting")
-            self.assertEqual(git(repo, "branch", "--show-current"), "gsd-path/M001")
+            self.assertEqual(git(repo, "branch", "--show-current"), "feature/milestone-001")
             self.assertNotEqual(result["commit"], result["source_commit"])
             self.assertEqual(
-                git(source, "branch", "--show-current"), "gsd-path-task/T001"
+                git(source, "branch", "--show-current"), "chore/task-t001"
             )
 
     def test_parallel_land_accepts_one_clean_commit_from_base(self) -> None:
@@ -1521,7 +1521,7 @@ class IsolationTests(unittest.TestCase):
                     ["src/app.py"],
                 )
             self.assertIn("conflict:", str(raised.exception))
-            self.assertEqual(git(repo, "branch", "--show-current"), "gsd-path/M001")
+            self.assertEqual(git(repo, "branch", "--show-current"), "feature/milestone-001")
             self.assertFalse(git(repo, "status", "--porcelain"))
             in_progress = subprocess.run(
                 ("git", "-C", str(repo), "rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"),
@@ -1539,7 +1539,7 @@ class IsolationTests(unittest.TestCase):
             result = isolation.retire(repo, repo, None, False)
             self.assertFalse(result["retired"])
             self.assertEqual(result["reason"], "serial")
-            self.assertEqual(git(repo, "branch", "--show-current"), "gsd-path/M001")
+            self.assertEqual(git(repo, "branch", "--show-current"), "feature/milestone-001")
 
     def test_retire_removes_named_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1558,12 +1558,12 @@ class IsolationTests(unittest.TestCase):
                     "show-ref",
                     "--verify",
                     "--quiet",
-                    "refs/heads/gsd-path-verify/inspect-codebase",
+                    "refs/heads/chore/verify-inspect-codebase",
                 ),
                 check=False,
             )
             self.assertNotEqual(missing.returncode, 0)
-            self.assertEqual(git(repo, "branch", "--show-current"), "gsd-path/M001")
+            self.assertEqual(git(repo, "branch", "--show-current"), "feature/milestone-001")
 
     def test_retire_unused_verify_preserves_uncommitted_sidecar_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1582,7 +1582,7 @@ class IsolationTests(unittest.TestCase):
             self.assertTrue(worktree.is_dir())
             self.assertEqual(git(worktree, "rev-parse", "HEAD"), base)
             self.assertEqual(
-                git(repo, "rev-parse", "refs/heads/gsd-path-verify/blocked-task"), base
+                git(repo, "rev-parse", "refs/heads/chore/verify-blocked-task"), base
             )
 
     def test_retire_unused_verify_preserves_advanced_head_and_ignored_files(self) -> None:
@@ -2135,7 +2135,7 @@ class IsolationTests(unittest.TestCase):
             for force in (False, True):
                 with self.subTest(force=force), self.assertRaisesRegex(
                     isolation.IsolationError,
-                    rf"not landed on gsd-path/M001: {unlanded}.*recover --repo",
+                    rf"not landed on feature/milestone-001: {unlanded}.*recover --repo",
                 ):
                     isolation.retire(repo, worktree, isolated["task_branch"], force)
                 self.assertTrue(worktree.exists())
@@ -2177,7 +2177,7 @@ class IsolationTests(unittest.TestCase):
             self.init_bound_repo(repo)
 
             with self.assertRaisesRegex(isolation.IsolationError, "bound branch"):
-                isolation.retire(repo, repo, "gsd-path/M001", False)
+                isolation.retire(repo, repo, "feature/milestone-001", False)
 
     def test_retire_refuses_a_mismatched_branch_name(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2189,12 +2189,12 @@ class IsolationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 isolation.IsolationError,
-                "expected gsd-path-verify/other",
+                "expected chore/verify-other",
             ):
                 isolation.retire(
                     repo,
                     worktree,
-                    "gsd-path-verify/other",
+                    "chore/verify-other",
                     False,
                 )
             self.assertTrue(worktree.exists())
@@ -2204,11 +2204,11 @@ class IsolationTests(unittest.TestCase):
             repo = Path(temporary) / "repo"
             repo.mkdir()
             base = self.init_bound_repo(repo)
-            worktree = Path(temporary) / "feature"
-            git(repo, "worktree", "add", "-q", "-b", "feature", str(worktree), base)
+            worktree = Path(temporary) / "unrelated"
+            git(repo, "worktree", "add", "-q", "-b", "unrelated", str(worktree), base)
 
             with self.assertRaisesRegex(isolation.IsolationError, "unrecognized branch"):
-                isolation.retire(repo, worktree, "feature", False)
+                isolation.retire(repo, worktree, "unrelated", False)
             self.assertTrue(worktree.exists())
 
     def test_retire_refuses_an_unrecognized_branch_when_worktree_is_absent(self) -> None:
@@ -2216,20 +2216,20 @@ class IsolationTests(unittest.TestCase):
             repo = Path(temporary) / "repo"
             repo.mkdir()
             base = self.init_bound_repo(repo)
-            git(repo, "branch", "feature", base)
+            git(repo, "branch", "unrelated", base)
             missing = Path(temporary) / "missing-feature-worktree"
 
             with self.assertRaisesRegex(isolation.IsolationError, "unrecognized branch"):
-                isolation.retire(repo, missing, "feature", True)
+                isolation.retire(repo, missing, "unrelated", True)
 
-            self.assertEqual(git(repo, "rev-parse", "feature"), base)
+            self.assertEqual(git(repo, "rev-parse", "unrelated"), base)
 
     def test_retire_removes_a_merged_task_branch_when_worktree_is_absent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "repo"
             repo.mkdir()
             base = self.init_bound_repo(repo)
-            branch = "gsd-path-task/T001"
+            branch = "chore/task-t001"
             git(repo, "branch", branch, base)
             missing = isolation.sidecar_root(repo.resolve(), "task", "T001")
 
@@ -2249,7 +2249,7 @@ class IsolationTests(unittest.TestCase):
             repo = Path(temporary) / "repo"
             repo.mkdir()
             base = self.init_bound_repo(repo)
-            branch = "gsd-path-task/T001"
+            branch = "chore/task-t001"
             authorization = isolation.task_authorization_ref("T001")
             git(repo, "update-ref", authorization, base)
             missing = isolation.sidecar_root(repo.resolve(), "task", "T001")
@@ -2340,7 +2340,7 @@ class IsolationTests(unittest.TestCase):
             self.init_bound_repo(repo)
             foreign = Path(temporary) / "foreign"
             foreign.mkdir()
-            git(foreign, "init", "-b", "gsd-path-verify/foreign")
+            git(foreign, "init", "-b", "chore/verify-foreign")
             git(foreign, "config", "user.email", "test@example.test")
             git(foreign, "config", "user.name", "Test")
             self.write(foreign, "README.md", "foreign\n")
@@ -2351,7 +2351,7 @@ class IsolationTests(unittest.TestCase):
                 isolation.retire(
                     repo,
                     foreign,
-                    "gsd-path-verify/foreign",
+                    "chore/verify-foreign",
                     False,
                 )
             self.assertTrue(foreign.exists())
@@ -2503,7 +2503,7 @@ class IsolationTests(unittest.TestCase):
             worktree = Path(isolated["worktree"])
             isolation.activate_task(
                 worktree, base, "T001", "coder",
-                ".project/tasks/T001.md", "gsd-path-task/T001",
+                ".project/tasks/T001.md", "chore/task-t001",
             )
 
             with self.assertRaisesRegex(
@@ -2621,7 +2621,7 @@ class IsolationTests(unittest.TestCase):
             self.assertEqual(result["reason"], "removed")
             self.assertFalse(sidecar.exists())
             self.assertNotIn(
-                "gsd-path-verify/task-t001-verify",
+                "chore/verify-task-t001-verify",
                 git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/"),
             )
 
@@ -2713,7 +2713,7 @@ class RecoverTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name) / "repo"
         self.repo.mkdir()
-        git(self.repo, "init", "-b", "gsd-path/M001")
+        git(self.repo, "init", "-b", "feature/milestone-001")
         git(self.repo, "config", "user.email", "t@example.test")
         git(self.repo, "config", "user.name", "T")
         (self.repo / "src").mkdir()
@@ -3304,8 +3304,8 @@ class RecoverTests(unittest.TestCase):
         report = self.recover()
         self.assertEqual(report["verdict"], "resume")
         self.assertEqual(report["base"], self.base)
-        self.assertEqual(report["task_branch"], "gsd-path-task/T001")
-        self.assertEqual(report["worktree"]["branch"], "gsd-path-task/T001")
+        self.assertEqual(report["task_branch"], "chore/task-t001")
+        self.assertEqual(report["worktree"]["branch"], "chore/task-t001")
         with (source / ".project/tasks/T001.md").open("a") as log:
             log.write("- done\n")
         (self.repo / ".project/STATE.md").write_bytes("wave advanced\n".encode("utf-8"))
@@ -3499,7 +3499,7 @@ class RecoverTests(unittest.TestCase):
         (self.repo / ".project/side.md").write_bytes(b"side bookkeeping\n")
         git(self.repo, "add", ".project/side.md")
         git(self.repo, "commit", "-q", "-m", "build: side bookkeeping")
-        git(self.repo, "switch", "-q", "gsd-path/M001")
+        git(self.repo, "switch", "-q", "feature/milestone-001")
         (self.repo / ".project/main.md").write_bytes(b"main bookkeeping\n")
         git(self.repo, "add", ".project/main.md")
         git(self.repo, "commit", "-q", "-m", "build: main bookkeeping")
@@ -3514,7 +3514,7 @@ class RecoverTests(unittest.TestCase):
         self.write_task("blocked", self.base, agent="coder", worktree=str(self.repo.resolve()))
         tree = git(self.repo, "rev-parse", f"{self.base}^{{tree}}")
         unrelated = git(self.repo, "commit-tree", tree, "-m", "unrelated history")
-        git(self.repo, "update-ref", "refs/heads/gsd-path/M001", unrelated, self.base)
+        git(self.repo, "update-ref", "refs/heads/feature/milestone-001", unrelated, self.base)
 
         report = self.recover()
 
@@ -3536,7 +3536,7 @@ class RecoverTests(unittest.TestCase):
             "worktree": (f"worktree: {source}", "worktree: /stale/worktree"),
             "task_branch": (
                 f"task_branch: {isolated['task_branch']}",
-                "task_branch: gsd-path-task/stale",
+                "task_branch: chore/task-stale",
             ),
         }
         for field, (expected, replacement) in cases.items():
@@ -3708,7 +3708,7 @@ class RecoverTests(unittest.TestCase):
         git(source, "checkout", "-q", "-b", "scratch")
         (source / "notes.txt").write_bytes(b"not landed\n")
 
-        self.assert_keeps_block("sidecar is on scratch, expected gsd-path-task/T001")
+        self.assert_keeps_block("sidecar is on scratch, expected chore/task-t001")
 
     def test_landed_isolate_path_of_another_repository_keeps_the_repository_block(self) -> None:
         source = self.land_parallel(b"print('hello')\n")
@@ -3768,7 +3768,7 @@ class RecoverTests(unittest.TestCase):
             self.base,
             agent="coder",
             worktree=str(expected),
-            task_branch="gsd-path-task/T001",
+            task_branch="chore/task-t001",
         )
 
         report = self.recover()
@@ -3785,7 +3785,7 @@ class RecoverTests(unittest.TestCase):
             self.base,
             agent="coder",
             worktree=str(expected),
-            task_branch="gsd-path-task/T001",
+            task_branch="chore/task-t001",
         )
 
         report = self.recover()
@@ -3796,13 +3796,13 @@ class RecoverTests(unittest.TestCase):
     def test_foreign_repository_at_sidecar_path_blocks_recovery(self) -> None:
         expected = isolation.sidecar_root(self.repo.resolve(), "task", "T001")
         expected.mkdir(parents=True)
-        git(expected, "init", "-b", "gsd-path-task/T001")
+        git(expected, "init", "-b", "chore/task-t001")
         self.write_task(
             "in-progress",
             self.base,
             agent="coder",
             worktree=str(expected),
-            task_branch="gsd-path-task/T001",
+            task_branch="chore/task-t001",
         )
 
         report = self.recover()
@@ -3817,7 +3817,7 @@ class RecoverTests(unittest.TestCase):
             "worktree",
             "add",
             "-b",
-            "gsd-path-task/T001",
+            "chore/task-t001",
             str(expected.parent),
             self.base,
         )
@@ -3827,7 +3827,7 @@ class RecoverTests(unittest.TestCase):
             self.base,
             agent="coder",
             worktree=str(expected),
-            task_branch="gsd-path-task/T001",
+            task_branch="chore/task-t001",
         )
 
         report = self.recover()
@@ -3842,7 +3842,7 @@ class RecoverTests(unittest.TestCase):
             "worktree",
             "add",
             "-b",
-            "gsd-path-task/other",
+            "chore/task-other",
             str(expected),
             self.base,
         )
@@ -3851,13 +3851,13 @@ class RecoverTests(unittest.TestCase):
             self.base,
             agent="coder",
             worktree=str(expected),
-            task_branch="gsd-path-task/T001",
+            task_branch="chore/task-t001",
         )
 
         report = self.recover()
 
         self.assertEqual(report["verdict"], "block")
-        self.assertIn("expected gsd-path-task/T001", report["reason"])
+        self.assertIn("expected chore/task-t001", report["reason"])
 
     def test_failed_serial_task_requires_a_valid_recorded_base(self) -> None:
         self.write_task(

@@ -2,10 +2,10 @@
 # gsd-path project runtime
 """Deterministic GSD Path branch names and pipeline commit messages.
 
-Bound work lives on `gsd-path/M00N` for that milestone. The remote default
+Bound work lives on `feature/milestone-00n` for that milestone. The remote default
 that STATE.md records (`main` when unrecorded) stays a separate trunk. Ship
 merges the bound branch onto it;
-the next milestone binds a new unused `gsd-path/M00N` and retires the
+the next milestone binds a new unused `feature/milestone-00n` and retires the
 integrated previous branch, locally and on origin.
 """
 
@@ -78,7 +78,8 @@ def milestone_number(token: str) -> int:
 
 
 def bound_branch_name(number: int) -> str:
-    return f"gsd-path/{milestone_id(number)}"
+    milestone_id(number)
+    return f"feature/milestone-{number:03d}"
 
 
 def is_bound_branch(name: str) -> bool:

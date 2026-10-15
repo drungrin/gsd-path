@@ -37,18 +37,18 @@ class MemberDriftTests(unittest.TestCase):
         (self.repo / "README.md").write_text("coordinator\n", encoding="utf-8")
         run_git(self.repo, "add", "-A")
         run_git(self.repo, "commit", "-m", "base")
-        run_git(self.repo, "switch", "-c", "gsd-path/M001")
+        run_git(self.repo, "switch", "-c", "feature/milestone-001")
         project = self.repo / ".project"
         (project / "next" / "tasks").mkdir(parents=True)
         (project / "next" / "plan").mkdir()
         (project / "next" / "review").mkdir()
         (project / "STATE.md").write_text(state_text(milestone="first", phase="plan", status="active",
-                                                     branch="gsd-path/M001"), encoding="utf-8")
+                                                     branch="feature/milestone-001"), encoding="utf-8")
         joined = subprocess.run([sys.executable, str(MEMBERS), "add", "--repo", str(self.repo), "--name", "web",
                                  "--checkout", str(self.member)], text=True, capture_output=True)
         self.assertEqual(joined.returncode, 0, joined.stderr)
         (project / "STATE.md").write_text(state_text(milestone="first", phase="build", status="active",
-                                                     branch="gsd-path/M001"), encoding="utf-8")
+                                                     branch="feature/milestone-001"), encoding="utf-8")
         (project / "ROADMAP.md").write_text(roadmap_text(), encoding="utf-8")
         (project / "next" / "STATE.md").write_text(state_text(status="active"), encoding="utf-8")
         (project / "next" / "tasks" / "T001-change-app.md").write_text(
@@ -74,7 +74,7 @@ class MemberDriftTests(unittest.TestCase):
 
     def ship(self, changed: str, *, rename_from: str = "") -> str:
         """The shipped milestone merged a member change to `changed` into the member's main."""
-        run_git(self.member, "switch", "-c", "gsd-path/demo-M001")
+        run_git(self.member, "switch", "-c", "feature/demo-milestone-001")
         if rename_from:
             run_git(self.member, "mv", rename_from, changed)
         else:
@@ -82,24 +82,24 @@ class MemberDriftTests(unittest.TestCase):
         run_git(self.member, "commit", "-am", "member landing")
         reviewed = run_git(self.member, "rev-parse", "HEAD").stdout.strip()
         run_git(self.member, "switch", "main")
-        run_git(self.member, "merge", "--no-ff", "-m", "integrate", "gsd-path/demo-M001")
+        run_git(self.member, "merge", "--no-ff", "-m", "integrate", "feature/demo-milestone-001")
         merge = run_git(self.member, "rev-parse", "HEAD").stdout.strip()
         project = self.repo / ".project"
         (project / "STATE.md").write_text(state_text(milestone="first", phase="shipped", status="done",
-                                                     branch="gsd-path/M001", archive=".project/archive/001-first/"),
+                                                     branch="feature/milestone-001", archive=".project/archive/001-first/"),
                                           encoding="utf-8")
         run_git(self.repo, "add", "-A")
         rows = [{"name": "web", "reviewed_head": reviewed, "merge": merge, "tag": "milestone/demo-001-first"}]
         run_git(self.repo, "commit", "-m", "ship: M001 — first", "-m",
                 pipeline_git.ship_commit_body(".project/archive/001-first", "d" * 40, rows))
         run_git(self.repo, "switch", "main")
-        run_git(self.repo, "merge", "--no-ff", "gsd-path/M001", "-m", "integrate: M001 — merge gsd-path/M001 into main")
+        run_git(self.repo, "merge", "--no-ff", "feature/milestone-001", "-m", "integrate: M001 — merge feature/milestone-001 into main")
         integrate = run_git(self.repo, "rev-parse", "HEAD").stdout.strip()
         run_git(self.repo, "tag", "-a", "-m", "milestone 001-first", "milestone/001-first", integrate)
         tag = run_git(self.repo, "rev-parse", "refs/tags/milestone/001-first").stdout.strip()
         run_git(self.repo, "update-ref", "refs/remotes/origin/tags/milestone/001-first", tag)
         run_git(self.repo, "update-ref", "refs/remotes/origin/main", integrate)
-        run_git(self.repo, "switch", "-c", "gsd-path/M002")
+        run_git(self.repo, "switch", "-c", "feature/milestone-002")
         return integrate
 
     def test_approval_records_the_member_base_the_brief_was_checked_at(self) -> None:
@@ -139,17 +139,17 @@ class MemberDriftTests(unittest.TestCase):
     def test_member_change_to_a_declared_path_flags_the_task(self) -> None:
         self.approve()
         integrate = self.ship("app.py")
-        result = state_promote.promote_next(self.repo, "second", "gsd-path/M002", integrate)
+        result = state_promote.promote_next(self.repo, "second", "feature/milestone-002", integrate)
         self.assertEqual(result["drift"]["class"], "changed")
         self.assertEqual(result["drift"]["task_ids"], ["T001"])
         self.assertIn("web:app.py", result["drift"]["changed_paths"])
-        again = state_promote.promote_next(self.repo, "second", "gsd-path/M002", integrate)
+        again = state_promote.promote_next(self.repo, "second", "feature/milestone-002", integrate)
         self.assertEqual(again["drift"], result["drift"])
 
     def test_member_change_elsewhere_keeps_the_plan_clean(self) -> None:
         self.approve()
         integrate = self.ship("other.py")
-        result = state_promote.promote_next(self.repo, "second", "gsd-path/M002", integrate)
+        result = state_promote.promote_next(self.repo, "second", "feature/milestone-002", integrate)
         self.assertEqual(result["drift"]["class"], "clean")
 
     def test_missing_member_bases_stay_unverifiable(self) -> None:
@@ -157,7 +157,7 @@ class MemberDriftTests(unittest.TestCase):
         common = Path(run_git(self.repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
         (common / "gsd-path" / "lookahead-member-bases" / "second.json").unlink()
         integrate = self.ship("other.py")
-        result = state_promote.promote_next(self.repo, "second", "gsd-path/M002", integrate)
+        result = state_promote.promote_next(self.repo, "second", "feature/milestone-002", integrate)
         self.assertEqual(result["drift"]["class"], "unverifiable")
 
     def test_done_member_task_needs_no_recorded_base_at_promotion(self) -> None:
@@ -165,7 +165,7 @@ class MemberDriftTests(unittest.TestCase):
         common = Path(run_git(self.repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
         self.assertFalse((common / "gsd-path" / "lookahead-member-bases" / "second.json").exists())
         integrate = self.ship("app.py")
-        result = state_promote.promote_next(self.repo, "second", "gsd-path/M002", integrate)
+        result = state_promote.promote_next(self.repo, "second", "feature/milestone-002", integrate)
         self.assertEqual(result["drift"]["class"], "clean")
         self.assertEqual(result["drift"]["task_ids"], [])
         self.assertEqual(result["drift"]["changed_paths"], [])
@@ -173,7 +173,7 @@ class MemberDriftTests(unittest.TestCase):
     def test_member_rename_of_declared_path_flags_the_task(self) -> None:
         self.approve()
         integrate = self.ship("renamed.py", rename_from="app.py")
-        result = state_promote.promote_next(self.repo, "second", "gsd-path/M002", integrate)
+        result = state_promote.promote_next(self.repo, "second", "feature/milestone-002", integrate)
         self.assertEqual(result["drift"]["class"], "changed")
         self.assertEqual(result["drift"]["task_ids"], ["T001"])
         self.assertIn("web:app.py", result["drift"]["changed_paths"])

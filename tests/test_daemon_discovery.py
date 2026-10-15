@@ -223,10 +223,10 @@ class WorktreeDedupTests(unittest.TestCase):
 
     def test_managed_sidecar_resolves_primary_outside_watched_root(self) -> None:
         main, primary = self.make_repo_with_worktree()
-        self._git("branch", "-m", "gsd-path/M001", cwd=primary)
+        self._git("branch", "-m", "feature/milestone-001", cwd=primary)
         managed = self.parent / ".gsd-path" / "projects"
         sidecar = managed / "repository" / "workspace" / "verify" / "review"
-        self._git("worktree", "add", "-b", "gsd-path-verify/review", str(sidecar), cwd=main)
+        self._git("worktree", "add", "-b", "chore/verify-review", str(sidecar), cwd=main)
         self.assertEqual([Path(p).resolve() for p in discovery.scan([str(managed)])], [primary.resolve()])
         self.assertEqual([Path(p).resolve() for p in discovery.scan([str(self.parent), str(managed)])], [primary.resolve()])
         self.assertNotIn(primary.resolve(), [Path(p).resolve() for p in discovery.scan([str(managed)], excludes=[str(primary)])])

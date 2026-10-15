@@ -76,13 +76,13 @@ raise SystemExit(pipeline_state.main(["status", "--repo", sys.argv[1]]))
 
     def repo(self, directory, phase="inspect", milestone="second"):
         repo = Path(directory).resolve()
-        run_git(repo, "init", "-b", "gsd-path/M002")
+        run_git(repo, "init", "-b", "feature/milestone-002")
         run_git(repo, "config", "user.name", "Test")
         run_git(repo, "config", "user.email", "test@example.com")
         project = repo / ".project"
         project.mkdir()
         (project / "STATE.md").write_bytes(state_text(
-            phase=phase, status="active", milestone=milestone, branch="gsd-path/M002").encode("utf-8"))
+            phase=phase, status="active", milestone=milestone, branch="feature/milestone-002").encode("utf-8"))
         roadmap = roadmap_text().replace("Status: pending", "Status: active")
         if phase == "roadmap":
             roadmap = roadmap_text().replace("Status: shipped", "Status: abandoned").replace("Depends on: [M001]", "Depends on: []")
@@ -249,7 +249,7 @@ raise SystemExit(pipeline_state.main(["status", "--repo", sys.argv[1]]))
             head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
             pipeline_state.transition_state(
                 repo,
-                {"phase": "plan", "status": "active", "branch": "gsd-path/M002", "archive": None},
+                {"phase": "plan", "status": "active", "branch": "feature/milestone-002", "archive": None},
                 {"phase": "define", "status": "active"},
                 "plan intent corrections requested",
             )

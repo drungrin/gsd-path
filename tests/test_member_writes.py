@@ -17,7 +17,7 @@ from tests._platform import requires_symlink
 MEMBERS = ROOT / "scripts" / "members.py"
 STATE = (
     "---\npipeline: gsd-path/v2\nproject: {project}\nmilestone: demo\nphase: plan\n"
-    "status: active\nbranch: gsd-path/M001\narchive: null\n---\n"
+    "status: active\nbranch: feature/milestone-001\narchive: null\n---\n"
 )
 
 

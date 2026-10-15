@@ -14,7 +14,7 @@ from tests._platform import requires_symlink
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ISOLATION_SCRIPT = PROJECT_ROOT / "scripts" / "isolation.py"
 GUARD_SCRIPT = PROJECT_ROOT / "scripts" / "git_guard.py"
-BOUND = "gsd-path/M001"
+BOUND = "feature/milestone-001"
 BOUND_REF = "refs/heads/" + BOUND
 ARCHIVE = ".project/archive/001-adoption"
 RECEIPT = isolation.REBASE_ADOPTION_PATH
@@ -213,7 +213,7 @@ class RebaseRecoveryTests(unittest.TestCase):
         self.adopt()
         (self.repo / ".project/STATE.md").write_bytes(
             "---\npipeline: gsd-path/v2\nproject: fixture\nmilestone: adoption\n"
-            "phase: ship\nstatus: active\nbranch: gsd-path/M001\narchive: null\n"
+            "phase: ship\nstatus: active\nbranch: feature/milestone-001\narchive: null\n"
             "integration_default: direct\nintegration: direct\nintegration_source: default\n"
             "---\n\n## Log\n".encode("utf-8"))
         lean_verification._require_ship_inputs(self.repo, self.head)
@@ -288,7 +288,7 @@ class RebaseRecoveryTests(unittest.TestCase):
             self.verify()
         (self.repo / ".project/STATE.md").write_bytes(
             "---\npipeline: gsd-path/v2\nproject: fixture\nmilestone: adoption\n"
-            "phase: ship\nstatus: active\nbranch: gsd-path/M001\narchive: null\n"
+            "phase: ship\nstatus: active\nbranch: feature/milestone-001\narchive: null\n"
             "integration_default: direct\nintegration: direct\nintegration_source: default\n"
             "---\n\n## Log\n".encode("utf-8"))
         with self.assertRaises((isolation.IsolationError, build_state.BuildStateError)):
@@ -359,7 +359,7 @@ class RebaseRecoveryTests(unittest.TestCase):
             shutil.move(str(self.repo / ".project" / folder), str(destination / folder))
         (self.repo / ".project/STATE.md").write_bytes(
             ("---\npipeline: gsd-path/v2\nproject: fixture\nmilestone: adoption\n"
-            "phase: shipped\nstatus: done\nbranch: gsd-path/M001\narchive: " + ARCHIVE + "\n"
+            "phase: shipped\nstatus: done\nbranch: feature/milestone-001\narchive: " + ARCHIVE + "\n"
             "integration_default: direct\nintegration: direct\nintegration_source: default\n"
             "---\n\n## Log\n").encode("utf-8"))
         self.adopted = self.head

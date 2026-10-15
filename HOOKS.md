@@ -154,8 +154,8 @@ See [UPDATE.md](UPDATE.md).
   `+` refspecs), `git branch -m`, `git stash drop`/`clear`, and whole-tree
   `git checkout -- .`/`git restore .`
 - forced branch deletion (`git branch -D`), `git update-ref` deletion, and
-  `git worktree remove --force` when the target is Path-owned: a `gsd-path/`,
-  `gsd-path-task/`, `gsd-path-verify/`, or `gsd-path-integrate/` branch, a
+  `git worktree remove --force` when the target is Path-owned: a `feature/milestone-`,
+  `chore/task-`, `chore/verify-`, or `chore/integrate-` branch, a
   `refs/gsd-path/` ref, the bound `STATE.branch`, a task branch or worktree
   that task frontmatter records, a worktree on one of these branches, and a
   worktree below a managed worktree root (`~/.gsd-path`,
@@ -163,7 +163,7 @@ See [UPDATE.md](UPDATE.md).
   `<repo>.gsd-path/` and `.<repo>-gsd-path-integrate-*` locations beside the
   repository). The text `gsd-path` in a path does not make a worktree
   Path-owned. Also Path-owned: the remote-tracking ref of one of these
-  branches (`origin/gsd-path/M001`), `refs/stash`, and a name that differs
+  branches (`origin/feature/milestone-001`), `refs/stash`, and a name that differs
   from a recorded branch only in letter case. Other branches, refs, and
   registered worktrees are allowed in each pipeline state. These three
   commands are also denied when the guard cannot prove the target: a missing,
@@ -342,7 +342,7 @@ such as `rm -rf scratch` passes the archive check; other guard rules still apply
   proof exists; an ordinary commit with an integration subject is not exempt
 - deleting the recorded branch or switching to another branch while carrying
   unfinished state does not release product commit protection
-- pushes (to any remote) that move a `gsd-path/M###` ref anywhere but its
+- pushes (to any remote) that move a `feature/milestone-###` ref anywhere but its
   strict ship commit, or delete it while it holds anything else; and pushes of
   any other ref whose commit carries a `STATE.md` that still owes a ship commit
   (names a bound branch, not `shipped/done`). The ship state's `branch` must
@@ -361,7 +361,7 @@ such as `rm -rf scratch` passes the archive check; other guard rules still apply
 
   `<project>` is the `project` field in that commit's `STATE.md`. The hook
   accepts the push only at that commit; a later commit, such as one that
-  removes the measurement inputs, needs its own record. Bound `gsd-path/M###`
+  removes the measurement inputs, needs its own record. Bound `feature/milestone-###`
   refs, the default branch, and tags never accept an authorization. The
   authorization accepts every push of that commit to that branch until the
   owner removes it with `git update-ref -d <same ref>`. Deleting the remote
@@ -382,11 +382,11 @@ milestone records are repaired through the pipeline.
 The guards above stop agents on the developer machine. A person can still
 merge a pull request from a bound branch in the GitHub UI. To surface that on
 the pull request, add a job to the consumer repository's pull-request workflow
-that fails unless a `gsd-path/M*` head is the ship commit at `shipped/done`:
+that fails unless a `feature/milestone-*` head is the ship commit at `shipped/done`:
 
 ```yaml
   gsd-path-ship-gate:
-    if: startsWith(github.head_ref, 'gsd-path/M')
+    if: startsWith(github.head_ref, 'feature/milestone-')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -399,7 +399,7 @@ that fails unless a `gsd-path/M*` head is the ship commit at `shipped/done`:
           subject=$(git log -1 --format=%s)
           case "$subject" in "ship: M"*) ship=1 ;; *) ship=0 ;; esac
           [ "$state" = shipped/done ] && [ "$ship" = 1 ] && exit 0
-          echo "::error::gsd-path: head is $state with subject '$subject'; a gsd-path/M* branch reaches main only through archive_milestone.py integrate"
+          echo "::error::gsd-path: head is $state with subject '$subject'; a feature/milestone-* branch reaches main only through archive_milestone.py integrate"
           exit 1
 ```
 

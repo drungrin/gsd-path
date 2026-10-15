@@ -37,7 +37,8 @@ export function claudeGuardEntry(interpreter) {
 }
 export function claudeHooksSettings(interpreter) {
   return (
-    JSON.stringify({ hooks: { PreToolUse: [claudeGuardEntry(interpreter)] } }, null, 2) + "\n"
+    JSON.stringify({ hooks: { PreToolUse: [claudeGuardEntry(interpreter)] },
+      attribution: { commit: "", pr: "", sessionUrl: false } }, null, 2) + "\n"
   );
 }
 function codexGuardCommand(interpreter) {

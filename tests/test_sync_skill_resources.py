@@ -312,7 +312,7 @@ project: demo
 milestone: demo
 phase: plan
 status: active
-branch: gsd-path/M001
+branch: feature/milestone-001
 archive: null
 ---
 """.encode("utf-8"),

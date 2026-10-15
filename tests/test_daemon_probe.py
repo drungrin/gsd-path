@@ -23,7 +23,7 @@ project: demo
 milestone: demo-ms    # set by define
 phase: build          # v2 tokens
 status: active
-branch: gsd-path/M001
+branch: feature/milestone-001
 archive: null
 integration_default: pull-request
 integration: direct
@@ -99,7 +99,7 @@ print(json.dumps({
     "schema": "gsd-path/status/v1",
     "state": {},
     "route": {},
-    "git": {"branch": "gsd-path/M001", "head": "abc123", "dirty": False},
+    "git": {"branch": "feature/milestone-001", "head": "abc123", "dirty": False},
     "pending_answers": [{"id": "Q001"}],
     "next_skill": "gsd-path-ship",
 }))
@@ -109,9 +109,9 @@ LAUNCHER_RUNTIME_STUB = """import json
 print(json.dumps({
     "schema": "gsd-path/status/v1",
     "state": {"project": "demo", "milestone": "demo-ms", "phase": "build",
-              "status": "active", "branch": "gsd-path/M001"},
+              "status": "active", "branch": "feature/milestone-001"},
     "route": {},
-    "git": {"branch": "gsd-path/M001", "head": "def456", "dirty": False},
+    "git": {"branch": "feature/milestone-001", "head": "def456", "dirty": False},
     "pending_answers": [{"id": "Q001"}],
     "next_skill": "gsd-path-ship",
 }))
@@ -208,7 +208,7 @@ class ParseStateTests(unittest.TestCase):
         self.assertEqual(state["milestone"], "demo-ms")
         self.assertEqual(state["phase"], "build")
         self.assertEqual(state["status"], "active")
-        self.assertEqual(state["branch"], "gsd-path/M001")
+        self.assertEqual(state["branch"], "feature/milestone-001")
         self.assertIsNone(state["archive"])
         self.assertEqual(state["integration_default"], "pull-request")
         self.assertEqual(state["integration"], "direct")
@@ -404,7 +404,7 @@ class ProbeProjectTests(unittest.TestCase):
         self.assertEqual(status.milestone, "demo-ms")
         self.assertEqual(status.phase, "build")
         self.assertEqual(status.status, "active")
-        self.assertEqual(status.branch, "gsd-path/M001")
+        self.assertEqual(status.branch, "feature/milestone-001")
         self.assertIsNone(status.archive)
         self.assertEqual(status.integration, "direct")
         self.assertEqual(status.tasks_total, 3)
@@ -532,7 +532,7 @@ class DeclaredRuntimeTests(unittest.TestCase):
         self.assertEqual(status.status_source, "runtime")
         self.assertEqual(status.workflow, {"state": "active", "label": "In build"})
         self.assertEqual(status.project, "demo")
-        self.assertEqual(status.branch, "gsd-path/M001")
+        self.assertEqual(status.branch, "feature/milestone-001")
         self.assertEqual(status.git["head"], "def456")
         self.assertEqual(status.next_skill, "gsd-path-ship")
 

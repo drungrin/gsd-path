@@ -78,7 +78,7 @@ class HandoffValidationTests(unittest.TestCase):
     def write_state(
         self, root: Path, phase: str, status: str, project_dir: str = ".project"
     ) -> None:
-        branch = "null" if project_dir == ".project/next" else "gsd-path/M001"
+        branch = "null" if project_dir == ".project/next" else "feature/milestone-001"
         self.write(
             root,
             f"{project_dir}/STATE.md",
@@ -589,7 +589,7 @@ Intent: `.project/intent/INTENT.md`
                         original = state.read_bytes()
                         command = [sys.executable, "-B", str(helper), "transition", "--repo", str(root),
                                    "--project-dir", track, "--expect-phase", "research", "--expect-status", status,
-                                   "--expect-branch", "null" if track.endswith("next") else "gsd-path/M001",
+                                   "--expect-branch", "null" if track.endswith("next") else "feature/milestone-001",
                                    "--expect-archive", "null", "--set-phase", "research" if status == "active" else "decide",
                                    "--set-status", "done" if status == "active" else "active", "--event", "research gate"]
                         failed = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace")
@@ -1820,7 +1820,7 @@ The task implements the demo.
     def test_roadmap_gate_rejects_define_reentered_after_intent_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            git(root, "init", "-b", "gsd-path/M001")
+            git(root, "init", "-b", "feature/milestone-001")
             git(root, "config", "user.email", "test@example.test")
             git(root, "config", "user.name", "Test")
             self.write_state(root, "plan", "active")
@@ -1831,7 +1831,7 @@ The task implements the demo.
             git(root, "commit", "-q", "-m", "approved intent")
             pipeline_state.transition_state(
                 root,
-                {"phase": "plan", "status": "active", "branch": "gsd-path/M001", "archive": None},
+                {"phase": "plan", "status": "active", "branch": "feature/milestone-001", "archive": None},
                 {"phase": "define", "status": "active"},
                 "plan intent corrections requested",
             )
@@ -1847,7 +1847,7 @@ The task implements the demo.
         ).replace("- First capability\n", "- First capability\n- X page publishing\n")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            git(root, "init", "-b", "gsd-path/M001")
+            git(root, "init", "-b", "feature/milestone-001")
             git(root, "config", "user.email", "test@example.test")
             git(root, "config", "user.name", "Test")
             self.write_state(root, "define", "active")
@@ -3084,7 +3084,7 @@ Tasks reviewed: 2
         project_dir: str = ".project",
     ) -> None:
         if not (root / ".git").exists():
-            git(root, "init", "-q", "-b", "gsd-path/M001")
+            git(root, "init", "-q", "-b", "feature/milestone-001")
             git(root, "config", "user.email", "test@example.test")
             git(root, "config", "user.name", "Test")
             git(root, "add", ".")

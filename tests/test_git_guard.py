@@ -91,7 +91,7 @@ class ViolationRuleTests(unittest.TestCase):
             [],
             git_guard.violations(
                 [entry],
-                "integrate: M002 — merge gsd-path/M002 into main",
+                "integrate: M002 — merge feature/milestone-002 into main",
                 (),
                 ".project/archive/002-next",
                 integration_merge=True,
@@ -99,7 +99,7 @@ class ViolationRuleTests(unittest.TestCase):
         )
         blocked = git_guard.violations(
             [entry],
-            "integrate: M002 — merge gsd-path/M002 into main",
+            "integrate: M002 — merge feature/milestone-002 into main",
             (),
             ".project/archive/002-next",
         )
@@ -207,16 +207,16 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.assertIn("read-only", result.stderr)
 
     def test_member_ship_body_names_every_closed_member(self):
-        self.git("branch", "-m", "gsd-path/M002")
+        self.git("branch", "-m", "feature/milestone-002")
         archived = self.repo / ".project" / "archive" / "002-next"
         (archived / "build").mkdir(parents=True)
         (archived / "MANIFEST.md").write_bytes("manifest\n".encode("utf-8"))
         (archived / "build" / "members.json").write_bytes(json.dumps(
             {"schema": "gsd-path/member-lock/v1",
-             "members": [{"name": "web", "branch": "gsd-path/demo-M002", "base": "a" * 40}]}).encode("utf-8"))
+             "members": [{"name": "web", "branch": "feature/demo-milestone-002", "base": "a" * 40}]}).encode("utf-8"))
         (self.repo / ".project" / "STATE.md").write_bytes(
             "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
-            "phase: shipped\nstatus: done\nbranch: gsd-path/M002\n"
+            "phase: shipped\nstatus: done\nbranch: feature/milestone-002\n"
             "archive: .project/archive/002-next\n---\n".encode("utf-8"),
         )
         self.git("add", "-A")
@@ -240,13 +240,13 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.assertEqual(0, closed.returncode, closed.stderr)
 
     def test_allows_only_the_staged_state_archive_during_ship(self):
-        self.git("branch", "-m", "gsd-path/M002")
+        self.git("branch", "-m", "feature/milestone-002")
         archived = self.repo / ".project" / "archive" / "002-next"
         archived.mkdir()
         (archived / "MANIFEST.md").write_bytes("manifest\n".encode("utf-8"))
         (self.repo / ".project" / "STATE.md").write_bytes(
             "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
-            "phase: shipped\nstatus: done\nbranch: gsd-path/M002\n"
+            "phase: shipped\nstatus: done\nbranch: feature/milestone-002\n"
             "archive: .project/archive/002-next\n---\n".encode("utf-8"),
         )
         self.git("add", "-A")
@@ -320,13 +320,13 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.assertEqual(body + "\n\n", stored)
 
     def test_ship_accepts_complete_integration_state(self) -> None:
-        self.git("branch", "-m", "gsd-path/M002")
+        self.git("branch", "-m", "feature/milestone-002")
         archived = self.repo / ".project" / "archive" / "002-next"
         archived.mkdir()
         (archived / "MANIFEST.md").write_bytes("manifest\n".encode("utf-8"))
         (self.repo / ".project" / "STATE.md").write_bytes(
             "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
-            "phase: shipped\nstatus: done\nbranch: gsd-path/M002\n"
+            "phase: shipped\nstatus: done\nbranch: feature/milestone-002\n"
             "archive: .project/archive/002-next\n"
             "integration_default: direct\nintegration: direct\n---\n".encode("utf-8"),
         )
@@ -353,7 +353,7 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
 
     def test_ship_accepts_state_that_records_the_default_branch(self) -> None:
-        self.git("branch", "-m", "gsd-path/M002")
+        self.git("branch", "-m", "feature/milestone-002")
         archived = self.repo / ".project" / "archive" / "002-next"
         archived.mkdir()
         (archived / "MANIFEST.md").write_bytes("manifest\n".encode("utf-8"))
@@ -362,7 +362,7 @@ class GitGuardEndToEndTests(unittest.TestCase):
         def stage(default_branch):
             state_path.write_bytes(
                 "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
-                "phase: shipped\nstatus: done\nbranch: gsd-path/M002\n"
+                "phase: shipped\nstatus: done\nbranch: feature/milestone-002\n"
                 "archive: .project/archive/002-next\n"
                 "integration_default: direct\nintegration: direct\n"
                 "integration_source: default\n"
@@ -377,19 +377,19 @@ class GitGuardEndToEndTests(unittest.TestCase):
                 result = self.run_guard("ship: M002 — next", body)
                 self.assertEqual(0, result.returncode, result.stderr)
 
-        stage("gsd-path/M002")
+        stage("feature/milestone-002")
         result = self.run_guard("ship: M002 — next", body)
         self.assertEqual(1, result.returncode)
         self.assertIn("not the strict shipped transaction", result.stderr)
 
     def test_blocks_malformed_or_duplicate_ship_commits(self):
-        self.git("branch", "-m", "gsd-path/M002")
+        self.git("branch", "-m", "feature/milestone-002")
         archive = self.repo / ".project/archive/002-next"
         archive.mkdir()
         (archive / "MANIFEST.md").write_bytes("manifest\n".encode("utf-8"))
         (self.repo / ".project/STATE.md").write_bytes(
             "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
-            "phase: shipped\nstatus: done\nbranch: gsd-path/M002\n"
+            "phase: shipped\nstatus: done\nbranch: feature/milestone-002\n"
             "archive: .project/archive/002-next\n---\n".encode("utf-8"),
         )
         self.git("add", "-A")
@@ -556,19 +556,19 @@ class GitGuardEndToEndTests(unittest.TestCase):
 
     def integration_merge(self, default, state_extra=""):
         self.git("branch", "-m", default)
-        self.git("checkout", "-q", "-b", "gsd-path/M002")
+        self.git("checkout", "-q", "-b", "feature/milestone-002")
         archive = self.repo / ".project/archive/002-next"
         archive.mkdir()
         (archive / "MANIFEST.md").write_bytes("manifest\n".encode("utf-8"))
         (self.repo / ".project/STATE.md").write_bytes(
             ("---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
-            "phase: shipped\nstatus: done\nbranch: gsd-path/M002\n"
+            "phase: shipped\nstatus: done\nbranch: feature/milestone-002\n"
             f"archive: .project/archive/002-next\n{state_extra}---\n").encode("utf-8"),
         )
         self.git("add", "-A")
         self.commit("ship: M002 — next")
         self.git("checkout", "-q", default)
-        self.git("checkout", "-q", "-b", "gsd-path-integrate/M002")
+        self.git("checkout", "-q", "-b", "chore/integrate-m002")
         self.install_hooks()
 
         return subprocess.run(
@@ -581,8 +581,8 @@ class GitGuardEndToEndTests(unittest.TestCase):
                 "merge",
                 "--no-ff",
                 "-m",
-                f"integrate: M002 — merge gsd-path/M002 into {default}",
-                "gsd-path/M002",
+                f"integrate: M002 — merge feature/milestone-002 into {default}",
+                "feature/milestone-002",
             ],
             cwd=self.repo,
             capture_output=True,
@@ -590,7 +590,7 @@ class GitGuardEndToEndTests(unittest.TestCase):
         )
 
     def test_hooks_allow_a_canonical_milestone_abandon_commit(self):
-        self.git("branch", "-m", "gsd-path/M002")
+        self.git("branch", "-m", "feature/milestone-002")
         archive = self.repo / ".project/archive/002-next"
         archive.mkdir()
         (archive / "MANIFEST.md").write_bytes(
@@ -603,7 +603,7 @@ class GitGuardEndToEndTests(unittest.TestCase):
         )
         (self.repo / ".project/STATE.md").write_bytes(
             "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: null\n"
-            "phase: roadmap\nstatus: active\nbranch: gsd-path/M002\n"
+            "phase: roadmap\nstatus: active\nbranch: feature/milestone-002\n"
             "archive: null\n---\n".encode("utf-8"),
         )
         self.git("add", "-A")
@@ -642,7 +642,7 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.assertTrue(archive.is_dir())
 
     def enter_build(self, phase="build", status="active"):
-        self.git("branch", "-m", "gsd-path/M002")
+        self.git("branch", "-m", "feature/milestone-002")
         tasks = self.repo / ".project" / "tasks"
         tasks.mkdir()
         (tasks / "T001-demo.md").write_bytes(TASK_FILE.encode("utf-8"))
@@ -651,7 +651,7 @@ class GitGuardEndToEndTests(unittest.TestCase):
     def write_state(self, phase, status, archive="null", subject=None):
         (self.repo / ".project" / "STATE.md").write_bytes(
             "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\n"
-            f"phase: {phase}\nstatus: {status}\nbranch: gsd-path/M002\narchive: {archive}\n---\n".encode("utf-8"),
+            f"phase: {phase}\nstatus: {status}\nbranch: feature/milestone-002\narchive: {archive}\n---\n".encode("utf-8"),
         )
         self.git("add", "-A")
         self.commit(subject or f"router: enter {phase}/{status}")
@@ -908,7 +908,7 @@ class GitGuardEndToEndTests(unittest.TestCase):
     def test_removing_bound_branch_does_not_release_unfinished_work(self):
         self.enter_build(phase="plan")
         self.git("checkout", "-q", "-b", "feature/manual")
-        self.git("branch", "-D", "gsd-path/M002")
+        self.git("branch", "-D", "feature/milestone-002")
         self.stage_product_change()
         result = self.run_guard("fix(app): manual change")
         self.assertEqual(1, result.returncode, result.stderr)
@@ -943,14 +943,14 @@ class GitGuardEndToEndTests(unittest.TestCase):
         self.commit("fixture: next roadmap")
         base = self.head()
         self.git("update-ref", "refs/remotes/origin/main", base)
-        self.git("checkout", "-q", "gsd-path/M002")
+        self.git("checkout", "-q", "feature/milestone-002")
         selected = subprocess.run(
             [sys.executable, "-B", str(runtime / "promote_lookahead.py"), "select-base",
              "--repo", str(self.repo), "--base", base, "--remote-default", "origin/main"],
             capture_output=True, encoding="utf-8", errors="replace",
         )
         self.assertEqual(0, selected.returncode, selected.stderr)
-        self.assertEqual("gsd-path/M003", json.loads(selected.stdout)["branch"])
+        self.assertEqual("feature/milestone-003", json.loads(selected.stdout)["branch"])
         for rewritten in (False, True):
             if rewritten:
                 self.write_state("build", "active")
@@ -967,7 +967,7 @@ class GitGuardEndToEndTests(unittest.TestCase):
                 {"tool_name": "Bash", "tool_input": {"command": "echo new > app.py"}},
                 {"tool_name": "Bash", "tool_input": {"command": "cat app.py > other.py"}},
                 {"tool_name": "Bash", "tool_input": {"command": "git branch feature/new"}},
-                {"tool_name": "Bash", "tool_input": {"command": "git branch -D gsd-path/M002"}},
+                {"tool_name": "Bash", "tool_input": {"command": "git branch -D feature/milestone-002"}},
                 {"tool_name": "Bash", "tool_input": {"command": "git worktree add ../elsewhere"}},
                 {"tool_name": "Bash", "tool_input": {"command": "git symbolic-ref HEAD refs/heads/main"}},
                 {"tool_name": "Bash", "tool_input": {"command": "git cat-file --filters HEAD:app.py"}},
@@ -1120,21 +1120,21 @@ class GitGuardEndToEndTests(unittest.TestCase):
             "shipped", "done", archive=".project/archive/002-next", subject="ship: M002 — next"
         )
         zero = git_guard.NULL_SHA
-        bound = "refs/heads/gsd-path/M002"
+        bound = "refs/heads/feature/milestone-002"
         other = "refs/heads/hotfix/m002"
         cases = (
-            (f"{bound} {unfinished} {bound} {zero}", "moves gsd-path/M002"),
-            (f"HEAD {unfinished} {bound} {zero}", "moves gsd-path/M002"),
+            (f"{bound} {unfinished} {bound} {zero}", "moves feature/milestone-002"),
+            (f"HEAD {unfinished} {bound} {zero}", "moves feature/milestone-002"),
             (f"{bound} {ship} {bound} {zero}", None),
             (f"{bound} {ship} {bound} {unfinished}", None),
-            (f"{bound} {ship} refs/heads/gsd-path/M003 {zero}", "moves gsd-path/M003"),
-            (f"refs/heads/gsd-path/M003 {ship} {bound} {zero}", "moves gsd-path/M003"),
-            (f"HEAD {ship} refs/heads/gsd-path/M003 {zero}", "moves gsd-path/M003"),
-            (f"(delete) {zero} refs/heads/gsd-path/M003 {ship}", "moves gsd-path/M003"),
-            (f"(delete) {zero} {bound} {unfinished}", "moves gsd-path/M002"),
+            (f"{bound} {ship} refs/heads/feature/milestone-003 {zero}", "moves feature/milestone-003"),
+            (f"refs/heads/feature/milestone-003 {ship} {bound} {zero}", "moves feature/milestone-003"),
+            (f"HEAD {ship} refs/heads/feature/milestone-003 {zero}", "moves feature/milestone-003"),
+            (f"(delete) {zero} refs/heads/feature/milestone-003 {ship}", "moves feature/milestone-003"),
+            (f"(delete) {zero} {bound} {unfinished}", "moves feature/milestone-002"),
             (f"(delete) {zero} {bound} {ship}", None),
             (f"(delete) {zero} {bound} {zero}", None),
-            (f"{other} {unfinished} {other} {zero}", "carries unshipped gsd-path/M002 work (ship/blocked)"),
+            (f"{other} {unfinished} {other} {zero}", "carries unshipped feature/milestone-002 work (ship/blocked)"),
             (f"HEAD {unfinished} {other} {zero}", "carries unshipped"),
             (f"{other} {ship} {other} {zero}", None),
             (f"refs/tags/v1 {ship} refs/tags/v1 {zero}", None),
@@ -1154,8 +1154,8 @@ class GitGuardEndToEndTests(unittest.TestCase):
         unfinished = self.enter_build()
         later = self.write_state("build", "blocked")
         zero = git_guard.NULL_SHA
-        task = "refs/heads/gsd-path-task/T039"
-        for ref in ("refs/heads/main", "refs/heads/gsd-path/M002", "refs/tags/v1"):
+        task = "refs/heads/chore/task-t039"
+        for ref in ("refs/heads/main", "refs/heads/feature/milestone-002", "refs/tags/v1"):
             self.git("update-ref", f"refs/gsd-path/authorizations/demo/push/{ref}", unfinished)
         before = self.run_pre_push(f"HEAD {unfinished} {task} {zero}")
         self.assertEqual(1, before.returncode, before.stderr)
@@ -1164,9 +1164,9 @@ class GitGuardEndToEndTests(unittest.TestCase):
         cases = (
             (f"HEAD {unfinished} {task} {zero}", None),
             (f"HEAD {later} {task} {unfinished}", "carries unshipped"),
-            (f"HEAD {unfinished} refs/heads/gsd-path-task/T040 {zero}", "carries unshipped"),
+            (f"HEAD {unfinished} refs/heads/chore/task-t040 {zero}", "carries unshipped"),
             (f"HEAD {unfinished} refs/heads/main {zero}", "carries unshipped"),
-            (f"HEAD {unfinished} refs/heads/gsd-path/M002 {zero}", "moves gsd-path/M002"),
+            (f"HEAD {unfinished} refs/heads/feature/milestone-002 {zero}", "moves feature/milestone-002"),
             (f"HEAD {unfinished} refs/tags/v1 {zero}", "carries unshipped"),
             (f"(delete) {zero} {task} {unfinished}", None),
         )

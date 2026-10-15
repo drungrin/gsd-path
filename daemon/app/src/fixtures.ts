@@ -15,11 +15,11 @@ const base = (over: Partial<Project>): Project => ({
 /** In build, with tasks, waves and matched usage. */
 export const building = base({
   root: "/work/gsd-path", repository: "gsd-path", project: "GSD Path", project_root: "/work/gsd-path",
-  milestone: "daemon", phase: "build", status: "active", branch: "gsd-path/M004", integration: "direct",
+  milestone: "daemon", phase: "build", status: "active", branch: "feature/milestone-004", integration: "direct",
   workflow: { state: "active", label: "In build" }, health: "amber",
   attention: [{ kind: "stale", label: "no activity for 2d", ref: null }],
   last_activity_iso: "2026-09-29T04:00:00+00:00",
-  git: { branch: "gsd-path/M004", head: "0e9a3b1c55d2", dirty: true },
+  git: { branch: "feature/milestone-004", head: "0e9a3b1c55d2", dirty: true },
   tasks_done: 2, tasks_total: 3, current_wave: 2, waves: { "1": "parsers", "2": "watcher", "3": "tray" },
   tasks: [
     { id: "T001", title: "Parse STATE.md", wave: 1, status: "done", files: ["daemon/gsd_daemon/probe.py"] },
@@ -56,10 +56,10 @@ export const building = base({
 /** Blocked at ship, no host sessions matched. */
 export const blocked = base({
   root: "/work/atlas", repository: "atlas", project_root: "/work/atlas", milestone: "api-v2", phase: "ship",
-  status: "blocked", branch: "gsd-path/M002", integration: "pull-request",
+  status: "blocked", branch: "feature/milestone-002", integration: "pull-request",
   workflow: { state: "blocked", label: "Blocked", reason: "The final review has not passed." }, health: "red",
   attention: [{ kind: "failed", label: ".project/review/FINAL.md — reject", ref: ".project/review/FINAL.md" }],
-  last_activity_iso: "2026-10-01T01:00:00+00:00", git: { branch: "gsd-path/M002", head: "c5d8e21aa0", dirty: false },
+  last_activity_iso: "2026-10-01T01:00:00+00:00", git: { branch: "feature/milestone-002", head: "c5d8e21aa0", dirty: false },
   roadmap_milestones: [{ number: "M002", slug: "api-v2", status: "active", archive: null, goal: "Second version of the public API." }],
   reviews: [{ file: ".project/review/FINAL.md", kind: "final", verdict: "reject", cycle: 2, depth: "deep", note: "SC3 not met" }],
 });
@@ -76,7 +76,7 @@ export const shipped = base({
 /** In research, waiting for an owner answer. */
 export const asking = base({
   root: "/work/notes", repository: "field-notes", project_root: "/work/notes", milestone: "bootstrap", phase: "research",
-  status: "active", branch: "gsd-path/M001", workflow: { state: "active", label: "In research" }, health: "amber",
+  status: "active", branch: "feature/milestone-001", workflow: { state: "active", label: "In research" }, health: "amber",
   attention: [{ kind: "question", label: "Which search index do we ship?", ref: "A001" }],
   last_activity_iso: "2026-10-01T03:00:00+00:00",
   answers: [{ id: "A001", question: "Which search index do we ship?", owner: "owner", status: "pending" }],

@@ -51,7 +51,7 @@ class MemberProjectVerifyTests(unittest.TestCase):
                                  "--checkout", str(self.member)], encoding="utf-8", errors="replace", capture_output=True)
         self.assertEqual(joined.returncode, 0, joined.stderr)
         state.write_bytes(shipping.encode("utf-8"))
-        git(self.member, "checkout", "-q", "-b", "gsd-path/demo-M001")
+        git(self.member, "checkout", "-q", "-b", "feature/demo-milestone-001")
         (self.member / "lib.py").write_bytes("landed = True\n".encode("utf-8"))
         git(self.member, "add", "-A")
         git(self.member, "commit", "-q", "-m", "member landing")
@@ -60,7 +60,7 @@ class MemberProjectVerifyTests(unittest.TestCase):
         lock = self.root / ".project" / "build" / "members.json"
         lock.parent.mkdir(parents=True, exist_ok=True)
         lock.write_bytes(json.dumps({"schema": "gsd-path/member-lock/v1", "members": [
-            {"name": "web", "branch": "gsd-path/demo-M001", "base": git(self.member, "rev-parse", default)}]}).encode("utf-8"))
+            {"name": "web", "branch": "feature/demo-milestone-001", "base": git(self.member, "rev-parse", default)}]}).encode("utf-8"))
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "member milestone")
         self.head = git(self.root, "rev-parse", "HEAD")
@@ -86,7 +86,7 @@ class MemberProjectVerifyTests(unittest.TestCase):
         self.assertTrue(result["passed"], result["execution"])
         self.assertEqual(result["execution"]["members"], {"web": self.member_tip})
         self.assertEqual(git(self.member, "worktree", "list", "--porcelain").count("worktree "), 1)
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-verify/*"), "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/verify-*"), "")
 
     def test_existing_member_sidecar_survives_failed_setup(self) -> None:
         sidecar = self.root.parent / "verify" / "coordinator"
@@ -114,7 +114,7 @@ class MemberProjectVerifyTests(unittest.TestCase):
         with self.assertRaisesRegex(isolation.IsolationError, "locked member project-verify collides"):
             lean_verification.verify_project(self.root, head)
         self.assertEqual(git(self.root, "worktree", "list", "--porcelain").count("worktree "), 1)
-        self.assertEqual(git(self.root, "branch", "--list", "gsd-path-verify/*"), "")
+        self.assertEqual(git(self.root, "branch", "--list", "chore/verify-*"), "")
         self.assertEqual(git(self.member, "worktree", "list", "--porcelain").count("worktree "), 1)
 
     def test_unlocked_stale_marker_does_not_block_cleanup(self) -> None:
@@ -168,7 +168,7 @@ class MemberProjectVerifyTests(unittest.TestCase):
             lean_verification.verify_project(self.root, head)
         self.assertEqual(gap.read_bytes() if gap.exists() else None, before)
         self.assertEqual(git(self.root, "worktree", "list", "--porcelain").count("worktree "), 1)
-        self.assertEqual(git(self.root, "branch", "--list", "gsd-path-verify/*"), "")
+        self.assertEqual(git(self.root, "branch", "--list", "chore/verify-*"), "")
         git(self.member, "reset", "--hard", self.member_tip)
         retry = lean_verification.verify_project(self.root, head)
         self.assertTrue(retry["passed"], retry)
@@ -183,7 +183,7 @@ class MemberProjectVerifyTests(unittest.TestCase):
         with self.assertRaisesRegex(isolation.IsolationError, "HEAD is detached"):
             lean_verification.verify_project(self.root, head)
         self.assertEqual(git(self.member, "worktree", "list", "--porcelain").count("worktree "), 1)
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-verify/*"), "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/verify-*"), "")
         self.assertEqual(git(self.root, "worktree", "list", "--porcelain").count("worktree "), 1)
         plan.write_bytes(plan.read_text(encoding="utf-8").replace("git -C ../web checkout --detach HEAD", COMMAND).encode("utf-8"))
         git(self.root, "add", "-A")
@@ -194,23 +194,23 @@ class MemberProjectVerifyTests(unittest.TestCase):
     def test_member_sidecar_on_another_branch_is_retired_before_retry(self) -> None:
         self.use_member_verify_command()
         plan = self.root / ".project" / "plan" / "PLAN.md"
-        command = "git -C ../web checkout gsd-path/demo-M001"
+        command = "git -C ../web checkout feature/demo-milestone-001"
         plan.write_bytes(plan.read_text(encoding="utf-8").replace(COMMAND, command).encode("utf-8"))
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "verify switches member branch")
         head = git(self.root, "rev-parse", "HEAD")
         with self.assertRaisesRegex(isolation.IsolationError, "branch changed"):
             lean_verification.verify_project(self.root, head)
-        self.assertEqual(git(self.member, "rev-parse", "gsd-path/demo-M001"), self.member_tip)
+        self.assertEqual(git(self.member, "rev-parse", "feature/demo-milestone-001"), self.member_tip)
         self.assertEqual(git(self.member, "worktree", "list", "--porcelain").count("worktree "), 1)
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-verify/*"), "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/verify-*"), "")
         self.assertEqual(git(self.root, "worktree", "list", "--porcelain").count("worktree "), 1)
         plan.write_bytes(plan.read_text(encoding="utf-8").replace(command, COMMAND).encode("utf-8"))
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "restore verify command")
         retry = lean_verification.verify_project(self.root, git(self.root, "rev-parse", "HEAD"))
         self.assertTrue(retry["passed"], retry)
-        self.assertEqual(git(self.member, "rev-parse", "gsd-path/demo-M001"), self.member_tip)
+        self.assertEqual(git(self.member, "rev-parse", "feature/demo-milestone-001"), self.member_tip)
 
     def test_failed_member_verify_keeps_exact_output_in_gap(self) -> None:
         self.use_member_verify_command()
@@ -244,7 +244,7 @@ class MemberProjectVerifyTests(unittest.TestCase):
         marker.unlink()
         with self.assertRaisesRegex(Exception, "member marker for web"):
             lean_verification.verify_project(self.root, self.head)
-        self.assertEqual(git(self.root, "branch", "--list", "gsd-path-verify/*"), "")
+        self.assertEqual(git(self.root, "branch", "--list", "chore/verify-*"), "")
         self.assertEqual(git(self.root, "worktree", "list", "--porcelain").count("worktree "), 1)
 
     def test_member_milestone_verify_is_never_reused_from_the_ledger(self) -> None:

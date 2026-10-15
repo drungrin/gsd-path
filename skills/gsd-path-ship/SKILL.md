@@ -205,7 +205,7 @@ The persisted `STATE.archive` field is the transaction identity.
    `Reviewed HEAD` differs from current HEAD, before persisting STATE.archive
    or creating archive directories. Regenerate the final review for the current
    commit before archiving; preflight and validation retain their own checks.
-   The helper strict-loads STATE.md, requires its canonical `gsd-path/M00N`
+   The helper strict-loads STATE.md, requires its canonical `feature/milestone-00n`
    branch with `N >= 1` to equal the next collision-free archive sequence,
    rejects any `000-*` archive entry, and writes the exact
    `.project/archive/<NNN>-<slug>` path atomically to STATE.md before moving
@@ -339,7 +339,7 @@ The persisted `STATE.archive` field is the transaction identity.
      including Azure SSH URLs and encoded project names; never substitute
      GitHub commands for Azure. It publishes the exact ship commit, reuses only the
      single PR from origin's bound branch at that commit or creates one with
-     the canonical integration title and body plus the GSD Path credit footer.
+     the canonical integration title and body, without attribution or footers.
      Any competing PR to `main` at the ship commit blocks. While the eligible
      PR is open, the helper returns `status: awaiting-merge`. Present
      **Outcome**, link
@@ -395,7 +395,7 @@ The persisted `STATE.archive` field is the transaction identity.
    and live branch and tag publication.
    Report shipped only when the integration result passes.
    Leave the primary worktree and STATE.branch on the shipped
-   `gsd-path/M00N` at the ship commit. The router owns the later handoff to a
+   `feature/milestone-00n` at the ship commit. The router owns the later handoff to a
    new milestone branch after this gate.
 8. If a crash occurs before STATE's atomic rename, discard only the exact
    deterministic state temp through `prepare`. If it occurs after STATE becomes

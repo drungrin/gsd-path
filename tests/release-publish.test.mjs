@@ -99,7 +99,12 @@ function assertFrozenPackage(steps, event) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-frozen-'));
   try {
     const frozen = new Map(['package.json', 'package-lock.json'].map(file => {
-      const bytes = JSON.stringify(JSON.parse(fs.readFileSync(new URL(`../${file}`, import.meta.url))));
+      // This fixture exercises upstream npm publication, which uses SemVer,
+      // independently of the fork's four-component source version.
+      const metadata = JSON.parse(fs.readFileSync(new URL(`../${file}`, import.meta.url)));
+      metadata.version = '1.2.3';
+      if (metadata.packages?.['']) metadata.packages[''].version = '1.2.3';
+      const bytes = JSON.stringify(metadata);
       fs.writeFileSync(path.join(dir, file), bytes);
       fs.utimesSync(path.join(dir, file), 0, 0);
       return [file, bytes];

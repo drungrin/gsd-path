@@ -859,7 +859,7 @@ def classify_undo(repo: Path) -> dict[str, object]:
     if not head:
         return _blocked(["HEAD has no commit"])
     if recorded_branch is None or not is_bound_branch(str(recorded_branch)):
-        return _blocked(["undo requires STATE.branch to be a bound gsd-path/M00N branch"])
+        return _blocked(["undo requires STATE.branch to be a bound feature/milestone-00n branch"])
     if branch != recorded_branch:
         return _blocked(
             [f"current branch {branch or '<detached>'} != STATE.branch {recorded_branch}"]

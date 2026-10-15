@@ -9,7 +9,7 @@ from scripts import check_handoffs, members, pipeline_diagnose, pipeline_state
 import tests.test_handoffs as handoffs
 
 LOCK = {"schema": "gsd-path/member-lock/v1",
-        "members": [{"name": "web", "branch": "gsd-path/demo-M001", "base": "a" * 40}]}
+        "members": [{"name": "web", "branch": "feature/demo-milestone-001", "base": "a" * 40}]}
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -27,7 +27,7 @@ class MemberRecoveryStatusTests(unittest.TestCase):
         task.write_text(re.sub(r"(?m)^(id: T001)$", r"\1\nrepo: web", task.read_text(encoding="utf-8"), count=1),
                         encoding="utf-8")
         self.task = task
-        git(self.root, "init", "-q", "-b", "gsd-path/M001")
+        git(self.root, "init", "-q", "-b", "feature/milestone-001")
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "plan")
         self.common = Path(git(self.root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
@@ -61,7 +61,7 @@ class MemberRecoveryStatusTests(unittest.TestCase):
         self.assertNotIn("members", pipeline_state.status_state(self.root))
         self.lock()
         self.assertEqual(pipeline_state.status_state(self.root)["members"],
-                         [{"name": "web", "branch": "gsd-path/demo-M001", "close": None}])
+                         [{"name": "web", "branch": "feature/demo-milestone-001", "close": None}])
         self.close("integrated")
         self.assertEqual(pipeline_state.status_state(self.root)["members"][0]["close"], "integrated")
 

@@ -7,8 +7,8 @@ PAYLOAD = json.dumps({
     "projects": [
         {
             "root": "~/orca/workspaces/orca", "project": "orca", "milestone": "fleet-ui",
-            "phase": "build", "status": "active", "branch": "gsd-path/M002",
-            "git": {"branch": "gsd-path/M002", "head": "0e9a3b1", "dirty": False},
+            "phase": "build", "status": "active", "branch": "feature/milestone-002",
+            "git": {"branch": "feature/milestone-002", "head": "0e9a3b1", "dirty": False},
             "tasks_done": 7, "tasks_total": 12, "current_wave": 2,
             "waves": {"1": "graph model", "2": "fleet intents", "3": "resolve"},
             "pending_answers": [],
@@ -24,8 +24,8 @@ PAYLOAD = json.dumps({
         },
         {
             "root": "~/work/gsd-path", "project": "gsd-path", "milestone": "daemon",
-            "phase": "ship", "status": "blocked", "branch": "gsd-path/M001",
-            "git": {"branch": "gsd-path/M001", "head": "9a0b1c2", "dirty": True},
+            "phase": "ship", "status": "blocked", "branch": "feature/milestone-001",
+            "git": {"branch": "feature/milestone-001", "head": "9a0b1c2", "dirty": True},
             "tasks_done": 12, "tasks_total": 12, "current_wave": None,
             "waves": {"1": "core parsers", "2": "watcher", "3": "tray"},
             "pending_answers": [
@@ -41,8 +41,8 @@ PAYLOAD = json.dumps({
         },
         {
             "root": "~/work/memtrace", "project": "memtrace", "milestone": "graph",
-            "phase": "shipped", "status": "shipped", "branch": "gsd-path/M003",
-            "git": {"branch": "gsd-path/M003", "head": "c41d2e7", "dirty": False},
+            "phase": "shipped", "status": "shipped", "branch": "feature/milestone-003",
+            "git": {"branch": "feature/milestone-003", "head": "c41d2e7", "dirty": False},
             "tasks_done": 9, "tasks_total": 9, "current_wave": None,
             "waves": {"1": "index"},
             "pending_answers": [],
@@ -54,8 +54,8 @@ PAYLOAD = json.dumps({
         },
         {
             "root": "~/work/alpha", "project": "alpha", "milestone": "bootstrap",
-            "phase": "define", "status": "active", "branch": "gsd-path/M001",
-            "git": {"branch": "gsd-path/M001", "head": "1a2b3c4", "dirty": False},
+            "phase": "define", "status": "active", "branch": "feature/milestone-001",
+            "git": {"branch": "feature/milestone-001", "head": "1a2b3c4", "dirty": False},
             "tasks_done": 0, "tasks_total": 0, "current_wave": None,
             "waves": None,
             "pending_answers": [],

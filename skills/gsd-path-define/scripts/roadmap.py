@@ -122,7 +122,7 @@ def selection_payload(selected: dict) -> dict:
         "status": "selected",
         "id": selected["id"],
         "milestone": milestone,
-        "branch": f"gsd-path/{selected['id']}",
+        "branch": f"feature/milestone-{int(selected['id'][1:]):03d}",
     }
 
 

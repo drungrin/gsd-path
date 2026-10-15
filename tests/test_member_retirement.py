@@ -11,7 +11,7 @@ import tests.test_pipeline_git as pipeline_git_tests
 git = member_integration.git
 ARCHIVE = member_integration.ARCHIVE
 TAG = member_integration.TAG
-BOUND = "refs/heads/gsd-path/demo-M001"
+BOUND = "refs/heads/feature/demo-milestone-001"
 
 
 class MemberRetirementTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class MemberRetirementTests(unittest.TestCase):
         self.integrate()
         git(self.member, "worktree", "remove", str(self.bound))
         team = self.root.parent / "team-bound"
-        git(self.member, "worktree", "add", "-q", str(team), "gsd-path/demo-M001")
+        git(self.member, "worktree", "add", "-q", str(team), "feature/demo-milestone-001")
         with self.assertRaisesRegex(ArchiveError, "outside Path's workspace"):
             self.retire()
         self.assertTrue(team.exists())
@@ -88,17 +88,17 @@ class BindNextRetiresMembersTests(unittest.TestCase):
             pipeline_git_tests.run_git(repo, "commit", "--allow-empty", "--amend", "-m", "ship: M001 — first",
                                        "-m", pipeline_git.ship_commit_body(".project/archive/001-first", "d" * 40, rows))
             ship = pipeline_git_tests.run_git(repo, "rev-parse", "HEAD").stdout.strip()
-            pipeline_git_tests.run_git(repo, "push", "-q", "--force", "origin", "gsd-path/M001")
+            pipeline_git_tests.run_git(repo, "push", "-q", "--force", "origin", "feature/milestone-001")
             pipeline_git_tests.run_git(repo, "switch", "-q", "main")
             pipeline_git_tests.run_git(repo, "reset", "-q", "--hard", "origin/main~1")
-            pipeline_git_tests.run_git(repo, "merge", "-q", "--no-ff", "gsd-path/M001", "-m",
-                                       "integrate: M001 — merge gsd-path/M001 into main")
+            pipeline_git_tests.run_git(repo, "merge", "-q", "--no-ff", "feature/milestone-001", "-m",
+                                       "integrate: M001 — merge feature/milestone-001 into main")
             landing = pipeline_git_tests.run_git(repo, "rev-parse", "HEAD").stdout.strip()
             pipeline_git_tests.run_git(repo, "push", "-q", "--force", "origin", "main")
             pipeline_git_tests.run_git(repo, "fetch", "-q", "origin")
-            pipeline_git_tests.run_git(repo, "switch", "-q", "gsd-path/M001")
+            pipeline_git_tests.run_git(repo, "switch", "-q", "feature/milestone-001")
             with mock.patch.object(integration, "retire_member") as retired:
-                pipeline_git.bind_next_milestone_branch(repo, "gsd-path/M002", "gsd-path/M001", ship,
+                pipeline_git.bind_next_milestone_branch(repo, "feature/milestone-002", "feature/milestone-001", ship,
                                                         "origin/main", landing, landing)
             retired.assert_called_once_with(repo.resolve(), "web", ".project/archive/001-first", "b" * 40,
                                             "c" * 40, TAG)

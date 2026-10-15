@@ -26,7 +26,7 @@ project: demo
 milestone: demo-ms
 phase: build
 status: active
-branch: gsd-path/M001
+branch: feature/milestone-001
 archive: null
 ---
 

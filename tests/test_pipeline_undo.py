@@ -26,7 +26,7 @@ def state_text(
     milestone: str = "first",
     phase: str = "plan",
     status: str = "active",
-    branch: str = "gsd-path/M001",
+    branch: str = "feature/milestone-001",
     archive: str = "null",
 ) -> str:
     return (
@@ -45,7 +45,7 @@ def state_text(
     )
 
 
-def init_repo(root: Path, branch: str = "gsd-path/M001") -> Path:
+def init_repo(root: Path, branch: str = "feature/milestone-001") -> Path:
     repo = root / "repo"
     run_git(Path(root), "init", "-b", branch, str(repo))
     run_git(repo, "config", "user.name", "GSD Path Test")
@@ -245,7 +245,7 @@ class PipelineUndoTests(unittest.TestCase):
                 check=True,
             )
             run_git(repo, "remote", "add", "origin", str(origin))
-            run_git(repo, "push", "-u", "origin", "gsd-path/M001")
+            run_git(repo, "push", "-u", "origin", "feature/milestone-001")
 
             previewed = pipeline_undo.preview(repo)
             self.assertIsNone(previewed["target"]["kind"])
@@ -282,7 +282,7 @@ class PipelineUndoTests(unittest.TestCase):
             origin = root / "origin.git"
             subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
             run_git(repo, "remote", "add", "origin", str(origin))
-            run_git(repo, "push", "-u", "origin", "gsd-path/M001")
+            run_git(repo, "push", "-u", "origin", "feature/milestone-001")
 
             with self.assertRaisesRegex(pipeline_undo.UndoError, "published"):
                 pipeline_undo.apply_undo(repo, "checkpoint", approved)
@@ -316,9 +316,9 @@ class PipelineUndoTests(unittest.TestCase):
             previewed = pipeline_undo.preview(repo)
 
             self.assertIsNone(previewed["target"]["kind"])
-            self.assertIn("expected gsd-path/M001", previewed["target"]["blocked"][0])
+            self.assertIn("expected feature/milestone-001", previewed["target"]["blocked"][0])
             with self.assertRaisesRegex(
-                pipeline_undo.UndoError, "expected gsd-path/M001"
+                pipeline_undo.UndoError, "expected feature/milestone-001"
             ):
                 pipeline_undo.apply_undo(repo, "checkpoint", approved)
             self.assertEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), approved)

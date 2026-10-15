@@ -38,7 +38,7 @@ class MemberTaskBriefTests(unittest.TestCase):
         (self.coordinator / ".project" / "tasks").mkdir(parents=True)
         git(root, "init", "-q", "-b", "main", str(self.coordinator))
         (self.coordinator / ".project" / "STATE.md").write_bytes(
-            STATE.format(phase="plan", branch="gsd-path/M001").encode("utf-8"))
+            STATE.format(phase="plan", branch="feature/milestone-001").encode("utf-8"))
         (self.coordinator / "lib").mkdir()
         (self.coordinator / "lib" / "server.py").write_bytes("coordinator only\n".encode("utf-8"))
         git(self.coordinator, "add", "-A")
@@ -250,7 +250,7 @@ class MemberTaskBriefTests(unittest.TestCase):
         self.assertEqual(result["tasks"], 1)
 
     def test_member_brief_during_build_resolves_at_the_bound_branch_tip(self) -> None:
-        git(self.member, "checkout", "-q", "-b", "gsd-path/acme-M001")
+        git(self.member, "checkout", "-q", "-b", "feature/acme-milestone-001")
         (self.member / "src" / "landed.py").write_bytes("earlier landing\n".encode("utf-8"))
         git(self.member, "add", "-A")
         git(self.member, "commit", "-q", "-m", "earlier landing")
@@ -261,11 +261,11 @@ class MemberTaskBriefTests(unittest.TestCase):
         lock = self.coordinator / ".project" / "build" / "members.json"
         lock.parent.mkdir(parents=True)
         lock.write_bytes('{"schema": "gsd-path/member-lock/v1", "members": [{"name": "web", '
-                        '"branch": "gsd-path/acme-M001", "base": "x"}]}'.encode("utf-8"))
+                        '"branch": "feature/acme-milestone-001", "base": "x"}]}'.encode("utf-8"))
         self.assertEqual(self.problems(), "")
 
     def test_plan_recovery_brief_uses_the_existing_build_lock(self) -> None:
-        git(self.member, "checkout", "-q", "-b", "gsd-path/acme-M001")
+        git(self.member, "checkout", "-q", "-b", "feature/acme-milestone-001")
         (self.member / "src" / "landed.py").write_bytes("earlier landing\n".encode("utf-8"))
         git(self.member, "add", "-A")
         git(self.member, "commit", "-q", "-m", "earlier landing")
@@ -280,7 +280,7 @@ class MemberTaskBriefTests(unittest.TestCase):
         lock = self.coordinator / ".project" / "build" / "members.json"
         lock.parent.mkdir(parents=True)
         lock.write_bytes('{"schema": "gsd-path/member-lock/v1", "members": [{"name": "web", '
-                        '"branch": "gsd-path/acme-M001", "base": "x"}]}'.encode("utf-8"))
+                        '"branch": "feature/acme-milestone-001", "base": "x"}]}'.encode("utf-8"))
         state_checkpoint._validate_plan_briefs(self.coordinator, "plan", ".project")
 
     def test_repo_must_name_a_member(self) -> None:

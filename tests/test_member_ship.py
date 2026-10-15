@@ -27,7 +27,7 @@ class MemberShipTests(unittest.TestCase):
         (self.archive / "build").mkdir(exist_ok=True)
         (self.archive / "build/members.json").write_text(json.dumps({
             "schema": "gsd-path/member-lock/v1",
-            "members": [{"name": "web", "branch": "gsd-path/demo-M001", "base": "a" * 40}]}), encoding="utf-8")
+            "members": [{"name": "web", "branch": "feature/demo-milestone-001", "base": "a" * 40}]}), encoding="utf-8")
         review = self.archive / "review"
         for path in [review / "FINAL.md", *sorted(review.glob("final-gap-*.md"))]:
             text = path.read_text(encoding="utf-8")

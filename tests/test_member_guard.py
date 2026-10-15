@@ -12,11 +12,11 @@ import members
 SCRIPT = ROOT / "scripts" / "git_guard.py"
 MEMBERS = ROOT / "scripts" / "members.py"
 NULL = "0" * 40
-BOUND = "refs/heads/gsd-path/acme-M001"
+BOUND = "refs/heads/feature/acme-milestone-001"
 TAG = "refs/tags/milestone/acme-001-demo"
 STATE = (
     "---\npipeline: gsd-path/v2\nproject: {project}\nmilestone: demo\nphase: {phase}\n"
-    "status: {status}\nbranch: gsd-path/M001\narchive: {archive}\n---\n"
+    "status: {status}\nbranch: feature/milestone-001\narchive: {archive}\n---\n"
 )
 
 
@@ -103,7 +103,7 @@ class MemberGuardTests(unittest.TestCase):
         git(self.member, "update-ref", "refs/remotes/origin/master", published)
         git(self.member, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
         self.join()
-        work = self.member_commit("gsd-path/acme-M001")
+        work = self.member_commit("feature/acme-milestone-001")
         feature = self.member_commit("feature/x")
         feature_line = f"refs/heads/feature/x {feature} refs/heads/feature/x {NULL}"
 
@@ -151,7 +151,7 @@ class MemberGuardTests(unittest.TestCase):
 
     def test_pre_push_blocks_when_origin_main_baseline_disappears(self) -> None:
         self.join()
-        self.member_commit("gsd-path/acme-M001")
+        self.member_commit("feature/acme-milestone-001")
         git(self.member, "update-ref", "-d", "refs/remotes/origin/main")
         result = self.push(f"refs/heads/main {self.base} refs/heads/main {NULL}")
         self.assertNotEqual(result.returncode, 0)
@@ -160,7 +160,7 @@ class MemberGuardTests(unittest.TestCase):
 
     def test_member_path_refs_publish_only_when_authorized(self) -> None:
         self.join()
-        work = self.member_commit("gsd-path/acme-M001")
+        work = self.member_commit("feature/acme-milestone-001")
         line = f"{BOUND} {work} {BOUND} {NULL}"
         refused = self.push(line)
         self.assertNotEqual(refused.returncode, 0)
@@ -184,12 +184,12 @@ class MemberGuardTests(unittest.TestCase):
 
     def test_other_refs_publish_unless_they_carry_member_work(self) -> None:
         self.join()
-        work = self.member_commit("gsd-path/acme-M001")
+        work = self.member_commit("feature/acme-milestone-001")
         feature = self.member_commit("feature/x")
         cases = {
             f"refs/heads/main {self.base} refs/heads/main {NULL}": True,
             f"refs/heads/feature/x {feature} refs/heads/feature/x {NULL}": True,
-            f"refs/heads/gsd-path/other-M001 {feature} refs/heads/gsd-path/other-M001 {NULL}": True,
+            f"refs/heads/feature/other-milestone-001 {feature} refs/heads/feature/other-milestone-001 {NULL}": True,
             f"refs/heads/main {work} refs/heads/main {self.base}": False,
             f"HEAD {work} refs/heads/hotfix {NULL}": False,
         }
@@ -205,7 +205,7 @@ class MemberGuardTests(unittest.TestCase):
 
     def test_member_path_ref_deletion_needs_its_expected_remote_sha(self) -> None:
         self.join()
-        work = self.member_commit("gsd-path/acme-M001")
+        work = self.member_commit("feature/acme-milestone-001")
         line = f"(delete) {NULL} {BOUND} {work}"
         refused = self.push(line)
         self.assertNotEqual(refused.returncode, 0)

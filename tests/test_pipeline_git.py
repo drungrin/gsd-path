@@ -29,7 +29,7 @@ def run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def ship_then_forge_deletes_branch(
     tmp: str, mode: str, default: str = "main"
 ) -> tuple[Path, Path, str, str]:
-    """Ship M001 in `mode`, merge it on the default branch, and delete origin/gsd-path/M001."""
+    """Ship M001 in `mode`, merge it on the default branch, and delete origin/feature/milestone-001."""
     origin = Path(tmp) / "origin.git"
     main = Path(tmp) / "repo"
     primary = Path(tmp) / "repo-gsd-path"
@@ -42,7 +42,7 @@ def ship_then_forge_deletes_branch(
     run_git(main, "commit", "-m", "base")
     run_git(main, "remote", "add", "origin", str(origin))
     run_git(main, "push", "-u", "origin", default)
-    run_git(main, "worktree", "add", "-b", "gsd-path/M001", str(primary), default)
+    run_git(main, "worktree", "add", "-b", "feature/milestone-001", str(primary), default)
     project = primary / ".project"
     project.mkdir()
     (project / "STATE.md").write_bytes(
@@ -52,7 +52,7 @@ def ship_then_forge_deletes_branch(
         "milestone: first\n"
         "phase: shipped\n"
         "status: done\n"
-        "branch: gsd-path/M001\n"
+        "branch: feature/milestone-001\n"
         "archive: .project/archive/001-first/\n"
         f"integration_default: {mode}\n"
         f"integration: {mode}\n"
@@ -63,11 +63,11 @@ def ship_then_forge_deletes_branch(
     run_git(primary, "add", ".project/STATE.md")
     run_git(primary, "commit", "-m", "ship: M001 — first")
     ship = run_git(primary, "rev-parse", "HEAD").stdout.strip()
-    run_git(primary, "push", "origin", "gsd-path/M001")
-    run_git(main, "merge", "--no-ff", "gsd-path/M001", "-m", "forge merge")
+    run_git(primary, "push", "origin", "feature/milestone-001")
+    run_git(main, "merge", "--no-ff", "feature/milestone-001", "-m", "forge merge")
     landing = run_git(main, "rev-parse", "HEAD").stdout.strip()
     run_git(main, "push", "origin", default)
-    run_git(main, "push", "origin", "--delete", "gsd-path/M001")
+    run_git(main, "push", "origin", "--delete", "feature/milestone-001")
     return main, primary, ship, landing
 
 
@@ -87,9 +87,9 @@ def bind_next_after_missing_previous(
             "--repo",
             str(primary),
             "--branch",
-            "gsd-path/M002",
+            "feature/milestone-002",
             "--previous-branch",
-            "gsd-path/M001",
+            "feature/milestone-001",
             "--ship",
             ship,
             "--remote-default",
@@ -122,7 +122,7 @@ def make_remote_repo(tmp: str, default: str = "main") -> tuple[Path, Path, str]:
 
 def make_integrated_milestone(tmp: str) -> tuple[Path, Path, str, str]:
     origin, repo, base = make_remote_repo(tmp)
-    run_git(repo, "switch", "-c", "gsd-path/M001", base)
+    run_git(repo, "switch", "-c", "feature/milestone-001", base)
     project = repo / ".project"
     project.mkdir()
     (project / "STATE.md").write_bytes(
@@ -132,7 +132,7 @@ def make_integrated_milestone(tmp: str) -> tuple[Path, Path, str, str]:
         "milestone: first\n"
         "phase: shipped\n"
         "status: done\n"
-        "branch: gsd-path/M001\n"
+        "branch: feature/milestone-001\n"
         "archive: .project/archive/001-first/\n"
         "---\n\n"
         "# Project State\n\n"
@@ -142,19 +142,19 @@ def make_integrated_milestone(tmp: str) -> tuple[Path, Path, str, str]:
     run_git(repo, "add", ".project/STATE.md", "milestone.txt")
     run_git(repo, "commit", "-m", "ship: M001 — first")
     ship = run_git(repo, "rev-parse", "HEAD").stdout.strip()
-    run_git(repo, "push", "origin", "gsd-path/M001")
+    run_git(repo, "push", "origin", "feature/milestone-001")
     run_git(repo, "switch", "main")
     run_git(
         repo,
         "merge",
         "--no-ff",
-        "gsd-path/M001",
+        "feature/milestone-001",
         "-m",
-        "integrate: M001 — merge gsd-path/M001 into main",
+        "integrate: M001 — merge feature/milestone-001 into main",
     )
     integrate = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     run_git(repo, "push", "origin", "main")
-    run_git(repo, "switch", "gsd-path/M001")
+    run_git(repo, "switch", "feature/milestone-001")
     return origin, repo, ship, integrate
 
 
@@ -167,7 +167,7 @@ class PipelineGitTests(unittest.TestCase):
             path = repo / ".project/STATE.md"
             original = path.read_bytes()
             command = [sys.executable, str(PIPELINE_GIT), "bind-initial", "--repo", str(repo),
-                       "--branch", "gsd-path/M001", "--remote-default", "origin/main", "--base", base]
+                       "--branch", "feature/milestone-001", "--remote-default", "origin/main", "--base", base]
             result = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(path.read_bytes(), original)
@@ -179,8 +179,8 @@ class PipelineGitTests(unittest.TestCase):
             state = pipeline_state.validate_state(repo)["state"]
             result = pipeline_state.transition_state(repo,
                 {key: state[key] for key in ("phase", "status", "branch", "archive")},
-                {"branch": "gsd-path/M001"}, "router bound initial milestone")
-            self.assertEqual(result["state"]["branch"], "gsd-path/M001")
+                {"branch": "feature/milestone-001"}, "router bound initial milestone")
+            self.assertEqual(result["state"]["branch"], "feature/milestone-001")
 
     @requires_symlink
     def test_initial_state_exception_rejects_other_dirt_and_invalid_state(self) -> None:
@@ -217,7 +217,7 @@ class PipelineGitTests(unittest.TestCase):
                     else:
                         os.link(target, path)
                 with self.assertRaises(pipeline_git.PipelineGitError):
-                    pipeline_git.bind_initial_milestone_branch(repo, "gsd-path/M001", "origin/main", base)
+                    pipeline_git.bind_initial_milestone_branch(repo, "feature/milestone-001", "origin/main", base)
                 self.assertEqual(run_git(repo, "branch", "--show-current").stdout.strip(), "main")
 
     def test_binding_reports_state_replacement_during_switch(self) -> None:
@@ -236,17 +236,17 @@ class PipelineGitTests(unittest.TestCase):
 
             with mock.patch.object(pipeline_git, "_run_git", side_effect=replace_state):
                 with self.assertRaisesRegex(pipeline_git.PipelineGitError, "changed during"):
-                    pipeline_git.bind_initial_milestone_branch(repo, "gsd-path/M001", "origin/main", base)
-            self.assertEqual(run_git(repo, "branch", "--show-current").stdout.strip(), "gsd-path/M001")
+                    pipeline_git.bind_initial_milestone_branch(repo, "feature/milestone-001", "origin/main", base)
+            self.assertEqual(run_git(repo, "branch", "--show-current").stdout.strip(), "feature/milestone-001")
 
     def test_bound_branch_name_uses_m00n(self) -> None:
-        self.assertEqual(pipeline_git.bound_branch_name(1), "gsd-path/M001")
-        self.assertEqual(pipeline_git.bound_branch_name(12), "gsd-path/M012")
-        self.assertTrue(pipeline_git.is_bound_branch("gsd-path/M001"))
-        self.assertFalse(pipeline_git.is_bound_branch("gsd-path/M000"))
+        self.assertEqual(pipeline_git.bound_branch_name(1), "feature/milestone-001")
+        self.assertEqual(pipeline_git.bound_branch_name(12), "feature/milestone-012")
+        self.assertTrue(pipeline_git.is_bound_branch("feature/milestone-001"))
+        self.assertFalse(pipeline_git.is_bound_branch("feature/milestone-000"))
         self.assertFalse(pipeline_git.is_bound_branch("gsd-path/demo"))
         self.assertFalse(pipeline_git.is_bound_branch("main"))
-        for token in ("M000", "gsd-path/M000", "000-demo"):
+        for token in ("M000", "feature/milestone-000", "000-demo"):
             with self.subTest(token=token), self.assertRaisesRegex(
                 pipeline_git.PipelineGitError,
                 ">= 1",
@@ -260,7 +260,7 @@ class PipelineGitTests(unittest.TestCase):
         )
         self.assertEqual(
             pipeline_git.integrate_subject("001-phase-0-1", "main"),
-            "integrate: M001 — merge gsd-path/M001 into main",
+            "integrate: M001 — merge feature/milestone-001 into main",
         )
         self.assertTrue(
             pipeline_git.is_ship_subject("ship: M001 — phase-0-1", "001-phase-0-1")
@@ -275,7 +275,7 @@ class PipelineGitTests(unittest.TestCase):
         )
         self.assertFalse(
             pipeline_git.is_integrate_subject(
-                "integrate: M001 — merge gsd-path/M001 into main",
+                "integrate: M001 — merge feature/milestone-001 into main",
                 "001-phase-0-1",
                 "master",
             )
@@ -285,9 +285,9 @@ class PipelineGitTests(unittest.TestCase):
         # A bare name can start with `origin/`; its remote ref is `origin/origin/trunk`.
         self.assertEqual(
             pipeline_git.integrate_subject("001-phase-0-1", "origin/trunk"),
-            "integrate: M001 — merge gsd-path/M001 into origin/trunk",
+            "integrate: M001 — merge feature/milestone-001 into origin/trunk",
         )
-        for name in ("", "gsd-path/M002", "we#ird"):
+        for name in ("", "feature/milestone-002", "we#ird"):
             with self.subTest(name=name), self.assertRaisesRegex(
                 pipeline_git.PipelineGitError, "default branch is invalid"
             ):
@@ -322,7 +322,7 @@ class PipelineGitTests(unittest.TestCase):
                 "--repo",
                 str(repo),
                 "--branch",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 "--remote-default",
                 "origin/main",
                 "--base",
@@ -337,7 +337,7 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(payload["status"], "bound")
             self.assertEqual(
                 run_git(repo, "branch", "--show-current").stdout.strip(),
-                "gsd-path/M001",
+                "feature/milestone-001",
             )
             self.assertEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), base)
 
@@ -348,7 +348,7 @@ class PipelineGitTests(unittest.TestCase):
     def bind_initial(self, repo: Path, remote_default: str, base: str):
         return subprocess.run(
             [sys.executable, str(PIPELINE_GIT), "bind-initial", "--repo", str(repo),
-             "--branch", "gsd-path/M001", "--remote-default", remote_default, "--base", base],
+             "--branch", "feature/milestone-001", "--remote-default", remote_default, "--base", base],
             capture_output=True, encoding="utf-8", errors="replace",
         )
 
@@ -369,7 +369,7 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["status"], "bound")
             self.assertEqual(
-                run_git(repo, "branch", "--show-current").stdout.strip(), "gsd-path/M001"
+                run_git(repo, "branch", "--show-current").stdout.strip(), "feature/milestone-001"
             )
             self.assertEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), base)
 
@@ -384,7 +384,7 @@ class PipelineGitTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
-                run_git(repo, "branch", "--show-current").stdout.strip(), "gsd-path/M001"
+                run_git(repo, "branch", "--show-current").stdout.strip(), "feature/milestone-001"
             )
             self.assertEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), base)
 
@@ -430,7 +430,7 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["status"], "bound")
             self.assertEqual(
-                run_git(primary, "branch", "--show-current").stdout.strip(), "gsd-path/M002"
+                run_git(primary, "branch", "--show-current").stdout.strip(), "feature/milestone-002"
             )
             self.assertEqual(run_git(primary, "rev-parse", "HEAD").stdout.strip(), landing)
             # The bind-next journal names origin/master; status must accept it.
@@ -450,7 +450,7 @@ class PipelineGitTests(unittest.TestCase):
             ):
                 pipeline_git.bind_initial_milestone_branch(
                     repo,
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                     "origin/main",
                     base[:12],
                 )
@@ -461,7 +461,7 @@ class PipelineGitTests(unittest.TestCase):
             ):
                 pipeline_git.bind_initial_milestone_branch(
                     repo,
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                     "origin/main",
                     base,
                 )
@@ -475,7 +475,7 @@ class PipelineGitTests(unittest.TestCase):
             ):
                 pipeline_git.bind_initial_milestone_branch(
                     repo,
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                     "origin/main",
                     base,
                 )
@@ -489,7 +489,7 @@ class PipelineGitTests(unittest.TestCase):
                 "worktree",
                 "add",
                 "-b",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 str(other),
                 base,
             )
@@ -500,7 +500,7 @@ class PipelineGitTests(unittest.TestCase):
             ):
                 pipeline_git.bind_initial_milestone_branch(
                     repo,
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                     "origin/main",
                     base,
                 )
@@ -523,7 +523,7 @@ class PipelineGitTests(unittest.TestCase):
             ):
                 pipeline_git.bind_initial_milestone_branch(
                     repo,
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                     "origin/main",
                     base,
                 )
@@ -531,8 +531,8 @@ class PipelineGitTests(unittest.TestCase):
     def test_bind_initial_rejects_remote_branch_collision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _, repo, base = make_remote_repo(tmp)
-            run_git(repo, "branch", "gsd-path/M001", base)
-            run_git(repo, "push", "origin", "gsd-path/M001")
+            run_git(repo, "branch", "feature/milestone-001", base)
+            run_git(repo, "push", "origin", "feature/milestone-001")
 
             with self.assertRaisesRegex(
                 pipeline_git.PipelineGitError,
@@ -540,7 +540,7 @@ class PipelineGitTests(unittest.TestCase):
             ):
                 pipeline_git.bind_initial_milestone_branch(
                     repo,
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                     "origin/main",
                     base,
                 )
@@ -548,9 +548,9 @@ class PipelineGitTests(unittest.TestCase):
     def test_retire_previous_branch_leases_remote_before_local_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _, repo, ship = make_remote_repo(tmp)
-            run_git(repo, "branch", "gsd-path/M001", ship)
-            run_git(repo, "push", "origin", "gsd-path/M001")
-            run_git(repo, "switch", "-c", "gsd-path/M002", ship)
+            run_git(repo, "branch", "feature/milestone-001", ship)
+            run_git(repo, "push", "origin", "feature/milestone-001")
+            run_git(repo, "switch", "-c", "feature/milestone-002", ship)
             calls: list[tuple[str, ...]] = []
             original = pipeline_git._run_git
 
@@ -565,14 +565,14 @@ class PipelineGitTests(unittest.TestCase):
             with mock.patch.object(pipeline_git, "_run_git", side_effect=recording_run_git):
                 pipeline_git.retire_previous_branch(
                     repo,
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                     ship,
                 )
 
             remote_delete = next(
                 index
                 for index, arguments in enumerate(calls)
-                if arguments[:2] == ("push", f"--force-with-lease=refs/heads/gsd-path/M001:{ship}")
+                if arguments[:2] == ("push", f"--force-with-lease=refs/heads/feature/milestone-001:{ship}")
             )
             local_delete = next(
                 index
@@ -584,7 +584,7 @@ class PipelineGitTests(unittest.TestCase):
     def test_bind_next_rejects_unjournaled_target_branch_adoption(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _, repo, ship, integrate = make_integrated_milestone(tmp)
-            run_git(repo, "switch", "-c", "gsd-path/M002", integrate)
+            run_git(repo, "switch", "-c", "feature/milestone-002", integrate)
 
             with self.assertRaisesRegex(
                 pipeline_git.PipelineGitError,
@@ -592,8 +592,8 @@ class PipelineGitTests(unittest.TestCase):
             ):
                 pipeline_git.bind_next_milestone_branch(
                     repo,
-                    "gsd-path/M002",
-                    "gsd-path/M001",
+                    "feature/milestone-002",
+                    "feature/milestone-001",
                     ship,
                     "origin/main",
                     integrate,
@@ -614,8 +614,8 @@ class PipelineGitTests(unittest.TestCase):
                 ):
                     pipeline_git.bind_next_milestone_branch(
                         repo,
-                        "gsd-path/M002",
-                        "gsd-path/M001",
+                        "feature/milestone-002",
+                        "feature/milestone-001",
                         ship,
                         "origin/main",
                         integrate,
@@ -624,9 +624,9 @@ class PipelineGitTests(unittest.TestCase):
 
             self.assertEqual(
                 run_git(repo, "branch", "--show-current").stdout.strip(),
-                "gsd-path/M002",
+                "feature/milestone-002",
             )
-            journal = pipeline_git.bind_next_journal_path(repo, "gsd-path/M002")
+            journal = pipeline_git.bind_next_journal_path(repo, "feature/milestone-002")
             self.assertEqual(
                 json.loads(journal.read_text(encoding="utf-8"))["stage"],
                 "switched",
@@ -634,8 +634,8 @@ class PipelineGitTests(unittest.TestCase):
 
             result = pipeline_git.bind_next_milestone_branch(
                 repo,
-                "gsd-path/M002",
-                "gsd-path/M001",
+                "feature/milestone-002",
+                "feature/milestone-001",
                 ship,
                 "origin/main",
                 integrate,
@@ -657,7 +657,7 @@ class PipelineGitTests(unittest.TestCase):
             remote = root / "origin.git"
             fixture.make_publishable_bound_repo(repo, remote)
             archive, ship = fixture.ship_bound(repo)
-            pushed = fixture.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            pushed = fixture.git(repo, "push", "-q", "origin", "feature/milestone-001")
             self.assertEqual(pushed.returncode, 0, pushed.stderr)
             integrate = fixture.integrate_bound(repo, archive, ship)
             published_main = fixture.git(
@@ -671,8 +671,8 @@ class PipelineGitTests(unittest.TestCase):
 
             bound = pipeline_git.bind_next_milestone_branch(
                 repo,
-                "gsd-path/M002",
-                "gsd-path/M001",
+                "feature/milestone-002",
+                "feature/milestone-001",
                 ship,
                 "origin/main",
                 integrate,
@@ -681,7 +681,7 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(bound["status"], "bound")
             self.assertEqual(
                 json.loads(
-                    pipeline_git.bind_next_journal_path(repo, "gsd-path/M002").read_text(
+                    pipeline_git.bind_next_journal_path(repo, "feature/milestone-002").read_text(
                         encoding="utf-8"
                     )
                 )["stage"],
@@ -689,7 +689,7 @@ class PipelineGitTests(unittest.TestCase):
             )
             retry_route = pipeline_state.route_state(repo)
             self.assertEqual(retry_route["route"]["action"], "resume-next-handoff")
-            self.assertEqual(retry_route["route"]["branch"], "gsd-path/M002")
+            self.assertEqual(retry_route["route"]["branch"], "feature/milestone-002")
 
             run_git(repo, "branch", "-f", "main", integrate)
             run_git(repo, "switch", "main")
@@ -707,13 +707,13 @@ class PipelineGitTests(unittest.TestCase):
             for target_exists in (True, False):
                 with self.subTest(target_exists=target_exists):
                     if not target_exists:
-                        run_git(repo, "branch", "-D", "gsd-path/M002")
+                        run_git(repo, "branch", "-D", "feature/milestone-002")
 
                     routed = invoke("route")
                     status = invoke("status")
 
                     self.assertEqual(routed["route"]["action"], "block")
-                    self.assertIn("current branch main != STATE.branch gsd-path/M001", routed["route"]["reason"])
+                    self.assertIn("current branch main != STATE.branch feature/milestone-001", routed["route"]["reason"])
                     self.assertEqual(status["completion"]["status"], "verified")
                     self.assertEqual(status["state"]["phase"], "shipped")
                     self.assertEqual(status["state"]["status"], "done")
@@ -744,14 +744,14 @@ class PipelineGitTests(unittest.TestCase):
                 f"refs/remotes/origin/tags/{tag_name}",
                 tag_object,
             )
-            journal_path = pipeline_git.bind_next_journal_path(repo, "gsd-path/M002")
+            journal_path = pipeline_git.bind_next_journal_path(repo, "feature/milestone-002")
             pipeline_git._write_bind_next_journal(
                 journal_path,
                 {
                     "schema": pipeline_git.LEGACY_BIND_NEXT_JOURNAL_SCHEMA,
                     "repo": str(repo.resolve()),
-                    "branch": "gsd-path/M002",
-                    "previous_branch": "gsd-path/M001",
+                    "branch": "feature/milestone-002",
+                    "previous_branch": "feature/milestone-001",
                     "ship": ship,
                     "remote_default": "origin/main",
                     "base": landing,
@@ -764,8 +764,8 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(recovery["landing"], landing)
             result = pipeline_git.bind_next_milestone_branch(
                 repo,
-                "gsd-path/M002",
-                "gsd-path/M001",
+                "feature/milestone-002",
+                "feature/milestone-001",
                 ship,
                 "origin/main",
                 landing,
@@ -786,7 +786,7 @@ class PipelineGitTests(unittest.TestCase):
             run_git(repo, "commit", "-m", "later main change")
             base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
             run_git(repo, "push", "origin", "main")
-            run_git(repo, "switch", "gsd-path/M001")
+            run_git(repo, "switch", "feature/milestone-001")
             original = pipeline_git._run_git
 
             def interrupt_switch(
@@ -809,8 +809,8 @@ class PipelineGitTests(unittest.TestCase):
                 ):
                     pipeline_git.bind_next_milestone_branch(
                         repo,
-                        "gsd-path/M002",
-                        "gsd-path/M001",
+                        "feature/milestone-002",
+                        "feature/milestone-001",
                         ship,
                         "origin/main",
                         base,
@@ -819,7 +819,7 @@ class PipelineGitTests(unittest.TestCase):
 
             journal_path = pipeline_git.bind_next_journal_path(
                 repo,
-                "gsd-path/M002",
+                "feature/milestone-002",
             )
             journal = json.loads(journal_path.read_text(encoding="utf-8"))
             self.assertEqual(journal["stage"], "prepared")
@@ -827,12 +827,12 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(journal["landing"], integrate)
             self.assertEqual(
                 run_git(repo, "branch", "--show-current").stdout.strip(),
-                "gsd-path/M001",
+                "feature/milestone-001",
             )
 
             recovery = pipeline_state.route_state(repo)["route"]
             self.assertEqual(recovery["action"], "resume-next-handoff")
-            self.assertEqual(recovery["previous_branch"], "gsd-path/M001")
+            self.assertEqual(recovery["previous_branch"], "feature/milestone-001")
             self.assertEqual(recovery["base"], base)
             self.assertEqual(recovery["landing"], integrate)
 
@@ -873,7 +873,7 @@ class PipelineGitTests(unittest.TestCase):
                 "worktree",
                 "add",
                 "-b",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 str(primary),
                 "main",
             )
@@ -887,7 +887,7 @@ class PipelineGitTests(unittest.TestCase):
                 "milestone: first\n"
                 "phase: shipped\n"
                 "status: done\n"
-                "branch: gsd-path/M001\n"
+                "branch: feature/milestone-001\n"
                 "archive: .project/archive/001-first/\n"
                 "integration_default: pull-request\n"
                 "integration: pull-request\n"
@@ -904,17 +904,17 @@ class PipelineGitTests(unittest.TestCase):
                 "Archive: .project/archive/001-first/\nReviewed-HEAD: base",
             )
             m001_ship = run_git(primary, "rev-parse", "HEAD").stdout.strip()
-            run_git(primary, "push", "origin", "gsd-path/M001")
+            run_git(primary, "push", "origin", "feature/milestone-001")
 
             run_git(
                 default_checkout,
                 "merge",
                 "--no-ff",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 "-m",
-                "integrate: M001 — merge gsd-path/M001 into main",
+                "integrate: M001 — merge feature/milestone-001 into main",
                 "-m",
-                f"Ship: {m001_ship}\nDefault: main\nBranch: gsd-path/M001",
+                f"Ship: {m001_ship}\nDefault: main\nBranch: feature/milestone-001",
             )
             integrated_main = run_git(
                 default_checkout,
@@ -922,7 +922,7 @@ class PipelineGitTests(unittest.TestCase):
                 "HEAD",
             ).stdout.strip()
             run_git(default_checkout, "push", "origin", "main")
-            run_git(default_checkout, "push", "origin", "--delete", "gsd-path/M001")
+            run_git(default_checkout, "push", "origin", "--delete", "feature/milestone-001")
 
             bind_next = [
                 sys.executable,
@@ -931,9 +931,9 @@ class PipelineGitTests(unittest.TestCase):
                 "--repo",
                 str(primary),
                 "--branch",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 "--previous-branch",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 "--ship",
                 m001_ship,
                 "--remote-default",
@@ -952,8 +952,8 @@ class PipelineGitTests(unittest.TestCase):
             ):
                 pipeline_git.bind_next_milestone_branch(
                     nested,
-                    "gsd-path/M002",
-                    "gsd-path/M001",
+                    "feature/milestone-002",
+                    "feature/milestone-001",
                     m001_ship,
                     "origin/main",
                     integrated_main,
@@ -998,7 +998,7 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)["status"], "bound")
             self.assertEqual(
                 run_git(primary, "branch", "--show-current").stdout.strip(),
-                "gsd-path/M002",
+                "feature/milestone-002",
             )
             self.assertEqual(
                 run_git(primary, "rev-parse", "HEAD").stdout.strip(),
@@ -1006,11 +1006,11 @@ class PipelineGitTests(unittest.TestCase):
             )
             retired_local = subprocess.run(
                 ["git", "-C", str(primary), "show-ref", "--verify", "--quiet",
-                 "refs/heads/gsd-path/M001"],
+                 "refs/heads/feature/milestone-001"],
                 capture_output=True,
                 encoding="utf-8", errors="replace",
             )
-            self.assertEqual(retired_local.returncode, 1, "gsd-path/M001 not retired")
+            self.assertEqual(retired_local.returncode, 1, "feature/milestone-001 not retired")
             self.assertEqual(
                 run_git(default_checkout, "branch", "--show-current").stdout.strip(),
                 "main",
@@ -1030,17 +1030,17 @@ class PipelineGitTests(unittest.TestCase):
             self.assertIn("stale relative to origin", stale_retry.stderr)
             run_git(origin, "update-ref", "refs/heads/main", integrated_main)
 
-            run_git(primary, "push", "origin", "gsd-path/M002")
+            run_git(primary, "push", "origin", "feature/milestone-002")
             run_git(
                 primary,
                 "update-ref",
                 "-d",
-                "refs/remotes/origin/gsd-path/M002",
+                "refs/remotes/origin/feature/milestone-002",
             )
             collision_retry = subprocess.run(bind_next, capture_output=True, encoding="utf-8", errors="replace")
             self.assertEqual(collision_retry.returncode, 1)
-            self.assertIn("refs/heads/gsd-path/M002 on origin", collision_retry.stderr)
-            run_git(primary, "push", "origin", "--delete", "gsd-path/M002")
+            self.assertIn("refs/heads/feature/milestone-002 on origin", collision_retry.stderr)
+            run_git(primary, "push", "origin", "--delete", "feature/milestone-002")
 
             (primary / "untracked.txt").write_bytes("dirty\n".encode("utf-8"))
             dirty_retry = subprocess.run(bind_next, capture_output=True, encoding="utf-8", errors="replace")
@@ -1061,12 +1061,12 @@ class PipelineGitTests(unittest.TestCase):
             run_git(default_checkout, "commit", "-m", "base")
             run_git(default_checkout, "remote", "add", "origin", str(origin))
             run_git(default_checkout, "push", "-u", "origin", "main")
-            run_git(default_checkout, "worktree", "add", "-b", "gsd-path/M001", str(primary), "main")
+            run_git(default_checkout, "worktree", "add", "-b", "feature/milestone-001", str(primary), "main")
             project = primary / ".project"
             project.mkdir()
             (project / "STATE.md").write_bytes(
                 b"---\npipeline: gsd-path/v2\nproject: demo\nmilestone: first\nphase: shipped\n"
-                b"status: done\nbranch: gsd-path/M001\narchive: .project/archive/001-first/\n"
+                b"status: done\nbranch: feature/milestone-001\narchive: .project/archive/001-first/\n"
                 b"integration_default: pull-request\nintegration: pull-request\n"
                 b"integration_source: default\n---\n\n# Project State\n\n## Log\n"
             )
@@ -1074,7 +1074,7 @@ class PipelineGitTests(unittest.TestCase):
             run_git(primary, "commit", "-m", "ship: M001 — first",
                     "-m", "Archive: .project/archive/001-first/\nReviewed-HEAD: base")
             m001_ship = run_git(primary, "rev-parse", "HEAD").stdout.strip()
-            run_git(primary, "push", "origin", "gsd-path/M001")
+            run_git(primary, "push", "origin", "feature/milestone-001")
 
             # A forge rebase merge: main moved, then the ship commit is replayed onto it.
             (default_checkout / "upstream.txt").write_bytes(b"upstream\n")
@@ -1086,7 +1086,7 @@ class PipelineGitTests(unittest.TestCase):
 
             bind_next = [
                 sys.executable, str(PIPELINE_GIT), "bind-next", "--repo", str(primary),
-                "--branch", "gsd-path/M002", "--previous-branch", "gsd-path/M001",
+                "--branch", "feature/milestone-002", "--previous-branch", "feature/milestone-001",
                 "--ship", m001_ship, "--remote-default", "origin/main",
                 "--base", landing, "--landing", landing,
             ]
@@ -1107,13 +1107,13 @@ class PipelineGitTests(unittest.TestCase):
             result = subprocess.run(bind_next, capture_output=True, encoding="utf-8", errors="replace")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["landing"], landing)
-            self.assertEqual(run_git(primary, "branch", "--show-current").stdout.strip(), "gsd-path/M002")
+            self.assertEqual(run_git(primary, "branch", "--show-current").stdout.strip(), "feature/milestone-002")
             for repo in (primary, origin):
                 retired = subprocess.run(
-                    ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", "refs/heads/gsd-path/M001"],
+                    ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", "refs/heads/feature/milestone-001"],
                     capture_output=True,
                 )
-                self.assertEqual(retired.returncode, 1, f"gsd-path/M001 not retired in {repo}")
+                self.assertEqual(retired.returncode, 1, f"feature/milestone-001 not retired in {repo}")
             # The router re-reads the retired journal and must accept the rebase landing too.
             routed = pipeline_state.route_state(primary)
             self.assertEqual(routed["route"]["action"], "resume-next-handoff", routed)
@@ -1162,7 +1162,7 @@ class PipelineGitTests(unittest.TestCase):
                 "worktree",
                 "add",
                 "-b",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 str(primary),
                 "main",
             )
@@ -1175,7 +1175,7 @@ class PipelineGitTests(unittest.TestCase):
                 "milestone: first\n"
                 "phase: shipped\n"
                 "status: done\n"
-                "branch: gsd-path/M001\n"
+                "branch: feature/milestone-001\n"
                 "archive: .project/archive/001-first/\n"
                 "integration_default: direct\n"
                 "integration: direct\n"
@@ -1185,11 +1185,11 @@ class PipelineGitTests(unittest.TestCase):
             run_git(primary, "add", ".project/STATE.md")
             run_git(primary, "commit", "-m", "ship: M001 — first")
             ship = run_git(primary, "rev-parse", "HEAD").stdout.strip()
-            run_git(primary, "push", "origin", "gsd-path/M001")
-            run_git(main, "merge", "--no-ff", "gsd-path/M001", "-m", "direct merge")
+            run_git(primary, "push", "origin", "feature/milestone-001")
+            run_git(main, "merge", "--no-ff", "feature/milestone-001", "-m", "direct merge")
             landing = run_git(main, "rev-parse", "HEAD").stdout.strip()
             run_git(main, "push", "origin", "main")
-            run_git(main, "push", "origin", "--delete", "gsd-path/M001")
+            run_git(main, "push", "origin", "--delete", "feature/milestone-001")
             tag_message = (
                 "milestone 001-first\n\n"
                 "Mode: pull-request\n"
@@ -1216,9 +1216,9 @@ class PipelineGitTests(unittest.TestCase):
                     "--repo",
                     str(primary),
                     "--branch",
-                    "gsd-path/M002",
+                    "feature/milestone-002",
                     "--previous-branch",
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                     "--ship",
                     ship,
                     "--remote-default",
@@ -1261,18 +1261,18 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)["status"], "bound")
             self.assertEqual(
                 run_git(primary, "branch", "--show-current").stdout.strip(),
-                "gsd-path/M002",
+                "feature/milestone-002",
             )
             self.assertEqual(
                 run_git(primary, "rev-parse", "HEAD").stdout.strip(), landing
             )
             retired_local = subprocess.run(
                 ["git", "-C", str(primary), "show-ref", "--verify", "--quiet",
-                 "refs/heads/gsd-path/M001"],
+                 "refs/heads/feature/milestone-001"],
                 capture_output=True,
                 encoding="utf-8", errors="replace",
             )
-            self.assertEqual(retired_local.returncode, 1, "gsd-path/M001 not retired")
+            self.assertEqual(retired_local.returncode, 1, "feature/milestone-001 not retired")
 
     def test_bind_next_rejects_milestone_tag_that_does_not_prove_state_mode(
         self,
@@ -1312,7 +1312,7 @@ class PipelineGitTests(unittest.TestCase):
                 self.assertIn(expected, result.stderr)
                 self.assertEqual(
                     run_git(primary, "branch", "--show-current").stdout.strip(),
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                 )
 
     def test_bind_next_retires_previous_branch_on_origin(self) -> None:
@@ -1332,7 +1332,7 @@ class PipelineGitTests(unittest.TestCase):
                 "worktree",
                 "add",
                 "-b",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 str(primary),
                 "main",
             )
@@ -1355,11 +1355,11 @@ class PipelineGitTests(unittest.TestCase):
                 default_checkout,
                 "merge",
                 "--no-ff",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 "-m",
-                "integrate: M001 — merge gsd-path/M001 into main",
+                "integrate: M001 — merge feature/milestone-001 into main",
                 "-m",
-                f"Ship: {m001_ship}\nDefault: main\nBranch: gsd-path/M001",
+                f"Ship: {m001_ship}\nDefault: main\nBranch: feature/milestone-001",
             )
             integrated_main = run_git(
                 default_checkout,
@@ -1368,7 +1368,7 @@ class PipelineGitTests(unittest.TestCase):
             ).stdout.strip()
             run_git(default_checkout, "remote", "add", "origin", str(origin))
             run_git(default_checkout, "push", "origin", "main")
-            run_git(primary, "push", "origin", "gsd-path/M001")
+            run_git(primary, "push", "origin", "feature/milestone-001")
 
             bind_next = [
                 sys.executable,
@@ -1377,9 +1377,9 @@ class PipelineGitTests(unittest.TestCase):
                 "--repo",
                 str(primary),
                 "--branch",
-                "gsd-path/M002",
+                "feature/milestone-002",
                 "--previous-branch",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 "--ship",
                 m001_ship,
                 "--remote-default",
@@ -1392,20 +1392,20 @@ class PipelineGitTests(unittest.TestCase):
             run_git(
                 origin,
                 "update-ref",
-                "refs/heads/gsd-path/M001",
+                "refs/heads/feature/milestone-001",
                 integrated_main,
             )
             moved = subprocess.run(bind_next, capture_output=True, encoding="utf-8", errors="replace")
             self.assertEqual(moved.returncode, 1)
-            self.assertIn("origin/gsd-path/M001 moved after ship", moved.stderr)
+            self.assertIn("origin/feature/milestone-001 moved after ship", moved.stderr)
             self.assertEqual(
                 run_git(primary, "branch", "--show-current").stdout.strip(),
-                "gsd-path/M001",
+                "feature/milestone-001",
             )
             run_git(
                 origin,
                 "update-ref",
-                "refs/heads/gsd-path/M001",
+                "refs/heads/feature/milestone-001",
                 m001_ship,
             )
             result = subprocess.run(bind_next, capture_output=True, encoding="utf-8", errors="replace")
@@ -1413,11 +1413,11 @@ class PipelineGitTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 run_git(primary, "branch", "--show-current").stdout.strip(),
-                "gsd-path/M002",
+                "feature/milestone-002",
             )
             for ref in (
-                f"refs/heads/gsd-path/M001",
-                f"refs/remotes/origin/gsd-path/M001",
+                f"refs/heads/feature/milestone-001",
+                f"refs/remotes/origin/feature/milestone-001",
             ):
                 gone = subprocess.run(
                     ["git", "-C", str(primary), "show-ref", "--verify", "--quiet", ref],
@@ -1427,7 +1427,7 @@ class PipelineGitTests(unittest.TestCase):
                 self.assertEqual(gone.returncode, 1, f"{ref} not retired")
             remote_gone = subprocess.run(
                 ["git", "-C", str(origin), "show-ref", "--verify", "--quiet",
-                 "refs/heads/gsd-path/M001"],
+                 "refs/heads/feature/milestone-001"],
                 capture_output=True,
                 encoding="utf-8", errors="replace",
             )
@@ -1447,10 +1447,10 @@ class PipelineGitTests(unittest.TestCase):
             "HEAD abc\n"
             "\n"
             "worktree /tmp/task\n"
-            "branch refs/heads/gsd-path-task/T001\n"
+            "branch refs/heads/chore/task-t001\n"
         )
         worktrees = pipeline_git.branch_worktrees_from_porcelain(output, nul_separated=False)
-        self.assertEqual(set(worktrees), {"main", "gsd-path-task/T001"})
+        self.assertEqual(set(worktrees), {"main", "chore/task-t001"})
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ try:
     from pipeline_git import is_ship_subject, ship_body_matches, ship_commit_body, task_commit_body
     from pipeline_state import _completion_status
     from _common import valid_default_branch
+    import _common
     import members
 except ImportError as error:  # pragma: no cover - broken install
     print(
@@ -36,7 +37,7 @@ ARCHIVE_PREFIX = ".project/archive/"
 GUARD_MARKER = "gsd-path guard"
 INTEGRATE_SUBJECT = re.compile(
     r"^integrate: (?P<milestone>M\d{3,}) — merge "
-    r"(?P<branch>gsd-path/M\d{3,}) into (?P<target>\S+)$"
+    r"(?P<branch>feature/milestone-\d{3,}) into (?P<target>\S+)$"
 )
 ABANDON_SUBJECT = re.compile(
     r"^build: abandon milestone (?P<slug>[a-z0-9][a-z0-9-]*)$"
@@ -48,8 +49,8 @@ ARCHIVE_NAME = re.compile(
     r"^\.project/archive/(?P<number>\d{3,})-(?P<slug>[a-z0-9][a-z0-9-]*)$"
 )
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-BOUND_BRANCH = re.compile(r"^gsd-path/M(?P<number>\d{3,})$")
-TASK_BRANCH_PREFIX = "gsd-path-task/"
+BOUND_BRANCH = re.compile(r"^feature/milestone-(?P<number>\d{3,})$")
+TASK_BRANCH_PREFIX = "chore/task-"
 TASK_SUBJECT = re.compile(r"^(?P<id>[A-Za-z][A-Za-z0-9._-]*): \S.*$")
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 LANDING_HINT = (
@@ -392,7 +393,7 @@ def staged_abandon_target(new_archives, state):
 
     heading = sections[0]
     slug = heading.group("slug")
-    branch = f"gsd-path/{heading.group('milestone')}"
+    branch = f"feature/milestone-{int(heading.group('milestone')[1:]):03d}"
     if (
         slug != archive_match.group("slug")
         or state.get("branch") != branch
@@ -590,9 +591,9 @@ def member_pre_push_violations(lines, role):
             continue
         if member_work is None:
             bound = [ref for ref in subprocess.run(
-                ["git", "for-each-ref", "--format=%(refname)", "refs/heads/gsd-path/"],
+                ["git", "for-each-ref", "--format=%(refname)", "refs/heads/feature/"],
                 capture_output=True, encoding="utf-8", errors="replace", check=True,
-            ).stdout.split() if ref.startswith(f"refs/heads/gsd-path/{project}-")]
+            ).stdout.split() if ref.startswith(f"refs/heads/feature/{_common.branch_slug(project)}-milestone-")]
             member_work = _commits(*bound, *exclude) if bound else set()
         if member_work & _commits(local_sha, *exclude):
             found.append(
@@ -698,14 +699,14 @@ def default_branch():
 
 def is_integration_merge(subject):
     match = INTEGRATE_SUBJECT.fullmatch(subject or "")
-    if not match or match.group("branch") != f"gsd-path/{match.group('milestone')}":
+    if not match or match.group("branch") != f"feature/milestone-{int(match.group('milestone')[1:]):03d}":
         return False
     target = default_branch()
     if match.group("target") != target:
         return False
     branch = current_branch()
     milestone = match.group("milestone")
-    if branch not in {target, f"gsd-path-integrate/{milestone}"}:
+    if branch not in {target, f"chore/integrate-{milestone.lower()}"}:
         return False
     merge_head = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", "MERGE_HEAD^{commit}"],
@@ -778,7 +779,7 @@ def violations(
                 f"{label}: a new archive requires a ship commit, a "
                 "milestone-abandon commit, or an integration merge with the "
                 f"subject 'integrate: {milestone} — merge "
-                f"gsd-path/{milestone} into {target}'"
+                f"feature/milestone-{milestone} into {target}'"
             )
     if is_ship_commit(subject):
         for code, old, new in entries:
@@ -838,7 +839,7 @@ def main(argv):
         # A member follows its coordinator, so its own STATE does not gate commits.
         role = members.member_role(repo_root())
         member = role is not None
-        if member and current_branch().startswith(f"gsd-path/{role['project']}-"):
+        if member and current_branch().startswith(f"feature/{_common.branch_slug(role['project'])}-milestone-"):
             return report([f"direct commits on the member bound branch {current_branch()} are refused; "
                            "member tasks land there through Path"], "commit")
         reason = None if member else closed_milestone_reason()
@@ -882,6 +883,8 @@ def main(argv):
     )
     found.extend(ship_contract_violations(entries, subject, body, new_archives, state))
     found.extend(abandon_contract_violations(subject, body, abandon))
+    if subject is not None and _common.TOOL_ATTRIBUTION_RE.search((subject or "") + "\n" + (body or "")):
+        found.append("commit messages must not contain tool attribution or generated-by disclaimers")
     found.extend(landing)
     return report(found, "commit")
 

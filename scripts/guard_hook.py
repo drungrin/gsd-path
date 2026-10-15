@@ -189,7 +189,7 @@ STATUS_STATE_FIELDS = frozenset(
 STATUS_INTEGRATION_MODES = frozenset({"direct", "pull-request", "external-landing"})
 STATUS_INTEGRATION_SOURCES = frozenset({"default", "milestone"})
 STATUS_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-STATUS_BRANCH = re.compile(r"^gsd-path/M(\d{3,})$")
+STATUS_BRANCH = re.compile(r"^feature/milestone-(\d{3,})$")
 STATUS_ARCHIVE = re.compile(r"^\.project/archive/(\d{3,})-([a-z0-9][a-z0-9-]*)/?$")
 STATUS_TRANSITIONS = {
     "inspect": frozenset({"inspect", "define"}),
@@ -3103,6 +3103,11 @@ def update_ref_deletes(arguments):
 
 
 PATH_OWNED_REF_PREFIXES = (
+    "feature/milestone-",
+    "chore/task-",
+    "chore/verify-",
+    "chore/integrate-",
+    # Protect existing refs created by older pinned runtimes, without creating new ones.
     "gsd-path/",
     "gsd-path-task/",
     "gsd-path-verify/",
@@ -4253,7 +4258,7 @@ def closed_milestone_reason(repo=None):
         ["git", "-C", str(repo), "branch", "--show-current"],
         capture_output=True, encoding="utf-8", errors="replace",
     )
-    if not re.fullmatch(r"gsd-path/M\d{3,}", branch.stdout.strip()):
+    if not re.fullmatch(r"feature/milestone-\d{3,}", branch.stdout.strip()):
         return None
     result = subprocess.run(
         [sys.executable, "-B", str(Path(__file__).with_name("git_guard.py")),

@@ -15,7 +15,7 @@ BASH = _common.find_bash()
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "build_state.py"
-BRANCH = "gsd-path/M001"
+BRANCH = "feature/milestone-001"
 
 
 def run_git(repo: Path, *arguments: str) -> str:
@@ -1101,11 +1101,11 @@ archive: null
         )
         self.assertEqual(self.ready_ids(), ["T004", "T005"])
         # A parallel round leaves the primary task file pending; the task branch shows the dispatch.
-        run_git(self.repo, "branch", "gsd-path-task/T004")
+        run_git(self.repo, "branch", "chore/task-t004")
         self.land_serial("T005", "Unrelated", 2, (), ("four.py",))
 
         self.assertEqual(self.ready_ids(), ["T004"])  # T003's dependency landed, and T003 still waits
-        run_git(self.repo, "branch", "-D", "gsd-path-task/T004")
+        run_git(self.repo, "branch", "-D", "chore/task-t004")
         self.land_serial("T004", "Edits two", 2, (), ("two.py",))
         self.assertEqual(self.ready_ids(), ["T003"])
 

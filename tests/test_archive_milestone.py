@@ -45,7 +45,7 @@ class ArchiveMilestoneTests(unittest.TestCase):
     def git(self, repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return self.run_command("git", *args, cwd=repo)
 
-    def make_repo(self, root: Path, branch: str = "gsd-path/M001", landing: str = "land", acceptance: str = "",
+    def make_repo(self, root: Path, branch: str = "feature/milestone-001", landing: str = "land", acceptance: str = "",
                   supersedes: str = "") -> None:
         self.git(root, "init", "-q", "-b", branch)
         # Finish automatic housekeeping before TemporaryDirectory removes Git objects.
@@ -606,11 +606,11 @@ wave: 1   # inline comment
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
             self.make_repo(repo)
-            switched = self.git(repo, "switch", "-q", "-c", "gsd-path/M002")
+            switched = self.git(repo, "switch", "-q", "-c", "feature/milestone-002")
             self.assertEqual(switched.returncode, 0, switched.stderr)
             state = repo / ".project" / "STATE.md"
             state.write_bytes(
-                state.read_text(encoding="utf-8").replace("branch: gsd-path/M001", "branch: gsd-path/M002").encode("utf-8")
+                state.read_text(encoding="utf-8").replace("branch: feature/milestone-001", "branch: feature/milestone-002").encode("utf-8")
             )
             prepare = self.run_command(
                 sys.executable,
@@ -630,11 +630,11 @@ wave: 1   # inline comment
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
             self.make_repo(repo)
-            switched = self.git(repo, "switch", "-q", "-c", "gsd-path/M002")
+            switched = self.git(repo, "switch", "-q", "-c", "feature/milestone-002")
             self.assertEqual(switched.returncode, 0, switched.stderr)
             state = repo / ".project" / "STATE.md"
             state.write_bytes(
-                state.read_text(encoding="utf-8").replace("branch: gsd-path/M001", "branch: gsd-path/M002").encode("utf-8")
+                state.read_text(encoding="utf-8").replace("branch: feature/milestone-001", "branch: feature/milestone-002").encode("utf-8")
             )
             (repo / ".project" / "archive" / "003-future").mkdir(parents=True)
             before = self.snapshot_worktree(repo)
@@ -659,7 +659,7 @@ wave: 1   # inline comment
         project.mkdir(parents=True)
         (project / "archive").mkdir()
         (project / "STATE.md").write_bytes(
-            b"---\npipeline: gsd-path/v2\nbranch: gsd-path/M002\narchive: null\n---\n"
+            b"---\npipeline: gsd-path/v2\nbranch: feature/milestone-002\narchive: null\n---\n"
         )
         return project
 
@@ -675,7 +675,7 @@ wave: 1   # inline comment
                 milestone="demo",
                 phase="ship",
                 status="active",
-                branch="gsd-path/M002",
+                branch="feature/milestone-002",
                 archive=".project/archive/002-demo",
                 integration_default="direct",
                 integration="direct",
@@ -695,7 +695,7 @@ wave: 1   # inline comment
                 milestone="demo",
                 phase="ship",
                 status="active",
-                branch="gsd-path/M002",
+                branch="feature/milestone-002",
                 archive=None,
                 integration_default="direct",
                 integration="direct",
@@ -715,7 +715,7 @@ wave: 1   # inline comment
                 milestone="demo",
                 phase="ship",
                 status="active",
-                branch="gsd-path/M002",
+                branch="feature/milestone-002",
                 archive=".project/archive/002-demo",
                 integration_default="direct",
                 integration="direct",
@@ -744,7 +744,7 @@ wave: 1   # inline comment
     def test_prepare_rejects_m000_bound_branch_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
-            self.make_repo(repo, branch="gsd-path/M000")
+            self.make_repo(repo, branch="feature/milestone-000")
             before = self.snapshot_worktree(repo)
 
             prepare = self.run_command(
@@ -776,7 +776,7 @@ wave: 1   # inline comment
             self.git(repo, "commit", "-q", "-am", "build: checkpoint blocked build")
             record = json.dumps({
                 "base": self.git(repo, "rev-parse", "HEAD").stdout.strip(),
-                "branch": "gsd-path/M001", "kind": "plan", "source": "build",
+                "branch": "feature/milestone-001", "kind": "plan", "source": "build",
             }, sort_keys=True)
             unnamed += (
                 f"- 2026-08-02 — plan — build recovery: {record}\n"
@@ -2058,7 +2058,7 @@ wave: 1   # inline comment
     def test_validate_rejects_mutation_of_an_older_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
-            self.make_repo(repo, branch="gsd-path/M002")
+            self.make_repo(repo, branch="feature/milestone-002")
             older = repo / ".project" / "archive" / "001-older" / "locked.md"
             older.parent.mkdir(parents=True)
             older.write_bytes("read only\n".encode("utf-8"))
@@ -2213,7 +2213,7 @@ wave: 1   # inline comment
         for status_kind in ("tracked", "untracked", "ignored"):
             with self.subTest(status_kind=status_kind), tempfile.TemporaryDirectory() as temporary_directory:
                 repo = Path(temporary_directory)
-                self.make_repo(repo, branch="gsd-path/M002")
+                self.make_repo(repo, branch="feature/milestone-002")
                 older = repo / ".project" / "archive" / "001-older" / "locked.md"
                 older.parent.mkdir(parents=True)
                 if status_kind == "tracked":
@@ -3651,7 +3651,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             )
             self.assertEqual(validate.returncode, 0, validate.stderr)
 
-    def make_bound_repo(self, root: Path, branch: str = "gsd-path/M001") -> None:
+    def make_bound_repo(self, root: Path, branch: str = "feature/milestone-001") -> None:
         self.make_repo(root)
         baseline = self.git(root, "rev-parse", "HEAD").stdout.strip()
         local_main = self.git(root, "update-ref", "refs/heads/main", baseline)
@@ -3662,12 +3662,12 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"
         )
         self.assertEqual(linked.returncode, 0, linked.stderr)
-        if branch != "gsd-path/M001":
+        if branch != "feature/milestone-001":
             checkout = self.git(root, "checkout", "-q", "-b", branch)
             self.assertEqual(checkout.returncode, 0, checkout.stderr)
         state_path = root / ".project" / "STATE.md"
         state_path.write_bytes(
-            state_path.read_text(encoding="utf-8").replace("branch: gsd-path/M001", f"branch: {branch}").encode("utf-8")
+            state_path.read_text(encoding="utf-8").replace("branch: feature/milestone-001", f"branch: {branch}").encode("utf-8")
         )
 
     def make_publishable_bound_repo(
@@ -3691,11 +3691,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         linked = self.git(root, "remote", "set-head", "origin", "--auto")
         self.assertEqual(linked.returncode, 0, linked.stderr)
-        checkout = self.git(root, "checkout", "-q", "-b", "gsd-path/M001")
+        checkout = self.git(root, "checkout", "-q", "-b", "feature/milestone-001")
         self.assertEqual(checkout.returncode, 0, checkout.stderr)
         state_path = root / ".project" / "STATE.md"
         text = state_path.read_text(encoding="utf-8").replace(
-            f"branch: {default}", "branch: gsd-path/M001"
+            f"branch: {default}", "branch: feature/milestone-001"
         )
         if default != "main":
             # What initialize records for an origin whose default is not main.
@@ -3842,7 +3842,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             "merge_commit_sha": None,
             "base": {"ref": "main"},
             "head": {
-                "ref": "gsd-path/M001",
+                "ref": "feature/milestone-001",
                 "sha": "a" * 40,
                 "repo": {"full_name": "someone/demo"},
             },
@@ -3854,7 +3854,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
         ):
             result = integration.find_pull_request(
                 "open-gsd/demo",
-                "gsd-path/M001",
+                "feature/milestone-001",
                 "b" * 40,
             )
 
@@ -3918,13 +3918,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     "merge_commit_sha": None,
                     "base": {"ref": "main"},
                     "head": {
-                        "ref": "gsd-path/M001",
+                        "ref": "feature/milestone-001",
                         "sha": pulls[0]["head"]["sha"],
                         "repo": {"full_name": "open-gsd/demo"},
                     }
                     if pulls
                     else {
-                        "ref": "gsd-path/M001",
+                        "ref": "feature/milestone-001",
                         "sha": "created-by-github",
                         "repo": {"full_name": "open-gsd/demo"},
                     },
@@ -3945,11 +3945,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             "merge_commit_sha": merge_sha,
             "base": {"ref": "main"},
             "head": {
-                "ref": "gsd-path/M001",
+                "ref": "feature/milestone-001",
                 "sha": ship_sha,
                 "repo": {"full_name": "open-gsd/demo"},
             },
-            "body": integration.PR_CREDIT_LINE,
+            "body": "Reviewed changes.",
         }
 
     def test_external_landing_publishes_bound_branch_and_waits(self) -> None:
@@ -3970,7 +3970,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.assertEqual(result["commit"], ship_sha)
             self.assertEqual(self.git(remote, "rev-parse", "main").stdout.strip(), baseline)
             self.assertEqual(
-                self.git(remote, "rev-parse", "gsd-path/M001").stdout.strip(),
+                self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(),
                 ship_sha,
             )
             self.assertNotEqual(self.git(remote, "show-ref", "--tags", "--quiet").returncode, 0)
@@ -4017,10 +4017,10 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             waiting = integration.integrate(repo, "demo")
             self.assertEqual(waiting["status"], "awaiting-merge")
 
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(repo, archive_name, ship_sha, tag=False)
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/main")
-            self.git(repo, "push", "-q", "origin", "--delete", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "--delete", "feature/milestone-001")
 
             result = integration.integrate(repo, "demo")
 
@@ -4065,7 +4065,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
 
             self.assertEqual(waiting["status"], "awaiting-merge")
             self.assertEqual(
-                waiting["merge_subject"], f"integrate: M001 — merge gsd-path/M001 into {default}"
+                waiting["merge_subject"], f"integrate: M001 — merge feature/milestone-001 into {default}"
             )
             self.assertIn(f"Default: {default}", waiting["merge_body"])
             self.assertEqual(self.git(remote, "rev-parse", f"refs/heads/{default}").stdout.strip(), baseline)
@@ -4081,7 +4081,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 default_branch=default,
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/{default}")
-            self.git(repo, "push", "-q", "origin", "--delete", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "--delete", "feature/milestone-001")
 
             result = integration.integrate(repo, "demo")
 
@@ -4134,7 +4134,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     "merge_commit_sha": None,
                     "base": created_base,
                     "head": {
-                        "ref": "gsd-path/M001",
+                        "ref": "feature/milestone-001",
                         "sha": ship_sha,
                         "repo": {"full_name": "open-gsd/demo"},
                     },
@@ -4157,7 +4157,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.assertIn(f"base={default}", listing)
             post = next(arguments for arguments in requests if "POST" in arguments)
             self.assertIn(
-                f"title=integrate: M001 — merge gsd-path/M001 into {default}", post
+                f"title=integrate: M001 — merge feature/milestone-001 into {default}", post
             )
             self.assertIn(f"base={default}", post)
             body = next(argument for argument in post if argument.startswith("body="))
@@ -4178,7 +4178,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote)
             self.enable_external_landing_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
@@ -4243,7 +4243,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     "merge_commit_sha": None,
                     "base": {"ref": "main"},
                     "head": {
-                        "ref": "gsd-path/M001",
+                        "ref": "feature/milestone-001",
                         "sha": ship_sha,
                         "repo": {"full_name": "open-gsd/demo"},
                     },
@@ -4268,7 +4268,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
 
             self.assertEqual(result["status"], "awaiting-merge")
             self.assertEqual(
-                self.git(remote, "rev-parse", "gsd-path/M001").stdout.strip(),
+                self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(),
                 ship_sha,
             )
             post = next(arguments for arguments in requests if "POST" in arguments)
@@ -4277,10 +4277,10 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 post,
             )
             self.assertIn("base=main", post)
-            self.assertIn("head=gsd-path/M001", post)
+            self.assertIn("head=feature/milestone-001", post)
             body = next(argument for argument in post if argument.startswith("body="))
             self.assertTrue(
-                body.endswith(f"\n\n---\n{integration.PR_CREDIT_LINE}")
+                "Archive:" in body and "prepared with" not in body.lower()
             )
 
     def test_pull_request_integration_waits_without_touching_main(self) -> None:
@@ -4301,11 +4301,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "merge_commit_sha": None,
                 "base": {"ref": "main"},
                 "head": {
-                    "ref": "gsd-path/M001",
+                    "ref": "feature/milestone-001",
                     "sha": ship_sha,
                     "repo": {"full_name": "open-gsd/demo"},
                 },
-                "body": integration.PR_CREDIT_LINE,
+                "body": "Reviewed changes.",
             }
 
             with (
@@ -4326,7 +4326,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.assertEqual(result["pull_request"], open_pull["html_url"])
             self.assertEqual(self.git(remote, "rev-parse", "main").stdout.strip(), baseline)
             self.assertEqual(
-                self.git(remote, "rev-parse", "gsd-path/M001").stdout.strip(),
+                self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(),
                 ship_sha,
             )
             self.assertNotEqual(
@@ -4353,11 +4353,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "merge_commit_sha": None,
                 "base": {"ref": "main"},
                 "head": {
-                    "ref": "gsd-path/M001",
+                    "ref": "feature/milestone-001",
                     "sha": ship_sha,
                     "repo": {"full_name": "open-gsd/demo"},
                 },
-                "body": integration.PR_CREDIT_LINE,
+                "body": "Reviewed changes.",
             }
             competing_pull = {
                 **canonical_pull,
@@ -4432,7 +4432,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
 
             self.assertFalse(any("POST" in arguments for arguments in requests))
             self.assertNotEqual(
-                self.git(remote, "rev-parse", "refs/heads/gsd-path/M001").returncode,
+                self.git(remote, "rev-parse", "refs/heads/feature/milestone-001").returncode,
                 0,
             )
 
@@ -4453,11 +4453,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "merge_commit_sha": None,
                 "base": {"ref": "main"},
                 "head": {
-                    "ref": "gsd-path/M001",
+                    "ref": "feature/milestone-001",
                     "sha": ship_sha,
                     "repo": {"full_name": "someone/demo"},
                 },
-                "body": integration.PR_CREDIT_LINE,
+                "body": "Reviewed changes.",
             }
 
             def github_api(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -4499,7 +4499,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     integration.integrate(repo, "demo")
 
             self.assertNotEqual(
-                self.git(remote, "rev-parse", "refs/heads/gsd-path/M001").returncode,
+                self.git(remote, "rev-parse", "refs/heads/feature/milestone-001").returncode,
                 0,
             )
 
@@ -4524,7 +4524,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     "sha": ship_sha,
                     "repo": {"full_name": "open-gsd/demo"},
                 },
-                "body": integration.PR_CREDIT_LINE,
+                "body": "Reviewed changes.",
             }
             requests = []
 
@@ -4550,7 +4550,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                         "state": "open",
                         "html_url": "https://github.com/open-gsd/demo/pull/8",
                         "head": {
-                            "ref": "gsd-path/M001",
+                            "ref": "feature/milestone-001",
                             "sha": ship_sha,
                             "repo": {"full_name": "open-gsd/demo"},
                         },
@@ -4614,7 +4614,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "merge_commit_sha": None,
                 "base": {"ref": "main"},
                 "head": {
-                    "ref": "gsd-path/M001",
+                    "ref": "feature/milestone-001",
                     "sha": ship_sha,
                     "repo": {"full_name": "open-gsd/demo"},
                 },
@@ -4684,7 +4684,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             patch = next(arguments for arguments in requests if "PATCH" in arguments)
             body = next(argument for argument in patch if argument.startswith("body="))
             self.assertTrue(
-                body.endswith(f"\n\n---\n{integration.PR_CREDIT_LINE}")
+                "Archive:" in body and "prepared with" not in body.lower()
             )
 
     def test_pull_request_integration_rejects_closed_pr_without_editing(self) -> None:
@@ -4704,7 +4704,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "merge_commit_sha": None,
                 "base": {"ref": "main"},
                 "head": {
-                    "ref": "gsd-path/M001",
+                    "ref": "feature/milestone-001",
                     "sha": ship_sha,
                     "repo": {"full_name": "open-gsd/demo"},
                 },
@@ -4765,11 +4765,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "merge_commit_sha": None,
                 "base": {"ref": "main"},
                 "head": {
-                    "ref": "gsd-path/M001",
+                    "ref": "feature/milestone-001",
                     "sha": ship_sha,
                     "repo": {"full_name": "open-gsd/demo"},
                 },
-                "body": integration.PR_CREDIT_LINE,
+                "body": "Reviewed changes.",
             }
 
             def github_api(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -4823,7 +4823,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     integration.integrate(repo, "demo")
 
             self.assertEqual(
-                self.git(remote, "rev-parse", "gsd-path/M001").stdout.strip(),
+                self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(),
                 ship_sha,
             )
             self.assertNotEqual(
@@ -4840,16 +4840,16 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote)
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
                 ship_sha,
                 tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001",
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001",
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/main")
-            self.git(repo, "push", "-q", "origin", "--delete", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "--delete", "feature/milestone-001")
             self.git(repo, "config", "tag.gpgSign", "true")
             pull = self.merged_pull_request(ship_sha, merge_sha)
 
@@ -4908,17 +4908,17 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote, default="master")
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
                 ship_sha,
                 tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001",
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001",
                 default_branch="master",
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/master")
-            self.git(repo, "push", "-q", "origin", "--delete", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "--delete", "feature/milestone-001")
             pull = {**self.merged_pull_request(ship_sha, merge_sha), "base": {"ref": "master"}}
 
             def github():
@@ -4951,13 +4951,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote)
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
                 ship_sha,
                 tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001",
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001",
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/main")
             pull_url = "https://github.com/open-gsd/demo/pull/7"
@@ -4985,11 +4985,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "merge_commit_sha": None,
                 "base": {"ref": "main"},
                 "head": {
-                    "ref": "gsd-path/M001",
+                    "ref": "feature/milestone-001",
                     "sha": ship_sha,
                     "repo": {"full_name": "open-gsd/demo"},
                 },
-                "body": integration.PR_CREDIT_LINE,
+                "body": "Reviewed changes.",
             }
 
             with (
@@ -5020,13 +5020,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
             baseline = self.git(remote, "rev-parse", "main").stdout.strip()
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
                 ship_sha,
                 tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001",
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001",
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/main")
             pull = self.merged_pull_request(ship_sha, merge_sha)
@@ -5077,13 +5077,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote)
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
                 ship_sha,
                 tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001",
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001",
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/main")
             pull = self.merged_pull_request(ship_sha, merge_sha)
@@ -5155,13 +5155,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote)
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
                 ship_sha,
                 tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001",
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001",
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/main")
             pull = self.merged_pull_request(ship_sha, merge_sha)
@@ -5217,13 +5217,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote)
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
                 ship_sha,
                 tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001",
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001",
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/main")
             pull = self.merged_pull_request(ship_sha, merge_sha)
@@ -5303,13 +5303,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote)
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
                 ship_sha,
                 tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001",
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001",
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/main")
             pull = self.merged_pull_request(ship_sha, merge_sha)
@@ -5389,13 +5389,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote)
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             merge_sha = self.integrate_bound(
                 repo,
                 archive_name,
                 ship_sha,
                 tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001",
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001",
             )
             self.git(repo, "push", "-q", "origin", f"{merge_sha}:refs/heads/main")
             pull = self.merged_pull_request(ship_sha, merge_sha)
@@ -5444,7 +5444,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     return subprocess.CompletedProcess(
                         arguments,
                         0,
-                        json.dumps({**pull, "body": integration.PR_CREDIT_LINE}),
+                        json.dumps({**pull, "body": "Reviewed changes."}),
                         "",
                     )
                 return normal_api(*arguments)
@@ -5494,7 +5494,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
         landing = self.git(work, "rev-parse", "HEAD").stdout.strip()
         self.git(repo, "worktree", "remove", "--force", str(work))
         self.git(repo, "push", "-q", "origin", f"{landing}:refs/heads/main")
-        self.git(repo, "push", "-q", "origin", "--delete", "gsd-path/M001")
+        self.git(repo, "push", "-q", "origin", "--delete", "feature/milestone-001")
         return landing
 
     def integrate_rebase_merge(self, *, moved: bool, forge: bool = False) -> None:
@@ -5505,7 +5505,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, root / "origin.git")
             self.enable_pull_request_integration(repo)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            self.git(repo, "push", "-q", "origin", "feature/milestone-001")
             landing = self.rebase_merge(repo, ship_sha, moved=moved, forge=forge)
             self.assertNotEqual(landing, ship_sha)
             pull = self.merged_pull_request(ship_sha, landing)
@@ -5627,7 +5627,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 self.git(remote, "rev-parse", "main").stdout.strip(), merge_sha
             )
             self.assertEqual(
-                self.git(remote, "rev-parse", "gsd-path/M001").stdout.strip(), ship_sha
+                self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(), ship_sha
             )
             self.assertEqual(
                 self.git(
@@ -5642,11 +5642,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "tag",
             )
             self.assertEqual(
-                self.git(repo, "branch", "--list", "gsd-path-integrate/M001").stdout.strip(),
+                self.git(repo, "branch", "--list", "chore/integrate-m001").stdout.strip(),
                 "",
             )
             self.assertNotIn(
-                "refs/heads/gsd-path-integrate/M001",
+                "refs/heads/chore/integrate-m001",
                 self.git(repo, "worktree", "list", "--porcelain").stdout,
             )
             self.assertFalse((repo / ".git" / "origin").exists())
@@ -5685,7 +5685,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             )
             self.assertEqual(
                 self.git(repo, "log", "-1", "--format=%s", merge_sha).stdout.strip(),
-                f"integrate: M001 — merge gsd-path/M001 into {default}",
+                f"integrate: M001 — merge feature/milestone-001 into {default}",
             )
             self.assertIn(
                 f"Default: {default}",
@@ -5704,15 +5704,15 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             # The next milestone binds at the same recorded default branch.
             bound = self.run_command(
                 sys.executable, str(ARCHIVE_SCRIPT.with_name("pipeline_git.py")), "bind-next",
-                "--repo", str(repo), "--branch", "gsd-path/M002",
-                "--previous-branch", "gsd-path/M001", "--ship", ship_sha,
+                "--repo", str(repo), "--branch", "feature/milestone-002",
+                "--previous-branch", "feature/milestone-001", "--ship", ship_sha,
                 "--remote-default", f"origin/{default}", "--base", merge_sha,
                 "--landing", merge_sha,
                 cwd=PROJECT_ROOT,
             )
             self.assertEqual(bound.returncode, 0, bound.stderr)
             self.assertEqual(
-                self.git(repo, "branch", "--show-current").stdout.strip(), "gsd-path/M002"
+                self.git(repo, "branch", "--show-current").stdout.strip(), "feature/milestone-002"
             )
             self.assertEqual(self.git(repo, "rev-parse", "HEAD").stdout.strip(), merge_sha)
             self.assertEqual(pipeline_state.load_state(repo)[0].default_branch, default)
@@ -5745,7 +5745,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             remote = root / "origin.git"
             self.make_publishable_bound_repo(repo, remote)
             archive_name, ship_sha = self.ship_canonical_bound(repo)
-            integration_branch = "gsd-path-integrate/M001"
+            integration_branch = "chore/integrate-m001"
             partial_worktree = root / "partial-integration"
             added = self.git(
                 repo,
@@ -5769,7 +5769,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     f".project/archive/{archive_name}",
                     ship_sha,
                     "main",
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                 ),
                 ship_sha,
             )
@@ -5822,7 +5822,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     "tag",
                 )
                 self.assertNotIn(
-                    "refs/heads/gsd-path-integrate/M001",
+                    "refs/heads/chore/integrate-m001",
                     self.git(repo, "worktree", "list", "--porcelain").stdout,
                 )
                 if rejected_ref == "refs/heads/main":
@@ -5834,7 +5834,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                             remote,
                             "show-ref",
                             "--verify",
-                            "refs/heads/gsd-path/M001",
+                            "refs/heads/feature/milestone-001",
                         ).returncode,
                         0,
                     )
@@ -5843,7 +5843,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                         self.git(remote, "rev-parse", "main").stdout.strip(), baseline
                     )
                     self.assertEqual(
-                        self.git(remote, "rev-parse", "gsd-path/M001").stdout.strip(), ship_sha
+                        self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(), ship_sha
                     )
                     self.assertNotEqual(
                         self.git(remote, "show-ref", "--verify", rejected_ref).returncode,
@@ -5876,7 +5876,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "push",
                 "-q",
                 "origin",
-                f"{ancestor}:refs/heads/gsd-path/M001",
+                f"{ancestor}:refs/heads/feature/milestone-001",
             )
             self.assertEqual(published.returncode, 0, published.stderr)
 
@@ -5888,7 +5888,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.assertIn("moved or collides", first.stderr)
             self.assertIn("moved or collides", retry.stderr)
             self.assertEqual(
-                self.git(remote, "rev-parse", "gsd-path/M001").stdout.strip(),
+                self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(),
                 ancestor,
             )
 
@@ -5938,7 +5938,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.assertIsNotNone(advanced_main)
             self.assertNotEqual(
                 self.git(
-                    remote, "show-ref", "--verify", "refs/heads/gsd-path/M001"
+                    remote, "show-ref", "--verify", "refs/heads/feature/milestone-001"
                 ).returncode,
                 0,
             )
@@ -5996,11 +5996,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.assertEqual(self.git(repo, "rev-parse", "HEAD").stdout.strip(), ship_sha)
             self.assertEqual(self.git(repo, "status", "--porcelain").stdout, "")
             self.assertEqual(
-                self.git(repo, "branch", "--list", "gsd-path-integrate/M001").stdout.strip(),
+                self.git(repo, "branch", "--list", "chore/integrate-m001").stdout.strip(),
                 "",
             )
             self.assertNotIn(
-                "refs/heads/gsd-path-integrate/M001",
+                "refs/heads/chore/integrate-m001",
                 self.git(repo, "worktree", "list", "--porcelain").stdout,
             )
 
@@ -6009,7 +6009,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
         repo: Path,
         archive_name: str,
         merged_sha: str,
-        branch: str = "gsd-path/M001",
+        branch: str = "feature/milestone-001",
         tag: bool = True,
         tag_sha=None,
         update_origin: bool = True,
@@ -6109,8 +6109,8 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             merge_sha = self.integrate_bound(repo, archive_name, ship_sha)
             self.assertEqual(pipeline_state.status_state(repo)["completion"]["status"], "verified")
             self.git(repo, "checkout", "-q", "-b", "feature/ordinary", merge_sha)
-            self.git(repo, "branch", "-D", "gsd-path/M001")
-            self.git(repo, "update-ref", "-d", "refs/remotes/origin/gsd-path/M001")
+            self.git(repo, "branch", "-D", "feature/milestone-001")
+            self.git(repo, "update-ref", "-d", "refs/remotes/origin/feature/milestone-001")
             installed = self.run_command(
                 sys.executable, "-B", str(GIT_GUARD_SCRIPT.with_name("install.py")),
                 "--hooks-init", "--claude", "--project", str(repo), cwd=PROJECT_ROOT)
@@ -6175,7 +6175,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     f".project/archive/{archive_name}",
                     ship_sha,
                     "main",
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                 ),
             ).stdout.strip()
             updated = self.git(
@@ -6234,7 +6234,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             decoy = self.git(repo, "commit", "-q", "-m", "decoy product work")
             self.assertEqual(decoy.returncode, 0, decoy.stderr)
             decoy_sha = self.git(repo, "rev-parse", "HEAD").stdout.strip()
-            back = self.git(repo, "checkout", "-q", "gsd-path/M001")
+            back = self.git(repo, "checkout", "-q", "feature/milestone-001")
             self.assertEqual(back.returncode, 0, back.stderr)
             self.integrate_bound(repo, archive_name, decoy_sha)
 
@@ -6308,7 +6308,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
     def test_validate_integrated_accepts_m00n_subjects(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
-            self.make_bound_repo(repo, branch="gsd-path/M001")
+            self.make_bound_repo(repo, branch="feature/milestone-001")
             archive = self.prepare_archive(repo)
             self.write_manifest(archive)
             self.mark_shipped(repo)
@@ -6329,13 +6329,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 repo,
                 archive.name,
                 ship_sha,
-                branch="gsd-path/M001",
-                subject="integrate: M001 — merge gsd-path/M001 into main",
+                branch="feature/milestone-001",
+                subject="integrate: M001 — merge feature/milestone-001 into main",
                 body=(
                     "Archive: .project/archive/001-demo\n"
                     f"Ship: {ship_sha}\n"
                     "Default: main\n"
-                    "Branch: gsd-path/M001"
+                    "Branch: feature/milestone-001"
                 ),
             )
 
@@ -6348,7 +6348,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
     def test_validate_rejects_canonical_ship_without_required_field_body(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
-            self.make_bound_repo(repo, branch="gsd-path/M001")
+            self.make_bound_repo(repo, branch="feature/milestone-001")
             archive = self.prepare_archive(repo)
             self.write_manifest(archive)
             self.mark_shipped(repo)
@@ -6451,7 +6451,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
-            self.make_bound_repo(repo, branch="gsd-path/M001")
+            self.make_bound_repo(repo, branch="feature/milestone-001")
             archive = self.prepare_archive(repo)
             self.write_manifest(archive)
             self.mark_shipped(repo)
@@ -6474,13 +6474,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 repo,
                 archive.name,
                 ship_sha,
-                branch="gsd-path/M001",
+                branch="feature/milestone-001",
                 subject=pipeline_git.integrate_subject(archive.name, "main"),
                 body=(
                     "Archive: wrong\n"
                     "Ship: wrong\n"
                     "Default: main\n"
-                    "Branch: gsd-path/M001"
+                    "Branch: feature/milestone-001"
                 ),
             )
 
@@ -6514,17 +6514,17 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
     def test_validate_integrated_rejects_bound_branch_as_default(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
-            self.make_bound_repo(repo, branch="gsd-path/M001")
+            self.make_bound_repo(repo, branch="feature/milestone-001")
             archive_name, ship_sha = self.ship_bound(repo)
             pointed = self.git(
-                repo, "update-ref", "refs/remotes/origin/gsd-path/M001", ship_sha
+                repo, "update-ref", "refs/remotes/origin/feature/milestone-001", ship_sha
             )
             self.assertEqual(pointed.returncode, 0, pointed.stderr)
             linked = self.git(
                 repo,
                 "symbolic-ref",
                 "refs/remotes/origin/HEAD",
-                "refs/remotes/origin/gsd-path/M001",
+                "refs/remotes/origin/feature/milestone-001",
             )
             self.assertEqual(linked.returncode, 0, linked.stderr)
 
@@ -6535,7 +6535,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
     def test_validate_integrated_rejects_remote_default_other_than_main(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
-            self.make_bound_repo(repo, branch="gsd-path/M001")
+            self.make_bound_repo(repo, branch="feature/milestone-001")
             default_sha = self.git(
                 repo, "rev-parse", "refs/remotes/origin/main"
             ).stdout.strip()
@@ -6555,13 +6555,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 repo,
                 archive_name,
                 ship_sha,
-                branch="gsd-path/M001",
+                branch="feature/milestone-001",
                 subject=pipeline_git.integrate_subject(archive_name, "master"),
                 body=pipeline_git.integrate_commit_body(
                     f".project/archive/{archive_name}",
                     ship_sha,
                     "master",
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                 ),
                 default_branch="master",
             )
@@ -6592,7 +6592,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
     def test_validate_integrated_rejects_unpublished_bound_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
-            self.make_bound_repo(repo, branch="gsd-path/M001")
+            self.make_bound_repo(repo, branch="feature/milestone-001")
             archive = self.prepare_archive(repo)
             self.write_manifest(archive)
             self.mark_shipped(repo)
@@ -6616,17 +6616,17 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 repo,
                 archive.name,
                 ship_sha,
-                branch="gsd-path/M001",
+                branch="feature/milestone-001",
                 subject=pipeline_git.integrate_subject(archive.name, "main"),
                 body=pipeline_git.integrate_commit_body(
                     f".project/archive/{archive.name}",
                     ship_sha,
                     "main",
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                 ),
             )
             deleted = self.git(
-                repo, "update-ref", "-d", "refs/remotes/origin/gsd-path/M001"
+                repo, "update-ref", "-d", "refs/remotes/origin/feature/milestone-001"
             )
             self.assertEqual(deleted.returncode, 0, deleted.stderr)
 
@@ -6638,7 +6638,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
     def test_validate_integrated_rejects_unpublished_milestone_tag(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
-            self.make_bound_repo(repo, branch="gsd-path/M001")
+            self.make_bound_repo(repo, branch="feature/milestone-001")
             archive = self.prepare_archive(repo)
             self.write_manifest(archive)
             self.mark_shipped(repo)
@@ -6662,13 +6662,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 repo,
                 archive.name,
                 ship_sha,
-                branch="gsd-path/M001",
+                branch="feature/milestone-001",
                 subject=pipeline_git.integrate_subject(archive.name, "main"),
                 body=pipeline_git.integrate_commit_body(
                     f".project/archive/{archive.name}",
                     ship_sha,
                     "main",
-                    "gsd-path/M001",
+                    "feature/milestone-001",
                 ),
             )
             deleted = self.git(
@@ -6743,18 +6743,18 @@ raise SystemExit(archive_milestone.main(["validate", "--repo", sys.argv[1]]))
             self.git(clone, "commit", "-q", "-m", "seed main")
             pushed = self.git(clone, "push", "-q", "-u", "origin", "main")
             self.assertEqual(pushed.returncode, 0, pushed.stderr)
-            self.git(clone, "checkout", "-q", "-b", "gsd-path/M001")
+            self.git(clone, "checkout", "-q", "-b", "feature/milestone-001")
             (clone / "work.txt").write_bytes("work\n".encode("utf-8"))
             self.git(clone, "add", "work.txt")
             self.git(clone, "commit", "-q", "-m", "bound work")
-            self.git(clone, "push", "-q", "-u", "origin", "gsd-path/M001")
+            self.git(clone, "push", "-q", "-u", "origin", "feature/milestone-001")
             defaulted = self.run_command(
                 "git",
                 "--git-dir",
                 str(remote),
                 "symbolic-ref",
                 "HEAD",
-                "refs/heads/gsd-path/M001",
+                "refs/heads/feature/milestone-001",
                 cwd=root,
             )
             self.assertEqual(defaulted.returncode, 0, defaulted.stderr)
@@ -6784,16 +6784,16 @@ raise SystemExit(archive_milestone.main(["validate", "--repo", sys.argv[1]]))
             self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
             self.assertEqual(
                 json.loads(refreshed.stdout)["remote_default"],
-                "origin/gsd-path/M001",
+                "origin/feature/milestone-001",
             )
             self.assertEqual(
                 self.git(clone, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
                 .stdout.strip(),
-                "origin/gsd-path/M001",
+                "origin/feature/milestone-001",
             )
 
     def make_build_repo(self, root: Path, status: str = "blocked") -> None:
-        self.git(root, "init", "-q", "-b", "gsd-path/M001")
+        self.git(root, "init", "-q", "-b", "feature/milestone-001")
         self.git(root, "config", "user.name", "Validation")
         self.git(root, "config", "user.email", "validation@example.invalid")
 
@@ -6808,7 +6808,7 @@ project: demo
 milestone: demo
 phase: build
 status: {status}
-branch: gsd-path/M001
+branch: feature/milestone-001
 archive: null
 ---
 

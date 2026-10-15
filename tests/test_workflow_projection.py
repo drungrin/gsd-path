@@ -74,10 +74,10 @@ class WorkflowProjectionTests(unittest.TestCase):
             fixture.make_publishable_bound_repo(repo, root / "origin.git")
             fixture.enable_pull_request_integration(repo)
             archive, ship = fixture.ship_canonical_bound(repo)
-            pushed = fixture.git(repo, "push", "-q", "origin", "gsd-path/M001")
+            pushed = fixture.git(repo, "push", "-q", "origin", "feature/milestone-001")
             self.assertEqual(pushed.returncode, 0, pushed.stderr)
             merge = fixture.integrate_bound(repo, archive, ship, tag=False,
-                subject="Merge pull request #7 from open-gsd/gsd-path/M001")
+                subject="Merge pull request #7 from open-gsd/feature/milestone-001")
             pushed = fixture.git(repo, "push", "-q", "origin", f"{merge}:refs/heads/main")
             self.assertEqual(pushed.returncode, 0, pushed.stderr)
             pull = fixture.merged_pull_request(ship, merge)
@@ -120,7 +120,7 @@ class WorkflowProjectionTests(unittest.TestCase):
     def test_projection_uses_runtime_state_and_labels_unavailable_facts(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run_git(repo, 'init', '-b', 'gsd-path/M001')
+            run_git(repo, 'init', '-b', 'feature/milestone-001')
             project = repo / '.project'
             project.mkdir()
             (project / 'STATE.md').write_bytes(state_text(phase='build', status='active').encode("utf-8"))

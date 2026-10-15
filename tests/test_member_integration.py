@@ -9,7 +9,7 @@ import tests.test_member_project_verify as member_verify
 
 git = member_verify.git
 ARCHIVE = ".project/archive/001-demo"
-SUBJECT = "integrate: demo M001 — merge gsd-path/demo-M001 into main"
+SUBJECT = "integrate: demo M001 — merge feature/demo-milestone-001 into main"
 TAG = "milestone/demo-001-demo"
 
 
@@ -49,15 +49,15 @@ class MemberIntegrationTests(unittest.TestCase):
         self.assertEqual(git(self.remote, "show", "-s", "--format=%s", merge), SUBJECT)
         self.assertEqual(git(self.remote, "show", "-s", "--format=%b", merge).strip(),
                          f"Archive: {ARCHIVE}\nMember: web\nReviewed-HEAD: {self.member_tip}")
-        self.assertEqual(self.remote_ref("refs/heads/gsd-path/demo-M001"), self.member_tip)
+        self.assertEqual(self.remote_ref("refs/heads/feature/demo-milestone-001"), self.member_tip)
         self.assertEqual(git(self.remote, "cat-file", "-t", f"refs/tags/{TAG}"), "tag")
         self.assertEqual(self.remote_ref(f"refs/tags/{TAG}^{{commit}}"), merge)
         self.assertEqual(result["tag"], TAG)
         tag_object = self.remote_ref(f"refs/tags/{TAG}")
-        for ref, sha in (("refs/heads/gsd-path/demo-M001", self.member_tip),
+        for ref, sha in (("refs/heads/feature/demo-milestone-001", self.member_tip),
                          ("refs/heads/main", merge), (f"refs/tags/{TAG}", tag_object)):
             self.assertTrue(members.authorized(self.member, "demo", "push", ref, sha), ref)
-        self.assertEqual(git(self.member, "branch", "--list", "gsd-path-integrate/*"), "")
+        self.assertEqual(git(self.member, "branch", "--list", "chore/integrate-*"), "")
         self.assertEqual(git(self.member, "worktree", "list", "--porcelain").count("worktree "), 1)
 
     def test_rerun_never_integrates_a_member_twice(self) -> None:
@@ -76,20 +76,20 @@ class MemberIntegrationTests(unittest.TestCase):
         self.assertEqual(self.remote_ref(f"refs/tags/{TAG}^{{commit}}"), first["merge"])
 
     def test_moved_bound_branch_is_refused_before_publishing(self) -> None:
-        with self.assertRaisesRegex(ArchiveError, "gsd-path/demo-M001"):
+        with self.assertRaisesRegex(ArchiveError, "feature/demo-milestone-001"):
             integration.integrate_member(self.root, "web", ARCHIVE, self.main)
         self.assertEqual(self.remote_ref("refs/heads/main"), self.main)
-        self.assertEqual(self.remote_ref("refs/heads/gsd-path/demo-M001"), "")
+        self.assertEqual(self.remote_ref("refs/heads/feature/demo-milestone-001"), "")
 
     def test_moved_remote_bound_branch_blocks(self) -> None:
-        git(self.member, "push", "-q", "origin", "main:refs/heads/gsd-path/demo-M001")
+        git(self.member, "push", "-q", "origin", "main:refs/heads/feature/demo-milestone-001")
         with self.assertRaisesRegex(ArchiveError, "moved"):
             self.integrate()
         self.assertEqual(self.remote_ref("refs/heads/main"), self.main)
 
     def test_stale_unpublished_merge_is_rebuilt_on_the_advanced_main(self) -> None:
         stale = self.root.parent / "stale"
-        git(self.member, "worktree", "add", "-q", "-b", "gsd-path-integrate/demo-M001", str(stale), self.main)
+        git(self.member, "worktree", "add", "-q", "-b", "chore/integrate-demo-m001", str(stale), self.main)
         git(stale, "merge", "-q", "--no-ff", "-m", SUBJECT, "-m",
             f"Archive: {ARCHIVE}\nMember: web\nReviewed-HEAD: {self.member_tip}", self.member_tip)
         stale_merge = git(stale, "rev-parse", "HEAD")
@@ -112,7 +112,7 @@ class MemberIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ArchiveError, "outside Path; user-approved recovery required"):
             self.integrate()
         self.assertEqual(self.remote_ref("refs/heads/main"), self.member_tip)
-        self.assertEqual(self.remote_ref("refs/heads/gsd-path/demo-M001"), "")
+        self.assertEqual(self.remote_ref("refs/heads/feature/demo-milestone-001"), "")
         self.assertEqual(self.remote_ref(f"refs/tags/{TAG}"), "")
 
     def test_merge_success_without_two_parents_cannot_publish(self) -> None:
@@ -131,7 +131,7 @@ class MemberIntegrationTests(unittest.TestCase):
 
     def test_interrupted_branch_at_creation_base_recreates_merge(self) -> None:
         interrupted = self.root.parent / "interrupted"
-        branch = "gsd-path-integrate/demo-M001"
+        branch = "chore/integrate-demo-m001"
         git(self.member, "worktree", "add", "-q", "-b", branch, str(interrupted), self.main)
         git(self.member, "worktree", "remove", str(interrupted))
         result = self.integrate()
@@ -205,7 +205,7 @@ class MasterMemberIntegrationTests(unittest.TestCase):
         self.assertEqual(git(self.remote, "rev-list", "--parents", "-n", "1", merge).split()[1:],
                          [self.main, self.member_tip])
         self.assertEqual(git(self.remote, "show", "-s", "--format=%s", merge),
-                         "integrate: demo M001 — merge gsd-path/demo-M001 into master")
+                         "integrate: demo M001 — merge feature/demo-milestone-001 into master")
         self.assertEqual(self.remote_ref(f"refs/tags/{TAG}^{{commit}}"), merge)
         self.assertEqual(self.remote_ref("refs/heads/main"), "")
         self.assertTrue(members.authorized(self.member, "demo", "push", "refs/heads/master", merge))
@@ -230,13 +230,13 @@ class MasterMemberIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ArchiveError, "member web remote default must be master, got 'main'"):
             self.integrate()
         self.assertEqual(self.remote_ref("refs/heads/master"), self.main)
-        self.assertEqual(self.remote_ref("refs/heads/gsd-path/demo-M001"), "")
+        self.assertEqual(self.remote_ref("refs/heads/feature/demo-milestone-001"), "")
 
     def test_retirement_clears_the_default_branch_push_authorization(self) -> None:
         merge = self.integrate()["merge"]
         integration.retire_member(self.root, "web", ARCHIVE, self.member_tip, merge, TAG)
         self.assertEqual(git(self.member, "for-each-ref", "refs/gsd-path/authorizations/demo/"), "")
-        self.assertEqual(self.remote_ref("refs/heads/gsd-path/demo-M001"), "")
+        self.assertEqual(self.remote_ref("refs/heads/feature/demo-milestone-001"), "")
         self.assertEqual(self.remote_ref("refs/heads/master"), merge)
 
 

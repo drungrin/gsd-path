@@ -50,7 +50,7 @@ def _git_common_dir(root: str) -> Optional[str]:
 
 def _dedupe_rank(root: str) -> Tuple[int, int, str]:
     branch = _git(root, "branch", "--show-current") or ""
-    rank = 0 if re.fullmatch(r"gsd-path/M\d{3,}", branch) else 1
+    rank = 0 if re.fullmatch(r"(?:feature/milestone-|gsd-path/M)\d{3,}", branch) else 1
     if rank and not os.path.isdir(os.path.join(root, ".git")):
         rank = 2
     return (rank, len(root), root)
@@ -61,7 +61,7 @@ def _bound_worktrees(root: str) -> List[str]:
     found = []
     for record in records.split("\0\0"):
         fields = record.split("\0")
-        if not any(re.fullmatch(r"branch refs/heads/gsd-path/M\d{3,}", field) for field in fields):
+        if not any(re.fullmatch(r"branch refs/heads/(?:feature/milestone-|gsd-path/M)\d{3,}", field) for field in fields):
             continue
         for field in fields:
             if field.startswith("worktree "):

@@ -288,7 +288,7 @@ class InstallerTests(unittest.TestCase):
             "milestone: demo\n"
             "phase: ship\n"
             "status: blocked\n"
-            "branch: gsd-path/M001\n"
+            "branch: feature/milestone-001\n"
             "archive: null\n"
             "---\n\n"
             "# Project State\n\n"

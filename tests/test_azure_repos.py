@@ -16,7 +16,7 @@ HEAD = 'a' * 40
 MERGE = 'b' * 40
 
 
-def azure_pull(number=7, branch='gsd-path/M001', base='main', head=HEAD):
+def azure_pull(number=7, branch='feature/milestone-001', base='main', head=HEAD):
     return {'pullRequestId': number, 'status': 'active', 'sourceRefName': f'refs/heads/{branch}',
             'targetRefName': f'refs/heads/{base}', 'description': 'review',
             'repository': {'id': 'repo-id', 'name': REPOSITORY.name,
@@ -104,7 +104,7 @@ class AzurePullMetadataTests(unittest.TestCase):
 
     def test_discovery_reads_exact_live_ref_and_uses_explicit_azure_scope(self):
         self.pull['lastMergeSourceCommit'] = None
-        result = azure_repos.find(REPOSITORY, 'gsd-path/M001', 'main', self.call)
+        result = azure_repos.find(REPOSITORY, 'feature/milestone-001', 'main', self.call)
         self.assertEqual(result['head']['sha'], HEAD)
         self.assertEqual(result['html_url'], HTTPS + '/pullrequest/7')
         first = self.commands[0]
@@ -123,11 +123,11 @@ class AzurePullMetadataTests(unittest.TestCase):
             self.pull = azure_pull()
             change(self.pull)
             with self.subTest(pull=self.pull), self.assertRaises(azure_repos.AzureError):
-                azure_repos.find(REPOSITORY, 'gsd-path/M001', 'main', self.call)
+                azure_repos.find(REPOSITORY, 'feature/milestone-001', 'main', self.call)
         self.pull = azure_pull()
         with mock.patch.object(integration, 'azure_cli_json', side_effect=self.call):
             with self.assertRaisesRegex(ArchiveError, 'ship commit'):
-                integration.find_pull_request(REPOSITORY, 'gsd-path/M001', 'c' * 40)
+                integration.find_pull_request(REPOSITORY, 'feature/milestone-001', 'c' * 40)
 
     def test_completion_requires_actual_user_merge_without_automation_or_policy_bypass(self):
         self.complete()
@@ -152,10 +152,10 @@ class AzurePullMetadataTests(unittest.TestCase):
         def duplicates(*args):
             return [self.pull, dict(self.pull, pullRequestId=8)]
         with self.assertRaisesRegex(azure_repos.AzureError, 'multiple pull requests'):
-            azure_repos.find(REPOSITORY, 'gsd-path/M001', 'main', duplicates)
+            azure_repos.find(REPOSITORY, 'feature/milestone-001', 'main', duplicates)
         for value in (None, {}, 'not-json', [{'pullRequestId': True}]):
             with self.subTest(value=value), self.assertRaises(azure_repos.AzureError):
-                azure_repos.find(REPOSITORY, 'gsd-path/M001', 'main', lambda *args: value)
+                azure_repos.find(REPOSITORY, 'feature/milestone-001', 'main', lambda *args: value)
 
     def test_pagination_keeps_searching_and_rejects_repeated_pages(self):
         unrelated = [azure_pull(number=i, branch='other') for i in range(1, 101)]
@@ -169,10 +169,10 @@ class AzurePullMetadataTests(unittest.TestCase):
             if args[:3] == ('repos', 'pr', 'show'):
                 return wanted
             return self.call(*args)
-        self.assertEqual(azure_repos.find(REPOSITORY, 'gsd-path/M001', 'main', call)['number'], 101)
+        self.assertEqual(azure_repos.find(REPOSITORY, 'feature/milestone-001', 'main', call)['number'], 101)
         self.assertEqual(skips, ['0', '100'])
         with self.assertRaisesRegex(azure_repos.AzureError, 'pagination repeats'):
-            azure_repos.find(REPOSITORY, 'gsd-path/M001', 'main', lambda *args: unrelated)
+            azure_repos.find(REPOSITORY, 'feature/milestone-001', 'main', lambda *args: unrelated)
 
     def test_invalid_metadata_types_raise_a_provider_error(self):
         for field, value in (('status', []), ('pullRequestId', True), ('sourceRefName', 42)):
