@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.0.2**. Upstream package base: **1.6.0**.
+Current fork version: **1.6.0.3**. Upstream package base: **1.6.0**.
 
 ## Version policy
 
@@ -18,6 +18,48 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.0.3 — 2026-10-15
+
+Upstream package base remains `1.6.0`.
+
+### Native Muse review panel family
+
+Implementation:
+[`ef107e70 — extend review panel family detection`](https://github.com/drungrin/gsd-path/commit/ef107e70866588f78b5988be65b46821035d19ef).
+
+- Recognize `muse` as an independent plan and wave review family in named
+  panels and detected rosters. Real Muse model IDs need no alias using
+  another family. Preserve provider-qualified IDs and existing host controls.
+- Cover `muse-spark-1.3`, `muse-spark-1.3-contributor`, the 1.2 variants,
+  `muse-spark-1.1`, and `muse-wonder-1.0` in model-family detection.
+- Prefer Standard over Contributor when both variants of the same Muse
+  version are advertised. Keep explicit assignment overrides available.
+  Preserve the three-family cap, independent-family checks, and inherited
+  canonical reviewer selection.
+- Update panel templates and user configuration examples, and distribute the
+  resolver through the generated skills and packaged runtime.
+
+Model IDs and mode differences were checked against
+[Meta's model catalog](https://dev.meta.ai/docs/models) and
+[pricing-mode documentation](https://dev.meta.ai/docs/pricing-rate-limits)
+on 2026-10-15. Contributor permits training on submitted content; Standard
+does not. Spark 1.3 Standard supports `max` reasoning; Contributor does not.
+
+Validation: 89 focused Python tests and four Node version/install tests passed,
+including real child argument delivery, unchanged inherited primary review,
+named and detected rosters, provider IDs, parent exclusions, unavailable
+families, and plan/wave artifact merging. All 501 generated resources match
+their sources. Package dry run, version/lockfile consistency, whitespace, and
+private-identifier checks passed. No live model inference was performed.
+
+Limits: host-advertised child models determine availability. Version ordering
+does not rank different Muse model lines by capability; use an explicit
+assignment override to choose a line. Existing projects need a runtime update
+to receive the new family, and configuration preferences do not rewrite
+approved milestone contracts.
+
+Upstream status: **not submitted**.
 
 ## 1.6.0.2 — 2026-10-15
 
