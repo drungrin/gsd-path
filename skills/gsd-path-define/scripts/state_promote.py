@@ -343,6 +343,67 @@ def _completed_promotion(
     }
 
 
+def _ruling_rows(text: str) -> dict[str, list[str]]:
+    """Map Queue # to the cells of each `## User rulings` table row."""
+    rows: dict[str, list[str]] = {}
+    in_rulings = False
+    for line in text.splitlines():
+        if line == "## User rulings":
+            in_rulings = True
+            continue
+        if in_rulings and line.startswith("## "):
+            break
+        if in_rulings and line.lstrip().startswith("|"):
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if len(cells) == 4 and cells[0].isdigit():
+                rows[cells[0]] = cells
+    return rows
+
+
+def _superseded_carry_forward(
+    repo: Path,
+    active_state: PipelineState,
+    source: Path,
+    destination: Path,
+) -> bool:
+    """True when active research is only the shipped DOCS-AUDIT carry-forward
+    and the lookahead audit keeps every one of its rulings."""
+    if not active_state.archive or destination.is_symlink() or not destination.is_dir():
+        return False
+    archived = repo / active_state.archive / "research" / "DOCS-AUDIT.md"
+    active = destination / "DOCS-AUDIT.md"
+    lookahead = source / "DOCS-AUDIT.md"
+    entries = [
+        path for path in destination.iterdir() if not state_checkpoint._is_junk_file(path)
+    ]
+    if entries != [active] or any(
+        path.is_symlink() or not path.is_file() for path in (archived, active, lookahead)
+    ):
+        return False
+    carried = active.read_bytes()
+    if carried != archived.read_bytes():
+        return False
+    rulings = _ruling_rows(carried.decode("utf-8"))
+    if not any(cells[3] == "no" for cells in rulings.values()):
+        return False
+    kept = _ruling_rows(lookahead.read_text(encoding="utf-8"))
+    for number, cells in rulings.items():
+        other = kept.get(number)
+        # Plan may record a T### for a pending ruling; nothing else may change.
+        if (
+            other is None
+            or other[:3] != cells[:3]
+            or (
+                other[3] != cells[3]
+                and not (cells[3] == "no" and re.fullmatch(r"T\d{3}", other[3]))
+            )
+        ):
+            raise PipelineStateError(
+                f"lookahead DOCS-AUDIT.md does not keep carry-forward ruling #{number}"
+            )
+    return True
+
+
 def _prepare_promotion(
     repo: Path,
     project: Path,
@@ -475,12 +536,17 @@ def _prepare_promotion(
         raise PipelineStateError("lookahead STATE branch and archive must be null")
 
     tracks: dict[str, str] = {}
+    carry_forward: Optional[str] = None
     for name in PROMOTION_TRACKS:
         source = next_root / name
         destination = project / name
         if source.exists() or source.is_symlink():
             if destination.exists() or destination.is_symlink():
-                raise PipelineStateError(f"promotion destination already exists: {destination}")
+                if name != "research" or not _superseded_carry_forward(
+                    repo, active_state, source, destination
+                ):
+                    raise PipelineStateError(f"promotion destination already exists: {destination}")
+                carry_forward = state_checkpoint._tree_digest(destination)
             tracks[name] = state_checkpoint._tree_digest(source)
     if not tracks:
         raise PipelineStateError("lookahead track has no promotable artifacts")
@@ -507,6 +573,7 @@ def _prepare_promotion(
         "landing": landing,
         "base": base,
         "tracks": tracks,
+        "carry_forward_sha256": carry_forward,
         "residual_sha256": state_checkpoint._tree_digest(next_root, tuple(tracks)),
         "next_state_sha256": state_checkpoint._sha256(next_text),
         "active_state_sha256": state_checkpoint._sha256(active_text),
@@ -559,6 +626,15 @@ def _resume_track_moves(project: Path, journal: dict[str, object], path: Path) -
         destination = project / name
         source_exists = source.exists() or source.is_symlink()
         destination_exists = destination.exists() or destination.is_symlink()
+        carry_forward = journal.get("carry_forward_sha256")
+        if name == "research" and source_exists and destination_exists and carry_forward:
+            if state_checkpoint._tree_digest(destination) != carry_forward:
+                raise PipelineStateError("DOCS-AUDIT carry-forward drifted during promotion")
+            # The archive and the ship commit keep the carry-forward copy.
+            shutil.rmtree(destination)
+            journal["stage"] = "removed:carry-forward"
+            pipeline_state._write_json(path, journal)
+            destination_exists = False
         if source_exists and destination_exists:
             raise PipelineStateError(f"promotion has both source and destination: {name}")
         if not source_exists and not destination_exists:
