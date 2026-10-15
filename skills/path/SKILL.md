@@ -150,6 +150,23 @@ selects a milestone branch.
    Treat its typed JSON as the state; do not parse frontmatter or repair an
    invalid file through model reasoning. A validation failure blocks without
    mutation. In particular, never stamp the marker onto unowned state.
+   One exception has its own helper. If validation reports a legacy bound
+   branch (`gsd-path/M00N`), the runtime was upgraded while a milestone was
+   active. Run `python3 <absolute-bundled-pipeline-state.py> migrate-branch
+   --repo <absolute-root> --dry-run`. Present **Outcome** naming the old and
+   new branch names, **Review** linking STATE.md, and **Next** asking the user
+   to approve the rename. Only after approval, rerun the command without
+   `--dry-run`, then validate again. Never rename the branch or edit STATE.md
+   by hand.
+
+   The helper renames the branch only when every condition holds:
+   - the milestone has not entered build;
+   - no helper journal and no legacy task, verify, or integration branch
+     exists;
+   - neither branch name is on origin.
+
+   Any other case blocks. Finish or abandon that milestone with its pinned
+   runtime instead.
 2. With no STATE.md, run the bundled
    `python3 <absolute-bundled-script> initialize --repo <absolute-root>
    --template <absolute-state-template> --require-git` helper

@@ -130,6 +130,15 @@ SHIPMENT_SCHEMA = "gsd-path/shipment/v1"
 SHIPMENT_JOURNAL_NAME = "gsd-path-shipment.json"
 UNDO_TRANSACTION_SCHEMA = "gsd-path/undo-transaction/v2"
 UNDO_TRANSACTION_NAME = "gsd-path-undo.json"
+BRANCH_MIGRATION_SCHEMA = "gsd-path/branch-migration/v1"
+# Bound branches written by runtimes before conventional branch names.
+LEGACY_BOUND_BRANCH_RE = re.compile(r"^gsd-path/M(\d{3,})$")
+LEGACY_SIDECAR_REF_PREFIXES = (
+    "refs/heads/gsd-path-task/",
+    "refs/heads/gsd-path-verify/",
+    "refs/heads/gsd-path-integrate/",
+)
+BRANCH_MIGRATION_PHASES = ("inspect", "define", "research", "decide", "roadmap", "plan")
 
 CROSS_PHASE_TRANSITIONS = {
     ("inspect", "done", "define", "active"),
@@ -366,6 +375,11 @@ def _validate_state_values(state: PipelineState, label: str) -> None:
             f"{label} has invalid default_branch: {state.default_branch}"
         )
     if state.branch is not None and _bound_branch_number(state.branch) is None:
+        if LEGACY_BOUND_BRANCH_RE.fullmatch(state.branch):
+            raise PipelineStateError(
+                f"{label} has invalid branch: {state.branch} (legacy bound branch; "
+                "before build, preview and run pipeline_state.py migrate-branch)"
+            )
         raise PipelineStateError(f"{label} has invalid branch: {state.branch}")
     archive_match = ARCHIVE_RE.fullmatch(state.archive or "")
     if state.archive is not None and (
@@ -1859,6 +1873,148 @@ def transition_state(
     }
 
 
+def _pipeline_git():
+    if __package__:
+        from . import pipeline_git
+    else:
+        try:
+            import pipeline_git
+        except ImportError:  # pragma: no cover - package import used by tests
+            from scripts import pipeline_git
+    return pipeline_git
+
+
+def _branch_migration_blockers(repo: Path) -> list[str]:
+    """Name every in-flight helper record that still refers to the legacy branch."""
+    blockers = [
+        name
+        for name in (
+            CHECKPOINT_JOURNAL_NAME,
+            SHIPMENT_JOURNAL_NAME,
+            UNDO_TRANSACTION_NAME,
+            "gsd-path-promote-next.json",
+            "gsd-path-abandon.json",
+        )
+        if _git_path(repo, name).exists() or _git_path(repo, name).is_symlink()
+    ]
+    bind_next = _git_path(repo, BIND_NEXT_JOURNAL_DIR)
+    if bind_next.is_dir() and any(bind_next.iterdir()):
+        blockers.append(BIND_NEXT_JOURNAL_DIR)
+    try:
+        if collect_artifact_recoveries(repo):
+            blockers.append("collect-artifact journal")
+    except IsolationError as error:
+        raise PipelineStateError(str(error)) from error
+    refs = _run_git(repo, "for-each-ref", "--format=%(refname)").stdout.splitlines()
+    blockers.extend(
+        ref for ref in refs if ref.startswith(LEGACY_SIDECAR_REF_PREFIXES)
+    )
+    return blockers
+
+
+def migrate_branch(repo: Path, dry_run: bool = False) -> dict[str, object]:
+    """Rename an unpublished legacy bound branch to its conventional name.
+
+    The rename runs before the STATE write, so a rerun after an interruption
+    finds the conventional branch checked out with the legacy name still in
+    STATE and completes the write. Refuses once build starts, while any helper
+    journal or legacy task, verify, or integration ref exists, or when either
+    name is already on origin.
+    """
+    git = _pipeline_git()
+    resolved = _repo_root(repo)
+    project = _track_root(resolved, ".project")
+    path = project / "STATE.md"
+    with _state_lock(project):
+        text = _read_real_file(path, "STATE.md")
+        values = _parse_frontmatter(text, "STATE.md")
+        recorded = values.get("branch", NULL)
+        current = _current_branch(resolved)
+        if _bound_branch_number(recorded) is not None:
+            state = _state_from_text(text)
+            if current != recorded:
+                raise PipelineStateError(
+                    f"STATE.md branch {recorded} is not checked out (current: {current})"
+                )
+            return {
+                "schema": BRANCH_MIGRATION_SCHEMA,
+                "status": "already-migrated",
+                "path": str(path),
+                "branch": recorded,
+                "state": state.json(),
+            }
+        match = LEGACY_BOUND_BRANCH_RE.fullmatch(recorded)
+        if match is None or int(match.group(1)) < 1:
+            raise PipelineStateError(
+                f"STATE.md branch is not a legacy bound branch: {recorded}"
+            )
+        target = git.bound_branch_name(int(match.group(1)))
+        rendered = _append_event(
+            _set_frontmatter(text, {"branch": target}),
+            values.get("phase", ""),
+            f"bound branch renamed from {recorded} to {target}",
+        )
+        state = _state_from_text(rendered)
+        if state.archive is not None or state.phase not in BRANCH_MIGRATION_PHASES:
+            raise PipelineStateError(
+                "legacy bound branch migration is only legal before build; "
+                f"STATE.md is {state.phase}/{state.status}"
+            )
+        blockers = _branch_migration_blockers(resolved)
+        if blockers:
+            raise PipelineStateError(
+                "legacy bound branch migration found in-flight records: " + ", ".join(blockers)
+            )
+        try:
+            published = [
+                name for name in (recorded, target) if git._remote_branch_exists(resolved, name)
+            ]
+            worktrees = git._branch_worktrees(resolved)
+        except git.PipelineGitError as error:
+            raise PipelineStateError(str(error)) from error
+        if published:
+            raise PipelineStateError(
+                "legacy bound branch migration requires unpublished branches; on origin: "
+                + ", ".join(published)
+            )
+        legacy_ref = _optional_rev(resolved, f"refs/heads/{recorded}")
+        target_ref = _optional_rev(resolved, f"refs/heads/{target}")
+        if current == recorded:
+            if target_ref is not None:
+                raise PipelineStateError(f"target branch already exists: refs/heads/{target}")
+            if worktrees.get(recorded) != resolved:
+                raise PipelineStateError("repo is not the registered worktree for the legacy branch")
+            resumed = False
+        elif current == target and legacy_ref is None and worktrees.get(target) == resolved:
+            resumed = True
+        else:
+            raise PipelineStateError(
+                f"current branch must be {recorded} (or {target} after an interrupted rename); "
+                f"found {current}"
+            )
+        if dry_run:
+            return {
+                "schema": BRANCH_MIGRATION_SCHEMA,
+                "status": "preview",
+                "path": str(path),
+                "from": recorded,
+                "to": target,
+                "renamed": resumed,
+            }
+        if not resumed:
+            _run_git(resolved, "branch", "-m", recorded, target)
+        _atomic_write(path, rendered)
+    return {
+        "schema": BRANCH_MIGRATION_SCHEMA,
+        "status": "migrated",
+        "path": str(path),
+        "from": recorded,
+        "to": target,
+        "resumed": resumed,
+        "state": state.json(),
+    }
+
+
 def _lock_build_members(repo: Path) -> None:
     if __package__:
         from scripts import members
@@ -2338,6 +2494,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     shipment.add_argument("--repo", required=True, type=Path)
     shipment.add_argument("--archive", required=True)
     shipment.add_argument("--event", required=True)
+    migrate = subparsers.add_parser(
+        "migrate-branch",
+        help="rename an unpublished legacy gsd-path/M00N bound branch before build",
+    )
+    migrate.add_argument("--repo", required=True, type=Path)
+    migrate.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -2426,6 +2588,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = pre_approve(args.repo, args.grant, args.use)
         elif args.command == "record-shipment":
             result = record_shipment(args.repo, args.archive, args.event)
+        elif args.command == "migrate-branch":
+            result = migrate_branch(args.repo, args.dry_run)
         elif args.command == "configure-integration":
             result = configure_integration(
                 args.repo,
