@@ -71,6 +71,7 @@ else:
 TASK_BRANCH_PREFIX = "chore/task-"
 TASK_AUTHORIZATION_PREFIX = "refs/gsd-path/task-authorizations/"
 VERIFY_BRANCH_PREFIX = "chore/verify-"
+LEGACY_VERIFY_BRANCH_PREFIX = "gsd-path-verify/"
 DISCUSSION_PATHS = frozenset(
     {".project/discuss/DIALOGUE.md", ".project/discuss/ANSWERS.md"}
 )
@@ -415,7 +416,12 @@ def _validated_collect_journal(
     source_worktree = Path(str(journal["source_worktree"]))
     if not source_worktree.is_absolute():
         raise IsolationError("artifact collection source worktree must be absolute")
-    if not str(journal["branch"]).startswith(VERIFY_BRANCH_PREFIX):
+    branch = str(journal["branch"])
+    # A finished record from before conventional branch names is inert history.
+    legacy_complete = (
+        journal.get("stage") == "complete" and branch.startswith(LEGACY_VERIFY_BRANCH_PREFIX)
+    )
+    if not branch.startswith(VERIFY_BRANCH_PREFIX) and not legacy_complete:
         raise IsolationError("artifact collection journal has an invalid verify branch")
     if journal.get("stage") not in {"prepared", "collected", "complete"}:
         raise IsolationError("artifact collection journal has an invalid stage")
