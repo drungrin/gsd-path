@@ -2738,6 +2738,25 @@ class PipelineStateTests(unittest.TestCase):
             self.assertEqual(audit.read_text(encoding="utf-8"), carried)
             self.assertTrue((repo / ".project" / "next" / "research").is_dir())
 
+    def test_promote_next_keeps_a_carry_forward_whose_pending_ruling_becomes_no_task(self) -> None:
+        carried = audit_with_rulings(("1", "fix-doc", "fix it", "no"))
+        for planned in ("done", "n/a (accept-drift)"):
+            with self.subTest(planned=planned), tempfile.TemporaryDirectory() as tmp:
+                changed = audit_with_rulings(("1", "fix-doc", "fix it", planned))
+                repo, integrate = self._promotion_repo(
+                    tmp, drift=False, carry_forward=(carried, changed)
+                )
+
+                with self.assertRaisesRegex(
+                    pipeline_state.PipelineStateError,
+                    "does not keep carry-forward ruling #1",
+                ):
+                    state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+
+                audit = repo / ".project" / "research" / "DOCS-AUDIT.md"
+                self.assertEqual(audit.read_text(encoding="utf-8"), carried)
+                self.assertTrue((repo / ".project" / "next" / "research").is_dir())
+
     def test_promote_next_separates_landing_from_a_later_main_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, landing = self._promotion_repo(tmp, drift=False)

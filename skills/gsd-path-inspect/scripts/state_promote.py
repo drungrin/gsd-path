@@ -390,7 +390,14 @@ def _superseded_carry_forward(
     for number, cells in rulings.items():
         other = kept.get(number)
         # Plan may record a T### for a pending ruling; nothing else may change.
-        if other is None or other[:3] != cells[:3] or cells[3] not in ("no", other[3]):
+        if (
+            other is None
+            or other[:3] != cells[:3]
+            or (
+                other[3] != cells[3]
+                and not (cells[3] == "no" and re.fullmatch(r"T\d{3}", other[3]))
+            )
+        ):
             raise PipelineStateError(
                 f"lookahead DOCS-AUDIT.md does not keep carry-forward ruling #{number}"
             )
