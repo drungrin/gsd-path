@@ -27,7 +27,8 @@ helper: run the bundled copy until the project runtime is upgraded.
 `dispatch_driver.py` and `workflow_run.py` always run from the installed skill
 bundle, because they read role briefs and templates from it; a skill update
 replaces them, a runtime upgrade does not. The driver reloads the helper modules
-that it imports from the selected runtime.
+that it imports from the selected runtime, and runs the subprocess helpers that
+the runtime lists (such as the fix-task brief lint) from it.
 
 With no declaration, retain the legacy helper lookup. An existing
 `.gsd-path/runtime/` requires the explicit `--runtime-migrate --project PATH`

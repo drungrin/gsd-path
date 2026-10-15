@@ -43,6 +43,11 @@ class DispatchPinnedRuntimeInProcessTests(unittest.TestCase):
                 PINNED_MARKER,
             )
             self.assertIn(dispatch_driver.isolation.IsolationError, dispatch_driver.STOP_ERRORS)
+            # Subprocess helpers (the fix-tasks lint) run from the runtime too.
+            self.assertEqual(
+                dispatch_driver.helper_script("check_task_briefs.py"),
+                runtime / "check_task_briefs.py",
+            )
 
     def activate(self, repo: Path, name: str, files: tuple) -> Path:
         runtime = repo / name
