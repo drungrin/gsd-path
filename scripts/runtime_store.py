@@ -21,7 +21,7 @@ RUNTIME_FILES = (
     "isolation.py", "discussion_records.py", "pipeline_git.py", "promote_lookahead.py",
     "detect_project.py", "pipeline_diagnose.py", "pipeline_undo.py", "archive_milestone.py",
     "review_panel.py", "_common.py", "worktree_paths.py", "build_recovery.py",
-    "state_checkpoint.py", "state_promote.py", "discussion_validate.py", "integration.py",
+    "state_checkpoint.py", "state_promote.py", "discussion_validate.py", "integration.py", "azure_repos.py",
     "build_state.py", "lean_verification.py", "check_docs_audit.py",
     "path_config.py", "model_policy.py", "loop_run.py", "members.py",
     "review_findings.py", "task_context.py",

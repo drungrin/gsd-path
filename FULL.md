@@ -322,14 +322,15 @@ approve **Archive and ship**, the archive transaction begins:
 - `MANIFEST.md` records contents and ship metadata
 - One **ship commit** (subject `ship: M00N — <slug>`) touches only `.project/`
 - Ship then either merges `gsd-path/M00N` onto `main` directly or opens a
-  GitHub PR and waits for you to merge it with a merge commit or a rebase
-  merge. Path-created PRs include a GSD Path credit footer.
+  GitHub or Azure Repos PR and waits for you to merge it. GitHub supports a
+  merge commit or a proven rebase merge; Azure requires **Merge (no fast-forward)**.
+  Path-created PRs include a GSD Path credit footer.
 - After the landing validates, Path tags `milestone/<NNN>-<slug>`
 - Archives are **read-only** — guard hooks enforce this if installed
 
 Direct integration is the project default. Before build, ask the router to set
 `pull-request` as the project default or as an override for the current
-milestone. The setting locks when build starts. When origin is not GitHub.com
+milestone. The setting locks when build starts. When origin is neither GitHub.com nor Azure Repos
 and `main` accepts merge requests only, set `external-landing`: Path publishes
 the milestone branch, you merge it in your own forge with the merge message
 that Path returns, and Path then validates the merge and tags it. See

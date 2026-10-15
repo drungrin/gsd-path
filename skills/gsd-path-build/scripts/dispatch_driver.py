@@ -77,6 +77,7 @@ STOP_ERRORS = (DriverStop, isolation.IsolationError, build_state.BuildStateError
                pipeline_state.PipelineStateError, archive_milestone.ArchiveError, model_policy.PolicyError)
 _RUNTIME_ACTIVATION_ORDER = (
     "_common",
+    "azure_repos",
     "roadmap",
     "review_panel",
     "loop_run",

@@ -24,10 +24,11 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 if __package__:
-    from . import _common, pipeline_state
+    from . import _common, pipeline_state, azure_repos
 else:
     import _common
     import pipeline_state
+    import azure_repos
 
 
 MEMBERS_FILE = "MEMBERS.md"
@@ -80,10 +81,11 @@ def _coordinator(repo: Path) -> tuple[Path, pipeline_state.PipelineState]:
     return root, state
 
 
-def _remote_identity(remote: str) -> Optional[tuple[str, str]]:
+def _remote_identity(remote: str) -> Optional[tuple[str, ...]]:
     match = GITHUB_REMOTE_RE.fullmatch(remote)
     if match is None:
-        return None
+        azure = azure_repos.parse_remote(remote)
+        return azure.identity if azure else None
     return match.group(1).lower(), match.group(2).removesuffix(".git").lower()
 
 
@@ -300,8 +302,8 @@ def check_member(
         raise MembersError(f"member has uncommitted changes: {checkout}")
     # The configured URL, not `get-url`, which expands local insteadOf rewrites.
     remote = _git(checkout, "config", "--get", "remote.origin.url")
-    if not GITHUB_REMOTE_RE.fullmatch(remote):
-        raise MembersError(f"member requires a GitHub.com origin: {remote}")
+    if _remote_identity(remote) is None:
+        raise MembersError(f"member requires a GitHub.com origin or Azure Repos origin: {remote}")
     if recorded is not None and remote != recorded["remote"]:
         raise MembersError(f"member origin changed: {recorded['remote']} -> {remote}")
     live = _common.origin_default_branch(checkout)

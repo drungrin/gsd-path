@@ -146,8 +146,10 @@ bundles this file; spawned agents follow their role brief instead.
   owns the integration leg. Direct mode creates and pushes one `--no-ff` merge
   onto `main` with subject
   `integrate: M00N — merge gsd-path/M00N into main`. Pull-request mode creates
-  or reuses one GitHub.com PR and waits for the user to merge it with a merge
-  commit; it never auto-merges. Both modes create one annotated
+  or reuses one GitHub.com or Azure DevOps Services PR and waits for the user
+  to merge it. GitHub uses `gh`; Azure uses `az` with the `azure-devops`
+  extension and requires a no-fast-forward merge without auto-complete or
+  policy bypass. It never auto-merges. Both modes create one annotated
   `milestone/<NNN>-<slug>` tag after merge validation.
   The roadmap and
   plan phases each make exactly one approval checkpoint commit

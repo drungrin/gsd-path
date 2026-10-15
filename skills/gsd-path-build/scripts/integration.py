@@ -11,7 +11,7 @@ import json
 import re
 import contextlib
 from pathlib import Path, PurePosixPath
-from typing import Optional
+from typing import Optional, Union
 
 if __package__:
     from .pipeline_git import (
@@ -63,9 +63,11 @@ else:
 
 if __package__:
     from . import archive_milestone
+    from . import azure_repos
     from .archive_milestone import ArchiveError
 else:
     import archive_milestone
+    import azure_repos
     from archive_milestone import ArchiveError
 
 
@@ -73,6 +75,7 @@ PR_CREDIT_LINE = (
     "PR prepared with [GSD Path](https://github.com/open-gsd/gsd-path)."
 )
 GITHUB_HOST = "github.com"
+PullRequestRepository = Union[str, azure_repos.Repository]
 
 
 run_git = _common.run_git
@@ -575,6 +578,36 @@ def github_repository(project: Path) -> str:
     raise ArchiveError("pull-request integration requires a GitHub.com origin")
 
 
+def pull_request_repository(project: Path) -> PullRequestRepository:
+    """Select the PR provider from the configured origin, never a Git URL rewrite."""
+    remote = archive_milestone.require_git_success(
+        run_git(project, "config", "--get", "remote.origin.url"), "read configured origin URL")
+    azure = azure_repos.parse_remote(remote)
+    if azure is not None:
+        return azure
+    require_github_authentication()
+    return github_repository(project)
+
+
+def azure_cli_json(*arguments: str) -> object:
+    try:
+        result = run_command("az", *arguments, "--output", "json", "--only-show-errors")
+    except OSError as error:
+        raise ArchiveError("Azure pull requests require az with the azure-devops extension") from error
+    output = archive_milestone.require_git_success(result, "Azure DevOps CLI request (az repos)")
+    try:
+        return json.loads(output)
+    except ValueError as error:
+        raise ArchiveError("Azure DevOps CLI returned invalid JSON") from error
+
+
+def azure_call(operation, repository, *arguments):
+    try:
+        return operation(repository, *arguments, azure_cli_json)
+    except azure_repos.AzureError as error:
+        raise ArchiveError(str(error)) from error
+
+
 def require_github_authentication() -> None:
     archive_milestone.require_git_success(
         run_command("gh", "auth", "status", "--hostname", GITHUB_HOST),
@@ -646,36 +679,43 @@ def require_pull_request_pages(value: object) -> list[dict]:
     return [require_pull_request_shape(item) for page in value for item in page]
 
 
-def pull_request_head_matches_repository(pull: dict, repository: str) -> bool:
+def pull_request_head_matches_repository(pull: dict, repository: PullRequestRepository) -> bool:
     head_repository = pull["head"].get("repo")
     full_name = (
         head_repository.get("full_name")
         if isinstance(head_repository, dict)
         else None
     )
-    return isinstance(full_name, str) and full_name.casefold() == repository.casefold()
+    key = repository.key if isinstance(repository, azure_repos.Repository) else repository
+    return isinstance(full_name, str) and full_name.casefold() == key.casefold()
 
 
 def require_pull_request_identity(
-    repository: str,
+    repository: PullRequestRepository,
     pull: dict,
     branch: str,
     ship_commit: str,
     base: str = "main",
 ) -> None:
+    provider = "Azure" if isinstance(repository, azure_repos.Repository) else "GitHub"
     if pull["base"].get("ref") != base:
-        raise ArchiveError(f"GitHub pull request base is not {base}")
+        raise ArchiveError(f"{provider} pull request base is not {base}")
     if pull["head"].get("ref") != branch:
-        raise ArchiveError("GitHub pull request head is not the bound branch")
+        raise ArchiveError(f"{provider} pull request head is not the bound branch")
     if pull["head"].get("sha") != ship_commit:
-        raise ArchiveError("GitHub pull request head is not the ship commit")
+        raise ArchiveError(f"{provider} pull request head is not the ship commit")
     if not pull_request_head_matches_repository(pull, repository):
-        raise ArchiveError("GitHub pull request head repository is not origin")
+        raise ArchiveError(f"{provider} pull request head repository is not origin")
 
 
 def find_pull_request(
-    repository: str, branch: str, ship_commit: str, base: str = "main"
+    repository: PullRequestRepository, branch: str, ship_commit: str, base: str = "main"
 ) -> Optional[dict]:
+    if isinstance(repository, azure_repos.Repository):
+        pull = azure_call(azure_repos.find, repository, branch, base)
+        if pull is not None:
+            require_pull_request_identity(repository, pull, branch, ship_commit, base)
+        return pull
     pulls = require_pull_request_pages(
         github_api_json(
             f"repos/{repository}/pulls",
@@ -720,7 +760,7 @@ def pull_request_body(
 
 
 def update_pull_request_body(
-    repository: str,
+    repository: PullRequestRepository,
     pull: dict,
     archive_path: str,
     ship_commit: str,
@@ -735,6 +775,14 @@ def update_pull_request_body(
     current = pull.get("body")
     if isinstance(current, str) and current.rstrip().endswith(PR_CREDIT_LINE):
         return pull
+    if isinstance(repository, azure_repos.Repository):
+        updated = azure_call(azure_repos.update_body, repository, pull["number"], expected)
+        if updated["number"] != pull["number"]:
+            raise ArchiveError("updated Azure pull request names a different id")
+        require_pull_request_identity(repository, updated, branch, ship_commit, base)
+        if updated.get("body") != expected:
+            raise ArchiveError("updated Azure pull request is missing the credit footer")
+        return updated
     response = github_api_json(
         f"repos/{repository}/pulls/{pull['number']}",
         "--method",
@@ -745,12 +793,12 @@ def update_pull_request_body(
     updated = require_pull_request_shape(response)
     require_pull_request_identity(repository, updated, branch, ship_commit, base)
     if updated.get("body") != expected:
-        raise ArchiveError("updated GitHub pull request is missing the credit footer")
+        raise ArchiveError("updated pull request is missing the credit footer")
     return updated
 
 
 def create_pull_request(
-    repository: str,
+    repository: PullRequestRepository,
     branch: str,
     archive_path: str,
     archive_name: str,
@@ -758,12 +806,22 @@ def create_pull_request(
     base: str = "main",
 ) -> dict:
     body = pull_request_body(archive_path, ship_commit, branch, base)
+    return create_provider_pull_request(repository, branch, base,
+                                        integrate_subject(archive_name, base), body, ship_commit)
+
+
+def create_provider_pull_request(repository: PullRequestRepository, branch: str, base: str, title: str,
+                                 body: str, ship_commit: str) -> dict:
+    if isinstance(repository, azure_repos.Repository):
+        pull = azure_call(azure_repos.create, repository, branch, base, title, body)
+        require_pull_request_identity(repository, pull, branch, ship_commit, base)
+        return pull
     response = github_api_json(
         f"repos/{repository}/pulls",
         "--method",
         "POST",
         "-f",
-        f"title={integrate_subject(archive_name, base)}",
+        f"title={title}",
         "-f",
         f"head={branch}",
         "-f",
@@ -850,7 +908,7 @@ def require_pull_request_merge(
 ) -> None:
     resolved = optional_ref(project, merge_commit)
     if resolved != merge_commit:
-        raise ArchiveError("GitHub merge commit is unavailable after fetch")
+        raise ArchiveError("pull-request merge commit is unavailable after fetch")
     parents = archive_milestone.require_git_success(
         run_git(project, "rev-list", "--parents", "-n", "1", merge_commit),
         "inspect pull-request merge parents",
@@ -877,10 +935,12 @@ def require_pull_request_merge(
 
 
 def require_pull_request_merge_provenance(
-    repository: str,
+    repository: PullRequestRepository,
     number: int,
     merge_commit: Optional[str] = None,
 ) -> None:
+    if isinstance(repository, azure_repos.Repository):
+        return azure_call(azure_repos.require_merge_provenance, repository, number, merge_commit)
     owner, name = repository.split("/", 1)
     query = """query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
@@ -988,8 +1048,7 @@ def integrate_pull_request(
     branch = state.branch
     if branch is None:
         raise ArchiveError("pull-request integration requires a bound branch")
-    require_github_authentication()
-    repository = github_repository(project)
+    repository = pull_request_repository(project)
     base = state.default_branch
     pull = find_pull_request(repository, branch, ship_commit, base)
     if pull is None:
@@ -1004,7 +1063,7 @@ def integrate_pull_request(
         )
     elif pull["merged_at"] is None:
         if pull["state"] != "open":
-            raise ArchiveError("GitHub pull request was closed without merging")
+            raise ArchiveError("pull request was closed without merging")
         pull = update_pull_request_body(
             repository,
             pull,
@@ -1015,7 +1074,7 @@ def integrate_pull_request(
         )
     if pull["merged_at"] is None:
         if pull["state"] != "open":
-            raise ArchiveError("GitHub pull request was closed without merging")
+            raise ArchiveError("pull request was closed without merging")
         publish_bound_branch(project, branch, ship_commit)
         require_pull_request_merge_provenance(repository, pull["number"])
         return {
@@ -1028,7 +1087,7 @@ def integrate_pull_request(
 
     merge_commit = pull["merge_commit_sha"]
     if pull["state"] != "closed" or not isinstance(merge_commit, str):
-        raise ArchiveError("GitHub pull request merge metadata is invalid")
+        raise ArchiveError("pull request merge metadata is invalid")
     require_pull_request_merge_provenance(
         repository,
         pull["number"],
@@ -1466,11 +1525,10 @@ def validate_integrated(
             raise ArchiveError("pull-request milestone tag names the wrong ship commit")
         merge_commit = metadata["Landing"]
         pull_request = metadata["Pull-Request"]
-        require_github_authentication()
-        repository = github_repository(project)
+        repository = pull_request_repository(project)
         pull = find_pull_request(repository, bound_branch, ship_commit, default_name)
         if pull is None:
-            raise ArchiveError("GitHub pull request for the ship commit is missing")
+            raise ArchiveError("pull request for the ship commit is missing")
         if pull["html_url"] != pull_request:
             raise ArchiveError("milestone tag names the wrong pull request")
         if (
@@ -1478,7 +1536,7 @@ def validate_integrated(
             or pull["merged_at"] is None
             or pull["merge_commit_sha"] != merge_commit
         ):
-            raise ArchiveError("GitHub pull request is not merged at the tagged landing")
+            raise ArchiveError("pull request is not merged at the tagged landing")
         require_pull_request_merge_provenance(
             repository,
             pull["number"],
@@ -1846,18 +1904,15 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
     checkout, project, bound, subject, tag_name, default = _member_names(coordinator, member, archive_path)
     body = _member_merge_body(archive_path, member, reviewed_head)
     _require_member_close(checkout, member, bound, reviewed_head, default)
-    require_github_authentication()
-    repository = github_repository(checkout)
+    repository = pull_request_repository(checkout)
     pull = find_pull_request(repository, bound, reviewed_head, default)
     if pull is None or pull["merged_at"] is None:
         if pull is not None and pull["state"] != "open":
             raise ArchiveError(f"member {member} pull request was closed without merging")
         _publish_member_bound(checkout, project, member, bound, reviewed_head)
         if pull is None:
-            pull = require_pull_request_shape(github_api_json(
-                f"repos/{repository}/pulls", "--method", "POST", "-f", f"title={subject}",
-                "-f", f"head={bound}", "-f", f"base={default}", "-f", f"body={body}\n\n---\n{PR_CREDIT_LINE}"))
-            require_pull_request_identity(repository, pull, bound, reviewed_head, default)
+            pull = create_provider_pull_request(repository, bound, default, subject,
+                                                f"{body}\n\n---\n{PR_CREDIT_LINE}", reviewed_head)
         else:
             pull = update_pull_request_body(
                 repository, pull, archive_path, reviewed_head, bound,
@@ -1911,16 +1966,15 @@ def validate_member_integrated(
             run_git(checkout, "rev-parse", f"{tracking}^{{commit}}"), "resolve member tag target")
         if metadata["Landing"] != merge:
             raise ArchiveError(f"member {member} tag {tag_name} names a different landing")
-        require_github_authentication()
-        repository = github_repository(checkout)
+        repository = pull_request_repository(checkout)
         pull = find_pull_request(repository, bound, reviewed_head, default)
         if pull is None:
-            raise ArchiveError(f"member {member} GitHub pull request is missing")
+            raise ArchiveError(f"member {member} pull request is missing")
         if pull["html_url"] != metadata["Pull-Request"]:
             raise ArchiveError(f"member {member} tag {tag_name} names the wrong pull request")
         if (pull["state"] != "closed" or pull["merged_at"] is None
                 or pull["merge_commit_sha"] != merge):
-            raise ArchiveError(f"member {member} GitHub pull request is not merged at the tagged landing")
+            raise ArchiveError(f"member {member} pull request is not merged at the tagged landing")
         require_pull_request_merge_provenance(repository, pull["number"], merge)
         require_pull_request_merge(checkout, merge, reviewed_head, f"origin/{default}")
         require_annotated_tag(

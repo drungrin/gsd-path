@@ -47,3 +47,12 @@ be `main`. `members add` records the default branch of the member one time in
 its `MEMBERS.md` section (`Default branch`); a section without the field means
 `main`. The members and the coordinator may have different default branches.
 A new repository that `members add --create` creates still uses `main`.
+
+**Update 2026-10-15 (Azure Repos):** existing members may use GitHub.com or
+Azure DevOps Services in the same milestone. Azure SSH and HTTPS origins share
+an identity based on organization, decoded project, and repository. Direct
+integration uses Git; pull-request integration uses Azure CLI with the
+`azure-devops` extension and explicitly scoped organization/project/repository.
+It waits for a user-completed no-fast-forward merge, rejects auto-complete and
+policy bypass, and retains the reviewed-HEAD, ancestry, and tag checks.
+New repository creation remains specific to GitHub.

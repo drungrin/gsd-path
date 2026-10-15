@@ -34,6 +34,7 @@
     "scripts/state_promote.py",
     "scripts/discussion_validate.py",
     "scripts/integration.py",
+    "scripts/azure_repos.py",
     "scripts/archive_milestone.py",
     "scripts/bootstrap_repository.py",
     "scripts/members.py",

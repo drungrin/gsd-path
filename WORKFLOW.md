@@ -609,14 +609,18 @@ and requires the remote default to be the recorded
   Path never resolves it automatically. The bound branch and annotated
   `milestone/<NNN>-<slug>` tag are then published, and the temporary worktree
   is removed.
-- `pull-request` requires `gh` authentication for GitHub.com and a GitHub.com
-  origin. Path publishes the exact ship commit and creates or reuses the one
+- `pull-request` uses `gh` for a GitHub.com origin or `az` with the
+  `azure-devops` extension for an Azure DevOps Services origin. Authenticate
+  the matching CLI; SSH authentication for Git alone is insufficient.
+  Path publishes the exact ship commit and creates or reuses the one
   eligible PR to `main` with a GSD Path credit footer. It returns
-  `awaiting-merge` until a human GitHub user merges it with a merge commit or a
-  rebase merge; Path never enables auto-merge or merges the PR. After
+  `awaiting-merge` until the user completes the PR. GitHub accepts a merge
+  commit or a proven rebase merge; Azure requires **Merge (no fast-forward)**
+  and refuses auto-complete and policy bypass. Path never enables auto-merge
+  or merges the PR. After
   validation, Path creates the annotated milestone tag. The [ship contract](skills/gsd-path-ship/SKILL.md)
   owns the candidate, provenance, topology, publication, and recovery rules.
-- `external-landing` is for an origin that is not GitHub.com, such as GitLab,
+- `external-landing` is for an origin without a supported PR adapter, such as GitLab,
   Gitea, or GitHub Enterprise Server, where a merge request is the only route
   to `main`. It needs no forge CLI. Path publishes the bound branch at the
   exact ship commit, does not push `main`, and returns `awaiting-merge` with

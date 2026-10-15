@@ -128,11 +128,13 @@ contain newer changes.
 
 1. Open your project folder in your coding-agent host. Existing repositories
    need Git; GitHub repository creation and pull-request operations also need
-   an authenticated GitHub CLI (`gh`). The default branch of `origin` can have
+   an authenticated GitHub CLI (`gh`). Azure Repos pull requests need Azure CLI
+   (`az`) with the `azure-devops` extension and access to the organization.
+   The default branch of `origin` can have
    any name: Path records it at initialization and ships onto it. This guide
    calls it `main`; see [default branch](WORKFLOW.md#default-branch).
    Pull-request
-   shipping supports GitHub.com only. On GitLab, Gitea, or GitHub Enterprise
+   shipping supports GitHub.com and Azure DevOps Services. On GitLab, Gitea, or GitHub Enterprise
    Server, use the [`external-landing` mode](WORKFLOW.md#integration) when
    the default branch accepts merge requests only.
 2. Start or reload the host session so it discovers the installed skills.
@@ -391,7 +393,8 @@ partial remote/clone/worktree transaction; the default checkout stays clean.
 One project can change several repositories in the same milestone. The
 **coordinator** repo holds `.project/` and runs the pipeline; each other repo
 is a **member** listed in `.project/MEMBERS.md`. A member needs a GitHub.com
-`origin`. Its default branch can have any name, and it can differ from the
+or Azure DevOps Services `origin`; a milestone can contain both providers.
+Its default branch can have any name, and it can differ from the
 default branch of the coordinator and of the other members. See
 [ADR 0002](docs/adr/0002-multi-repo-coordinator.md) for the design.
 
@@ -430,7 +433,34 @@ the field means `main`. See [default branch](WORKFLOW.md#default-branch).
   the member branches.
 - `members.py detect --checkout <path>` reports whether a repo is a member.
 
-Out of scope: submodules, one task across two repos, non-GitHub remotes, and
+Azure Repos members accept SSH and HTTPS URLs, including URL-encoded project
+names, for example:
+
+```text
+git@ssh.dev.azure.com:v3/example-org/Example%20Project/infra-repo
+https://dev.azure.com/example-org/Example%20Project/_git/infra-repo
+```
+
+For `pull-request` integration, install the Azure DevOps extension and sign in
+to the organization (or use your existing `az login` session):
+
+```sh
+az extension add --name azure-devops
+az devops login --organization https://dev.azure.com/example-org
+```
+
+The adapter also supports `AZURE_DEVOPS_EXT_PAT` for automation. Git SSH keys
+authorize Git operations; they do not authenticate `az`. Path passes the
+organization, project, and repository explicitly, so no global Azure defaults
+are required. It opens or reuses the PR and waits for you to complete it with
+**Merge (no fast-forward)**. Auto-complete, policy bypass, squash, and rebase
+are refused. It validates the reviewed source SHA, merge ancestry, and published
+tag before closing the member. `direct` integration uses Git and needs no
+Azure CLI. New repository creation (`members.py add --create`) remains specific
+to GitHub; create an Azure repository separately before adding its checkout.
+
+Out of scope: submodules, one task across two repos, other remote providers,
+Azure DevOps Server, and
 an atomic close across repos.
 
 ## Handoff contract

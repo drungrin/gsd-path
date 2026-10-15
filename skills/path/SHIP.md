@@ -333,17 +333,22 @@ The persisted `STATE.archive` field is the transaction identity.
      after the local merge but rejects the push, a retry may discard and
      rebuild only the unpublished canonical merge and tag under the helper's
      existing recovery checks.
-   - `pull-request` requires `gh` authentication for GitHub.com and a
-     GitHub.com origin. It publishes the exact ship commit, reuses only the
+   - `pull-request` uses `gh` for GitHub.com, or `az` with the `azure-devops`
+     extension for Azure DevOps Services. Require authentication for the
+     matching provider. The helper selects it from the configured origin,
+     including Azure SSH URLs and encoded project names; never substitute
+     GitHub commands for Azure. It publishes the exact ship commit, reuses only the
      single PR from origin's bound branch at that commit or creates one with
      the canonical integration title and body plus the GSD Path credit footer.
      Any competing PR to `main` at the ship commit blocks. While the eligible
      PR is open, the helper returns `status: awaiting-merge`. Present
      **Outcome**, link
      the returned PR as **Review**, and state in **Next** that the user must
-     merge it with GitHub's merge-commit or rebase method. Stop this ship
+     merge it with GitHub's merge-commit or rebase method, or Azure's
+     **Merge (no fast-forward)** method. Azure auto-complete, policy bypass,
+     squash, and rebase are refused. Stop this ship
      invocation; Path never enables auto-merge or merges the PR. On rerun after
-     a human GitHub user merges it, the helper requires the PR head to remain
+     the user merges it, the helper requires the PR head to remain
      the ship commit and its landing to be on `origin/main` first-parent
      history as either a two-parent merge with that ship commit as second
      parent, or a rebase merge: the last of a first-parent run of single-parent
@@ -353,8 +358,10 @@ The persisted `STATE.archive` field is the transaction identity.
      milestone tag containing the PR URL, ship SHA, and landing SHA. A
      milestone that was rebase-merged before this support existed recovers by
      rerunning ship. A closed unmerged PR, squash, merge queue, moved
-     head, duplicate PR, or non-GitHub.com origin blocks. The remote bound
-     branch may be absent after a valid merge because GitHub may auto-delete it.
+     head, duplicate PR, or unsupported origin blocks. Azure completion must
+     identify the closing user and the exact source and merge commits;
+     it cannot use GitHub's rebase exception. The remote bound branch may be
+     absent after a valid merge because the provider may auto-delete it.
    - `external-landing` is for an origin where Path cannot open the review
      itself, such as GitLab, Gitea, or GitHub Enterprise Server. It needs no
      forge CLI. The helper publishes the bound branch at the exact ship commit,

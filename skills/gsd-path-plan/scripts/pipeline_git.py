@@ -25,12 +25,13 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 if __package__:
-    from . import _common
+    from . import _common, azure_repos
 else:
     try:
         import _common
+        import azure_repos
     except ImportError:  # pragma: no cover - package import used by tests
-        from scripts import _common
+        from scripts import _common, azure_repos
 
 
 ARCHIVE_NAME_RE = re.compile(r"^(\d{3,})-([a-z0-9][a-z0-9-]*)$")
@@ -445,10 +446,10 @@ def _require_tag_integration_proof(
         raise PipelineGitError(f"{mode} integration proof is incomplete")
     if fields["Mode"] != mode or fields["Ship"] != ship:
         raise PipelineGitError(f"{mode} integration proof does not match shipped state")
-    if mode == "pull-request" and re.fullmatch(
-        r"https://github\.com/[^/]+/[^/]+/pull/[1-9][0-9]*",
-        fields["Pull-Request"],
-    ) is None:
+    if mode == "pull-request" and not (
+        re.fullmatch(r"https://github\.com/[^/]+/[^/]+/pull/[1-9][0-9]*", fields["Pull-Request"])
+        or azure_repos.valid_pull_request_url(fields["Pull-Request"])
+    ):
         raise PipelineGitError("pull-request integration proof has an invalid PR URL")
     landing = fields["Landing"]
     if re.fullmatch(r"[0-9a-f]{40}", landing) is None:

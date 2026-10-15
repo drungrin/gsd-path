@@ -229,7 +229,8 @@ milestone boundary, never during build or ship. Resolve the bundled
 `scripts/members.py` to an absolute path and use it; never edit MEMBERS.md
 or a member marker by hand.
 
-- To add an existing repository, it needs a GitHub.com `origin`, a clean
+- To add an existing repository, it needs a GitHub.com or Azure DevOps Services
+  `origin`, a clean
   worktree, and no active milestone of its own. Its default branch can have
   any name. Run `git remote set-head origin --auto` in the member first: `add`
   reads the member's local `origin/HEAD` one time and records the name in
@@ -237,6 +238,13 @@ or a member marker by hand.
   for the member name, checkout path, and integration (`direct`,
   `pull-request`, or `default`, which follows the milestone's choice), then run
   `python3 <members.py> add --repo <absolute-root> --name <name> --checkout <path> --integration <mode>`.
+  Azure URLs may use `git@ssh.dev.azure.com:v3/<org>/<project>/<repo>` or
+  `https://dev.azure.com/<org>/<project>/_git/<repo>`; encoded project names
+  are supported. Do not refuse Azure solely because it uses SSH. For an Azure
+  `pull-request` member, require `az` with the `azure-devops` extension and an
+  authenticated organization (`az login`, `az devops login`, or
+  `AZURE_DEVOPS_EXT_PAT`). `direct` needs Git only. Existing GitHub and Azure
+  repositories may participate in the same milestone.
   When `validate` or member close later reports
   `remote default must be <recorded>`, stop and report it; never edit the
   record.
