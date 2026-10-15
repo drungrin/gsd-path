@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.0.4**. Upstream package base: **1.6.0**.
+Current fork version: **1.6.0.5**. Upstream package base: **1.6.0**.
 
 ## Version policy
 
@@ -18,6 +18,35 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.0.5 — 2026-10-15
+
+Upstream package base remains `1.6.0`.
+
+### Completed legacy artifact-collection journals
+
+Implementation:
+[`420d0749 — accept completed legacy artifact collection journals`](https://github.com/drungrin/gsd-path/commit/420d074981d802ec0d26ac1704774d7a6b484d2b).
+
+1.6.0.4 could not read a project upgraded from a runtime that used
+`gsd-path-verify/` branches. If that project had already collected inspection
+artifacts, its completed collection journals failed with "invalid verify
+branch". The failure blocked status, recovery, and `migrate-branch`.
+
+- Treat a completed journal that names a legacy `gsd-path-verify/` branch as
+  inert history.
+- Still refuse an unfinished legacy journal. `migrate-branch` continues to
+  block on it.
+
+Validation:
+- A new regression test proves a completed legacy journal is accepted and an
+  unfinished one is refused.
+- 456 tests across the isolation, state, git, diagnose, dispatch,
+  lean-verification, and full-cycle modules passed.
+- All 501 generated resources match their sources.
+
+Upstream status: **not submitted**. This compatibility applies only to this
+fork's branch names.
 
 ## 1.6.0.4 — 2026-10-15
 
