@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.0.5**. Upstream package base: **1.6.0**.
+Current fork version: **1.6.0.6**. Upstream package base: **1.6.0**.
 
 ## Version policy
 
@@ -18,6 +18,56 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.0.6 — 2026-10-15
+
+Upstream package base remains `1.6.0`.
+
+### Completed inline review publication
+
+Implementation:
+[`8288add3 — publish completed inline review reports`](https://github.com/drungrin/gsd-path/commit/8288add376279ceb3ad466e49fa04339d81c98df).
+
+Claude Code's native subagent system prompt can forbid Markdown report files,
+even for a write-capable reviewer assigned exactly one report. A completed
+review could therefore return inline while file collection failed, causing an
+unnecessary corrective dispatch before the parent manually saved the output.
+
+- Define final-message report transport for native plan panels, wave reviews
+  and lenses, wave panels, final/gap reviews, and finding skeptics. The
+  independent child owns the review; the parent publishes its recorded text.
+- Add `isolation.py stage-review` to extract a completed response directly
+  from the bound child transcript and assignment metadata. Preserve text
+  without adding fences, summaries, provenance, or credits to the report body.
+- Retain a Git-common-directory receipt naming child, assignment, model,
+  message ID, content hash, and parent publication. Support selecting an
+  existing completed report before a later file-only refusal, without
+  repeating the review. Refuse incomplete responses, identity mismatches,
+  stale review bases, unsafe destinations, and unknown content replacements.
+- Add `collect-artifact --expected-source` to bind collection to the captured
+  report hash. Stage success does not validate the report; all existing
+  format, evidence, verdict, and phase gates still apply.
+- Update the host adapter, reviewer brief, plan/build/ship contracts, and
+  generated distributions so a completed inline report is published directly
+  instead of triggering file-publication retries or instruction forensics.
+
+Validation: 680 focused Python cases passed, including 19 publication
+regressions and six existing dispatcher review/panel/skeptic integration
+cases. The Node suite passed 116 tests with one skip. All 501 generated
+resources match their canonical sources. Package dry run, Python 3.9 syntax,
+version/lockfile consistency, whitespace, and private-identifier checks passed.
+The publication tests use synthetic transcripts and real local Git worktrees;
+no live model inference was performed.
+
+Limits: this transport is for native single-report review assignments in
+Claude Code. It requires a completed child's recorded JSONL transcript and
+companion assignment metadata. Other hosts, owner-supplied CLI commands,
+coders, and multi-file planners retain their file-output contracts. Existing
+projects must explicitly update their pinned runtime to receive the helper
+and matching dispatch contracts. No live model inference is required by the
+regression suite.
+
+Upstream status: **not submitted**.
 
 ## 1.6.0.5 — 2026-10-15
 
