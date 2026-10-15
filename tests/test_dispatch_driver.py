@@ -2186,6 +2186,34 @@ class DispatchDriverTests(unittest.TestCase):
         lint_steps = [step for step in receipt["steps"] if step["script"] == "check_task_briefs.py"]
         self.assertEqual([step["exit_code"] for step in lint_steps], [0])
 
+    def test_fix_tasks_lints_with_the_selected_runtime_copy(self) -> None:
+        self.fixture(self.root)
+        self.assertEqual(self.round(self.root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(self.root, "--wait", "60", verdict="blocked")["status"], "blocked")
+        runtime = self.root.parent / "runtime"
+        runtime.mkdir()
+        marker = self.root.parent / "runtime-lint-ran"
+        (runtime / "check_task_briefs.py").write_bytes(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
+            "import sys\nsys.exit(1)\n".encode("utf-8")
+        )
+        options = argparse.Namespace(project_dir=".project", wave=1, cycle=1)
+        with mock.patch.object(dispatch_driver, "_RUNTIME_ROOT", runtime):
+            receipt = dispatch_driver.fix_tasks(self.root, options)
+        self.assertTrue(marker.is_file())
+        self.assertEqual(receipt["blocked"][0]["reason"], "fix task briefs failed lint", receipt)
+
+    def test_helper_json_falls_back_to_the_bundled_helper_the_runtime_lacks(self) -> None:
+        runtime = self.root.parent / "runtime"
+        runtime.mkdir()
+        (runtime / "review_panel.py").write_bytes(b'print(\'{"source": "runtime"}\')\n')
+        receipt: dict = {"steps": []}
+        with mock.patch.object(dispatch_driver, "_RUNTIME_ROOT", runtime):
+            result = dispatch_driver.helper_json(receipt, "review_panel.py", cwd=self.root)
+            self.assertEqual(result["source"], "runtime")
+            bundled = dispatch_driver.helper_script("token_budget.py")
+        self.assertEqual(bundled, Path(dispatch_driver.__file__).resolve().parent / "token_budget.py")
+
     def test_fix_tasks_resumes_after_only_first_batch_was_written(self) -> None:
         root = self.root
         self.fixture(root)
