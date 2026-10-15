@@ -17,7 +17,7 @@ Project verify: `<command that installs dependencies, builds + tests the whole p
                              tokens, or cost (e.g. 2h, 500k tokens). Reaching the
                              cap blocks the wave like an exhausted cycle cap and
                              escalates to the user. none is default. -->
-- review_panel: off      <!-- off | detected | claude,gpt,grok — optional
+- review_panel: off      <!-- off | detected | e.g. gpt,muse — optional
                              cross-model panel. off is default. detected uses
                              advertised host families except the parent, cap 3.
                              Named families are an assertion. Quick lane stays

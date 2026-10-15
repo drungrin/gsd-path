@@ -95,6 +95,17 @@ class PathConfigTests(unittest.TestCase):
         self.cli('reset', 'models.roles.coder.effort')
         self.assertEqual(model_policy.resolve(self.repo, '.project', 'coder', CAPS, {})['selected']['effort'], 'high')
 
+    def test_muse_panel_preference_works_in_user_project_and_bundled_helper(self):
+        self.cli('set', 'review_panel', 'gpt,muse', '--scope', 'user')
+        self.assertEqual(self.cli('show')['settings']['review_panel']['value'], 'gpt,muse')
+        self.cli('set', 'review_panel', 'muse')
+        self.assertEqual(self.cli('show')['settings']['review_panel']['value'], 'muse')
+        helper = ROOT / 'skills/path/scripts/path_config.py'
+        result = subprocess.run([sys.executable, '-B', str(helper), 'validate',
+                                 '--repo', str(self.repo)], capture_output=True,
+                                encoding='utf-8', errors='replace')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     @requires_symlink
     def test_invalid_and_unsafe_writes_leave_files_unchanged(self):
         path = self.profile({'review_panel': 'off'})

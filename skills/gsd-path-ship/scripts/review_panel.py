@@ -31,6 +31,7 @@ KNOWN_FAMILIES = (
     "deepseek",
     "kimi",
     "qwen",
+    "muse",
 )
 FAMILY_ALIASES = {
     "claude": "claude",
@@ -46,6 +47,7 @@ FAMILY_ALIASES = {
     "kimi": "kimi",
     "moonshot": "kimi",
     "qwen": "qwen",
+    "muse": "muse",
 }
 MAX_FAMILIES = 3
 PLAN_LINE = re.compile(
@@ -189,7 +191,16 @@ def version_key(slug: str) -> tuple[int, ...]:
 
 
 def latest_slug(slugs: Sequence[str]) -> str:
-    return max(slugs, key=lambda slug: (version_key(slug), len(slug), slug))
+    def selection_key(slug: str) -> tuple:
+        # Contributor is an alternate data-use mode, not a newer release.
+        # Prefer Standard when both modes of the same Muse version are offered.
+        standard = not (
+            family_of_slug(slug) == "muse"
+            and "contributor" in TOKEN_SPLIT.split(slug.casefold())
+        )
+        return version_key(slug), standard, len(slug), slug
+
+    return max(slugs, key=selection_key)
 
 
 def group_advertised(slugs: Iterable[str]) -> dict[str, list[str]]:

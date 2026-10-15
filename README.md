@@ -410,6 +410,32 @@ attribution while preserving its human-written content. Commit guards reject
 tool-attribution trailers. The supported client settings disable automatic
 commit and PR attribution, including installs without optional guard hooks.
 
+## Review panels
+
+Optional panels add independent model families to plan and wave reviews.
+The family keys are `claude`, `gpt`, `grok`, `composer`, `gemini`, `deepseek`,
+`kimi`, `qwen`, and `muse`. Select at most three, or use `detected` to resolve
+from the host's advertised models. The canonical reviewer keeps its own model
+and verdict authority.
+
+For example, set a future user preference from this source checkout:
+
+```sh
+python3 -B scripts/path_config.py set review_panel gpt,muse --scope user
+```
+
+This preference does not rewrite approved project contracts. After updating a
+project's pinned runtime, use its `.gsd-path/path_config.py` for project
+preferences. The host must advertise the exact child models you want to use.
+
+`muse-spark-1.3` and `muse-spark-1.3-contributor` both resolve to the `muse`
+lane, including provider-qualified IDs. When both are advertised at the same
+version, automatic selection prefers Standard. Contributor mode permits
+training on submitted content; Spark 1.3 Standard also supports `max`
+reasoning, unavailable in Contributor mode. See
+[Meta's model catalog](https://dev.meta.ai/docs/models) and the
+[panel contract](skills/gsd-path/references/reviewer-panel.md).
+
 ## Multi-repo milestones
 
 One project can change several repositories in the same milestone. The

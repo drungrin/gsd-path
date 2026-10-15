@@ -4,7 +4,7 @@
      owns Wave verdict. Kind criterion may be presented to the user when
      Severity is high; preference stays a warning. -->
 
-- Family: <claude | gpt | grok | composer | gemini | deepseek | kimi | qwen>
+- Family: <claude | gpt | grok | composer | gemini | deepseek | kimi | qwen | muse>
 - Model: <exact advertised slug>
 - Depth: <full | adversarial>
 

@@ -171,6 +171,26 @@ class DispatchPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(model_policy.PolicyError, 'inherited model'):
             model_policy.resolve(self.root, '.project', 'coder', caps, {}, first)
 
+    def test_muse_roster_model_reaches_child_and_leaves_primary_reviewer_inherited(self):
+        from scripts import model_policy, path_config
+        self.options.action = 'panel'
+        slug = 'muse-spark-1.3-contributor'
+        self.state.update(family='muse', slug=slug, excluded_families=['claude', 'gpt'])
+        caps = json.loads(self.caps.read_text(encoding='utf-8'))
+        caps['model']['values'] = [slug, 'claude-opus-5.5']
+        caps['inherited_model'] = 'claude-opus-5.5'
+        self.caps.write_text(json.dumps(caps), encoding='utf-8')
+        with mock.patch.object(path_config, 'user_defaults', return_value={}):
+            state, received = self.launch()
+            self.assertEqual(state['slug'], slug)
+            self.assertEqual(received, ['--model', slug])
+            primary = model_policy.resolve(self.root, '.project', 'reviewer', caps, {})
+        self.assertEqual(primary['selected']['model'], 'inherit')
+        self.assertEqual(primary['effective_model'], 'claude-opus-5.5')
+        model_policy.validate_panel(state['model_selection'], 'muse', ['claude', 'gpt'])
+        with self.assertRaises(model_policy.PolicyError):
+            model_policy.validate_panel(state['model_selection'], 'muse', ['muse'])
+
     def test_host_override_explicit_inherit_and_default_hints(self):
         from scripts import model_policy
         self.policy.write_bytes(json.dumps({'roles': {'plan': {'model': 'small', 'effort': 'low'}},

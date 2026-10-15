@@ -85,6 +85,10 @@ class ReviewPanelParseTests(unittest.TestCase):
         parsed = review_panel.parse_review_panel_value("kimi,qwen")
         self.assertEqual(parsed, {"mode": "named", "families": ("kimi", "qwen")})
 
+    def test_muse_is_a_named_panel_family(self) -> None:
+        parsed = review_panel.parse_sources("- review_panel: gpt,muse\n", None)
+        self.assertEqual(parsed["families"], ("gpt", "muse"))
+
     def test_plan_review_panel_enabled(self) -> None:
         self.assertFalse(review_panel.plan_review_panel_enabled("# Plan\n"))
         self.assertFalse(
@@ -178,6 +182,53 @@ class ReviewPanelResolveTests(unittest.TestCase):
         self.assertEqual(review_panel.family_of_slug("composer2-claude"), "claude")
         self.assertEqual(review_panel.family_of_slug("gpt4"), "gpt")
 
+    def test_muse_real_ids_and_provider_prefixes_classify(self) -> None:
+        for slug in (
+            "muse-spark", "muse-spark-1.1", "muse-spark-1.2",
+            "muse-spark-1.2-contributor", "muse-spark-1.3",
+            "muse-spark-1.3-contributor", "meta/muse-spark-1.3",
+            "opencode-go/muse-spark-1.3-contributor#xhigh",
+            "MUSE-SPARK-1.3", "muse-wonder-1.0",
+        ):
+            with self.subTest(slug=slug):
+                self.assertEqual(review_panel.family_of_slug(slug), "muse")
+        self.assertIsNone(review_panel.family_of_slug("meta/llama-4"))
+
+    def test_muse_detected_uses_real_id_and_prefers_standard_at_same_version(self) -> None:
+        resolved = review_panel.resolve_panel(
+            {"mode": "detected", "families": ()},
+            ("muse-spark-1.2", "muse-spark-1.3-contributor", "muse-spark-1.3"),
+            parent_slug="claude-opus-5.5",
+        )
+        self.assertEqual(resolved["selected"], [{"family": "muse", "slug": "muse-spark-1.3"}])
+
+    def test_muse_named_allows_advertised_contributor_and_keeps_family_independence(self) -> None:
+        config = review_panel.parse_review_panel_value("gpt,muse")
+        advertised = ("gpt-6-astra", "muse-spark-1.3-contributor")
+        resolved = review_panel.resolve_panel(config, advertised, parent_family="claude")
+        self.assertEqual(resolved["selected"], [
+            {"family": "gpt", "slug": "gpt-6-astra"},
+            {"family": "muse", "slug": "muse-spark-1.3-contributor"},
+        ])
+        detected = review_panel.resolve_panel(
+            {"mode": "detected", "families": ()}, advertised,
+            parent_slug="muse-spark-1.3", excluded_families=("gpt",),
+        )
+        self.assertEqual(detected["status"], "skipped")
+        with self.assertRaises(review_panel.ReviewPanelError):
+            review_panel.resolve_panel(config, advertised, excluded_families=("muse",))
+        with self.assertRaises(review_panel.ReviewPanelError):
+            review_panel.resolve_panel(config, ("gpt-6-astra",))
+
+    def test_muse_version_precedes_mode_preference_and_provider_id_is_preserved(self) -> None:
+        selected = review_panel.latest_slug(("muse-spark-1.2", "muse-spark-1.3-contributor"))
+        self.assertEqual(selected, "muse-spark-1.3-contributor")
+        resolved = review_panel.resolve_panel(
+            review_panel.parse_review_panel_value("muse"),
+            ("opencode-go/muse-spark-1.3-contributor#xhigh", "meta/muse-spark-1.3#xhigh"),
+        )
+        self.assertEqual(resolved["selected"], [{"family": "muse", "slug": "meta/muse-spark-1.3#xhigh"}])
+
     def test_detected_caps_new_families_in_known_order(self) -> None:
         resolved = review_panel.resolve_panel(
             {"mode": "detected", "families": ()},
@@ -211,6 +262,18 @@ class ReviewPanelMergeTests(unittest.TestCase):
         path = directory / name
         path.write_bytes(content.encode("utf-8"))
         return path
+
+    def test_muse_artifacts_merge_for_plan_and_wave_reviews(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for kind in ("plan", "wave"):
+                with self.subTest(kind=kind):
+                    source = self.write(root, f"{kind}-muse.md", family_artifact(
+                        "muse", "muse-spark-1.3-contributor", "- none\n", kind))
+                    output = root / f"{kind}-panel.md"
+                    result = review_panel.merge_artifacts(kind, (source,), output, ())
+                    self.assertEqual(result["conflicts"], 0)
+                    self.assertIn("- Family: muse", output.read_text(encoding="utf-8"))
 
     def test_agreeing_families_with_different_wording_are_not_a_conflict(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
