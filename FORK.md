@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.0.1**. Upstream package base: **1.6.0**.
+Current fork version: **1.6.0.2**. Upstream package base: **1.6.0**.
 
 ## Version policy
 
@@ -18,6 +18,45 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.0.2 — 2026-10-15
+
+Upstream package base remains `1.6.0`.
+
+### Conventional branches and change-only Git metadata
+
+Implementation:
+[`f01f0662 — use conventional branches and remove attribution`](https://github.com/drungrin/gsd-path/commit/f01f06625729bcc05e3807c397b50550ad78cffd).
+
+- Replace framework-named milestone, member, task, verification, and integration
+  branches with lowercase Conventional Branch names using purpose prefixes.
+  Update routing, binding, guards, recovery, and integration as one contract.
+- Normalize branch descriptions separately from task identifiers. Preserve
+  authorization and landing checks, including retained-branch recovery.
+- Create GitHub and Azure PRs without credits or generated-by footers. Remove
+  existing tool attribution on reuse without discarding human-written content.
+- Reject tool-attribution commit trailers and disable client-added commit/PR
+  credits and session links, with or without optional guard hooks. Member
+  worktrees inherit the same attribution policy.
+- Record the no-attribution requirement in the fork rules and phase contracts.
+- Recognize conventional milestone branches in dashboard discovery while still
+  reading branches from older pinned runtimes. Update the displayed examples.
+- Keep upstream npm publication tests on a synthetic SemVer release rather
+  than deriving that fixture from the fork's four-component source version.
+
+Validation: all 127 Python test modules were exercised, totaling 2,904 cases
+with 39 platform skips. The only remaining stale worktree-path expectation was
+corrected, and all nine tests in that module passed on rerun. The Node suite
+passed 116 tests with one skip. All 501 generated resources match their
+canonical sources. Package dry run, version/lockfile consistency, whitespace,
+and private-identifier checks passed. Provider tests use local Git repositories
+and simulated API responses; no live PR was created.
+
+The new branch contract applies to the updated runtime. Existing projects keep
+using their pinned runtime until explicitly upgraded; finish an active milestone
+before upgrading rather than renaming its branches or rewriting its archives.
+
+Upstream status: **not submitted**.
 
 ## 1.6.0.1 — 2026-10-15
 
