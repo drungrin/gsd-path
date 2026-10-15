@@ -1,5 +1,8 @@
 # GSD Path — Release
 
+Fork deliveries use the separate version policy and history in [FORK.md](FORK.md).
+The npm release automation below is the upstream workflow and assumes SemVer.
+
 This document describes the automated CI and release cycles for the source
 repository. Consumer projects use GSD Path through install/update flows
 documented in [DOCS.md](DOCS.md); this file is for maintainers.

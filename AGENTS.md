@@ -210,3 +210,29 @@ scripts/sync_skill_resources.py` after editing a canonical source. Sync
 overwrites divergent generated copies and warns when a divergent copy is
 newer than its canonical source (the wrong-direction-edit signature); treat
 that warning as a lost edit and re-apply it to the canonical path.
+
+## Fork-specific rules
+
+These rules belong to this fork and are separate from the upstream GSD Path
+operating rules above.
+
+- The fork uses `X.Y.Z.N` versions. `X.Y.Z` is the version of the upstream
+  source most recently synchronized into the fork; local changes never bump
+  those three components. `N` is this fork's revision and increases for each
+  fork release. Never reset or decrement `N`, including after an upstream sync.
+  For example: `1.6.0.1`, `1.6.0.2`, then `1.7.0.3` after synchronizing
+  upstream `1.7.0`.
+- Keep `package.json`, both root version fields in `package-lock.json`, the
+  README fork notice, and `FORK.md` consistent. Do not change the separately
+  versioned desktop app or rewrite historical upstream release evidence.
+  Update fork revision metadata directly: upstream `npm version` and
+  `release:bump` assume three-component SemVer and must not decide fork bumps.
+- Maintain `FORK.md` as the history of differences from upstream. Every fork
+  delivery records its fork version, upstream base, behavior changes, relevant
+  implementation commit links, validation, and known limits. Record upstream
+  submission or merge links when they exist, so changes can later be
+  contributed without including unrelated fork bookkeeping. Never invent a
+  commit hash or claim an upstream submission that did not happen.
+- Tests, fixtures, and documentation use synthetic organizations, projects,
+  repository names, and accounts. Never copy private identifiers, credentials,
+  or personal filesystem paths from a user example into tracked files.

@@ -1,5 +1,8 @@
 # GSD Path
 
+**Fork version: 1.6.0.1** · upstream base: **1.6.0**.
+See [FORK.md](FORK.md) for fork changes, implementation commits, and version policy.
+
 A disk-backed project pipeline for AI coding agents. It turns a raw idea into
 shipped code through gated phases — inspect, define, research, decide,
 roadmap, plan, build, and ship — with every handoff written to `.project/`
