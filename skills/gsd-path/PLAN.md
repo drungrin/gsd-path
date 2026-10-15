@@ -229,8 +229,10 @@ as stated in Lookahead mode.
      with logical task name `review_plan_panel_<family>`, the reviewer role
      in plan-panel mode, the plan-panel template, and the exact helper-returned
      model slug through the dispatch model-policy contract. Planner choices
-     use that same contract. Each child stages its family file under a
-     disposable root; the parent validates and copies those files, removes
+     use that same contract. Each family report is staged under its disposable
+     root using the host's publication contract (native Claude returns the
+     complete report inline and the parent uses `isolation.py stage-review`).
+     The parent validates and copies those files, removes
      any stale `<track>/review/PLAN-PANEL.skipped.json`, then runs
      `python3 <absolute review_panel.py> merge --kind plan --inputs <family
      files> --output <absolute <track>/review/PLAN-PANEL.md> --mode

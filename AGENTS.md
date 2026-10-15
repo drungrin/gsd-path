@@ -34,6 +34,14 @@ The project gap is always a view of its recorded command result.
 Do not repeat a proven claim or write another narrative of the same evidence.
 Verification effort follows uncovered contract claims and actual integration
 risk; code line counts and token ratios are observations, never scope targets.
+Native Claude single-report review assignments return complete Markdown in
+their final assistant message. The parent publishes the exact recorded text
+with `isolation.py stage-review`, preserves its provenance receipt outside
+`.project/`, and runs the existing gates and collection. The reviewer still
+authors the findings and verdicts. Never redispatch a completed report only
+to obtain a file, rewrite its content during publication, or use partial text
+from a failed, cancelled, or still-active child. Other hosts, coder outputs,
+and multi-file task artifacts keep their existing file contracts.
 A task Verify must not copy the project command unless an
 owned success criterion names it. Any other task Verify must name a path
 from that task's `files`. INTENT constraints about not running the

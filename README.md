@@ -418,6 +418,12 @@ The family keys are `claude`, `gpt`, `grok`, `composer`, `gemini`, `deepseek`,
 from the host's advertised models. The canonical reviewer keeps its own model
 and verdict authority.
 
+For native Claude reviews, the child returns the complete Markdown report in
+its final message. The parent stages the exact recorded text with provenance,
+then runs the existing validation and collection gates. A completed inline
+review does not need another dispatch just to create a file. See the
+[Claude publication contract](platforms/claude/dispatch.md#native-review-report-publication).
+
 For example, set a future user preference from this source checkout:
 
 ```sh

@@ -112,7 +112,10 @@ so the position is unchanged. Then:
    <absolute primary> --base <HEAD> --name review-gap-<number>` and supply the
    returned path.
    Review commands and staged outputs run only there, never in the primary
-   worktree. For every returned artifact, substitute its returned worktree,
+   worktree. For native Claude reviewers, use the host's final-message
+   publication contract and `isolation.py stage-review` to stage the exact
+   completed report before the normal gates and collection. Do not redispatch
+   a completed review just to request a report file. For every returned artifact, substitute its returned worktree,
    branch, and assigned `.project/review/...` path into `python3 <absolute isolation.py> collect-artifact --repo <primary>
    --source <worktree> --base <HEAD> --branch <branch> --source-path <assigned path>
    --destination-path <assigned path>`. If replacing an admitted stale output,

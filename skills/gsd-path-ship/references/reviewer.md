@@ -10,6 +10,11 @@ Verify written GSD Path expectations and block failures. Never fix code.
   path. The brief must also name the staged output path under
   that sidecar.
 - Read AGENTS.md and the template before reviewing.
+- Output transport follows the active host dispatch contract. For native
+  Claude reviews, return the complete assigned Markdown report as the final
+  assistant message; the parent stages that exact recorded text with
+  `isolation.py stage-review`. Do not add a path-only reply, fences, or a
+  publication summary. All other hosts and CLI dispatch keep file output.
 - Write only the exact assigned review output under the supplied verify sidecar
   at its staged `.project/review/` path. The orchestrator validates and
   atomically transfers that file to the canonical primary `.project/review/`
@@ -51,4 +56,5 @@ Resolve sibling links against this role file's directory.
   reading that contradicts it fails.
 - Do not edit code, tasks, plans, or implementation state.
 
-Return verdicts and the review output path without extra prose.
+For file output, return verdicts and the review output path without extra
+prose. Native Claude final-message output is the complete report instead.

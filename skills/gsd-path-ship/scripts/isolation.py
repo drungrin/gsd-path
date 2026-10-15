@@ -3711,6 +3711,114 @@ def _failed_task_branch_proof_error(
         repo, branch_commit, body, task_file, base, None
     )
     return proof_error
+
+
+def stage_review(
+    primary: Path, source: Path, base: str, branch: str, source_path: str,
+    transcript: Path, assignment: str, agent_id: str, model: str,
+    message_id: Optional[str] = None, expected_source: Optional[str] = None,
+) -> Dict[str, object]:
+    """Publish a completed native review message verbatim; validation still follows."""
+    primary = require_directory(primary, "primary worktree")
+    source = require_directory(source, "source worktree")
+    if (primary == source or worktree_root(primary) != primary
+            or worktree_root(source) != source
+            or common_git_dir(primary) != common_git_dir(source)):
+        raise IsolationError("review staging requires a separate verify worktree of this repository")
+    base = require_commit(primary, require_full_sha(base))
+    if current_sha(primary) != base or current_sha(source) != base:
+        raise IsolationError("review staging HEAD differs from the recorded base")
+    if not branch.startswith(VERIFY_BRANCH_PREFIX) or require_attached(source) != branch:
+        raise IsolationError("review staging requires the expected verify branch")
+    relative = relative_posix(source_path)
+    if not re.fullmatch(r"\.project/(?:next/)?review/[^/]+\.md", relative):
+        raise IsolationError("review staging only permits assigned Markdown review artifacts")
+    target = _safe_destination(source, relative)
+    if uncommitted_paths(source) - {relative}:
+        raise IsolationError("review staging found unexpected sidecar changes")
+    if not re.fullmatch(r"review_[a-z0-9_]+", assignment):
+        raise IsolationError("review staging requires a logical review assignment")
+    if transcript.is_symlink() or not transcript.is_file():
+        raise IsolationError("review transcript must be a real file")
+    metadata = transcript.with_name(transcript.stem + ".meta.json")
+    if metadata.is_symlink() or not metadata.is_file():
+        raise IsolationError("review transcript has no assignment metadata")
+    try:
+        meta = json.loads(metadata.read_bytes())
+        events = [json.loads(line) for line in transcript.read_bytes().decode("utf-8").splitlines() if line.strip()]
+    except (ValueError, UnicodeError, OSError) as error:
+        raise IsolationError("review transcript or metadata is incomplete or invalid") from error
+    if not isinstance(meta, dict) or meta.get("description") != assignment:
+        raise IsolationError("review transcript belongs to another assignment")
+    if not events or any(
+        not isinstance(event, dict)
+        or (event.get("type") in {"assistant", "user"} and event.get("agentId") != agent_id)
+        or ("agentId" in event and event["agentId"] != agent_id)
+        for event in events
+    ):
+        raise IsolationError("review transcript belongs to another child")
+    replies = [(index, event) for index, event in enumerate(events)
+               if event.get("type") == "assistant" and isinstance(event.get("message"), dict)
+               and event["message"].get("stop_reason") == "end_turn"]
+    requests = [index for index, event in enumerate(events) if event.get("type") == "user"]
+    assistants = [index for index, event in enumerate(events) if event.get("type") == "assistant"]
+    if (not replies or assistants[-1] != replies[-1][0]
+            or (requests and requests[-1] > replies[-1][0])):
+        raise IsolationError("review child has no completed final response")
+    selected_id = message_id or replies[-1][1].get("uuid")
+    selected = [event for _, event in replies if event.get("uuid") == selected_id]
+    if len(selected) != 1:
+        raise IsolationError("review message id is missing or ambiguous")
+    event = selected[0]
+    message = event["message"]
+    if message.get("role") != "assistant" or message.get("model") != model or not model:
+        raise IsolationError("review final response has a different model identity")
+    blocks = message.get("content")
+    if not isinstance(blocks, list) or any(
+        not isinstance(block, dict) or block.get("type") not in {"text", "thinking", "redacted_thinking"}
+        or (block.get("type") == "text" and not isinstance(block.get("text"), str))
+        for block in blocks
+    ):
+        raise IsolationError("review final response is not report text")
+    text = "".join(block["text"] for block in blocks if block.get("type") == "text")
+    if not text.startswith("# ") or "\x00" in text:
+        raise IsolationError("review final response must be the complete raw Markdown report")
+    try:
+        data = text.encode("utf-8")
+    except UnicodeError as error:
+        raise IsolationError("review final response is not valid UTF-8 text") from error
+    identity = {
+        "schema": "gsd-path/staged-review/v1", "assignment": assignment,
+        "agent_id": agent_id, "message_id": event.get("uuid"), "model": model,
+        "base": base, "branch": branch, "source_worktree": str(source), "source": relative,
+    }
+    if not isinstance(identity["message_id"], str) or not identity["message_id"]:
+        raise IsolationError("review final response has no stable message id")
+    key = _sha256(json.dumps(identity, sort_keys=True).encode("utf-8"))
+    receipt = common_git_dir(primary) / "gsd-path" / "staged-review" / f"{key}.json"
+    payload = {**identity, "publisher": "parent", "transport": "final-message",
+               "transcript": str(transcript.resolve()), "sha256": _sha256(data), "bytes": len(data)}
+    if receipt.is_symlink():
+        raise IsolationError("review publication receipt is unsafe")
+    if receipt.exists():
+        previous = _read_collect_journal(receipt)
+        if {k: previous.get(k) for k in payload} != payload:
+            raise IsolationError("recorded review response changed after publication")
+    if target.exists() and target.read_bytes() != data:
+        expected = (_sha256(_git_file(source, base, relative)) if expected_source == "base"
+                    else expected_source)
+        if not expected or _sha256(target.read_bytes()) != expected:
+            raise IsolationError("staged review differs without a proven expected version")
+    _write_collect_journal(receipt, {**payload, "stage": "prepared"})
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists() or target.read_bytes() != data:
+        _common.atomic_write(target, text)
+    if target.read_bytes() != data:
+        raise IsolationError("staged review differs from its final response")
+    _write_collect_journal(receipt, {**payload, "stage": "staged"})
+    return {**payload, "receipt": str(receipt), "status": "staged", "validated": False}
+
+
 def collect_artifact(
     primary: Path,
     source: Path,
@@ -3719,8 +3827,12 @@ def collect_artifact(
     source_path: str,
     destination_path: str,
     expected_destination: Optional[str] = None,
+    expected_source: Optional[str] = None,
 ) -> Dict[str, object]:
     """Atomically collect one artifact and retain an idempotent receipt."""
+
+    if expected_source is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_source):
+        raise IsolationError("expected artifact source must be a SHA-256")
 
     primary = require_directory(primary, "primary worktree")
     source = require_directory(source, "source worktree")
@@ -3767,6 +3879,8 @@ def collect_artifact(
             raise IsolationError(f"unexpected sidecar paths: {detail}")
         source_file = _real_file(source, normalized_source, "artifact source")
         data = source_file.read_bytes()
+        if expected_source is not None and _sha256(data) != expected_source:
+            raise IsolationError("artifact source differs from its publication receipt")
         previous_data = destination.read_bytes() if destination.exists() else None
         if previous_data is not None and previous_data != data:
             actual_hash = _sha256(previous_data)
@@ -3796,6 +3910,8 @@ def collect_artifact(
         }
         _write_collect_journal(journal_path, journal)
     else:
+        if expected_source is not None and journal["sha256"] != expected_source:
+            raise IsolationError("artifact source receipt differs from its publication receipt")
         current_hash = _sha256(destination.read_bytes()) if destination.exists() else None
         if not changed:
             if current_hash != journal["sha256"]:
@@ -5013,6 +5129,22 @@ def parser() -> argparse.ArgumentParser:
         "--expected-destination",
         help="base or the recorded SHA-256 of an existing destination",
     )
+    collect_parser.add_argument("--expected-source", help="SHA-256 recorded when the report was staged")
+
+    stage_parser = subparsers.add_parser(
+        "stage-review", help="stage a completed native review message without rewriting it"
+    )
+    stage_parser.add_argument("--repo", type=Path, required=True)
+    stage_parser.add_argument("--source", type=Path, required=True)
+    stage_parser.add_argument("--base", required=True)
+    stage_parser.add_argument("--branch", required=True)
+    stage_parser.add_argument("--source-path", required=True)
+    stage_parser.add_argument("--transcript", type=Path, required=True)
+    stage_parser.add_argument("--assignment", required=True)
+    stage_parser.add_argument("--agent-id", required=True)
+    stage_parser.add_argument("--model", required=True)
+    stage_parser.add_argument("--message-id")
+    stage_parser.add_argument("--expected-source", help="base or recorded SHA-256 before replacing a staged report")
 
     checkpoint_parser = subparsers.add_parser(
         "checkpoint", help="commit allowlisted pipeline bookkeeping"
@@ -5102,6 +5234,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 arguments.source_path,
                 arguments.destination_path,
                 arguments.expected_destination,
+                arguments.expected_source,
+            )
+        elif arguments.command == "stage-review":
+            result = stage_review(
+                arguments.repo, arguments.source, arguments.base, arguments.branch,
+                arguments.source_path, arguments.transcript, arguments.assignment,
+                arguments.agent_id, arguments.model, arguments.message_id, arguments.expected_source,
             )
         elif arguments.command == "checkpoint":
             result = checkpoint(

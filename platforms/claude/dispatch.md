@@ -2,10 +2,10 @@
 
 Apply this contract whenever a GSD Path skill delegates work:
 
-- Use Claude Code's `Agent` tool with `subagent_type: general-purpose`. Every
-  GSD Path child must be able to write its declared artifact, so do not use the
-  one-shot `Explore` or `Plan` agents. The linked role brief supplies the
-  read-only boundary for auditors and reviewers.
+- Use Claude Code's `Agent` tool with `subagent_type: general-purpose`. Coders
+  and multi-file producers need write capability; single-report reviewers use
+  the publication procedure below. Do not use the one-shot `Explore` or `Plan`
+  agents. The linked role brief supplies each role's read-only boundary.
 - Supply the deterministic logical task name as the Agent `description`:
   `inspect_codebase`, `inspect_docs`, `docs_audit`,
   `research_<dimension>`, `decide`, `roadmap`, `plan`, `plan_patch`,
@@ -50,10 +50,63 @@ Apply this contract whenever a GSD Path skill delegates work:
   under that root. The parent validates it and atomically transfers it to
   the canonical project path before removing the exact disposable root. A
   child never writes a disposable-review output directly into the primary
-  worktree.
+  worktree. Native review reports use parent publication below instead of
+  asking the child to create a report file.
 - If the `Agent` tool or full-capability `general-purpose` agent is unavailable,
   stop and report the missing capability. Do not silently collapse an
   independence boundary into the main context.
+
+## Native review report publication
+
+Claude Code can append a system instruction that forbids Markdown report
+files and requires final-message output, even when the child has `Write`.
+For native `review_plan_panel_*`, `review_wave_*` (including lenses, panels,
+and skeptics), `review_final`, and `review_gap_*`, request the complete assigned
+template as the child's final assistant message. Return raw Markdown only,
+without fences, a path-only reply, or a second publication summary. The child
+still owns every finding and verdict and performs its review in the supplied
+sidecar. In these assignments, a role's instruction to write or stage its
+report describes the required artifact, not a requirement to call `Write`.
+
+After the host reports terminal completion, bind its returned child ID to
+that child's recorded JSONL transcript and companion `.meta.json` assignment
+metadata. Use the exact host-reported model identity. Publish through the
+bundled helper, never by retyping or reconstructing the report:
+
+```text
+python3 -B <isolation.py> stage-review --repo <primary> --source <verify-sidecar> \
+  --base <recorded-review-base> --branch <verify-branch> \
+  --source-path <assigned-.project/review/report.md> \
+  --transcript <absolute-child-transcript.jsonl> \
+  --assignment <logical-review-name> --agent-id <returned-child-id> \
+  --model <host-reported-model>
+```
+
+The helper takes the latest completed final response. If a completed report
+already exists before a later file-only refusal, select its exact transcript
+UUID with `--message-id`; do not request another review. It copies only text
+blocks, preserving their UTF-8 content, and records child, assignment, model,
+message ID, content hash, and `publisher: parent` in its returned receipt
+outside `.project/`. Never append provenance or credits to the report body.
+Replacing an admitted invalid staged report requires its recorded SHA-256
+with `--expected-source`; unknown content must not be overwritten.
+
+`status: staged` is publication only. Apply the existing mode-specific
+validators and `collect-artifact` procedure before advancing. Preserve the
+staging receipt alongside the native assignment's lifecycle evidence. A
+native inline report's `collect-artifact` call must include
+`--expected-source <stage-review-sha256>` so changed text cannot be collected
+under the original reviewer's provenance. A complete inline report needs no
+file-publication retry or investigation of
+the host's instruction origin. Missing/truncated output, a failed or active
+child, an unavailable transcript, identity mismatch, or invalid report still
+blocks; a correction must address the report content through the usual review
+retry rules. Never synthesize missing findings or a passing verdict.
+
+This transport applies to native single-report review assignments only.
+Coders, multi-file planners, other hosts, and owner-supplied CLI child commands
+keep their existing file contracts. A timeout or cancellation never becomes
+a completed review merely because partial text exists.
 
 ## Parent lifecycle
 

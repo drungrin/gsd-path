@@ -6,6 +6,14 @@ preconditions remain in the build skill. Do not repeat a proven driver step.
 
 ## Wave loop
 
+Native Claude review assignments use the active dispatch contract's
+final-message publication: the child returns the complete report, and the
+parent stages it unchanged through `isolation.py stage-review`. References
+below to a reviewer staging a file include this transport. It preserves the
+cycle, review base, independent author, and all validation/collection gates;
+it never authorizes backfilling an earlier cycle or writing review findings
+in the parent. Owner-supplied CLI commands keep their file-output contract.
+
 For each `## Wave N` in PLAN.md order (a wave's tasks are the task files whose
 `wave` equals N):
 
@@ -424,8 +432,9 @@ dispatch contract and perform steps 1–5 by hand.
      return `pass`; any `blocked` lens blocks the wave, and both files'
      findings feed the fix-task batching in step 7.
    - A review file is written only during that cycle, at that cycle's recorded
-     base, by the writer the selected depth names: a dispatched reviewer at
-     `full` or `deep`, or the orchestrator at `verify-only`. Never backfill,
+     base, with content authored by the selected depth's owner: a dispatched
+     reviewer at `full` or `deep`, or the orchestrator at `verify-only`.
+     Native Claude parent publication does not change that authorship. Never backfill,
      split, rename, or reconstruct a review file for a cycle that already ran,
      and never write a placeholder verdict for a task that did not exist at
      that cycle. A missing or non-canonical earlier artifact is reported to
