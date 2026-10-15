@@ -1,6 +1,6 @@
 # GSD Path
 
-**Fork version: 1.6.0.3** · upstream base: **1.6.0**.
+**Fork version: 1.6.0.4** · upstream base: **1.6.0**.
 See [FORK.md](FORK.md) for fork changes, implementation commits, and version policy.
 
 A disk-backed project pipeline for AI coding agents. It turns a raw idea into

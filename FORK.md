@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.0.3**. Upstream package base: **1.6.0**.
+Current fork version: **1.6.0.4**. Upstream package base: **1.6.0**.
 
 ## Version policy
 
@@ -18,6 +18,52 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.0.4 — 2026-10-15
+
+Upstream package base remains `1.6.0`.
+
+### Legacy bound branch migration before build
+
+Implementation:
+[`b28e951a — migrate legacy bound branches before build`](https://github.com/drungrin/gsd-path/commit/b28e951a2e27fd40389322c98d3edf168f8d5bed).
+
+1.6.0.2 changed bound branch names. A project that upgraded its pinned runtime
+while a milestone was active then failed validation on its `gsd-path/M00N`
+branch, and nothing could repair it.
+
+- Add `pipeline_state.py migrate-branch`. It renames an unpublished legacy
+  `gsd-path/M00N` bound branch to `feature/milestone-NNN` and records the
+  rename in STATE.md with a Log event. `--dry-run` previews the change without
+  writing.
+- Rename only before build. Refuse an archive transaction, any helper journal,
+  a legacy task, verify, or integration branch, a target branch that already
+  exists, and either name on origin. A failed `ls-remote` blocks.
+- Rename the branch before writing STATE. After an interruption, a rerun finds
+  the new branch checked out and completes the STATE write. A second run
+  reports `already-migrated`.
+- When validation meets a legacy bound branch, its error names the helper. The
+  router contract previews the rename and asks the user to approve it. It
+  forbids renaming the branch or editing STATE by hand.
+
+Validation:
+- Nine new tests cover preview, migration, interrupted-rename recovery,
+  idempotence, each refusal, and the CLI JSON contract. They use local Git
+  repositories with a bare origin.
+- The full Python suite ran 2,921 tests, with 39 skipped. The Node suite passed
+  116 tests, with one skip.
+- All 501 generated resources match their sources. Whitespace and
+  private-identifier checks passed.
+
+Limits:
+- A milestone that has entered build, or that published its branch, keeps its
+  pinned runtime until it ships or is abandoned. The note under 1.6.0.2 still
+  applies to it.
+- Member repositories have no member branches before build, so the helper
+  changes no member branches.
+
+Upstream status: **not submitted**. This migration applies only to this fork's
+branch names.
 
 ## 1.6.0.3 — 2026-10-15
 
