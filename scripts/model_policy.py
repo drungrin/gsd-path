@@ -196,7 +196,14 @@ def task_settings(path):
 
 def native_record(args):
     """The parent owns lifecycle; release requires its recorded terminal-result receipt."""
+    # A relative path would resolve against cwd, which may be the immutable runtime store.
+    if not args.record.is_absolute():
+        raise PolicyError(f'--record must be an absolute path: {args.record}')
     record = args.record.resolve()
+    missing = f'release requires an existing record and terminal-result evidence: {record}'
+    # Check before log_lock creates the record directory and its lock file.
+    if args.action == 'release' and not record.exists():
+        raise PolicyError(missing)
     with log_lock({'log': str(record)}):
         data = read_json(record) if record.exists() else None
         identity = {'repo': str(args.repo.resolve()), 'project_dir': args.project_dir,
@@ -209,7 +216,7 @@ def native_record(args):
             raise PolicyError(f'record belongs to another assignment or milestone/track/cycle ({differing})')
         if args.action == 'release':
             if data is None or not args.terminal_result:
-                raise PolicyError('release requires an existing record and terminal-result evidence')
+                raise PolicyError(missing)
             data.update(active=False, terminal_result=args.terminal_result)
         else:
             if args.capabilities is None:
