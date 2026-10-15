@@ -171,6 +171,15 @@ def task_text() -> str:
     )
 
 
+
+def audit_with_rulings(*rows: tuple[str, str, str, str]) -> str:
+    table = "".join(f"| {' | '.join(row)} |\n" for row in rows)
+    return (
+        "# Docs audit\n\n## User rulings\n\n"
+        "| Queue # | Ruling | User's words | Planned |\n|---|---|---|---|\n"
+        f"{table}\n## Remediation queue\n\n| # | Doc |\n|---|---|\n| 9 | no |\n"
+    )
+
 class PipelineStateTests(unittest.TestCase):
     def test_authorized_task_worktree_routes_build_but_not_over_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2241,6 +2250,7 @@ class PipelineStateTests(unittest.TestCase):
         context_repo_example: bool = False,
         default: str = "main",
         next_default=None,
+        carry_forward=None,
     ) -> tuple[Path, str]:
         # `default` other than main is recorded in STATE as initialize does it.
         recorded = None if default == "main" else default
@@ -2257,6 +2267,12 @@ class PipelineStateTests(unittest.TestCase):
         (project / "next" / "tasks").mkdir(parents=True)
         (project / "next" / "plan").mkdir()
         (project / "next" / "review").mkdir()
+        if carry_forward is not None:
+            # Lookahead inspect wrote its audit with the active audit as prior.
+            (project / "next" / "research").mkdir()
+            (project / "next" / "research" / "DOCS-AUDIT.md").write_bytes(
+                carry_forward[1].encode("utf-8")
+            )
         (repo / "app.py").write_bytes("approved = True\n".encode("utf-8"))
         run_git(repo, "add", "app.py")
         run_git(repo, "commit", "-m", "fixture: milestone base")
@@ -2358,6 +2374,11 @@ class PipelineStateTests(unittest.TestCase):
             )
         if remove_task:
             task_path.unlink()
+        if carry_forward is not None:
+            # Ship archived research and recreated the pending-rulings carry-forward.
+            for root in (project / "archive" / "001-first" / "research", project / "research"):
+                root.mkdir(parents=True)
+                (root / "DOCS-AUDIT.md").write_bytes(carry_forward[0].encode("utf-8"))
         (project / "STATE.md").write_bytes(
             state_text(
                 milestone="first",
@@ -2676,6 +2697,46 @@ class PipelineStateTests(unittest.TestCase):
                 "multiple bind-next journals claim",
             ):
                 pipeline_state.route_state(repo)
+
+    def test_promote_next_replaces_a_carry_forward_the_lookahead_audit_keeps(self) -> None:
+        carried = audit_with_rulings(("1", "fix-doc", "fix it", "no"), ("2", "accept-drift", "keep", "n/a (accept-drift)"))
+        kept = audit_with_rulings(
+            ("1", "fix-doc", "fix it", "T001"),
+            ("2", "accept-drift", "keep", "n/a (accept-drift)"),
+            ("3", "fix-doc", "new", "no"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, integrate = self._promotion_repo(tmp, drift=False, carry_forward=(carried, kept))
+
+            result = state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+
+            self.assertEqual(result["status"], "promoted")
+            audit = repo / ".project" / "research" / "DOCS-AUDIT.md"
+            self.assertEqual(audit.read_text(encoding="utf-8"), kept)
+            self.assertEqual(
+                run_git(repo, "show", "HEAD:.project/research/DOCS-AUDIT.md").stdout, kept
+            )
+            self.assertEqual(
+                run_git(repo, "show", "HEAD:.project/archive/001-first/research/DOCS-AUDIT.md").stdout,
+                carried,
+            )
+            self.assertEqual(run_git(repo, "status", "--porcelain").stdout, "")
+
+    def test_promote_next_keeps_a_carry_forward_whose_ruling_the_lookahead_drops(self) -> None:
+        carried = audit_with_rulings(("1", "fix-doc", "fix it", "no"), ("2", "fix-doc", "also", "no"))
+        dropped = audit_with_rulings(("1", "fix-doc", "fix it", "no"))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, integrate = self._promotion_repo(tmp, drift=False, carry_forward=(carried, dropped))
+
+            with self.assertRaisesRegex(
+                pipeline_state.PipelineStateError,
+                "does not keep carry-forward ruling #2",
+            ):
+                state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+
+            audit = repo / ".project" / "research" / "DOCS-AUDIT.md"
+            self.assertEqual(audit.read_text(encoding="utf-8"), carried)
+            self.assertTrue((repo / ".project" / "next" / "research").is_dir())
 
     def test_promote_next_separates_landing_from_a_later_main_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
