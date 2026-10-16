@@ -587,12 +587,25 @@ def _move_product_extras(source: Path, code: Path, journal: dict, journal_path: 
             transfer(path)
 
 
+def _exclude_local_metadata(coordinator: Path) -> None:
+    exclude = Path(_text(coordinator, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"))
+    if exclude.is_symlink():
+        raise MigrationError("local Git excludes must not be a symlink")
+    content = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    patterns = ["/" + name for name in sorted(METADATA - {".project", ".planning"})]
+    missing = [pattern for pattern in patterns if pattern not in content.splitlines()]
+    if missing:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        _common.atomic_write(exclude, content.rstrip("\n") + "\n" + "\n".join(missing) + "\n")
+
+
 def finalize(coordinator: Path, package_root: Path) -> dict:
     """Install supported bindings, retain the old worktree, and complete cutover."""
     path = _journal(coordinator)
     journal = json.loads(path.read_text())
     if journal.get("schema") != SCHEMA or journal.get("stage") not in {"published", "finalizing", "complete"}:
         raise MigrationError("publish preservation and the clean backup before finalizing")
+    _exclude_local_metadata(coordinator)
     if journal["stage"] == "complete":
         validate(coordinator)
         return journal

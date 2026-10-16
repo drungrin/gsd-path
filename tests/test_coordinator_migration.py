@@ -258,6 +258,7 @@ class CoordinatorMigrationTests(unittest.TestCase):
         self.assertEqual((self.code / "node_modules/local.txt").read_text(), "local dependency\n")
         self.assertFalse((self.code / ".project").exists())
         self.assertTrue((self.coordinator / ".gsd-path/runtime.json").is_file())
+        self.assertEqual(git(self.coordinator, "status", "--porcelain"), "")
         self.assertEqual(pipeline_state.route_state(self.coordinator)["route"]["action"], "run-phase")
         self.assertEqual(migration.finalize(self.coordinator, Path(__file__).resolve().parents[1])["stage"], "complete")
 
