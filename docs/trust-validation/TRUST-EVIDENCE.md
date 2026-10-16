@@ -1,6 +1,6 @@
 # GSD Path — Trust Evidence Log
 
-Current release evidence: [1.6.0 candidate](#release-evidence-2026-10-11--160).
+Current release evidence: [1.6.1 candidate](#release-evidence-2026-10-15--161).
 Earlier sections remain historical observations.
 
 **Date:** 2026-08-05 (reconciled 2026-08-11 — dispatch-smoke rows downgraded; see notes)  
@@ -345,7 +345,7 @@ publication authority.
 
 ---
 
-## Release evidence (2026-10-11 — 1.6.0)
+## Release evidence (2026-10-11 — 1.6.0, historical)
 
 Candidate: `2aad06114ebf7d4b88ba70d3de63627e4c238c2f`, main after the 1.6.0
 version change (PR #405). The release gate required a fresh run on every host
@@ -369,3 +369,31 @@ the runs. [Run notes](evidence/releases/1.6.0/notes/RUNS.md) list token usage
 and scopes, the owner-gate corrections, and the hardening gaps. The complete
 `verify:release` gate is required before publication; receipts do not grant
 publication authority.
+
+---
+
+## Release evidence (2026-10-15 — 1.6.1)
+
+Candidate: `ec116bf9af69af2a1769d73b566b53834fa4c327`, main after the 1.6.1
+version change (PR #426). The release gate required a fresh run on every host
+in the live-check scope and reused no earlier receipt, because product scripts
+changed after the 1.6.0 candidate. Codex, Claude Code, Grok, OpenCode,
+Antigravity, Cursor, and Kimi have validated current-candidate receipts under
+`evidence/releases/1.6.1/`. A fresh clone of each local origin `main` passed
+the external counter CLI oracle 6/6, 42/42 in total. See
+[HOST-MATRIX.md](HOST-MATRIX.md) for each receipt.
+
+Each receipt binds a native child to the landed task, isolated Task Verify,
+review, committed archive, local-origin integration, and Git guard results.
+Claude Code and Cursor also passed native guard probes. No candidate defect
+was found and the candidate source did not change during the runs. One Cursor
+attempt was invalid because the host made pre-ship checkpoint commits against
+the ship contract; the re-run passed.
+
+GitHub Copilot CLI, Muse Code, Qwen, Kiro, and Zed stay excluded from the
+live-check scope, as in the 2026-09-30 entry. Exclusion is not a live-test
+pass. Owner ruling on output tokens: "allow and record"; overages did not stop
+the runs. [Run notes](evidence/releases/1.6.1/notes/RUNS.md) list token usage
+and scopes, the invalid attempt, the owner-gate corrections, and the hardening
+gaps. The complete `verify:release` gate is required before publication;
+receipts do not grant publication authority.

@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "cursor",
+  "run_id": "92f9e2ba-197c-472f-a379-7526b9384ac0",
+  "result": "pass",
+  "step": "reviews",
+  "command": "python3 -B /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/cursor/quick/repo/.cursor/skills/gsd-path/scripts/workflow_run.py prepare-final --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/cursor/quick/repo --expected-head 525bb90fd9edc2681b9457ec6ce5d7e8e1a1212b",
+  "output": "# Review \u2014 wave 1, cycle 1\n\nReviewed HEAD: 428b285a8aefe870affc94dc3362ca86789e6071\nReview scope: final\n\nWave verdict: pass\n# Final Review \u2014 reused full wave\n\nReviewed HEAD: 525bb90fd9edc2681b9457ec6ce5d7e8e1a1212b\nOverall verdict: pass\nSource review: .project/review/wave-1.cycle1.md\nSource commit: 428b285a8aefe870affc94dc3362ca86789e6071",
+  "wave_review_artifact": ".project/archive/001-count-cli-json/review/wave-1.cycle1.md",
+  "final_review_artifact": ".project/archive/001-count-cli-json/review/FINAL.md"
+}

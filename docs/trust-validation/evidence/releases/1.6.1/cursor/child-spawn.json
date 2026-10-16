@@ -1,0 +1,44 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "cursor",
+  "run_id": "92f9e2ba-197c-472f-a379-7526b9384ac0",
+  "result": "pass",
+  "step": "child-spawn",
+  "command": "Task",
+  "child_api": "Task",
+  "child_id": "build_T001",
+  "child_status": "completed",
+  "output": {
+    "child_id": "build_T001",
+    "status": "completed",
+    "child_api": "Task",
+    "run": "run-20261016T000557473792Z",
+    "session_id": "92f9e2ba-197c-472f-a379-7526b9384ac0",
+    "tool_key": "taskToolCall",
+    "tool_use": {
+      "id": "tool_df29bf5b-99db-43ae-885e-0f14f5c40f2",
+      "input": {
+        "description": "build_T001",
+        "subagentType": {
+          "custom": {
+            "name": "gsd-path"
+          }
+        },
+        "model": "composer-2.5",
+        "agentId": "29ea68e9-989d-4cac-b716-4242299de746",
+        "attachments": [],
+        "mode": "TASK_MODE_UNSPECIFIED",
+        "respondingToMessageIds": [],
+        "environment": "SUBAGENT_EXECUTION_ENVIRONMENT_UNSPECIFIED",
+        "machine": {
+          "sameMachine": {}
+        }
+      },
+      "prompt_sha256": "86f4a4b2509beffbdbf397849c4eb5e964b13fc037ec8be7f2b2b4148d01c08a"
+    },
+    "tool_result": {
+      "is_error": false,
+      "content": "{\"success\": {\"conversationSteps\": [{\"assistantMessage\": {\"text\": \"Reading the role brief, task file, and INTENT, then inspecting the codebase.\\n\\n\\nImplementing `count.py` and comprehensive tests.\\n\\n\\nT001: `ready`. Verify: `python3 tests/test_count_cli.py` \\u2014 12 tests, OK.\\n\\nChanged: `count.py`, `tests/test_count_cli.py`, `.project/tasks/T001-count-cli-json.md` (Log only).\\n\\nRESULT: T001 ready\"}}], \"agentId\": \"bd7a25ec-ff04-45ce-a6aa-33bdd7942205\", \"isBackground\": false, \"durationMs\": \"43386\", \"backgroundReason\": \"SUBAGENT_BACKGROUND_REASON_UNSPECIFIED\"}}"
+    }
+  }
+}

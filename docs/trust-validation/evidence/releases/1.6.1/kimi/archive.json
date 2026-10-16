@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "kimi",
+  "run_id": "session_176e3a5f-e51a-430c-95e5-6cb56591a551",
+  "result": "pass",
+  "step": "archive",
+  "command": "RT=/Users/jeremymcspadden/.gsd-path/runtimes/041b6c87f6c564e28117a504b282801428bd11aa692b61c04a5f07767cf804b5; REPO=/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/kimi/quick/repo; echo \"CMD: python3 -B $RT/archive_milestone.py validate --repo $REPO\" && python3 -B $RT/archive_milestone.py validate --repo $REPO",
+  "output": "CMD: python3 -B /Users/jeremymcspadden/.gsd-path/runtimes/041b6c87f6c564e28117a504b282801428bd11aa692b61c04a5f07767cf804b5/archive_milestone.py validate --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/kimi/quick/repo\n{\"archive\": \".project/archive/001-count-cli-json\", \"commit\": \"c7ebc4cf8345612c07fd0df51c6ee42a1deb74ad\"}\n",
+  "archive_path": ".project/archive/001-count-cli-json",
+  "validation_exit_code": 0
+}

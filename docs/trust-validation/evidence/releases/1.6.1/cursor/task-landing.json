@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "cursor",
+  "run_id": "92f9e2ba-197c-472f-a379-7526b9384ac0",
+  "result": "pass",
+  "step": "task-landing",
+  "command": "python3 /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/cursor/quick/repo/.cursor/skills/gsd-path/scripts/dispatch_driver.py finish --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/cursor/quick/repo --task-id T001",
+  "output": "commit 428b285a8aefe870affc94dc3362ca86789e6071\nAuthor:     Feature Evaluation <evaluation@example.invalid>\nAuthorDate: Thu Oct 15 19:08:32 2026 -0500\nCommit:     Feature Evaluation <evaluation@example.invalid>\nCommitDate: Thu Oct 15 19:08:32 2026 -0500\n\n    T001: Implement count.py JSON CLI and subprocess tests\n    \n    Task: .project/tasks/T001-count-cli-json.md\n    Base: 34c742d6279e486d9eca9e89300b063a726b1501\n    Files:\n    - .project/tasks/T001-count-cli-json.md\n    - count.py\n    - tests/test_count_cli.py\n\n .project/tasks/T001-count-cli-json.md |  15 ++++-\n count.py                              |  39 +++++++++++-\n tests/test_count_cli.py               | 115 ++++++++++++++++++++++++++++++++++\n 3 files changed, 164 insertions(+), 5 deletions(-)",
+  "fixture_bundle": "cursor/fixture.bundle",
+  "run_manifest": ".project/archive/001-count-cli-json/trust-run-manifest.json",
+  "fixture_base_commit": "34c742d6279e486d9eca9e89300b063a726b1501",
+  "task_branch": "gsd-path-verify/task-t001-verify",
+  "task_worktree": "/Users/jeremymcspadden/.gsd-path/projects/64dd6c22d098c5b85a53b25604922068704ab25f7c17ab737f1ee5c4494fa51a/f3f8148a9d24116bcded3b4bbc19508a92ef58e3be59715395c2d62c7a0cd218/verify/task-t001-verify",
+  "landing_commit": "428b285a8aefe870affc94dc3362ca86789e6071",
+  "isolation_mode": "serial",
+  "isolation_note": "A one-task wave uses the helper's serial mode: the coder worked on the bound branch in the primary worktree at the recorded base, and the named branch and worktree are the isolated Task Verify sidecar created for this task and retired after landing."
+}
