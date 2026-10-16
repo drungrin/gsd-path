@@ -1904,6 +1904,10 @@ def prepared_transaction(
     require_canonical_archive(archive)
     require_clean_active_root(active_root, archive)
     archived_files, reviewed_head = validate_manifest(project, archive, state)
+    try:
+        _common.validate_migration(project, configured)
+    except ValueError as error:
+        raise ArchiveError(str(error)) from error
     return project, active_root, state, configured, archive, archived_files, reviewed_head
 
 

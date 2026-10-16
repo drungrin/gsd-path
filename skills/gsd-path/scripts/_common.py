@@ -151,6 +151,7 @@ PROJECT_PROBE_PATHS = (
     VERIFY_LEDGER_PATH,
     ".project/build/members.json",
     ".project/build/evidence.json",
+    ".project/build/coordinator-migration.json",
     ".project/archive/001-probe/build/evidence.json",
     ".project/archive/001-probe/build/verify-ledger.jsonl",
     ".project/intent/probe.md",
@@ -300,6 +301,34 @@ def quoted_criterion(item: str, criteria: Sequence[str]) -> Optional[Tuple[int, 
                 if quote == " ".join(form.split()):
                     return index, end
     return None
+
+
+def effective_task_repo(repo: Path, task_id: str, declared: Optional[str], project_dir: str = ".project") -> Optional[str]:
+    if declared or not (Path(repo) / project_dir / "build/coordinator-migration.json").exists():
+        return declared
+    if __package__:
+        from . import coordinator_migration
+    else:
+        import coordinator_migration
+    return coordinator_migration.effective_repo(Path(repo), task_id, declared, project_dir)
+
+
+def task_repo_for_path(path: Path, task_id: str, declared: Optional[str]) -> Optional[str]:
+    project_root = next((parent for parent in path.parents if parent.name == ".project"), None)
+    if project_root is None:
+        return declared
+    project_dir = path.parent.parent.relative_to(project_root.parent).as_posix()
+    return effective_task_repo(project_root.parent, task_id, declared, project_dir)
+
+
+def validate_migration(repo: Path, project_dir: str = ".project") -> Optional[dict]:
+    if not (Path(repo) / project_dir / "build/coordinator-migration.json").exists():
+        return None
+    if __package__:
+        from . import coordinator_migration
+    else:
+        import coordinator_migration
+    return coordinator_migration.validate(Path(repo), project_dir)
 
 
 def task_verify_command(task_text: str) -> str:

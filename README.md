@@ -526,6 +526,24 @@ an atomic close across repos.
 
 ## Handoff contract
 
+An active single-repo milestone can move to a dedicated coordinator through the
+owner-approved `scripts/coordinator_migration.py` transaction. Its supported
+checkpoint is quiet `ship/active`: completed tasks, before final review or archive,
+with no retained worktrees or unfinished transactions. `preview` is read-only;
+`prepare` builds independent coordinator and clean code checkouts; `publish`
+preserves both graphs remotely before rewriting only an approved backup branch
+with an exact-SHA lease; `finalize` installs native member bindings and retains
+the original worktree under the coordinator's Git directory. An incomplete
+journal blocks ordinary phase work.
+
+The coordinator owns `.project` and the original task/review history. Members
+receive code-only history, without new tracked pipeline files. The migration
+receipt verifies tree bytes, paths, modes, original task landings, unchanged
+success criteria, and the source-to-product commit map. Later repairs and
+regression Verifies resolve legacy product tasks to member `code`. Existing
+review, archive-approval, and user-completed PR gates remain required. Git ref
+cleanup does not promise physical removal of older provider-side PR iterations.
+
 ```text
 .project/
   STATE.md                    phase, branch, archive transaction

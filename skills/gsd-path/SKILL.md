@@ -145,6 +145,14 @@ selects a milestone branch.
 
 ## State ownership and initialization
 
+An approved dedicated-coordinator migration has its own journaled helper,
+`scripts/coordinator_migration.py`. A route blocked on that transaction must
+finish the recorded migration before dispatching phases. A completed
+`build/coordinator-migration.json` maps original single-repo task history to its
+clean code member. Preserve original contracts and outputs, and use runtime
+effective-repository routing for later repair tasks. This migration does not
+grant final review, archive, or merge approval.
+
 1. When `.project/STATE.md` exists, run `python3
    <absolute-bundled-pipeline-state.py> validate --repo <absolute-root>`.
    Treat its typed JSON as the state; do not parse frontmatter or repair an

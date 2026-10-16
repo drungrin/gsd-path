@@ -26,6 +26,16 @@ ledger.
 This skill
 verifies first and never archives or ships before explicit final approval.
 
+For an approved coordinator migration, the runtime must report its transaction
+complete before phase work. Preserve `build/coordinator-migration.json` with
+the archive. Existing task contracts, review text and command output remain
+original evidence; the receipt binds their source history to the clean `code`
+member history. The locked member HEADs are required in fresh final/gap reviews.
+Product paths and surface commands in legacy artifacts refer to that member;
+PLAN.md's Project verify already enters its sibling verify checkout. Use the
+runtime's effective task repository for repairs and regressions. Never edit old
+reports to claim commands ran at projected commit IDs.
+
 Wave reviews are owned by the build orchestrator; this phase never runs them.
 
 ## Final mode

@@ -590,6 +590,24 @@ default branch.
 
 ### Integration
 
+A user-approved `coordinator_migration.py` transaction may move a quiet
+single-repo milestone at `ship/active`, before final review/archive, into a
+dedicated coordinator. It preserves original task commits and recorded output,
+projects code-only history into member `code`, and records their mapping in
+`build/coordinator-migration.json`. Its structural checkpoint keeps the original
+graph as first parent and the clean projection graph as second parent; original
+first-parent task proofs remain intact. The new coordinator owns planning and
+evidence, uses direct integration, and locks only the participating code member,
+which uses user-completed pull requests. Registered infrastructure members are
+unchanged until explicitly selected by later work.
+
+The journal owns creation and recovery of the new checkouts, publishes retained
+evidence before an exact-lease rewrite of the approved backup branch, and blocks
+phase routing until cutover completes. No old report may be relabelled as a run
+at a projected SHA. New product repairs declare the member; effective legacy
+ownership comes from the validated receipt. Migration does not waive final
+review, archive approval, or member/coordinator integration validation.
+
 After the postcommit validator passes, ship performs integration — the only
 path from the bound branch to the default branch. The bound branch never
 receives merges or back-merges, and the default checkout is never entered;

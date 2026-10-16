@@ -52,6 +52,17 @@ bundles this file; spawned agents follow their role brief instead.
 
 ## Stay in role
 
+- A user-approved `coordinator_migration.py` transaction is the only supported
+  mid-milestone move from single-repo to a dedicated coordinator. It requires
+  `ship/active`, all task landings proven, no final review/archive, and no active
+  worktrees or other transactions. It preserves original evidence and publishes
+  the coordinator backup before an exact-lease backup-branch rewrite. Its
+  structural checkpoint retains original and clean projection graphs as first
+  and second parents. The journal blocks ordinary phase work until complete.
+  Legacy completed tasks retain their original frontmatter and evidence; their
+  effective product repository and clean commit identities come from
+  `build/coordinator-migration.json`. New repairs use the named member. All
+  normal review, approval, member-close, and archive gates still apply.
 - The codebase mapper and docs auditor observe and verify; they are strictly
   read-only, report observations rather than judgments, and never resolve a
   doc-vs-code conflict — that ruling belongs to the user.

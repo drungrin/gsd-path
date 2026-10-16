@@ -430,6 +430,13 @@ def _task_members(coordinator: Path) -> set[str]:
     except ImportError:  # pragma: no cover - package import used by tests
         from scripts.check_task_briefs import _frontmatter
     named = set()
+    migration = coordinator / ".project/build/coordinator-migration.json"
+    if migration.exists():
+        if __package__:
+            from . import coordinator_migration
+        else:
+            import coordinator_migration
+        named.add(coordinator_migration.load(coordinator)["member"])
     for task in sorted((coordinator / ".project" / "tasks").glob("*.md")):
         fields, error = _frontmatter(task.read_text(encoding="utf-8"))
         if fields is None:

@@ -1514,7 +1514,8 @@ def _require_task_structure(task_id: str, text: str, *, initial: bool) -> None:
 
 
 def _validate_task_graph(
-    wave_depths: Dict[int, str], tasks: Dict[str, str], *, initial: bool
+    wave_depths: Dict[int, str], tasks: Dict[str, str], *, initial: bool,
+    repo: Optional[Path] = None, project_dir: str = DEFAULT_PROJECT_DIR,
 ) -> Dict[str, Set[str]]:
     task_ids = list(tasks)
     expected = [f"T{number:03d}" for number in range(1, len(task_ids) + 1)]
@@ -1527,7 +1528,9 @@ def _validate_task_graph(
     # `repo:` names the member a task changes; absent means the coordinator.
     task_repos: Dict[str, str] = {}
     for task_id, text in tasks.items():
-        task_repos[task_id] = str(_strict_frontmatter(text, task_id).get("repo") or "")
+        declared = _strict_frontmatter(text, task_id).get("repo")
+        effective = _common.effective_task_repo(repo, task_id, declared, project_dir) if repo is not None else declared
+        task_repos[task_id] = str(effective or "")
         # Patch mode reopens planning beside landed tasks; only new tasks start clean.
         landed = _task_scalar(text, task_id, "status") == "done"
         _require_task_structure(task_id, text, initial=initial and not landed)
@@ -1619,7 +1622,7 @@ def plan_brief_inputs(
     """Validate the plan graph, requiring clean unlanded tasks only at approval."""
     tasks = _task_texts(root, project_dir)
     wave_depths, _ = _plan_waves(_read(root, f"{project_dir}/plan/PLAN.md"))
-    return tasks, _validate_task_graph(wave_depths, tasks, initial=initial)
+    return tasks, _validate_task_graph(wave_depths, tasks, initial=initial, repo=root, project_dir=project_dir)
 
 
 def _intent_path(project_dir: str) -> str:
@@ -1918,10 +1921,10 @@ def validate_plan(
     wave_depths, waves = _plan_waves(plan)
     # Build readiness owns task lifecycle validation; coverage must survive landings.
     state = _require_pipeline(root, project_dir)
-    _validate_task_graph(wave_depths, tasks, initial=state["phase"] == "plan")
+    _validate_task_graph(wave_depths, tasks, initial=state["phase"] == "plan", repo=root, project_dir=project_dir)
     integrated = _integrated_members(root, state)
     for task_id, text in tasks.items():
-        repo = str(_strict_frontmatter(text, task_id).get("repo") or "")
+        repo = str(_common.effective_task_repo(root, task_id, _strict_frontmatter(text, task_id).get("repo"), project_dir) or "")
         if repo in integrated and _task_scalar(text, task_id, "status") != "done":
             raise HandoffError(
                 f"{task_id} changes member {repo}, which is already integrated in this milestone; "

@@ -2020,6 +2020,15 @@ def validate_member_integrated(
         published = live_remote_ref(checkout, f"refs/tags/{tag_name}")
     else:
         published = optional_ref(checkout, tracking)
+    if (coordinator / archive_path / "build/coordinator-migration.json").exists():
+        if __package__:
+            from . import coordinator_migration
+        else:
+            import coordinator_migration
+        try:
+            coordinator_migration.require_member_baseline(coordinator, member, checkout, reviewed_head, archive_path)
+        except ValueError as error:
+            raise ArchiveError(str(error)) from error
     contents = ""
     if refresh and published is not None:
         archive_milestone.require_git_success(

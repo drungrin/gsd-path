@@ -206,7 +206,7 @@ def load_wave_tasks(project: Path, wave: int) -> Dict[str, dict]:
         tasks[named.group("id")] = {
             "id": named.group("id"),
             "path": str(path),
-            "repo": member.group("name").strip("\"'") if member else None,  # None is the coordinator
+            "repo": _common.task_repo_for_path(path, named.group("id"), member.group("name").strip("\"'") if member else None),
             "files": _frontmatter_list(frontmatter, "files"),
             "acceptance": _numbered_items(_section(body, "Acceptance criteria")),
             "interface": [
@@ -658,8 +658,18 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
             """A proven landing as the receipt shows it; a member landing adds its commits in the member."""
             item = {"task": landing["task_id"], "base": landing["base"], "commit": landing["commit"], "files": paths}
             if member:
-                item.update(member_base=isolation.task_frontmatter(_read(path, "task"))[0]["member_base"],
-                            member_commit=landing["landing"])
+                if "landing" in landing:
+                    item.update(member_base=isolation.task_frontmatter(_read(path, "task"))[0]["member_base"],
+                                member_commit=landing["landing"])
+                else:
+                    if __package__:
+                        from . import coordinator_migration
+                    else:
+                        import coordinator_migration
+                    projected = coordinator_migration.legacy_proof(repo, landing["task_id"], landing["commit"], project_dir)
+                    if projected is None:
+                        raise ReviewFindingsError("member repair source has no native or migrated landing proof")
+                    item.update(projected, evidence_origin="preserved-single-repo")
             return item
 
         def at(item: dict, point: str = "commit") -> str:
@@ -724,7 +734,7 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
                 return {origin for finding in carried.get(other, ()) for origin in traced(finding)}
 
             repairs = {other: task for other, task in tasks.items() if other == task_id or (
-                task[1].get("status") == "done" and task[1].get("repo") == member
+                task[1].get("status") == "done" and _common.task_repo_for_path(task[0], other, task[1].get("repo")) == member
                 and origins(task_id) & origins(other))}
             joined, more = set(), {task_id}
             while more:
@@ -840,7 +850,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 arguments.helper_failure,
             )
         )
-    except ReviewFindingsError as error:
+    except (ReviewFindingsError, ValueError) as error:
         json.dump({"status": "error", "error": str(error)}, sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 2

@@ -122,6 +122,17 @@ full-repo suite on a tiny edit outrank the phase brief.
 
 ## Gates
 
+- An explicitly approved `coordinator_migration.py` transaction may transfer a
+  quiet single-repo `ship/active` milestone before final review into a dedicated
+  coordinator. It owns the new coordinator identity, integration modes, member
+  registry and lock, product projections, and migration checkpoint. That
+  checkpoint preserves the original graph as its first parent and the clean
+  code graph as its second parent; it is the sole migration exception to the
+  ordinary bound-branch history rule. Original task contracts and recorded
+  outputs stay unchanged. Its journal blocks phase work until cutover completes.
+  Publish preservation before rewriting only the approved backup ref under an
+  exact-SHA lease. This operation does not approve final review, archive, or
+  product integration.
 - Same-wave dependencies execute in dependency order; a task dispatches as
   soon as its dependencies land, never idling behind unrelated
   in-flight tasks. Only ready tasks run.

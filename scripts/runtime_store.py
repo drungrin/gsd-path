@@ -24,7 +24,7 @@ RUNTIME_FILES = (
     "state_checkpoint.py", "state_promote.py", "discussion_validate.py", "integration.py", "azure_repos.py",
     "build_state.py", "lean_verification.py", "check_docs_audit.py",
     "path_config.py", "model_policy.py", "loop_run.py", "members.py",
-    "review_findings.py", "task_context.py",
+    "review_findings.py", "task_context.py", "coordinator_migration.py",
 )
 GUARDS = ("guard_hook.py", "git_guard.py")
 

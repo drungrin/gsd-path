@@ -1204,6 +1204,19 @@ def _route_state(repo: Path, project_dir: str = ".project") -> dict[str, object]
     if not lookahead:
         git_dir = _run_git(resolved, "rev-parse", "--git-dir", check=False)
         if git_dir.returncode == 0:
+            migration = _git_path(resolved, "gsd-path/coordinator-migration.json")
+            if migration.exists() or migration.is_symlink():
+                transaction = _read_json(migration)
+                if (transaction.get("schema") != "gsd-path/coordinator-migration/v1"
+                        or not isinstance(transaction.get("spec"), dict)
+                        or transaction.get("spec", {}).get("coordinator") != str(resolved)
+                        or not isinstance(transaction.get("stage"), str)
+                        or transaction.get("stage") not in {"preparing", "prepared", "preserved", "published", "finalizing", "complete"}):
+                    raise PipelineStateError("coordinator migration journal is invalid")
+                if transaction["stage"] != "complete":
+                    result = _route_result(state, "block", reason="finish the approved coordinator migration before phase work")
+                    result["route"]["journal"] = str(migration)
+                    return result
             undo = undo_transaction(resolved)
             if undo is not None:
                 result = _route_result(

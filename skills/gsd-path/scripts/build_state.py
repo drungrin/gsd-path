@@ -235,6 +235,10 @@ def _parse_task(path: Path, relative_path: str, task_file: Optional[str] = None)
     if status not in VALID_TASK_STATUSES:
         raise BuildStateError("invalid-frontmatter", f"{label} has invalid status: {status}")
 
+    try:
+        effective_repo = _common.task_repo_for_path(path, task_id, fields.get("repo"))
+    except ValueError as error:
+        raise BuildStateError("invalid-migration", str(error)) from error
     return Task(
         task_id=task_id,
         title=title,
@@ -248,7 +252,7 @@ def _parse_task(path: Path, relative_path: str, task_file: Optional[str] = None)
         task_branch=_nullable_string(fields, "task_branch", label),
         task_file=task_file or relative_path,
         verify_heavy=_verify_heavy(text, label),
-        repo=str(fields.get("repo") or ""),
+        repo=str(effective_repo or ""),
         review_findings=REVIEW_FINDINGS_HEADING in _sections(text),
         verify=_common.task_verify_command(text),
         supersedes=_normalize_list(fields.get("supersedes", []), f"{label} supersedes", task_ids=True),
@@ -1041,12 +1045,17 @@ def verify_landed_tasks(
                 "reasons": [],
             }
         )
+    try:
+        migration = _common.validate_migration(repository, artifact_dir)
+    except ValueError as error:
+        raise BuildStateError("invalid-migration", str(error)) from error
     return {
         "command": "verify-landed",
         "project_dir": artifact_dir,
         "canonical_project_dir": canonical_dir,
         "head": head,
         "tasks": evidence,
+        **({"migration": migration} if migration else {}),
     }
 
 

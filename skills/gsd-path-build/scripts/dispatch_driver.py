@@ -2198,7 +2198,8 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
                 if source not in texts:
                     raise DriverStop(f"fix batch names unknown task {source}")
             # One task changes one repo: the fix depends on, and runs the Verify of, the source tasks of its repo.
-            sources = [source for source in sources if isolation.task_frontmatter(texts[source])[0].get("repo") == repo]
+            sources = [source for source in sources if _common.effective_task_repo(
+                primary, source, isolation.task_frontmatter(texts[source])[0].get("repo"), options.project_dir) == repo]
             # A repeat builds on the landed repairs of its finding: repair-evidence links them by this dependency.
             deps = sources + [item["task"] for item in repairs
                               if item not in pending and item.get("repo") == repo

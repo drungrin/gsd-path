@@ -20,6 +20,7 @@
     "scripts/install.mjs",
     "scripts/install.py",
     "scripts/runtime_store.py",
+    "scripts/coordinator_migration.py",
     "scripts/migrate_core.py",
     "scripts/core_hook_gate.py",
     "scripts/core_hook_settings.py",
