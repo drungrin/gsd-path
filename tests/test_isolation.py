@@ -1976,6 +1976,58 @@ class IsolationTests(unittest.TestCase):
                     [".project"],
                 )
 
+    def state_text(self, phase: str, status: str) -> str:
+        return f"---\npipeline: gsd-path/v2\nphase: {phase}   # comment\nstatus: {status}\n---\n\n## Log\n"
+
+    def committed_state(self, repo: Path, phase: str, status: str) -> str:
+        self.write(repo, ".project/STATE.md", self.state_text(phase, status))
+        git(repo, "add", ".project/STATE.md")
+        git(repo, "commit", "-q", "-m", f"state {phase}/{status}")
+        return git(repo, "rev-parse", "HEAD")
+
+    def test_build_checkpoint_refuses_final_review_outputs_during_ship(self) -> None:
+        for phase, status in (("ship", "active"), ('"ship"', "'active'")):
+            with self.subTest(phase=phase, status=status), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                self.init_bound_repo(repo)
+                head = self.committed_state(repo, phase, status)
+                self.write(repo, ".project/review/FINAL.md", "# Final Review\n")
+
+                with self.assertRaisesRegex(isolation.IsolationError, "no pre-ship commit"):
+                    isolation.checkpoint(
+                        repo, head, "build: record final review artifacts",
+                        "Why: Commit FINAL.md before archive.", [".project"],
+                    )
+                self.assertEqual(git(repo, "rev-parse", "HEAD"), head)
+                self.assertEqual(git(repo, "diff", "--cached", "--name-only"), "")
+                self.assertEqual(
+                    (repo / ".project/review/FINAL.md").read_text(encoding="utf-8"), "# Final Review\n"
+                )
+
+    def test_checkpoint_outside_ship_active_still_commits(self) -> None:
+        cases = (
+            ("build", "active", "build: complete milestone", "Why: build done"),
+            ("ship", "blocked", "build: record patch findings", "Why: patch build"),
+            ("ship", "active", "plan: build plan approved",
+             "Why: approved plan checkpoint\nMilestone: M001"),
+        )
+        for phase, status, subject, body in cases:
+            with self.subTest(phase=phase, status=status, subject=subject), \
+                    tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                self.init_bound_repo(repo)
+                head = self.committed_state(repo, phase, status)
+                # HEAD decides: the working-tree STATE may already be ship/active.
+                self.write(repo, ".project/STATE.md", self.state_text("ship", "active"))
+                self.write(repo, ".project/review/FINAL.md", "# Final Review\n")
+
+                result = isolation.checkpoint(repo, head, subject, body, [".project"])
+
+                self.assertEqual(result["status"], "committed")
+                self.assertEqual(git(repo, "rev-parse", "HEAD^"), head)
+
     def test_checkpoint_rejects_unrelated_changes_without_moving_head(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "repo"

@@ -69,7 +69,8 @@ so the position is unchanged. Then:
    task logs prove it is the immediately preceding `ship/blocked` finding
    set, the approved patch tasks copied every finding verbatim, and those tasks
    are now done; otherwise it blocks. Git history preserves the superseded
-   finding, while final review itself still creates no pre-ship commit.
+   finding, while final review itself still creates no pre-ship commit
+   (`isolation.py checkpoint` refuses a `build:` checkpoint at `ship/active`).
 2. Derive a stable numbered list of cross-wave integration risks from
    interfaces and flows that span waves. List only genuine risks that could
    plausibly fail; never pad the list. Include PLAN.md's project Verify as
