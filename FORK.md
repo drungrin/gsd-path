@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.1.7**. Upstream package base: **1.6.1**.
+Current fork version: **1.6.1.8**. Upstream package base: **1.6.1**.
 
 ## Version policy
 
@@ -18,6 +18,73 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.1.8 — 2026-10-16
+
+Upstream package base remains `1.6.1`.
+
+Implementation:
+[`2c331232 — verify squash delivery and retain milestone history`](https://github.com/drungrin/gsd-path/commit/2c331232f9cc3a82a8280f7228382e5b6b72033d),
+[`77559891 — report malformed retained history as unverified`](https://github.com/drungrin/gsd-path/commit/77559891372096a82646800a3f5bb42048fed772).
+
+### Squash integration
+
+- Accept user-completed Azure Repos squash PRs for coordinators and members,
+  alongside the existing no-fast-forward merge method. PR creation no longer
+  explicitly forces a non-squash completion option.
+- Support Azure-backed `external-landing` without changing the locked
+  integration mode. The owner still opens and completes the PR; Path discovers
+  and verifies it through `az`, without requiring a canonical merge message.
+  Existing Git-only external proofs keep their original contract.
+- Bind the completed PR, closing user, exact reviewed source, recorded target,
+  and landing. Require the target as the squash's sole parent and reproduce
+  the complete integration tree with `git merge-tree`. Include concurrent
+  target changes, binary content, paths, and modes; reject extra changes and
+  unresolved or independently edited conflict resolutions.
+- Retain the original evidence graph under an annotated
+  `milestone-source/<archive>` tag, or
+  `milestone-source/<project>-<archive>` for members, before publishing the
+  landing tag. The landing proof records `Source-Tag`. Verify both tags and
+  their publication unchanged before completion or branch retirement.
+- Cover historical archive lookup, read-only status, fresh clones, interrupted
+  tag publication, bind-next journal recovery, and retirement after the forge
+  deletes the source branch. Reserve and authorize member source-tag pushes
+  through the existing member guards.
+- Keep GitHub's existing merge/rebase proof and other forges' Git-only external
+  contract. Auto-complete, policy bypass, and Azure rebase remain refused.
+  Regenerate the installed skill resources and document the revised closeout.
+
+The proof follows Azure's
+[merge-strategy policy](https://learn.microsoft.com/en-us/azure/devops/repos/git/branch-policies?view=azure-devops#limit-merge-types)
+and [completed PR metadata](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-requests/get-pull-request?view=azure-devops-rest-7.1).
+[Git's merge-tree](https://git-scm.com/docs/git-merge-tree) computes the tree in
+a disposable object store; verification does not alter repository objects,
+refs, index, or worktree.
+
+Validation: the full Python suite passed 2,974 cases with 39 platform skips.
+The final malformed-tag recovery change also passed all 14 focused squash
+cases. The Node suite passed 116 tests with one skip. All 501 generated resources
+match their canonical sources; Python 3.9 syntax and whitespace checks passed.
+Local Git regressions cover both coordinator modes, members, concurrent target
+changes, source deletion, fresh clones, garbage collection, tampered trees and
+metadata, interrupted publication, and next-milestone recovery.
+
+Live read-only checks confirmed an existing Azure repository's mandatory
+squash-only policy. A completed manual squash passed the provider provenance
+check and reproduced its exact integration tree in a disposable bare repository.
+The active consuming project's 24 existing task landings were accepted by the
+new helpers without repeating its project or task commands. Its runtime and
+installed contracts are upgraded explicitly for the current milestone; final
+review and milestone integration remain pending their normal gates.
+
+Limits: squash verification requires Git 2.38+. A merge requiring conflict
+resolution stops for reviewed recovery rather than accepting provider metadata
+alone. Both source and landing tags must remain published. Azure DevOps Server
+remains outside this adapter. An active milestone still completes its normal
+final review, archive approval, and user-completed PR before it can be reported
+as shipped.
+
+Upstream status: **not submitted**.
 
 ## 1.6.1.7 — 2026-10-16
 
