@@ -2708,7 +2708,7 @@ class PipelineStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo, integrate = self._promotion_repo(tmp, drift=False, carry_forward=(carried, kept))
 
-            result = state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+            result = state_promote.promote_next(repo, "second", "feature/milestone-002", integrate)
 
             self.assertEqual(result["status"], "promoted")
             audit = repo / ".project" / "research" / "DOCS-AUDIT.md"
@@ -2732,7 +2732,7 @@ class PipelineStateTests(unittest.TestCase):
                 pipeline_state.PipelineStateError,
                 "does not keep carry-forward ruling #2",
             ):
-                state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+                state_promote.promote_next(repo, "second", "feature/milestone-002", integrate)
 
             audit = repo / ".project" / "research" / "DOCS-AUDIT.md"
             self.assertEqual(audit.read_text(encoding="utf-8"), carried)
@@ -2751,7 +2751,7 @@ class PipelineStateTests(unittest.TestCase):
                     pipeline_state.PipelineStateError,
                     "does not keep carry-forward ruling #1",
                 ):
-                    state_promote.promote_next(repo, "second", "gsd-path/M002", integrate)
+                    state_promote.promote_next(repo, "second", "feature/milestone-002", integrate)
 
                 audit = repo / ".project" / "research" / "DOCS-AUDIT.md"
                 self.assertEqual(audit.read_text(encoding="utf-8"), carried)
