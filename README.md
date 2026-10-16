@@ -24,14 +24,14 @@ The [host trust matrix](https://github.com/open-gsd/gsd-path/blob/main/docs/trus
 is the source of truth for live milestone proof and each host's guard tier.
 
 <!-- release-docs -->
-**Latest npm release:** [@opengsd/gsd-path@1.6.0](https://www.npmjs.com/package/@opengsd/gsd-path/v/1.6.0) — [release notes](CHANGELOG.md#160---2026-10-12)
+**Latest npm release:** [@opengsd/gsd-path@1.6.1](https://www.npmjs.com/package/@opengsd/gsd-path/v/1.6.1) — [release notes](CHANGELOG.md#161---2026-10-16)
 
 **Recent highlights**
-- let a later task supersede an earlier task and retire its Verify
-- document the default branch record of a member
-- member paths read the default branch that MEMBERS.md records
-- record the default branch of a member in MEMBERS.md
-- add --uninstall to the skill installers
+- accept GitHub rebase merges in pull-request integration
+- run dispatch_driver subprocess helpers from the selected runtime
+- refuse a relative model_policy --record and check release before locking
+- let promote-next replace a DOCS-AUDIT carry-forward the lookahead keeps
+- let the owner authorize one exact pre-ship push to a task branch
 
 <!-- /release-docs -->
 
