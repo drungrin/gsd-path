@@ -1966,7 +1966,10 @@ def find_ship_commit(project: Path, archive_name: str, *, historical: bool = Fal
         source_ref = "refs/tags/" + _common.source_tag_name(tag_name)
         source = run_git(project, "rev-parse", "--verify", "--quiet", f"{source_ref}^{{commit}}")
         if source.returncode == 0:
-            fields = pipeline_git._milestone_tag_fields(project, "refs/tags/" + tag_name)
+            try:
+                fields = pipeline_git._milestone_tag_fields(project, "refs/tags/" + tag_name)
+            except pipeline_git.PipelineGitError as error:
+                raise ArchiveError(str(error)) from error
             if (fields.get("Source-Tag") != _common.source_tag_name(tag_name)
                     or fields.get("Ship") != source.stdout.strip()
                     or not azure_repos.valid_pull_request_url(fields.get("Pull-Request", ""))):

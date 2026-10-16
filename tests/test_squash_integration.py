@@ -146,6 +146,15 @@ class SquashCoordinatorTests(unittest.TestCase):
         self.assertEqual(self.remote_ref(f"refs/tags/milestone-source/{self.archive}^{{}}"), self.member_tip)
         self.assertEqual(self.integrate()["landing"], landing)
 
+    def test_malformed_historical_tag_is_reported_as_unverified(self):
+        self.completed()
+        name = f"milestone/{self.archive}"
+        contents = git(self.root, "for-each-ref", "--format=%(contents)", "refs/tags/" + name)
+        git(self.root, "tag", "-f", "-a", name, "-m", contents + "\nSource-Tag: duplicate")
+        completion = pipeline_state.status_state(self.root)["completion"]
+        self.assertEqual(completion["status"], "unverified")
+        self.assertIn("repeats metadata", completion["reason"])
+
 
 class SquashExternalLandingTests(SquashCoordinatorTests):
     mode = "external-landing"
