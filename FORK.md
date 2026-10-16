@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.1.8**. Upstream package base: **1.6.1**.
+Current fork version: **1.6.1.9**. Upstream package base: **1.6.1**.
 
 ## Version policy
 
@@ -18,6 +18,38 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.1.9 — 2026-10-16
+
+Upstream package base remains `1.6.1`.
+
+Implementation:
+[`191b903a — move active orchestration into a dedicated repository`](https://github.com/drungrin/gsd-path/commit/191b903a97e7e95271bdc4afb2abb8e7e3d0ff4f).
+
+- Add an explicitly approved, journaled migration from a quiet single-repo
+  `ship/active` milestone to a dedicated coordinator and native code member.
+  Retain original contracts, reports, command output, and task landing proofs.
+- Project product commits into an independent clean graph, collapse metadata-only
+  commits, preserve tree bytes and file modes, and record every commit mapping.
+  Preserve both graphs remotely before rewriting only the approved backup ref
+  with an exact previous-SHA lease. Refuse unrelated coordinator remote refs.
+- Bind legacy task ownership to the member for fixes, regressions, superseding
+  tasks, and dependency validation. Preserve the migration receipt through
+  archive and require the migrated baseline in member integration proofs.
+- Install native member hooks and runtime, retain ignored local product assets,
+  and keep the original worktree under the coordinator Git directory. An
+  unfinished migration blocks phase routing. Final review, shipping approval,
+  user-completed product PRs, and integration validation remain required.
+
+Validation: 190 focused migration, evidence, member, repair, Azure and squash
+cases passed; Node tests passed 116 cases with one platform skip. Generated
+resource synchronization and whitespace checks passed. Additional plan gates
+and the full Python suite are checked separately before delivery.
+
+Limits: early preparation interruptions retain their staging for inspection;
+publication and final cutover support retries. Rewriting Git refs does not erase
+older snapshots retained by the provider in PR iterations. No upstream submission
+has been made for this change.
 
 ## 1.6.1.8 — 2026-10-16
 
