@@ -4509,7 +4509,10 @@ def _committed_ship_active(repo: Path) -> bool:
     if result.returncode != 0:
         return False
     frontmatter = result.stdout.split("\n---", 1)[0]
-    fields = dict(re.findall(r"(?m)^(phase|status):[ \t]*([a-z]+)", frontmatter))
+    fields = {
+        key: _unquote(value)
+        for key, value in re.findall(r"(?m)^(phase|status):(.*)$", frontmatter)
+    }
     return fields.get("phase") == "ship" and fields.get("status") == "active"
 
 
