@@ -163,7 +163,7 @@ raise SystemExit(not unittest.TextTestRunner().run(suite).wasSuccessful())
             self.assertEqual(json.loads(before)["execution"]["exit_code"], 0)
             self.assertIn("verified in", json.loads(before)["execution"]["stdout"])
 
-    def fixture(self, root, surface=False, lane_line="Lane: quick"):
+    def fixture(self, root, surface=False, lane_line="Lane: quick", edges="", evidence="hello.py output"):
         helper = test_handoffs.HandoffValidationTests()
         helper.write_plan_handoff(root)
         if surface:
@@ -177,6 +177,9 @@ States: prints hello
 Walkthrough:
 1. Run python3 hello.py and observe hello.
 """)
+        if edges:
+            spec = test_handoffs.SpecReachProbeTests()
+            spec.append_intent(root, spec.edges(edges))
         intent = root / ".project/intent/INTENT.md"
         intent.write_bytes(intent.read_text(encoding="utf-8").replace("# Intent — demo", f"# Intent — demo\n\n{lane_line}").encode("utf-8"))
         (root / "hello.py").write_bytes("print('hello')\n".encode("utf-8"))
@@ -201,7 +204,7 @@ Walkthrough:
         wave = root / relative
         text = wave.read_text(encoding="utf-8").replace("Wave verdict: pass", f"Reviewed HEAD: {reviewed}\nReview scope: final\nWave verdict: pass")
         if surface:
-            text = text.replace("- ✅ hello.py output", """- ✅ hello.py output
+            text = text.replace("- ✅ hello.py output", f"""- ✅ {evidence}
 - **Surface**: CLI
 - **Check**: `python3 hello.py`
 - **Observed**: hello followed by newline""")
@@ -254,6 +257,32 @@ Walkthrough:
             final = root / ".project/review/FINAL.md"
             self.assertIn("hello followed by newline", final.read_text(encoding="utf-8"))
             self.assertEqual(check_handoffs.validate_final(root)["verdict"], "pass")
+
+    def test_walked_surface_keeps_held_out_ids_cited_on_the_evidence_line(self):
+        edges = (
+            "| E1 | SC1 | boundary | held-out | output ends with a newline |\n"
+            "| E2 | SC2 | none | dismissed | static |\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            head, _ = self.fixture(
+                root, surface=True, edges=edges, evidence="hello.py output; held-out E1 passed"
+            )
+            result = lean_verification.reuse_final(root, head)
+            self.assertTrue(result["reused"], result)
+            self.assertEqual(check_handoffs.validate_final(root)["verdict"], "pass")
+
+    def test_walked_surface_without_the_held_out_id_still_needs_a_final_review(self):
+        edges = (
+            "| E1 | SC1 | boundary | held-out | output ends with a newline |\n"
+            "| E2 | SC2 | none | dismissed | static |\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            head, _ = self.fixture(root, surface=True, edges=edges)
+            result = lean_verification.reuse_final(root, head)
+            self.assertFalse(result["reused"])
+            self.assertIn("without cited evidence for E1", result["reason"])
 
     def test_wave_surface_state_converts_without_accepting_a_different_surface(self):
         for named, expected in (
