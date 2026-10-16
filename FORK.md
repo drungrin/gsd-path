@@ -24,7 +24,8 @@ records in `CHANGELOG.md`; record fork changes here.
 Upstream package base remains `1.6.1`.
 
 Implementation:
-[`191b903a — move active orchestration into a dedicated repository`](https://github.com/drungrin/gsd-path/commit/191b903a97e7e95271bdc4afb2abb8e7e3d0ff4f).
+[`191b903a — move active orchestration into a dedicated repository`](https://github.com/drungrin/gsd-path/commit/191b903a97e7e95271bdc4afb2abb8e7e3d0ff4f),
+[`3da09072 — ignore local coordinator tooling`](https://github.com/drungrin/gsd-path/commit/3da0907228dd71be1a05d01d88c5bb84940bebec).
 
 - Add an explicitly approved, journaled migration from a quiet single-repo
   `ship/active` milestone to a dedicated coordinator and native code member.
@@ -42,9 +43,13 @@ Implementation:
   user-completed product PRs, and integration validation remain required.
 
 Validation: 190 focused migration, evidence, member, repair, Azure and squash
-cases passed; Node tests passed 116 cases with one platform skip. Generated
-resource synchronization and whitespace checks passed. Additional plan gates
-and the full Python suite are checked separately before delivery.
+cases passed. The final migration and plan gates passed 204 cases, including
+19 migration cases; the local-tooling correction passed those 19 migration
+cases again. Node tests passed 116 cases with one platform skip. Generated
+resource synchronization and whitespace checks passed. A live migration
+preserved all 24 original task proofs, completed native cutover, and passed
+installer doctor with a clean coordinator worktree. The full Python suite is
+checked separately before delivery.
 
 Limits: early preparation interruptions retain their staging for inspection;
 publication and final cutover support retries. Rewriting Git refs does not erase
