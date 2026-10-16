@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "kimi",
+  "run_id": "session_176e3a5f-e51a-430c-95e5-6cb56591a551",
+  "result": "pass",
+  "step": "task-landing",
+  "command": "REPO=/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/kimi/quick/repo; python3 -B $REPO/.kimi-code/skills/gsd-path/scripts/dispatch_driver.py finish --repo $REPO --task-id T001",
+  "output": "commit b160ec1e296345e10b4e6493dd110a2b84e5e8e0\nAuthor:     Feature Evaluation <evaluation@example.invalid>\nAuthorDate: Thu Oct 15 18:39:38 2026 -0500\nCommit:     Feature Evaluation <evaluation@example.invalid>\nCommitDate: Thu Oct 15 18:39:38 2026 -0500\n\n    T001: Extend count.py with --json output and int() input handling, plus real-CLI tests\n    \n    Task: .project/tasks/T001-count-cli-json.md\n    Base: d63b7fa4c91bf5679dce826f230d50bc732d8e75\n    Files:\n    - .project/tasks/T001-count-cli-json.md\n    - count.py\n    - test_count.py\n\n .project/tasks/T001-count-cli-json.md |  39 ++++++++++-\n count.py                              |  39 ++++++++++-\n test_count.py                         | 121 ++++++++++++++++++++++++++++++++++\n 3 files changed, 194 insertions(+), 5 deletions(-)",
+  "fixture_bundle": "kimi/fixture.bundle",
+  "run_manifest": ".project/archive/001-count-cli-json/trust-run-manifest.json",
+  "fixture_base_commit": "d63b7fa4c91bf5679dce826f230d50bc732d8e75",
+  "task_branch": "gsd-path-verify/task-t001-verify",
+  "task_worktree": "/Users/jeremymcspadden/.gsd-path/projects/36e100762e68a0a114e70f3d4b52737ca8e3ba137ef169db50e77e82199ea05a/03ea2130629a809babbdcc4b3dc0f1afcf2349239a4c852387fa26b034079af8/verify/task-t001-verify",
+  "landing_commit": "b160ec1e296345e10b4e6493dd110a2b84e5e8e0",
+  "isolation_mode": "serial",
+  "isolation_note": "A one-task wave uses the helper's serial mode: the coder worked on the bound branch in the primary worktree at the recorded base, and the named branch and worktree are the isolated Task Verify sidecar created for this task and retired after landing."
+}

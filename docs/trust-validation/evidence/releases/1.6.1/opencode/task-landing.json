@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "opencode",
+  "run_id": "ses_ebe2b3457ffehprsEiDRQrQIGN",
+  "result": "pass",
+  "step": "task-landing",
+  "command": "REPO=/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/opencode/quick/repo; python3 -B $REPO/.opencode/skills/gsd-path/scripts/dispatch_driver.py finish --repo $REPO --task-id T001 2>&1 | tail -6",
+  "output": "commit 74f3665fc4f0c7a875038c8fabb6c094f493bb7a\nAuthor:     Feature Evaluation <evaluation@example.invalid>\nAuthorDate: Thu Oct 15 18:35:38 2026 -0500\nCommit:     Feature Evaluation <evaluation@example.invalid>\nCommitDate: Thu Oct 15 18:35:38 2026 -0500\n\n    T001: Extend count.py with int()-contract counts, --json output, strict failures, and real-CLI tests\n    \n    Task: .project/tasks/T001-count-cli.md\n    Base: 918c0272b72a25411bdb46db690d96fb1ad6bc30\n    Files:\n    - .project/tasks/T001-count-cli.md\n    - count.py\n    - tests/test_count_cli.py\n\n .project/tasks/T001-count-cli.md | 37 ++++++++++++++--\n count.py                         | 43 ++++++++++++++++++-\n tests/test_count_cli.py          | 93 ++++++++++++++++++++++++++++++++++++++++\n 3 files changed, 168 insertions(+), 5 deletions(-)",
+  "fixture_bundle": "opencode/fixture.bundle",
+  "run_manifest": ".project/archive/001-count-cli/trust-run-manifest.json",
+  "fixture_base_commit": "918c0272b72a25411bdb46db690d96fb1ad6bc30",
+  "task_branch": "gsd-path-verify/task-t001-verify",
+  "task_worktree": "/Users/jeremymcspadden/.gsd-path/projects/b4c82b74fbb237d19ffb848d7e8f785ee5e87d0aa85cc98993ec4c85d94b3e81/f4559a7285f888225fd0685d77ae1aae46be32990e0150859736c73d3194573c/verify/task-t001-verify",
+  "landing_commit": "74f3665fc4f0c7a875038c8fabb6c094f493bb7a",
+  "isolation_mode": "serial",
+  "isolation_note": "A one-task wave uses the helper's serial mode: the coder worked on the bound branch in the primary worktree at the recorded base, and the named branch and worktree are the isolated Task Verify sidecar created for this task and retired after landing."
+}

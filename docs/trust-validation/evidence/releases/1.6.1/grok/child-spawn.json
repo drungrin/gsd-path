@@ -1,0 +1,58 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "grok",
+  "run_id": "01a141d4-d716-7a83-ae59-ef87c6140c1f",
+  "result": "pass",
+  "step": "child-spawn",
+  "command": "spawn_subagent",
+  "child_api": "spawn_subagent",
+  "child_id": "build_T001",
+  "child_status": "completed",
+  "output": {
+    "child_id": "build_T001",
+    "status": "completed",
+    "child_api": "spawn_subagent",
+    "session_id": "01a141d4-d716-7a83-ae59-ef87c6140c1f",
+    "transcript": {
+      "session_dir": "/Users/jeremymcspadden/.grok/sessions/%2FUsers%2Fjeremymcspadden%2Forca%2Fevaluations%2Fgsd-path-release-1.6.1-ec116bf9-ec116bf9%2Fgrok%2Fquick%2Frepo/01a141d4-d716-7a83-ae59-ef87c6140c1f",
+      "child_session_dir": "/Users/jeremymcspadden/.grok/sessions/%2FUsers%2Fjeremymcspadden%2Forca%2Fevaluations%2Fgsd-path-release-1.6.1-ec116bf9-ec116bf9%2Fgrok%2Fquick%2Frepo/01a141fc-c3c4-7f91-85f0-b08ccd212042",
+      "reported_completions": [
+        "01a1420a-7bb9-7382-b727-c0e395265a5b",
+        "01a141db-cbc9-7662-90ef-8df9324af81e",
+        "01a141fc-c3c4-7f91-85f0-b08ccd212042",
+        "01a141db-cbca-7700-86ea-1740519a2c69"
+      ]
+    },
+    "session_store": {
+      "session_dir": "/Users/jeremymcspadden/.grok/sessions/%2FUsers%2Fjeremymcspadden%2Forca%2Fevaluations%2Fgsd-path-release-1.6.1-ec116bf9-ec116bf9%2Fgrok%2Fquick%2Frepo/01a141d4-d716-7a83-ae59-ef87c6140c1f",
+      "child_session_dir": "/Users/jeremymcspadden/.grok/sessions/%2FUsers%2Fjeremymcspadden%2Forca%2Fevaluations%2Fgsd-path-release-1.6.1-ec116bf9-ec116bf9%2Fgrok%2Fquick%2Frepo/01a141fc-c3c4-7f91-85f0-b08ccd212042",
+      "reported_completions": [
+        "01a1420a-7bb9-7382-b727-c0e395265a5b",
+        "01a141db-cbc9-7662-90ef-8df9324af81e",
+        "01a141fc-c3c4-7f91-85f0-b08ccd212042",
+        "01a141db-cbca-7700-86ea-1740519a2c69"
+      ]
+    },
+    "run": "run-20261015T234959324142Z",
+    "tool_call_id": "call-1ff67a76-abae-4d25-9d98-90377e21f5a8-94",
+    "spawn_input": {
+      "description": "build_T001",
+      "background": true,
+      "cwd": "/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/grok/quick/repo"
+    },
+    "prompt_sha256": "4edc03344f1232b0931136efaab43e110906d75a5fc57ae2a204242fb95189ac",
+    "spawn_output": "Subagent started in background.\nsubagent_id: 01a141fc-c3c4-7f91-85f0-b08ccd212042\ndescription: build_T001\n\nWhen you need its result, use get_command_or_subagent_output with task_ids=[\"01a141fc-c3c4-7f91-85f0-b08ccd212042\"] and a positive timeout_ms.",
+    "subagent_id": "01a141fc-c3c4-7f91-85f0-b08ccd212042",
+    "completion": {
+      "tool_call_id": "call-dda7e533-41c2-42ac-9350-91cbd6da84e4-97",
+      "task_id": "01a141fc-c3c4-7f91-85f0-b08ccd212042",
+      "command": "[subagent:general-purpose] build_T001",
+      "status": "completed",
+      "exit_code": 0,
+      "started": "2026-10-15T23:54:06Z",
+      "ended": "2026-10-16T00:01:11Z",
+      "duration_secs": 424.423,
+      "output": "Preflight matched SC1\u2013SC5, `count.py`, and the declared test file at base `a003b722`.\n`count.py` prints a canonical `N widgets` line or one `{\"widgets\": N}` object, and bad input exits 1 with the token on stderr and empty stdout.\n`test_count.py` exercises that command through real subprocess calls.\nVerify `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_count` from this checkout root: OK (4 tests). No bytecode left behind.\n\n- `/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/grok/quick/repo/count.py`\n- `/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/grok/quick/repo/test_count.py`\n- `/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/grok/quick/repo/.project/tasks/T001-count-cli.md`\n\nRESULT: T001 ready\n\n<subagent_meta>id=01a141fc-c3c4-7f91-85f0-b08ccd212042, tool_calls=16, turns=1, duration_ms=424423</subagent_meta>\n\n<subagent_result>\nsubagent_id: 01a141fc-c3c4-7f91-85f0-b08ccd212042\nTo continue this subagent's conversation, use resume_from=\"01a141fc-c3c4-7f91-85f0-b08ccd212042\".\n</subagent_result>"
+    }
+  }
+}

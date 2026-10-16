@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "grok",
+  "run_id": "01a141d4-d716-7a83-ae59-ef87c6140c1f",
+  "result": "pass",
+  "step": "reviews",
+  "command": "PRIMARY=\"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/grok/quick/repo\"\nSKILL=\"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/grok/quick/repo/.grok/skills/gsd-path\"\npython3 -B \"$SKILL/scripts/workflow_run.py\" prepare-final --repo \"$PRIMARY\" --expected-head 11961c20676be8a025615e560a91beb7c5595657 | tee /tmp/gsd-path-prepare-final-2.json >/dev/null\npython3 - <<'PY'\nimport hashlib, json, pathlib\np = pathlib.Path(\"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/grok/quick/repo/.project/build/verify-ledger.jsonl\")\nb = p.read_bytes()\nlines = b.splitlines()\nreceipt = json.loads(pathlib.Path(\"/tmp/gsd-path-prepare-final-2.json\").read_text())\nstep = receipt[\"steps\"][-1][\"result\"]\nprint(\"status\", receipt[\"status\"])\nprint(\"final\", json.dumps(step.get(\"final\"), sort_keys=True))\nver = step.get(\"verification\", {})\nprint(\"verification.reused\", ver.get(\"reused\"))\nprint(\"verification.passed\", ver.get(\"passed\"))\nprint(\"verification.execution\", json.dumps(ver.get(\"execution\"), sort_keys=True)[:800])\nprint(\"next\", step.get(\"next\"))\nprint(\"ledger_lines\", len(lines))\nprint(\"ledger_sha256\", hashlib.sha256(b).hexdigest())\nprint(\"ledger_commits\", [json.loads(x)[\"commit\"] for x in lines])\nPY\ngit -C \"$PRIMARY\" rev-parse HEAD\ngit -C \"$PRIMARY\" log -1 --format='%H %s'\ngit -C \"$PRIMARY\" worktree list\ngit -C \"$PRIMARY\" status --short",
+  "output": "# Review \u2014 wave 1, cycle 1\n\nReviewed HEAD: 07b6724a4b45db9dd54deb426ac9001440e39644\nReview scope: final\n\nWave verdict: pass\n# Final Review \u2014 reused full wave\n\nReviewed HEAD: 11961c20676be8a025615e560a91beb7c5595657\nOverall verdict: pass\nSource review: .project/review/wave-1.cycle1.md\nSource commit: 07b6724a4b45db9dd54deb426ac9001440e39644",
+  "wave_review_artifact": ".project/archive/001-widget-count/review/wave-1.cycle1.md",
+  "final_review_artifact": ".project/archive/001-widget-count/review/FINAL.md"
+}
