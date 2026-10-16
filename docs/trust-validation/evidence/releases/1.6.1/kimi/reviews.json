@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "kimi",
+  "run_id": "session_176e3a5f-e51a-430c-95e5-6cb56591a551",
+  "result": "pass",
+  "step": "reviews",
+  "command": "REPO=/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/kimi/quick/repo; python3 -B $REPO/.kimi-code/skills/gsd-path/scripts/workflow_run.py prepare-final --repo $REPO --expected-head 087933771e20a65be91841b870d47d74d8b3f98e 2>&1 | python3 -c \"import sys,json; d=json.load(sys.stdin); print(json.dumps({'status': d.get('status'), 'steps': [{'script': s.get('script'), 'command_tail': s.get('command', [])[-3:], 'exit_code': s.get('exit_code'), 'result': s.get('result')} for s in d.get('steps', [])]}, indent=1))\"",
+  "output": "# Review \u2014 wave 1, cycle 1\n\nReviewed HEAD: b160ec1e296345e10b4e6493dd110a2b84e5e8e0\nReview scope: final\n\nWave verdict: pass\n# Final Review \u2014 repo\n\nReviewed HEAD: 087933771e20a65be91841b870d47d74d8b3f98e\nOverall verdict: pass\n\n## Success criteria",
+  "wave_review_artifact": ".project/archive/001-count-cli-json/review/wave-1.cycle1.md",
+  "final_review_artifact": ".project/archive/001-count-cli-json/review/FINAL.md"
+}

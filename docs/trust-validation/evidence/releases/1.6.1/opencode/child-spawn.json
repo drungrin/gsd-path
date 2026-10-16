@@ -1,0 +1,45 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "opencode",
+  "run_id": "ses_ebe2b3457ffehprsEiDRQrQIGN",
+  "result": "pass",
+  "step": "child-spawn",
+  "command": "Task",
+  "child_api": "Task",
+  "child_id": "build_T001",
+  "child_status": "completed",
+  "output": {
+    "child_id": "build_T001",
+    "status": "completed",
+    "child_api": "Task",
+    "run": "run-20261015T232838419997Z",
+    "parent_session": "ses_ebe2b3457ffehprsEiDRQrQIGN",
+    "call_id": "call_e1123a2fafcc401ba8678d50",
+    "task_state": "completed",
+    "child_session": "ses_ebe184a7affeiokNxF6IbfPIz4",
+    "input": {
+      "description": "build_T001",
+      "subagent_type": "general"
+    },
+    "prompt_sha256": "212a7a3d1c6fb24899e1f8dc9df1b84e848e339fc564c0527b1ec57c1d4feb93",
+    "output": "<task id=\"ses_ebe184a7affeiokNxF6IbfPIz4\" state=\"completed\">\n<task_result>\nready \u2014 changed `count.py` (in-order parsing: `--json` at most once, at most one count token accepted exactly when `int()` accepts it, unknown `-`-prefixed flags rejected; exact text/JSON output bytes; all failures print one-line stderr and exit 2 with no traceback) and added `tests/test_count_cli.py` (stdlib unittest + subprocess from repo root, pins SC1\u2013SC4 including named E3/E5/E9 tests plus E6). Checks: `python3 tests/test_count_cli.py -v` \u2192 8 tests OK; `python3 -m unittest discover -s tests -p \"test_count_cli.py\" -v` \u2192 8 tests OK; manual CLI spot checks for defaults, negative `--json` in both orders, int() contract forms, 10**18, and all failure classes. Verify: PASS.\n\nRESULT: T001 ready\n</task_result>\n</task>",
+    "metadata": {
+      "parentSessionId": "ses_ebe2b3457ffehprsEiDRQrQIGN",
+      "sessionId": "ses_ebe184a7affeiokNxF6IbfPIz4",
+      "model": {
+        "modelID": "glm-5.3",
+        "providerID": "zai-coding-plan"
+      },
+      "truncated": false
+    },
+    "session_row": {
+      "id": "ses_ebe184a7affeiokNxF6IbfPIz4",
+      "parent_id": "ses_ebe2b3457ffehprsEiDRQrQIGN",
+      "title": "build_T001 (@general subagent)",
+      "agent": "general",
+      "model": "{\"id\":\"glm-5.3\",\"providerID\":\"zai-coding-plan\",\"variant\":\"default\"}",
+      "time_created": 1792107066757,
+      "time_updated": 1792107247915
+    }
+  }
+}

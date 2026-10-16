@@ -1,6 +1,6 @@
 # GSD Path
 
-**Fork version: 1.6.0.6** · upstream base: **1.6.0**.
+**Fork version: 1.6.1.7** · upstream base: **1.6.1**.
 See [FORK.md](FORK.md) for fork changes, implementation commits, and version policy.
 
 A disk-backed project pipeline for AI coding agents. It turns a raw idea into
@@ -12,11 +12,11 @@ milestone loop. While a milestone builds, the next one can be planned in
 parallel under `.project/next/` (lookahead); a building milestone can also be
 abandoned on an explicit ruling, archiving its partial work for a re-slice.
 
-**Hosts with a passing full live milestone for release 1.6.0:** Codex, Claude
+**Hosts with a passing full live milestone for release 1.6.1:** Codex, Claude
 Code, Grok, OpenCode, Antigravity CLI, Cursor, and Kimi Code.
 
 **Hosts with an installer and a dispatch contract, but no live milestone for
-release 1.6.0:** GitHub Copilot CLI (account quota exhausted), Qwen Code, Zed,
+release 1.6.1:** GitHub Copilot CLI (account quota exhausted), Qwen Code, Zed,
 and Kiro (API credits), and Muse Code (no live release evidence recorded yet).
 These hosts are excluded from the release evaluation. Exclusion is not a pass.
 

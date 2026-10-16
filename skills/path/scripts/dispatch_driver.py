@@ -118,9 +118,21 @@ def _refresh_stop_errors() -> None:
                    model_policy.PolicyError)
 
 
+# The selected Project runtime directory once _reload_pinned_modules ran; None keeps bundled helpers.
+_RUNTIME_ROOT: Optional[Path] = None
+
+
+def helper_script(name: str) -> Path:
+    """A subprocess helper from the selected runtime when it ships one, else the bundled sibling."""
+    if _RUNTIME_ROOT is not None and (_RUNTIME_ROOT / name).is_file():
+        return _RUNTIME_ROOT / name
+    return Path(__file__).resolve().parent / name
+
+
 def _reload_pinned_modules(runtime_root: Path) -> None:
     global isolation, build_state, task_context, contracts, pipeline_state
-    global archive_milestone, review_findings, model_policy
+    global archive_milestone, review_findings, model_policy, _RUNTIME_ROOT
+    _RUNTIME_ROOT = runtime_root
     if _bundled_helpers():
         path = str(runtime_root)
         if path not in sys.path:
@@ -982,7 +994,7 @@ class Round:
                 diagnose = shlex.join([
                     sys.executable,
                     "-B",
-                    str(Path(__file__).with_name("pipeline_diagnose.py")),
+                    str(helper_script("pipeline_diagnose.py")),
                     "diagnose",
                     "--repo",
                     str(self.primary),
@@ -1678,8 +1690,8 @@ class Review:
 
 
 def helper_json(receipt: Dict[str, object], script: str, *arguments: str, cwd: Path) -> Dict[str, object]:
-    """Run a bundled helper and return its JSON stdout; a non-zero exit is a typed stop."""
-    command = [sys.executable, "-B", str(Path(__file__).resolve().parent / script), *arguments]
+    """Run a helper (runtime-selected, else bundled) and return its JSON stdout; a non-zero exit is a typed stop."""
+    command = [sys.executable, "-B", str(helper_script(script)), *arguments]
     completed = subprocess.run(command, cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
     step = {"script": script, "command": command, "exit_code": completed.returncode,
             "stdout": completed.stdout, "stderr": completed.stderr}
@@ -2291,7 +2303,7 @@ Heavy: {'yes' if heavy else 'no'}
         if plan_changed:
             _common.atomic_write(plan_path, updated)
         receipt["plan_wave"] = fix_wave
-        lint = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve().parent / "check_task_briefs.py"),
+        lint = subprocess.run([sys.executable, "-B", str(helper_script("check_task_briefs.py")),
                                "--repo", str(primary), "--base", isolation.current_sha(primary),
                                "--tasks-dir", f"{options.project_dir}/tasks",
                                "--project-dir", options.project_dir], capture_output=True, encoding="utf-8", errors="replace")

@@ -142,6 +142,33 @@ class DispatchPolicyTests(unittest.TestCase):
         self.assertEqual(changed['selection']['selected'], {'model': 'large', 'effort': 'low'})
         self.assertEqual(changed['history'][0]['selection'], first['selection'])
 
+    def test_native_record_refuses_a_relative_path_and_creates_nothing(self):
+        script = Path(__file__).parents[1] / 'scripts/model_policy.py'
+        cwd = self.root / 'runtime'
+        cwd.mkdir()
+        for action in ('release', 'resolve'):
+            result = subprocess.run([
+                sys.executable, '-B', str(script), action, '--repo', str(self.root),
+                '--scope', 'M001/active/plan', '--assignment', 'plan', '--role', 'plan',
+                '--record', '.git/gsd-path/model-selection/M001/plan.json',
+                '--capabilities', str(self.caps), '--terminal-result', 'host:completed/plan'],
+                cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('--record must be an absolute path', json.loads(result.stdout)['reason'])
+        self.assertEqual(list(cwd.iterdir()), [])
+
+    def test_native_release_of_a_missing_record_names_it_and_creates_nothing(self):
+        record = self.root / 'selection' / 'M001' / 'plan.json'
+        script = Path(__file__).parents[1] / 'scripts/model_policy.py'
+        result = subprocess.run([
+            sys.executable, '-B', str(script), 'release', '--repo', str(self.root),
+            '--scope', 'M001/active/plan', '--assignment', 'plan', '--role', 'plan',
+            '--record', str(record), '--terminal-result', 'host:completed/plan'],
+            capture_output=True, encoding="utf-8", errors="replace")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(str(record.resolve()), json.loads(result.stdout)['reason'])
+        self.assertFalse((self.root / 'selection').exists())
+
     def test_invalid_task_override_fails_task_contract_validation(self):
         from scripts import check_handoffs
         with self.assertRaisesRegex(check_handoffs.HandoffError, 'model'):

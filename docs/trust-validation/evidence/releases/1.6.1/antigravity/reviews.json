@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "antigravity",
+  "run_id": "e12f3aa2-c541-4c0a-bcf4-0b9ded5a9473",
+  "result": "pass",
+  "step": "reviews",
+  "command": "python3 -B /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/antigravity/quick/repo/.agents/skills/gsd-path-ship/scripts/workflow_run.py prepare-final --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/antigravity/quick/repo --expected-head 40356a3d122c498125bf487c5b3d9402ff870b57",
+  "output": "# Review \u2014 wave 1, cycle 1\n\nReviewed HEAD: daea59a1b9a6e3549d5bac35688bff545eb20b98\nReview scope: final\n\nWave verdict: pass\n# Final Review \u2014 reused full wave\n\nReviewed HEAD: 40356a3d122c498125bf487c5b3d9402ff870b57\nOverall verdict: pass\nSource review: .project/review/wave-1.cycle1.md\nSource commit: daea59a1b9a6e3549d5bac35688bff545eb20b98",
+  "wave_review_artifact": ".project/archive/001-count-cli/review/wave-1.cycle1.md",
+  "final_review_artifact": ".project/archive/001-count-cli/review/FINAL.md"
+}

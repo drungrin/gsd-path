@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.0.6**. Upstream package base: **1.6.0**.
+Current fork version: **1.6.1.7**. Upstream package base: **1.6.1**.
 
 ## Version policy
 

@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "kimi",
+  "run_id": "session_176e3a5f-e51a-430c-95e5-6cb56591a551",
+  "result": "pass",
+  "step": "integration",
+  "command": "RT=/Users/jeremymcspadden/.gsd-path/runtimes/041b6c87f6c564e28117a504b282801428bd11aa692b61c04a5f07767cf804b5; REPO=/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/kimi/quick/repo; echo \"CMD: python3 -B $RT/archive_milestone.py integrate --repo $REPO --slug count-cli-json\" && python3 -B $RT/archive_milestone.py integrate --repo $REPO --slug count-cli-json",
+  "output": "CMD: python3 -B /Users/jeremymcspadden/.gsd-path/runtimes/041b6c87f6c564e28117a504b282801428bd11aa692b61c04a5f07767cf804b5/archive_milestone.py integrate --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/kimi/quick/repo --slug count-cli-json\n{\"archive\": \".project/archive/001-count-cli-json\", \"base\": \"23121a800be57bc46bdb6ff7a71ff243c3aae566\", \"commit\": \"c7ebc4cf8345612c07fd0df51c6ee42a1deb74ad\", \"integrate\": \"23121a800be57bc46bdb6ff7a71ff243c3aae566\", \"landing\": \"23121a800be57bc46bdb6ff7a71ff243c3aae566\", \"mode\": \"direct\", \"tag\": \"milestone/001-count-cli-json\"}\n",
+  "fixture_bundle": "kimi/fixture.bundle",
+  "run_manifest": ".project/archive/001-count-cli-json/trust-run-manifest.json",
+  "ship_commit": "c7ebc4cf8345612c07fd0df51c6ee42a1deb74ad",
+  "bound_branch": "gsd-path/M001",
+  "default_branch": "main",
+  "pre_integration_default_commit": "a6f81eba8d90eaa0c2f91e79d5a432c6d0cfbaa5",
+  "integration_commit": "23121a800be57bc46bdb6ff7a71ff243c3aae566",
+  "milestone_tag": "milestone/001-count-cli-json"
+}

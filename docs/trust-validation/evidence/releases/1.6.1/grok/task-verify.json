@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "grok",
+  "run_id": "01a141d4-d716-7a83-ae59-ef87c6140c1f",
+  "result": "pass",
+  "step": "task-verify",
+  "command": "python3 -m unittest test_count",
+  "output": "{\"command\": \"python3 -m unittest test_count\", \"commit\": \"2ea42b8cc1fc413791461131488aafaf7cce7c2a\", \"execution\": {\"evidence\": \"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/grok/quick/repo/.git/gsd-path/dispatch/gsd-path-M001/T001/manual-2026-10-16T000148+0000/verify.json\", \"exit_code\": 0, \"location\": \"sidecar gsd-path-verify/task-t001-verify\", \"stderr\": \"....\\n----------------------------------------------------------------------\\nRan 4 tests in 3.121s\\n\\nOK\\n\", \"stdout\": \"\", \"worktree\": \"/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/grok/quick/repo\"}, \"recorded_at\": \"2026-10-16T00:01:51+00:00\", \"result\": \"pass\", \"schema\": \"gsd-path/verify-ledger/v2\"}\n{\"command\": \"python3 -m unittest test_count\", \"commit\": \"11961c20676be8a025615e560a91beb7c5595657\", \"execution\": {\"branch\": \"gsd-path-verify/project-verify\", \"exit_code\": 0, \"stderr\": \"....\\n----------------------------------------------------------------------\\nRan 4 tests in 3.241s\\n\\nOK\\n\", \"stdout\": \"\", \"worktree\": \"/Users/jeremymcspadden/.gsd-path/projects/ade124c30b80bcbc04f8fbd0bb2f351e2c48980671be240e0e4577c82bcd8bbb/f57a3d148d1ddb0d5f5ca71b2d780f9df7e89389b6d38d67574852835e7c84e1/verify/project-verify\"}, \"recorded_at\": \"2026-10-16T00:22:35+00:00\", \"result\": \"pass\", \"schema\": \"gsd-path/verify-ledger/v2\"}\n",
+  "verify_artifact": ".project/archive/001-widget-count/build/verify-ledger.jsonl",
+  "verify_exit_code": 0
+}

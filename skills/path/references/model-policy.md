@@ -70,7 +70,9 @@ settings block; their default inheritance remains usable.
 Resolve the bundled helper to an absolute path. Use one record under the Git
 common directory's `gsd-path/model-selection/` directory per assignment. Scope
 the path and `--scope` to the milestone, active/lookahead track, and review cycle
-where applicable; later work must not reuse an earlier record.
+where applicable; later work must not reuse an earlier record. The helper
+refuses a relative `--record`, and `release` of a missing record names the
+path and creates nothing.
 
 ```text
 python3 -B <helper> resolve --repo <primary> --scope <milestone/track/cycle> --assignment <logical-name> --role <role> --record <absolute-record> --capabilities <advertised-json>

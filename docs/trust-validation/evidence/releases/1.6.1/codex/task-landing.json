@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "codex",
+  "run_id": "01a141d4-89e8-75a2-b328-5d81d1be537d",
+  "result": "pass",
+  "step": "task-landing",
+  "command": "/bin/zsh -lc 'python3 -B .agents/skills/gsd-path/scripts/dispatch_driver.py finish --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.1-ec116bf9-ec116bf9/codex/quick/repo --task-id T001 > /tmp/gsd-path-build.JqLRRJ/finish-t001.json'",
+  "output": "commit 6e301d29ec3c0468af53042e61b9c0be373814a8\nAuthor:     Feature Evaluation <evaluation@example.invalid>\nAuthorDate: Thu Oct 15 18:27:48 2026 -0500\nCommit:     Feature Evaluation <evaluation@example.invalid>\nCommitDate: Thu Oct 15 18:27:48 2026 -0500\n\n    T001: Complete the counter CLI with exact output and real-process tests\n    \n    Task: .project/tasks/T001-complete-counter-cli.md\n    Base: 14e1bef5998cf4e620cea17c4f2489014ff8f8a1\n    Files:\n    - .project/tasks/T001-complete-counter-cli.md\n    - count.py\n    - tests/test_count.py\n\n .project/tasks/T001-complete-counter-cli.md | 15 ++++-\n count.py                                    | 24 +++++++-\n tests/test_count.py                         | 95 +++++++++++++++++++++++++++++\n 3 files changed, 129 insertions(+), 5 deletions(-)",
+  "fixture_bundle": "codex/fixture.bundle",
+  "run_manifest": ".project/archive/001-widget-counter-cli/trust-run-manifest.json",
+  "fixture_base_commit": "14e1bef5998cf4e620cea17c4f2489014ff8f8a1",
+  "task_branch": "gsd-path-verify/task-t001-verify",
+  "task_worktree": "/Users/jeremymcspadden/.gsd-path/projects/4dfe604b6f75f0cfbfa3d3f4432e1620e0cd8b23483d00061ab143a802ec5006/296bc9a3a3f2fa40d8363341f90909bbfd1be5dbc30634040308b6c94fd86546/verify/task-t001-verify",
+  "landing_commit": "6e301d29ec3c0468af53042e61b9c0be373814a8",
+  "isolation_mode": "serial",
+  "isolation_note": "A one-task wave uses the helper's serial mode: the coder worked on the bound branch in the primary worktree at the recorded base, and the named branch and worktree are the isolated Task Verify sidecar created for this task and retired after landing."
+}

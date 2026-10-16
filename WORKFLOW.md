@@ -513,7 +513,11 @@ untouched.
 One exception: a DOCS-AUDIT.md with pending `planned: no` rulings is copied
 atomically back into a recreated `research/` so the alignment queue survives;
 the archived original keeps full history. Active and archived research may
-coexist only for that byte-identical carry-forward.
+coexist only for that byte-identical carry-forward. When a lookahead track
+brings its own `research/`, `promote-next` removes the carry-forward in the
+promotion commit, but only if the lookahead DOCS-AUDIT.md keeps every
+carry-forward ruling (a pending row may gain a `T###`); otherwise promotion
+stops.
 
 Archives become read-only when committed. No phase may modify a committed
 archive; the next milestone's inspection may read it. A retry with a persisted
