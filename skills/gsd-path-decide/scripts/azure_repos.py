@@ -189,7 +189,7 @@ def create(repository: Repository, branch: str, base: str, title: str, body: str
     return normalize(repository, call("repos", "pr", "create", *repository.scope,
                      "--repository", repository.name, "--source-branch", branch, "--target-branch", base,
                      "--title", title, "--description", body, "--auto-complete", "false",
-                     "--squash", "false", "--delete-source-branch", "false"), call)
+                     "--delete-source-branch", "false"), call)
 
 
 def update_body(repository: Repository, number: int, body: str, call: Callable[..., object]) -> dict:
@@ -198,7 +198,7 @@ def update_body(repository: Repository, number: int, body: str, call: Callable[.
 
 
 def require_merge_provenance(repository: Repository, number: int, merge: Optional[str],
-                             call: Callable[..., object]) -> None:
+                             call: Callable[..., object]) -> dict:
     pull = show(repository, number, call)
     raw = pull["azure"]
     options = raw.get("completionOptions")
@@ -213,14 +213,18 @@ def require_merge_provenance(repository: Repository, number: int, merge: Optiona
     if merge is None:
         if pull["state"] != "open" or pull["merged_at"] is not None:
             raise AzureError("open Azure pull request has invalid merge provenance")
-        return
+        return pull
     if pull["merged_at"] is None or pull["merge_commit_sha"] != merge:
         raise AzureError("Azure pull-request merge action does not match landing")
     strategy = options.get("mergeStrategy")
-    if strategy != "noFastForward" and not (strategy is None and options.get("squashMerge") is False):
-        raise AzureError("Azure pull-request integration requires a no-fast-forward merge commit")
+    if not (isinstance(strategy, str) and strategy in {"noFastForward", "squash"}) and not (strategy is None and options.get("squashMerge") is False):
+        raise AzureError("Azure pull-request integration requires a no-fast-forward merge or squash")
+    if strategy == "squash":
+        target = raw.get("lastMergeTargetCommit")
+        _sha(target.get("commitId") if isinstance(target, dict) else None, "target commit")
     actor = raw.get("closedBy")
     if (not isinstance(actor, dict) or not isinstance(actor.get("id"), str) or not actor["id"]
             or actor.get("isContainer")
             or not isinstance(actor.get("uniqueName"), str) or "@" not in actor["uniqueName"]):
         raise AzureError("Azure pull request must be completed by a user")
+    return pull

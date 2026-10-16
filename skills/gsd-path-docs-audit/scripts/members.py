@@ -386,7 +386,7 @@ def member_ref_prefixes(project: str) -> tuple[str, ...]:
     """Ref prefixes a member repo reserves for the coordinator named `project`."""
     return tuple(
         "refs/heads/" + branch.format(_common.branch_slug(project)) for branch in MEMBER_BRANCH_FORMATS
-    ) + (MEMBER_TAG_FORMAT.format(project),)
+    ) + (MEMBER_TAG_FORMAT.format(project), f"refs/tags/milestone-source/{project}-")
 
 
 def _authorization_ref(project: str, kind: str, ref: str) -> str:

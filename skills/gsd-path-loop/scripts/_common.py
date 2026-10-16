@@ -23,6 +23,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import BinaryIO, Iterable, Iterator, List, Optional, Sequence, Tuple
@@ -432,6 +433,67 @@ def rebase_landing_problem(repo: Path, ship: str, landing: str) -> Optional[str]
     trees = run_git(repo, "rev-parse", f"{ship}^{{tree}}", f"{landing}^{{tree}}").stdout.split()
     if rows[0][1] == fork and (len(trees) != 2 or trees[0] != trees[1]):
         return "rebased tree differs from the ship tree"
+    return None
+
+
+def squash_landing_problem(
+    repo: Path, source: str, landing: str, target: Optional[str] = None,
+) -> Optional[str]:
+    """Prove the exact tree of a squash, including concurrent target changes.
+
+    Compute Git's merge in a disposable object store. Status checks never write
+    repository objects, refs, the index, or the worktree. Conflicts fail closed;
+    a provider's successful merge alone cannot attest a conflict resolution.
+    """
+    parents = run_git(repo, "rev-list", "--parents", "-n", "1", landing)
+    row = parents.stdout.split()
+    if parents.returncode or len(row) != 2:
+        return "squash landing must have exactly one parent"
+    if target is not None and row[1] != target:
+        return "squash landing parent differs from the recorded target commit"
+    target = row[1]
+    objects = run_git(repo, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+    tree = run_git(repo, "rev-parse", "--verify", f"{landing}^{{tree}}")
+    if objects.returncode or tree.returncode:
+        return "could not resolve squash objects"
+    environment = os.environ.copy()
+    alternates = [objects.stdout.strip()]
+    if environment.get("GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+        alternates.append(environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"])
+    environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = os.pathsep.join(alternates)
+    with tempfile.TemporaryDirectory(prefix="milestone-merge-") as temporary:
+        environment["GIT_OBJECT_DIRECTORY"] = temporary
+        merged = subprocess.run(
+            git_command(repo, "merge-tree", "--write-tree", target, source),
+            capture_output=True, encoding="utf-8", errors="replace", env=environment,
+        )
+    if merged.returncode:
+        return "squash merge cannot be reproduced cleanly (Git 2.38+ is required)"
+    if merged.stdout.splitlines() != [tree.stdout.strip()]:
+        return "squash landing tree differs from the source merged into its target"
+    return None
+
+
+def source_tag_name(milestone_tag: str) -> str:
+    if not milestone_tag.startswith("milestone/"):
+        raise ValueError("invalid milestone tag for source retention")
+    return "milestone-source/" + milestone_tag.removeprefix("milestone/")
+
+
+def source_tag_message(milestone_tag: str, source: str, landing: str, pull: str) -> str:
+    return (f"milestone source {milestone_tag.removeprefix('milestone/')}\n\n"
+            f"Source: {source}\nLanding: {landing}\nPull-Request: {pull}")
+
+
+def source_tag_problem(repo: Path, milestone_tag: str, source: str, landing: str, pull: str) -> Optional[str]:
+    ref = "refs/tags/" + source_tag_name(milestone_tag)
+    kind = run_git(repo, "cat-file", "-t", ref)
+    resolved = run_git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    contents = run_git(repo, "for-each-ref", "--format=%(contents)", ref)
+    if kind.returncode or kind.stdout.strip() != "tag" or resolved.returncode or resolved.stdout.strip() != source:
+        return "squash source tag is missing, unannotated, or names a different source"
+    if contents.returncode or contents.stdout.strip() != source_tag_message(milestone_tag, source, landing, pull):
+        return "squash source tag metadata differs from the milestone proof"
     return None
 
 

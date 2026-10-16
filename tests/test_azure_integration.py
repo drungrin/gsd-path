@@ -76,6 +76,7 @@ class AzureIntegrationTests(unittest.TestCase):
         default = getattr(self, 'member_default', 'main')
         git(self.root.parent, 'clone', '-q', str(self.remote), str(clone))
         git(clone, 'fetch', '-q', 'origin', self.bound)
+        target = git(clone, 'rev-parse', 'HEAD')
         if squash:
             git(clone, 'merge', '--squash', 'FETCH_HEAD')
             git(clone, 'commit', '-q', '-m', 'squashed')
@@ -85,6 +86,7 @@ class AzureIntegrationTests(unittest.TestCase):
         git(clone, 'push', '-q', 'origin', default)
         self.pulls[0].update(status='completed', closedDate='2026-10-15T12:00:00Z',
                              mergeStatus='succeeded', lastMergeCommit={'commitId': merge},
+                             lastMergeTargetCommit={'commitId': target},
                              closedBy={'id': 'user', 'uniqueName': 'owner@example.com'},
                              completionOptions={'mergeStrategy': 'squash' if squash else 'noFastForward',
                                                 'triggeredByAutoComplete': False})
@@ -113,16 +115,19 @@ class AzureIntegrationTests(unittest.TestCase):
             self.assertEqual(integration.validate_member_integrated(
                 self.root, 'web', ARCHIVE, self.member_tip)['merge'], merge)
 
-    def test_squash_or_auto_complete_is_rejected_without_tagging(self):
+    def test_auto_complete_is_rejected_and_human_squash_preserves_source(self):
         self.integrate()
         self.pulls[0]['autoCompleteSetBy'] = {'id': 'user'}
         with self.assertRaisesRegex(ArchiveError, 'auto-complete'):
             self.integrate()
         self.pulls[0]['autoCompleteSetBy'] = None
-        self.complete(squash=True)
-        with self.assertRaisesRegex(ArchiveError, 'no-fast-forward'):
-            self.integrate()
-        self.assertEqual(self.remote_ref('refs/tags/' + TAG), '')
+        merge = self.complete(squash=True)
+        result = self.integrate()
+        self.assertEqual(result['merge'], merge)
+        self.assertEqual(self.remote_ref('refs/tags/' + TAG + '^{}'), merge)
+        source = integration._common.source_tag_name(TAG)
+        self.assertEqual(self.remote_ref('refs/tags/' + source + '^{}'), self.member_tip)
+        self.assertEqual(self.integrate()['merge'], merge)
 
     def test_azure_direct_integration_needs_no_az_or_gh(self):
         with mock.patch.object(integration, 'run_command', side_effect=AssertionError('forge CLI used')):

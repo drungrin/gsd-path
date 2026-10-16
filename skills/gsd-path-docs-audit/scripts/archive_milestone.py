@@ -52,7 +52,7 @@ if __package__:
         load_state,
         transition_state,
     )
-    from . import _common
+    from . import _common, pipeline_git, azure_repos
 else:
     try:
         from isolation import (
@@ -83,6 +83,8 @@ else:
             transition_state,
         )
         import _common
+        import pipeline_git
+        import azure_repos
     except ImportError:  # pragma: no cover - package import used by tests
         from scripts.isolation import (
             IsolationError,
@@ -111,7 +113,7 @@ else:
             load_state,
             transition_state,
         )
-        from scripts import _common
+        from scripts import _common, pipeline_git, azure_repos
 
 if sys.platform != "win32":
     import fcntl
@@ -1957,6 +1959,22 @@ def require_canonical_commit_body(
 
 def find_ship_commit(project: Path, archive_name: str, *, historical: bool = False) -> str:
     expected_subject = ship_subject(archive_name)
+    if historical:
+        # A squash preserves content but does not contain the original ship.
+        # Its independently published source tag retains the full review graph.
+        tag_name = f"milestone/{archive_name}"
+        source_ref = "refs/tags/" + _common.source_tag_name(tag_name)
+        source = run_git(project, "rev-parse", "--verify", "--quiet", f"{source_ref}^{{commit}}")
+        if source.returncode == 0:
+            fields = pipeline_git._milestone_tag_fields(project, "refs/tags/" + tag_name)
+            if (fields.get("Source-Tag") != _common.source_tag_name(tag_name)
+                    or fields.get("Ship") != source.stdout.strip()
+                    or not azure_repos.valid_pull_request_url(fields.get("Pull-Request", ""))):
+                raise ArchiveError("historical squash source does not match its milestone proof")
+            problem = _common.source_tag_problem(project, tag_name, fields["Ship"], fields.get("Landing", ""), fields["Pull-Request"])
+            if problem:
+                raise ArchiveError(problem)
+            return fields["Ship"]
     log = require_git_success(
         run_git(project, "log", *([] if historical else ["--first-parent"]),
                 "--format=%H%x00%s", "HEAD"),

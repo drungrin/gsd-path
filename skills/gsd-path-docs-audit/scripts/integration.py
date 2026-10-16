@@ -166,6 +166,8 @@ def refresh_origin(repo: Path) -> dict:
         "--prune",
         "origin",
         "refs/tags/milestone/*:refs/remotes/origin/tags/milestone/*",
+        "refs/tags/milestone-source/*:refs/remotes/origin/tags/milestone-source/*",
+        "refs/tags/milestone-source/*:refs/tags/milestone-source/*",
     )
     if mirrored.returncode != 0:
         detail = (mirrored.stderr or mirrored.stdout).strip()
@@ -837,13 +839,16 @@ def pull_request_tag_message(
     pull_request: str,
     ship_commit: str,
     landing: str,
+    source_tag: Optional[str] = None,
+    mode: str = "pull-request",
 ) -> str:
     return (
         f"milestone {archive_name}\n\n"
-        "Mode: pull-request\n"
+        f"Mode: {mode}\n"
         f"Pull-Request: {pull_request}\n"
         f"Ship: {ship_commit}\n"
         f"Landing: {landing}"
+        + (f"\nSource-Tag: {source_tag}" if source_tag else "")
     )
 
 
@@ -854,12 +859,12 @@ def pull_request_tag_metadata(project: Path, tag_ref: str) -> dict[str, str]:
     )
     fields: dict[str, str] = {}
     for line in message.splitlines():
-        match = re.fullmatch(r"(Mode|Pull-Request|Ship|Landing): (.+)", line)
+        match = re.fullmatch(r"(Mode|Pull-Request|Ship|Landing|Source-Tag): (.+)", line)
         if match:
             if match.group(1) in fields:
                 raise ArchiveError("pull-request milestone tag repeats metadata")
             fields[match.group(1)] = match.group(2)
-    if set(fields) != {"Mode", "Pull-Request", "Ship", "Landing"}:
+    if set(fields) - {"Source-Tag"} != {"Mode", "Pull-Request", "Ship", "Landing"}:
         raise ArchiveError("pull-request milestone tag is missing metadata")
     if fields["Mode"] != "pull-request":
         raise ArchiveError("pull-request milestone tag has the wrong mode")
@@ -884,13 +889,15 @@ def external_landing_tag_metadata(project: Path, tag_ref: str) -> dict[str, str]
     )
     fields: dict[str, str] = {}
     for line in message.splitlines():
-        match = re.fullmatch(r"(Mode|Ship|Landing): (.+)", line)
+        match = re.fullmatch(r"(Mode|Ship|Landing|Pull-Request|Source-Tag): (.+)", line)
         if match:
             if match.group(1) in fields:
                 raise ArchiveError("external-landing milestone tag repeats metadata")
             fields[match.group(1)] = match.group(2)
-    if set(fields) != {"Mode", "Ship", "Landing"}:
+    if set(fields) - {"Pull-Request", "Source-Tag"} != {"Mode", "Ship", "Landing"}:
         raise ArchiveError("external-landing milestone tag is missing metadata")
+    if "Source-Tag" in fields and "Pull-Request" not in fields:
+        raise ArchiveError("external-landing source tag requires pull-request provenance")
     if fields["Mode"] != "external-landing":
         raise ArchiveError("external-landing milestone tag has the wrong mode")
     return fields
@@ -903,6 +910,7 @@ def require_pull_request_merge(
     remote_default: str,
     *,
     allow_rebase: bool = False,
+    squash_target: Optional[str] = None,
 ) -> None:
     resolved = optional_ref(project, merge_commit)
     if resolved != merge_commit:
@@ -911,7 +919,11 @@ def require_pull_request_merge(
         run_git(project, "rev-list", "--parents", "-n", "1", merge_commit),
         "inspect pull-request merge parents",
     ).split()
-    if allow_rebase and len(parents) == 2:
+    if squash_target is not None:
+        problem = _common.squash_landing_problem(project, ship_commit, merge_commit, squash_target)
+        if problem:
+            raise ArchiveError(problem)
+    elif allow_rebase and len(parents) == 2:
         problem = _common.rebase_landing_problem(project, ship_commit, merge_commit)
         if problem is not None:
             raise ArchiveError(
@@ -932,11 +944,57 @@ def require_pull_request_merge(
         )
 
 
+def require_provider_landing(
+    project: Path, repository: PullRequestRepository, pull: dict, source: str,
+    remote_default: str, *, allow_rebase: bool = False,
+) -> bool:
+    """Validate provider provenance and Git together; return whether it is a squash."""
+    proof = require_pull_request_merge_provenance(repository, pull["number"], pull["merge_commit_sha"])
+    target = None
+    if isinstance(repository, azure_repos.Repository):
+        require_pull_request_identity(repository, proof, pull["head"]["ref"], source, pull["base"]["ref"])
+        if proof["azure"].get("completionOptions", {}).get("mergeStrategy") == "squash":
+            target = proof["azure"]["lastMergeTargetCommit"]["commitId"]
+    require_pull_request_merge(project, pull["merge_commit_sha"], source, remote_default,
+                               allow_rebase=allow_rebase and target is None,
+                               squash_target=target)
+    return target is not None
+
+
+def retain_squash_source(project: Path, tag_name: str, source: str, landing: str, pull: str,
+                         member_project: Optional[str] = None) -> str:
+    name = _common.source_tag_name(tag_name)
+    tag_object, published = ensure_integration_tag(
+        project, name, source, _common.source_tag_message(tag_name, source, landing, pull))
+    if not published:
+        if member_project:
+            _push_member_ref(project, member_project, f"refs/tags/{name}", f"refs/tags/{name}", tag_object, None)
+        else:
+            archive_milestone.require_git_success(
+                run_git(project, "push", "origin", f"refs/tags/{name}:refs/tags/{name}"),
+                "publish retained squash source")
+    archive_milestone.require_git_success(
+        run_git(project, "update-ref", f"refs/remotes/origin/tags/{name}", tag_object),
+        "refresh retained squash source")
+    return name
+
+
+def require_squash_source(project: Path, tag_name: str, metadata: dict, source: str, landing: str) -> None:
+    if metadata.get("Source-Tag") != _common.source_tag_name(tag_name):
+        raise ArchiveError("squash milestone proof is missing its canonical source tag")
+    problem = _common.source_tag_problem(project, tag_name, source, landing, metadata["Pull-Request"])
+    if problem:
+        raise ArchiveError(problem)
+    ref = "refs/tags/" + metadata["Source-Tag"]
+    if live_remote_ref(project, ref) != optional_ref(project, ref):
+        raise ArchiveError("retained squash source tag is not published unchanged")
+
+
 def require_pull_request_merge_provenance(
     repository: PullRequestRepository,
     number: int,
     merge_commit: Optional[str] = None,
-) -> None:
+) -> Optional[dict]:
     if isinstance(repository, azure_repos.Repository):
         return azure_call(azure_repos.require_merge_provenance, repository, number, merge_commit)
     owner, name = repository.split("/", 1)
@@ -1042,6 +1100,7 @@ def integrate_pull_request(
     archive_path: str,
     archive_name: str,
     ship_commit: str,
+    *, external_landing: bool = False,
 ) -> dict:
     branch = state.branch
     if branch is None:
@@ -1051,6 +1110,10 @@ def integrate_pull_request(
     pull = find_pull_request(repository, branch, ship_commit, base)
     if pull is None:
         publish_bound_branch(project, branch, ship_commit)
+        if external_landing:
+            return {"status": "awaiting-merge", "mode": "external-landing", "archive": archive_path,
+                    "commit": ship_commit, "branch": branch, "base": base,
+                    "repository": repository.web_url, "merge_methods": ["noFastForward", "squash"]}
         pull = create_pull_request(
             repository,
             branch,
@@ -1077,7 +1140,7 @@ def integrate_pull_request(
         require_pull_request_merge_provenance(repository, pull["number"])
         return {
             "status": "awaiting-merge",
-            "mode": "pull-request",
+            "mode": "external-landing" if external_landing else "pull-request",
             "archive": archive_path,
             "commit": ship_commit,
             "pull_request": pull["html_url"],
@@ -1086,15 +1149,8 @@ def integrate_pull_request(
     merge_commit = pull["merge_commit_sha"]
     if pull["state"] != "closed" or not isinstance(merge_commit, str):
         raise ArchiveError("pull request merge metadata is invalid")
-    require_pull_request_merge_provenance(
-        repository,
-        pull["number"],
-        merge_commit,
-    )
     remote_default = refresh_origin(project)["remote_default"]
-    require_pull_request_merge(
-        project, merge_commit, ship_commit, remote_default, allow_rebase=True
-    )
+    squashed = require_provider_landing(project, repository, pull, ship_commit, remote_default, allow_rebase=True)
     pull = update_pull_request_body(
         repository,
         pull,
@@ -1104,11 +1160,14 @@ def integrate_pull_request(
         base=base,
     )
     tag_name = f"milestone/{archive_name}"
+    source_tag = retain_squash_source(project, tag_name, ship_commit, merge_commit, pull["html_url"]) if squashed else None
     message = pull_request_tag_message(
         archive_name,
         pull["html_url"],
         ship_commit,
         merge_commit,
+        source_tag,
+        "external-landing" if external_landing else "pull-request",
     )
     tag_object, tag_published = ensure_integration_tag(
         project,
@@ -1150,6 +1209,12 @@ def integrate_external_landing(
 ) -> dict:
     if state.branch is None:
         raise ArchiveError("external-landing integration requires a bound branch")
+    remote = archive_milestone.require_git_success(run_git(project, "config", "--get", "remote.origin.url"), "read origin")
+    if azure_repos.parse_remote(remote) is not None:
+        tag_ref = f"refs/tags/milestone/{archive_name}"
+        legacy = optional_ref(project, tag_ref) and "Pull-Request" not in external_landing_tag_metadata(project, tag_ref)
+        if not legacy:
+            return integrate_pull_request(project, state, archive_path, archive_name, ship_commit, external_landing=True)
     publishable_bound_branch(project, bound_branch, ship_commit)
     contains_ship = run_git(
         project, "merge-base", "--is-ancestor", ship_commit, remote_default
@@ -1515,15 +1580,19 @@ def validate_integrated(
     tag_name = f"milestone/{archive_name}"
     tag_ref = f"refs/tags/{tag_name}"
     pull_request = None
-    if state.integration == "pull-request":
+    external_metadata = (external_landing_tag_metadata(project, tag_ref)
+                         if state.integration == "external-landing" and optional_ref(project, tag_ref) else {})
+    if state.integration == "pull-request" or "Pull-Request" in external_metadata:
         if run_git(project, "rev-parse", "--verify", "--quiet", tag_ref).returncode != 0:
             raise ArchiveError(f"missing milestone tag: {tag_name}")
-        metadata = pull_request_tag_metadata(project, tag_ref)
+        metadata = external_metadata or pull_request_tag_metadata(project, tag_ref)
         if metadata["Ship"] != ship_commit:
             raise ArchiveError("pull-request milestone tag names the wrong ship commit")
         merge_commit = metadata["Landing"]
         pull_request = metadata["Pull-Request"]
         repository = pull_request_repository(project)
+        if external_metadata and not isinstance(repository, azure_repos.Repository):
+            raise ArchiveError("provider-backed external landing requires an Azure origin")
         pull = find_pull_request(repository, bound_branch, ship_commit, default_name)
         if pull is None:
             raise ArchiveError("pull request for the ship commit is missing")
@@ -1535,14 +1604,11 @@ def validate_integrated(
             or pull["merge_commit_sha"] != merge_commit
         ):
             raise ArchiveError("pull request is not merged at the tagged landing")
-        require_pull_request_merge_provenance(
-            repository,
-            pull["number"],
-            merge_commit,
-        )
-        require_pull_request_merge(
-            project, merge_commit, ship_commit, remote_default, allow_rebase=True
-        )
+        squashed = require_provider_landing(project, repository, pull, ship_commit, remote_default, allow_rebase=True)
+        if squashed:
+            require_squash_source(project, tag_name, metadata, ship_commit, merge_commit)
+        elif "Source-Tag" in metadata:
+            raise ArchiveError("source retention metadata requires a squash landing")
         require_annotated_tag(
             project,
             tag_ref,
@@ -1553,6 +1619,8 @@ def validate_integrated(
                 pull_request,
                 ship_commit,
                 merge_commit,
+                metadata.get("Source-Tag"),
+                state.integration,
             ),
         )
     elif state.integration == "external-landing":
@@ -1742,20 +1810,22 @@ def _member_merge_body(archive_path: str, member: str, reviewed_head: str) -> st
     return f"Archive: {archive_path}\nMember: {member}\nReviewed-HEAD: {reviewed_head}"
 
 
-def member_pull_request_tag_message(tag_name: str, pull_request: str, reviewed_head: str, landing: str) -> str:
+def member_pull_request_tag_message(tag_name: str, pull_request: str, reviewed_head: str, landing: str,
+                                    source_tag: Optional[str] = None) -> str:
     return (f"milestone {tag_name.removeprefix('milestone/')}\n\nMode: pull-request\n"
-            f"Pull-Request: {pull_request}\nReviewed-HEAD: {reviewed_head}\nLanding: {landing}")
+            f"Pull-Request: {pull_request}\nReviewed-HEAD: {reviewed_head}\nLanding: {landing}"
+            + (f"\nSource-Tag: {source_tag}" if source_tag else ""))
 
 
 def member_pull_request_tag_metadata(contents: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     for line in contents.splitlines():
-        match = re.fullmatch(r"(Mode|Pull-Request|Reviewed-HEAD|Landing): (.+)", line)
+        match = re.fullmatch(r"(Mode|Pull-Request|Reviewed-HEAD|Landing|Source-Tag): (.+)", line)
         if match:
             if match.group(1) in fields:
                 raise ArchiveError("pull-request member tag repeats metadata")
             fields[match.group(1)] = match.group(2)
-    if set(fields) != {"Mode", "Pull-Request", "Reviewed-HEAD", "Landing"}:
+    if set(fields) - {"Source-Tag"} != {"Mode", "Pull-Request", "Reviewed-HEAD", "Landing"}:
         raise ArchiveError("pull-request member tag is missing metadata")
     if fields["Mode"] != "pull-request":
         raise ArchiveError("pull-request member tag has the wrong mode")
@@ -1922,14 +1992,14 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
     merge = pull["merge_commit_sha"]
     if pull["state"] != "closed" or not isinstance(merge, str):
         raise ArchiveError(f"member {member} pull request merge metadata is invalid")
-    require_pull_request_merge_provenance(repository, pull["number"], merge)
     refresh_origin(checkout)
-    require_pull_request_merge(checkout, merge, reviewed_head, f"origin/{default}")
+    squashed = require_provider_landing(checkout, repository, pull, reviewed_head, f"origin/{default}")
     pull = update_pull_request_body(
         repository, pull, archive_path, reviewed_head, bound,
         body, default,
     )
-    message = member_pull_request_tag_message(tag_name, pull["html_url"], reviewed_head, merge)
+    source_tag = retain_squash_source(checkout, tag_name, reviewed_head, merge, pull["html_url"], project) if squashed else None
+    message = member_pull_request_tag_message(tag_name, pull["html_url"], reviewed_head, merge, source_tag)
     tag_object, tag_published = ensure_integration_tag(checkout, tag_name, merge, message)
     if not tag_published:
         _push_member_ref(checkout, project, f"refs/tags/{tag_name}", f"refs/tags/{tag_name}", tag_object, None)
@@ -1973,11 +2043,14 @@ def validate_member_integrated(
         if (pull["state"] != "closed" or pull["merged_at"] is None
                 or pull["merge_commit_sha"] != merge):
             raise ArchiveError(f"member {member} pull request is not merged at the tagged landing")
-        require_pull_request_merge_provenance(repository, pull["number"], merge)
-        require_pull_request_merge(checkout, merge, reviewed_head, f"origin/{default}")
+        squashed = require_provider_landing(checkout, repository, pull, reviewed_head, f"origin/{default}")
+        if squashed:
+            require_squash_source(checkout, tag_name, metadata, reviewed_head, merge)
+        elif "Source-Tag" in metadata:
+            raise ArchiveError("source retention metadata requires a squash landing")
         require_annotated_tag(
             checkout, tracking, merge, f"member tag {tag_name}",
-            member_pull_request_tag_message(tag_name, pull["html_url"], reviewed_head, merge),
+            member_pull_request_tag_message(tag_name, pull["html_url"], reviewed_head, merge, metadata.get("Source-Tag")),
         )
     else:
         merge = _find_member_merge(checkout, subject, _member_merge_body(archive_path, member, reviewed_head),
@@ -2037,6 +2110,7 @@ def retire_member(coordinator: Path, member: str, archive_path: str, reviewed_he
                                               "delete member bound branch")
     run_git(checkout, "update-ref", "-d", f"refs/remotes/origin/{bound}")
     for kind, ref in (("push", bound_ref), ("push", f"refs/heads/{default}"), ("push", f"refs/tags/{tag_name}"),
+                      ("push", f"refs/tags/{_common.source_tag_name(tag_name)}"),
                       ("delete", bound_ref)):
         members.clear_authorization(checkout, project, kind, ref)
     # The last sidecar retires here at milestone end; isolation's retires also

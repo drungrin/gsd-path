@@ -148,6 +148,18 @@ class AzurePullMetadataTests(unittest.TestCase):
             with self.subTest(pull=self.pull), self.assertRaises(azure_repos.AzureError):
                 azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)
 
+    def test_squash_requires_the_recorded_target_and_retains_full_metadata(self):
+        self.complete()
+        self.pull['completionOptions']['mergeStrategy'] = 'squash'
+        self.pull['lastMergeTargetCommit'] = {'commitId': 'c' * 40}
+        result = azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)
+        self.assertEqual(result['head']['sha'], HEAD)
+        self.assertEqual(result['azure']['lastMergeTargetCommit']['commitId'], 'c' * 40)
+        for value in (None, {}, {'commitId': 'bad'}):
+            self.pull['lastMergeTargetCommit'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(azure_repos.AzureError, 'target commit'):
+                azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)
+
     def test_duplicate_pull_requests_and_malformed_responses_are_refused(self):
         def duplicates(*args):
             return [self.pull, dict(self.pull, pullRequestId=8)]

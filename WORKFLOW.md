@@ -619,12 +619,17 @@ and requires the remote default to be the recorded
   Path publishes the exact ship commit and creates or reuses the one
   eligible PR to `main` without tool attribution or credit footers. It returns
   `awaiting-merge` until the user completes the PR. GitHub accepts a merge
-  commit or a proven rebase merge; Azure requires **Merge (no fast-forward)**
+  commit or a proven rebase merge; Azure accepts **Merge (no fast-forward)**
+  or **Squash commit**, according to branch policy,
   and refuses auto-complete and policy bypass. Path never enables auto-merge
   or merges the PR. After
   validation, Path creates the annotated milestone tag. The [ship contract](skills/gsd-path-ship/SKILL.md)
   owns the candidate, provenance, topology, publication, and recovery rules.
-- `external-landing` is for an origin without a supported PR adapter, such as GitLab,
+- `external-landing` on Azure preserves manual PR creation and uses `az` to
+  discover and verify the unique PR for the exact ship. It supports Merge and
+  Squash according to branch policy and keeps the configured integration mode.
+  It never creates or completes the PR and does not require a canonical merge
+  message. On other origins, `external-landing` is for a forge without a supported PR adapter, such as GitLab,
   Gitea, or GitHub Enterprise Server, where a merge request is the only route
   to `main`. It needs no forge CLI. Path publishes the bound branch at the
   exact ship commit, does not push `main`, and returns `awaiting-merge` with
@@ -634,6 +639,17 @@ and requires the remote default to be the recorded
   fast-forward. Your forge may delete the source branch after the merge. On
   the next ship invocation, Path validates the two-parent merge on `main` and
   creates the annotated milestone tag.
+
+Azure squash proofs bind the closing user and exact source, target, and landing
+SHAs. The landing must have the recorded target as its sole parent and exactly
+the tree of a clean source/target merge, computed with Git 2.38+ in a disposable
+object store. Conflicts or extra changes block. Before publishing the landing
+tag, publish the annotated `milestone-source/<archive>` tag at the original ship
+commit; member tags use `milestone-source/<project>-<archive>`. The landing tag
+includes its canonical `Source-Tag` and PR URL. Both tags must remain published
+unchanged. This retains review evidence and original commits after source-branch
+deletion and allows status, fresh clones, retries, and next-milestone binding to
+verify delivery without requiring original-commit ancestry on the default.
 
 Ship leaves the primary worktree and `STATE.branch` on the shipped local
 `feature/milestone-00n`; the router owns the later branch handoff. NNN always comes

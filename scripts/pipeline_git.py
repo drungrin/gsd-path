@@ -374,7 +374,7 @@ def _milestone_tag_fields(repo: Path, ref: str) -> dict[str, str]:
     contents = _run_git(repo, "for-each-ref", "--format=%(contents)", ref).stdout
     fields: dict[str, str] = {}
     for line in contents.splitlines():
-        match = re.fullmatch(r"(Mode|Pull-Request|Ship|Landing): (.+)", line)
+        match = re.fullmatch(r"(Mode|Pull-Request|Ship|Landing|Source-Tag): (.+)", line)
         if match:
             if match.group(1) in fields:
                 raise PipelineGitError("milestone tag repeats metadata")
@@ -443,15 +443,18 @@ def _require_tag_integration_proof(
         raise PipelineGitError("shipped archive does not match the previous branch")
     ref = f"refs/tags/milestone/{match.group(1)}"
     fields = _milestone_tag_fields(repo, ref)
-    if set(fields) != TAG_PROOF_FIELDS[mode]:
+    expected_fields = TAG_PROOF_FIELDS[mode] | ({"Pull-Request"} if mode == "external-landing" and "Pull-Request" in fields else set())
+    if set(fields) - {"Source-Tag"} != expected_fields:
         raise PipelineGitError(f"{mode} integration proof is incomplete")
     if fields["Mode"] != mode or fields["Ship"] != ship:
         raise PipelineGitError(f"{mode} integration proof does not match shipped state")
-    if mode == "pull-request" and not (
+    if "Pull-Request" in fields and not (
         re.fullmatch(r"https://github\.com/[^/]+/[^/]+/pull/[1-9][0-9]*", fields["Pull-Request"])
         or azure_repos.valid_pull_request_url(fields["Pull-Request"])
     ):
         raise PipelineGitError("pull-request integration proof has an invalid PR URL")
+    if mode == "external-landing" and "Pull-Request" in fields and not azure_repos.valid_pull_request_url(fields["Pull-Request"]):
+        raise PipelineGitError("provider-backed external landing requires an Azure PR")
     landing = fields["Landing"]
     if re.fullmatch(r"[0-9a-f]{40}", landing) is None:
         raise PipelineGitError(f"{mode} integration proof has an invalid landing")
@@ -491,7 +494,22 @@ def _require_tag_integration_proof(
         and len(parents) == 2
         and _common.rebase_landing_problem(repo, ship, landing) is None
     )
-    if not rebased and (len(parents) != 3 or parents[2] != ship):
+    squashed = "Source-Tag" in fields
+    if squashed:
+        if (not azure_repos.valid_pull_request_url(fields.get("Pull-Request", ""))
+                or fields["Source-Tag"] != _common.source_tag_name(f"milestone/{match.group(1)}")):
+            raise PipelineGitError("squash proof requires an Azure PR and canonical source tag")
+        problem = (_common.source_tag_problem(repo, f"milestone/{match.group(1)}", ship, landing, fields["Pull-Request"])
+                   or _common.squash_landing_problem(repo, ship, landing))
+        if problem:
+            raise PipelineGitError(problem)
+        source_ref = "refs/tags/" + fields["Source-Tag"]
+        source_object = _run_git(repo, "rev-parse", source_ref).stdout.strip()
+        published_source = _run_git(repo, "ls-remote", "--tags", "origin", source_ref, source_ref + "^{}")
+        expected_source = {source_ref: source_object, source_ref + "^{}": ship}
+        if dict(line.split("\t", 1)[::-1] for line in published_source.stdout.splitlines() if "\t" in line) != expected_source:
+            raise PipelineGitError("squash source tag is not published unchanged")
+    if not rebased and not squashed and (len(parents) != 3 or parents[2] != ship):
         raise PipelineGitError(f"{mode} integration proof has invalid merge topology")
     first_parent = _run_git(repo, "rev-list", "--first-parent", base).stdout.splitlines()
     if landing not in first_parent:
@@ -855,7 +873,15 @@ def bind_next_milestone_branch(
         integrated.returncode == 1
         and _common.rebase_landing_problem(repo, ship_sha, landing_sha) is None
     )
-    if integrated.returncode == 1 and not rebased:
+    squashed = False
+    if (integrated.returncode == 1 and not rebased
+            and _run_git(repo, "for-each-ref", "--format=%(refname)", "--points-at", ship_sha,
+                         "refs/tags/milestone-source/").stdout.strip()):
+        # Unlike rebase, squash must preserve the original graph in a source
+        # tag before the bound branch can be retired.
+        proven = _require_tag_integration_proof(repo, ship_sha, base_sha, previous_branch)
+        squashed = proven == landing_sha and _common.squash_landing_problem(repo, ship_sha, landing_sha) is None
+    if integrated.returncode == 1 and not rebased and not squashed:
         raise PipelineGitError("milestone landing does not contain the ship commit")
     if integrated.returncode not in (0, 1):
         detail = integrated.stderr.strip() or integrated.stdout.strip()
@@ -873,7 +899,7 @@ def bind_next_milestone_branch(
     if landing_integrated.returncode != 0:
         detail = landing_integrated.stderr.strip() or landing_integrated.stdout.strip()
         raise PipelineGitError(f"could not verify integrated branch: {detail}")
-    if allow_remote_absent or rebased:
+    if allow_remote_absent or rebased or squashed:
         proven_landing = _require_tag_integration_proof(
             repo,
             ship_sha,
@@ -1009,7 +1035,7 @@ def bind_next_milestone_branch(
         allow_remote_absent=(
             allow_remote_absent or journal["stage"] in {"switched", "retired"}
         ),
-        rebased=rebased,
+        rebased=rebased or squashed,
     )
     _retire_members(repo, ship_sha)
     journal["stage"] = "retired"

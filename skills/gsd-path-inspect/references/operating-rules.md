@@ -124,7 +124,10 @@ bundles this file; spawned agents follow their role brief instead.
   remote branch.
   `bind-initial`, this handoff, and the approved new-repository bootstrap are
   the only bound-branch creation authorities, and the handoff's retirement
-  push is the router's only bound-branch deletion authority. When a lookahead
+  push is the router's only bound-branch deletion authority. Azure squash
+  integration retains the original ship graph in a separately published,
+  annotated `milestone-source/<archive>` tag before branch retirement; member
+  source tags use `milestone-source/<project>-<archive>`. When a lookahead
   track exists, the router then calls `scripts/pipeline_state.py promote-next`;
   only that journaled helper moves the track, updates state and roadmap,
   classifies plan drift, and writes the router promotion commit.
@@ -133,12 +136,15 @@ bundles this file; spawned agents follow their role brief instead.
   default checkout and first bound branch; later milestones may rebind
   `feature/milestone-00n` without rewriting that artifact. Build ignores older
   milestone ship and integrate commits inherited through main. A ship commit
-  for the current STATE.branch milestone must be an ancestor of origin/main;
-  if it is not, that milestone's integration is incomplete and control routes
+  for the current STATE.branch milestone must be an ancestor of origin/main
+  or have a validated PR rebase/squash proof. Without that evidence, integration is incomplete and control routes
   to ship, not build. Direct mode requires the matching canonical `integrate:`
   commit; PR mode requires tag metadata and either a two-parent merge whose
   second parent is the ship commit or a proven rebase merge of the ship
-  commits. A null branch returns
+  commits. Azure additionally accepts a user-completed squash with exact
+  source/target/landing provenance, an identical reproducible merge tree, and
+  a published original-source tag. Azure-backed `external-landing` uses this
+  same proof while retaining its mode and manual PR creation. A null branch returns
   to the router; build never creates, selects, switches, or rebinds it.
 - The ship phase makes exactly one commit on the bound branch — the
   `.project/`-only ship commit recording
@@ -148,8 +154,8 @@ bundles this file; spawned agents follow their role brief instead.
   `integrate: M00N — merge feature/milestone-00n into main`. Pull-request mode creates
   or reuses one GitHub.com or Azure DevOps Services PR and waits for the user
   to merge it. GitHub uses `gh`; Azure uses `az` with the `azure-devops`
-  extension and requires a no-fast-forward merge without auto-complete or
-  policy bypass. It never auto-merges. Both modes create one annotated
+  extension and accepts a no-fast-forward merge or a proven squash, according
+  to branch policy, without auto-complete or policy bypass. It never auto-merges. Both modes create one annotated
   `milestone/<NNN>-<slug>` tag after merge validation.
   The roadmap and
   plan phases each make exactly one approval checkpoint commit

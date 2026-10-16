@@ -507,9 +507,16 @@ The adapter also supports `AZURE_DEVOPS_EXT_PAT` for automation. Git SSH keys
 authorize Git operations; they do not authenticate `az`. Path passes the
 organization, project, and repository explicitly, so no global Azure defaults
 are required. It opens or reuses the PR and waits for you to complete it with
-**Merge (no fast-forward)**. Auto-complete, policy bypass, squash, and rebase
-are refused. It validates the reviewed source SHA, merge ancestry, and published
-tag before closing the member. `direct` integration uses Git and needs no
+**Merge (no fast-forward)** or **Squash commit**, according to branch policy.
+Auto-complete, policy bypass, and rebase are refused. A squash requires Git
+2.38+ and must reproduce the exact tree obtained by merging the reviewed source
+into the recorded target commit. Path retains the original history under an
+annotated `milestone-source/<project>-<archive>` tag before publishing the
+landing tag or retiring the branch. It validates PR provenance and both
+published tags before closing the member. Coordinators use
+`milestone-source/<archive>` and also support user-created Azure PRs in
+`external-landing` mode, without an exact merge-message requirement. Other
+forges retain the Git-only external-landing contract. `direct` integration uses Git and needs no
 Azure CLI. New repository creation (`members.py add --create`) remains specific
 to GitHub; create an Azure repository separately before adding its checkout.
 

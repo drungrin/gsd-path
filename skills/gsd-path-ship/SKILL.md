@@ -348,8 +348,9 @@ The persisted `STATE.archive` field is the transaction identity.
      **Outcome**, link
      the returned PR as **Review**, and state in **Next** that the user must
      merge it with GitHub's merge-commit or rebase method, or Azure's
-     **Merge (no fast-forward)** method. Azure auto-complete, policy bypass,
-     squash, and rebase are refused. Stop this ship
+     **Merge (no fast-forward)** or **Squash commit** method, as permitted by
+     its branch policy. Azure auto-complete, policy bypass, and rebase are
+     refused. Stop this ship
      invocation; Path never enables auto-merge or merges the PR. On rerun after
      the user merges it, the helper requires the PR head to remain
      the ship commit and its landing to be on `origin/main` first-parent
@@ -360,12 +361,34 @@ The persisted `STATE.archive` field is the transaction identity.
      when `main` did not move). It then writes and pushes the annotated
      milestone tag containing the PR URL, ship SHA, and landing SHA. A
      milestone that was rebase-merged before this support existed recovers by
-     rerunning ship. A closed unmerged PR, squash, merge queue, moved
+     rerunning ship. A closed unmerged PR, GitHub squash, merge queue, moved
      head, duplicate PR, or unsupported origin blocks. Azure completion must
-     identify the closing user and the exact source and merge commits;
-     it cannot use GitHub's rebase exception. The remote bound branch may be
+     identify the closing user and the exact source, target, and landing
+     commits. A squash must have the recorded target as its only parent and
+     exactly the tree produced by merging the reviewed source into that target.
+     Verification requires Git 2.38+ and uses a disposable object store without
+     modifying repository objects, index, or worktree. Concurrent clean changes
+     are retained; conflicts or unreviewed resolutions block. Before publishing
+     the landing tag, publish the annotated `milestone-source/<NNN>-<slug>` tag
+     at the original ship commit. The landing tag records `Source-Tag` as well
+     as PR, ship, and landing. Validate both published tags on every retry;
+     never accept an overwritten or missing source tag. Member PRs use the same
+     proof with `milestone-source/<project>-<archive>`. This preserves original
+     evidence through branch retirement, garbage collection, and fresh clones.
+     Azure cannot use GitHub's rebase exception. The remote bound branch may be
      absent after a valid merge because the provider may auto-delete it.
-   - `external-landing` is for an origin where Path cannot open the review
+   - `external-landing` on Azure DevOps Services preserves the user's manual
+     PR workflow while using `az` for provenance. Publish the bound ship and
+     discover the unique PR from that branch to the recorded default. If none
+     exists, return `awaiting-merge` with the repository, branch, base, and
+     supported `merge_methods`; ask the user to open the PR. Never create or
+     merge it. An existing open PR returns its URL. The user completes it with
+     Merge or Squash according to policy; use the same provenance, exact-tree,
+     source-retention, and publication checks above. Its landing tag keeps
+     `Mode: external-landing` and adds `Pull-Request` plus `Source-Tag` for a
+     squash. No state-mode change or canonical merge message is required.
+     Existing completed Git-only external proofs keep their original contract.
+   - `external-landing` for other origins is for a forge where Path cannot open the review
      itself, such as GitLab, Gitea, or GitHub Enterprise Server. It needs no
      forge CLI. The helper publishes the bound branch at the exact ship commit,
      never pushes `main`, and returns `status: awaiting-merge` with `branch`,

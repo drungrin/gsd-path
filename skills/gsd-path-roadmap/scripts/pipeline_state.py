@@ -1041,7 +1041,16 @@ def _bind_next_journal_recovery(
     if not _is_ancestor(repo, ship, landing) and _common.rebase_landing_problem(
         repo, ship, landing
     ) is not None:
-        raise PipelineStateError("bind-next journal landing does not contain ship")
+        if __package__:
+            from . import pipeline_git
+        else:
+            import pipeline_git
+        try:
+            proven = pipeline_git._require_tag_integration_proof(repo, ship, base, previous)
+        except pipeline_git.PipelineGitError as error:
+            raise PipelineStateError(f"bind-next journal landing does not contain ship: {error}") from error
+        if proven != landing:
+            raise PipelineStateError("bind-next journal squash proof names a different landing")
     if not _is_ancestor(repo, landing, base):
         raise PipelineStateError("bind-next journal landing is not an ancestor of base")
     if transaction["remote_default"] != f"origin/{state.default_branch}":
