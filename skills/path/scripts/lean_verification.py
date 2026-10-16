@@ -108,10 +108,14 @@ def _final_view(relative, text, criteria, reviewed, head, surfaces=None):
                 fields[field] = contracts._raw_source_field(block, field, relative)
         if "Surface" in fields and not {"Check", "Observed"}.issubset(fields):
             raise contracts.HandoffError(f"{criterion} lacks its recorded surface walkthrough")
+        reference = f"{relative} — {criterion}"
+        if "Observed" in fields and evidence:
+            # The reviewer may cite held-out and judgment ids on the evidence line.
+            reference += f"; evidence: {evidence}"
         lines += [f"### {criterion} — {title}", "", "- **Verdict**: met",
                   f"- **Check**: {fields.get('Check', 'none')}",
                   f"- **Observed**: {fields.get('Observed', evidence)}",
-                  f"- **Reference**: {relative} — {criterion}",
+                  f"- **Reference**: {reference}",
                   "- **Finding**: none", "- **Fix direction**: none"]
         if "Surface" in fields:
             expected = (surfaces or {}).get(criterion)
