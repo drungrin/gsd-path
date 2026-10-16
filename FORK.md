@@ -53,8 +53,10 @@ checked separately before delivery.
 
 Limits: early preparation interruptions retain their staging for inspection;
 publication and final cutover support retries. Rewriting Git refs does not erase
-older snapshots retained by the provider in PR iterations. No upstream submission
-has been made for this change.
+older snapshots retained by the provider in PR iterations. The upstream host
+release-evidence check fails on unchanged historical `bound_branch` values;
+the same failure was reproduced on revision `1.6.1.8`. Historical proof bundles
+were retained. No upstream submission has been made for this change.
 
 ## 1.6.1.8 — 2026-10-16
 
