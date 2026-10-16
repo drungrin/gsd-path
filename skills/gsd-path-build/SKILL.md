@@ -130,7 +130,9 @@ STATE.md-only "finalize" checkpoint for work already checkpointed. The helper
 refuses a `build:` checkpoint that deletes or renames a `.project/tasks/`
 brief unless the canonical `build: abandon milestone <slug>` checkpoint moves
 that same brief into `.project/archive/`; build adds fix tasks and repairs
-briefs, it never replans.
+briefs, it never replans. It also refuses a `build:` checkpoint while the
+committed STATE is `ship/active`: final-review outputs stay uncommitted until
+the ship commit.
 
 ## Execute from runtime receipts
 

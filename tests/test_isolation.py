@@ -1976,6 +1976,52 @@ class IsolationTests(unittest.TestCase):
                     [".project"],
                 )
 
+    def committed_state(self, repo: Path, phase: str, status: str) -> str:
+        self.write(
+            repo, ".project/STATE.md",
+            f"---\npipeline: gsd-path/v2\nphase: {phase}   # comment\nstatus: {status}\n---\n\n## Log\n",
+        )
+        git(repo, "add", ".project/STATE.md")
+        git(repo, "commit", "-q", "-m", f"state {phase}/{status}")
+        return git(repo, "rev-parse", "HEAD")
+
+    def test_build_checkpoint_refuses_final_review_outputs_during_ship(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            self.init_bound_repo(repo)
+            head = self.committed_state(repo, "ship", "active")
+            self.write(repo, ".project/review/FINAL.md", "# Final Review\n")
+
+            with self.assertRaisesRegex(isolation.IsolationError, "no pre-ship commit"):
+                isolation.checkpoint(
+                    repo, head, "build: record final review artifacts",
+                    "Why: Commit FINAL.md before archive.", [".project"],
+                )
+            self.assertEqual(git(repo, "rev-parse", "HEAD"), head)
+            self.assertTrue((repo / ".project/review/FINAL.md").is_file())
+
+    def test_checkpoint_outside_ship_active_still_commits(self) -> None:
+        cases = (
+            ("build", "active", "build: complete milestone", "Why: build done"),
+            ("ship", "blocked", "build: record patch findings", "Why: patch build"),
+            ("ship", "active", "plan: build plan approved",
+             "Why: approved plan checkpoint\nMilestone: M001"),
+        )
+        for phase, status, subject, body in cases:
+            with self.subTest(phase=phase, status=status, subject=subject), \
+                    tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                self.init_bound_repo(repo)
+                head = self.committed_state(repo, phase, status)
+                self.write(repo, ".project/review/FINAL.md", "# Final Review\n")
+
+                result = isolation.checkpoint(repo, head, subject, body, [".project"])
+
+                self.assertEqual(result["status"], "committed")
+                self.assertEqual(git(repo, "rev-parse", "HEAD^"), head)
+
     def test_checkpoint_rejects_unrelated_changes_without_moving_head(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "repo"
