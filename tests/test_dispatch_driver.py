@@ -2652,6 +2652,24 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "done", receipt)
         self.assertEqual([item["task"] for item in receipt["landed"]], ["T002"])
 
+    def test_panel_history_completes_with_individual_family_reports_preserved(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.set_panel(root, "gpt")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        for cycle in (1, 2):
+            self.assertEqual(self.review(root, "--wait", "60", cycle=cycle)["status"], "pass")
+            panel = self.panel(root, "--wait", "60", "--cycle", str(cycle))
+            self.assertEqual(panel["status"], "pass", panel)
+        first = root / ".project/review/wave-1.cycle1.md"
+        original = first.read_bytes()
+        receipt = self.driver(root, "complete")
+        self.assertEqual(receipt["status"], "done", receipt)
+        self.assertEqual(receipt["review_cycles"], [2])
+        self.assertEqual(first.read_bytes(), original)
+        for cycle in (1, 2):
+            self.assertTrue((root / f".project/review/wave-1.cycle{cycle}.panel.gpt.md").is_file())
+
     def test_panel_detected_without_cross_model_families_writes_the_skipped_receipt(self) -> None:
         root = self.root
         self.fixture(root)

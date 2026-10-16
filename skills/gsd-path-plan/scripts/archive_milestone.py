@@ -125,6 +125,10 @@ WAVE_FILE_PATTERN = re.compile(
 WAVE_PANEL_SKIP_PATTERN = re.compile(
     r"^wave-([1-9]\d*)\.cycle([1-9]\d*)\.panel\.skipped\.json$"
 )
+WAVE_PANEL_FAMILY_PATTERN = re.compile(
+    r"^wave-([1-9]\d*)\.cycle([1-9]\d*)\.panel\.(?:"
+    + "|".join(re.escape(family) for family in KNOWN_FAMILIES) + r")\.md$"
+)
 WAVE_SKEPTIC_PATTERN = re.compile(
     r"^wave-([1-9]\d*)\.cycle([1-9]\d*)\.skeptic-"
     r"([a-z0-9]+(?:_[a-z0-9]+)*)\.md$"
@@ -862,6 +866,7 @@ def canonical_wave_files(reviews: Path) -> Sequence[WaveArtifact]:
         (
             match is None
             and WAVE_PANEL_SKIP_PATTERN.fullmatch(path.name) is None
+            and WAVE_PANEL_FAMILY_PATTERN.fullmatch(path.name) is None
             and WAVE_SKEPTIC_PATTERN.fullmatch(path.name) is None
             and WAVE_REPAIR_PATTERN.fullmatch(path.name) is None
         )
@@ -872,7 +877,7 @@ def canonical_wave_files(reviews: Path) -> Sequence[WaveArtifact]:
             "canonical wave artifacts must be real wave-N.cycleC.md files "
             "(a .contract, .adversarial, or .panel lens suffix is allowed), "
             "canonical .panel.skipped.json receipts, or auxiliary "
-            ".skeptic-<locator>.md and .repair-T###.json evidence"
+            ".panel.<family>.md, .skeptic-<locator>.md and .repair-T###.json evidence"
         )
     return [
         WaveArtifact(

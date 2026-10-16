@@ -2552,6 +2552,27 @@ wave: 1   # inline comment
 
             self.assertEqual(preflight.returncode, 0, preflight.stderr)
 
+    def test_wave_classifier_accepts_family_reports_without_counting_them_as_reviews(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            review = Path(directory)
+            for family in archive_milestone.KNOWN_FAMILIES:
+                (review / f"wave-1.cycle1.panel.{family}.md").write_text(
+                    "# Panel — wave 1, cycle 1\n", encoding="utf-8")
+            self.assertEqual(archive_milestone.canonical_wave_files(review), [])
+            canonical = review / "wave-1.cycle1.md"
+            canonical.write_text("# Review — wave 1, cycle 1\n", encoding="utf-8")
+            self.assertEqual([item.path for item in archive_milestone.canonical_wave_files(review)],
+                             [canonical])
+
+    def test_wave_classifier_rejects_unknown_or_malformed_family_reports(self) -> None:
+        for name in ("wave-1.cycle1.panel.unknown.md", "wave-1.cycle1.panel.gpt.extra.md",
+                     "wave-1.cycle0.panel.gpt.md", "wave-1.cycle1.panel.gpt.json"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                review = Path(directory)
+                (review / name).write_text("# Panel\n", encoding="utf-8")
+                with self.assertRaises(archive_milestone.ArchiveError):
+                    archive_milestone.canonical_wave_files(review)
+
     def test_wave_classifier_accepts_repair_receipts_as_auxiliary_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             review = Path(temporary_directory)
@@ -2774,12 +2795,17 @@ Tasks reviewed: 2
             (repo / ".project" / "review" / "wave-1.cycle1.panel.md").write_bytes(
                 "# Panel — wave 1, cycle 1\n".encode("utf-8")
             )
+            family = repo / ".project/review/wave-1.cycle1.panel.gpt.md"
+            family.write_text("# Panel — wave 1, cycle 1\n", encoding="utf-8")
+            family_text = family.read_bytes()
 
             archive = self.prepare_archive(repo)
             self.write_manifest(archive)
             preflight = self.preflight(repo)
 
             self.assertEqual(preflight.returncode, 0, preflight.stderr)
+
+            self.assertEqual((archive / "review" / family.name).read_bytes(), family_text)
 
     def test_preflight_requires_panel_when_review_panel_is_on(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

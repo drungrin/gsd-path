@@ -90,6 +90,7 @@ class BlockedWaveRepairReadyTests(unittest.TestCase):
         source, ordinary = self.source_and_ordinary()
         self.panel_plan("gpt")
         self.review(1, 1, None, "pass")
+        (self.review_dir / "wave-1.cycle1.panel.gpt.md").write_text("# Panel\n", encoding="utf-8")
         for tasks in ((source, ordinary), (source,)):
             with self.subTest(tasks=len(tasks)):
                 with self.assertRaises(build_state.BuildStateError) as raised:
