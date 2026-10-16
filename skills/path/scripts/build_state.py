@@ -689,11 +689,57 @@ def _unreviewed_waves(project: Project, waves: Sequence[int]) -> List[int]:
     return [wave for wave in waves if wave not in reviewed]
 
 
+def require_review_panels(
+    repo: Path, project_dir: str = DEFAULT_PROJECT_DIR, *,
+    wave: Optional[int] = None, before_cycle: Optional[int] = None,
+) -> None:
+    """Finish recorded panels before dispatching more work or replacing a cycle."""
+    if __package__:
+        from . import archive_milestone
+    else:
+        import archive_milestone
+
+    project = repo / project_dir
+    plan = _read_file(project / "plan/PLAN.md", "PLAN.md")
+    try:
+        config = archive_milestone.plan_review_panel_config(plan)
+        if config["mode"] == "off":
+            return
+        _, depths = archive_milestone.plan_wave_depths(plan)
+    except archive_milestone.ArchiveError as error:
+        raise BuildStateError("invalid-plan", str(error)) from error
+    reviews = project / "review"
+    if not reviews.is_dir():
+        return
+    cycles = set()
+    for path in reviews.iterdir():
+        named = check_handoffs.WAVE_REVIEW_NAME.fullmatch(path.name)
+        if named is not None:
+            cycles.add((int(named.group("wave")), int(named.group("cycle"))))
+    for number, cycle in sorted(cycles):
+        if wave is not None and number != wave:
+            continue
+        if before_cycle is not None and cycle >= before_cycle:
+            continue
+        if number not in depths:
+            raise BuildStateError("invalid-plan", f"review wave {number} is absent from PLAN.md")
+        try:
+            archive_milestone.require_wave_panel_evidence(
+                reviews, number, cycle, depths[number], str(config["mode"])
+            )
+        except archive_milestone.ArchiveError as error:
+            raise BuildStateError(
+                "review-panel-required", str(error),
+                {"wave": number, "cycle": cycle, "review_dir": str(reviews)},
+            ) from error
+
+
 def ready(repo: str, project_dir: str = DEFAULT_PROJECT_DIR, *,
           allow_done: bool = False) -> Dict[str, object]:
     """Return task readiness, optionally accepting build/done for completion checks."""
 
     project = _load_project(repo, project_dir, ("active", "done") if allow_done else ("active",))
+    require_review_panels(project.repo, project_dir)
     reports = _validate_ready_metadata(project)
     by_id = {task.task_id: task for task in project.tasks}
     unfinished_waves = sorted({task.wave for task in project.tasks if task.status != "done"})

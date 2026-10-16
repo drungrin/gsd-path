@@ -1647,6 +1647,10 @@ class Review:
             plan_text = (project / "plan/PLAN.md").read_text(encoding="utf-8")
             depth = review_findings.wave_depth(plan_text, self.wave)
             self.receipt["depth"] = depth
+            # Older pinned runtimes keep their own readiness contract.
+            panel_gate = getattr(build_state, "require_review_panels", None)
+            if panel_gate is not None:
+                panel_gate(self.primary, self.project_dir, wave=self.wave, before_cycle=self.cycle)
             if depth == "verify-only":
                 # ponytail: verify-only files are orchestrator-written judgment; the parent owns them.
                 self.receipt.update(status="not-applicable",

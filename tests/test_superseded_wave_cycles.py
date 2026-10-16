@@ -209,22 +209,33 @@ Depth: {depth}
         )
         return (*first, *last)
 
-    def test_deep_superseded_cycles_require_a_blocked_gate(self) -> None:
-        cases = (
-            (("blocked", "pass"), True),
-            (("pass", "blocked"), True),
-            (("blocked", "blocked"), True),
-            (("pass", "pass"), False),
-        )
-        for verdicts, accepted in cases:
+    def test_deep_superseded_cycles_preserve_both_passing_and_blocked_verdicts(self) -> None:
+        cases = (("blocked", "pass"), ("pass", "blocked"),
+                 ("blocked", "blocked"), ("pass", "pass"))
+        for verdicts in cases:
             with self.subTest(verdicts=verdicts), tempfile.TemporaryDirectory() as directory:
                 project = Path(directory)
                 self.write_deep_cycles(project, verdicts)
-                if accepted:
-                    self.assertEqual(discussion_validate.review_cycle_counts(project), [2])
-                else:
-                    with self.assertRaisesRegex(ArchiveError, "superseded review cycle"):
-                        discussion_validate.review_cycle_counts(project)
+                self.assertEqual(discussion_validate.review_cycle_counts(project), [2])
+
+    def test_passing_panel_cycles_can_be_reviewed_again_without_rewriting_history(self) -> None:
+        for depth in ("full", "deep"):
+            with self.subTest(depth=depth), tempfile.TemporaryDirectory() as directory:
+                project = Path(directory)
+                self.make_project(project, depth)
+                plan = project / "plan/PLAN.md"
+                plan.write_text(plan.read_text() + "\n## Config\n\n- review_panel: gpt\n",
+                                encoding="utf-8")
+                originals = {}
+                for cycle in (1, 2, 3):
+                    for lens in (("contract", "adversarial") if depth == "deep" else (None,)):
+                        path = self.write_cycle_review(project, cycle=cycle, depth=depth,
+                                                       wave_verdict="pass", lens=lens)
+                        originals[path] = path.read_bytes()
+                    panel = project / "review" / f"wave-1.cycle{cycle}.panel.md"
+                    panel.write_text("# Wave panel\n\nActionable: 1\n", encoding="utf-8")
+                self.assertEqual(discussion_validate.review_cycle_counts(project), [3])
+                self.assertTrue(all(path.read_bytes() == text for path, text in originals.items()))
 
     def test_deep_latest_cycle_requires_every_gate_and_task_to_pass(self) -> None:
         cases = (

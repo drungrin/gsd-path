@@ -2374,6 +2374,20 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertTrue((root / ".project/build/evidence.json").is_file())
         self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
 
+    def test_complete_accepts_an_additional_review_after_a_canonical_pass(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60")["status"], "pass")
+        first = root / ".project/review/wave-1.cycle1.md"
+        original = first.read_bytes()
+        self.assertEqual(self.review(root, "--wait", "60", cycle=2)["status"], "pass")
+        receipt = self.driver(root, "complete")
+        self.assertEqual(receipt["status"], "done", receipt)
+        self.assertEqual(receipt["review_cycles"], [2])
+        self.assertEqual(first.read_bytes(), original)
+        self.assertEqual(self.state_cli(root, "validate")["state"]["phase"], "ship")
+
     def test_complete_recovers_build_done_after_passing_review(self) -> None:
         root = self.root
         self.fixture(root)
@@ -2615,6 +2629,28 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review")
         self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
         self.assertEqual(self.branches(root), ["feature/milestone-001"])
+
+    def test_missing_panel_blocks_dispatch_and_another_review_before_they_change_head(self) -> None:
+        root = self.root
+        self.fixture(root, wave_t002=2)
+        self.set_panel(root, "gpt")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60")["status"], "pass")
+        head = self.head(root)
+        product = (root / "src/app.py").read_bytes()
+        for receipt in (self.round(root, "--wait", "60", wave=2),
+                        self.review(root, "--wait", "60", cycle=2)):
+            self.assertEqual(receipt["status"], "blocked", receipt)
+            self.assertEqual(receipt["blocked"][0]["code"], "review-panel-required")
+            self.assertIn("wave 1 cycle 1 requires exactly one panel artifact",
+                          receipt["blocked"][0]["reason"])
+        self.assertEqual(self.head(root), head)
+        self.assertEqual((root / "src/app.py").read_bytes(), product)
+        self.assertFalse((root / ".project/review/wave-1.cycle2.md").exists())
+        self.assertEqual(self.panel(root, "--wait", "60")["status"], "pass")
+        receipt = self.round(root, "--wait", "60", wave=2)
+        self.assertEqual(receipt["status"], "done", receipt)
+        self.assertEqual([item["task"] for item in receipt["landed"]], ["T002"])
 
     def test_panel_detected_without_cross_model_families_writes_the_skipped_receipt(self) -> None:
         root = self.root

@@ -809,6 +809,27 @@ def require_plan_panel_evidence(
     return config
 
 
+def require_wave_panel_evidence(
+    reviews: Path, wave: int, cycle: int, depth: str, mode: str
+) -> None:
+    """The same per-cycle panel requirement during build and archive validation."""
+    panel = reviews / f"wave-{wave}.cycle{cycle}.panel.md"
+    receipt = reviews / f"wave-{wave}.cycle{cycle}.panel.skipped.json"
+    for path in (panel, receipt):
+        if path.is_symlink() or (path.exists() and not is_real_file(path)):
+            raise ArchiveError(f"panel evidence must be a real file: {path.name}")
+    if mode != "off" and depth in {"full", "deep"}:
+        if is_real_file(panel) == is_real_file(receipt):
+            raise ArchiveError(
+                f"wave {wave} cycle {cycle} requires exactly one panel artifact "
+                "or canonical skipped-panel receipt"
+            )
+        if is_real_file(receipt):
+            validate_panel_skip_receipt(receipt, mode)
+    elif is_real_file(receipt):
+        raise ArchiveError(f"unexpected skipped-panel receipt: {receipt.name}")
+
+
 class WaveArtifact(NamedTuple):
     path: Path
     wave: int

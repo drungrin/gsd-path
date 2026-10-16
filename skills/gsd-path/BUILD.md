@@ -146,6 +146,10 @@ python3 <absolute dispatch_driver.py> round --repo <absolute primary> --wave <N>
 `round` owns entry transition, recovery, ready-set checks, brief lint, isolation,
 child dispatch, authoritative Verify, landing, ledger, retirement, and bookkeeping.
 Do not replay those steps or rewrite their results in another report.
+Every recorded `full` or `deep` cycle owes its configured panel, including
+blocked cycles, focused re-checks, and repair waves. `review-panel-required`
+stops task dispatch and later review cycles until that evidence is present;
+run the panel step for the named wave and cycle before advancing.
 
 | Receipt | Next action |
 |---|---|

@@ -161,6 +161,11 @@ dispatch contract and perform steps 1–5 by hand.
    task with a retained isolate keeps its turn. A task that a `supersedes`
    field retires still counts: the superseding task never runs together
    with a task that shares a file with the superseded task.
+   `review-panel-required` holds dispatch when an earlier recorded cycle
+   lacks its configured panel or has an invalid skipped receipt. Complete
+   that cycle's panel procedure in step 6 before further task or review
+   dispatch. A blocked canonical verdict and a focused re-check still owe
+   their panels when their PLAN depth is `full` or `deep`.
    A `NEEDS-ORCHESTRATOR` block stays unselectable until its `Orchestrator
    answer` is recorded in the task Log and the task is back to `pending`.
    An all-done wave whose latest canonical review cycle has any blocked lens
@@ -637,6 +642,10 @@ dispatch contract and perform steps 1–5 by hand.
    Preference-only panel warnings do not block advance. On pass, checkpoint
    the review artifact, the panel file when present, STATE.md, and wave
    bookkeeping, then report `wave N/M done, C review cycle(s)`.
+   Opening fixes from a panel preserves the canonical reviewer's `pass`.
+   A later review cycle does not turn an earlier pass into a blocked verdict.
+   Completion and archive validation require every last-cycle lens and task
+   verdict to pass while preserving the earlier recorded verdicts.
 
 ## Completion
 

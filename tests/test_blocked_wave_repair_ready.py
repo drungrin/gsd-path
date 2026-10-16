@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import json
 import unittest
 from pathlib import Path
 from typing import Optional
@@ -43,6 +44,21 @@ class BlockedWaveRepairReadyTests(unittest.TestCase):
         self.tasks_dir.mkdir(parents=True)
         self.review_dir = self.repo / ".project" / "review"
         self.review_dir.mkdir()
+        self.plan = self.repo / ".project" / "plan/PLAN.md"
+        self.plan.parent.mkdir()
+        self.plan.write_text("# Plan\n", encoding="utf-8")
+
+    def panel_plan(self, mode: str, depth: str = "full") -> None:
+        self.plan.write_text(
+            f"# Plan\n\n## Config\n\n- review_panel: {mode}\n\n"
+            f"## Wave 1 — first\n\nReview depth: {depth}\n\n"
+            "## Wave 2 — next\n\nReview depth: full\n", encoding="utf-8")
+
+    def skipped_panel(self, mode: str = "detected") -> None:
+        (self.review_dir / "wave-1.cycle1.panel.skipped.json").write_text(json.dumps({
+            "mode": mode, "status": "skipped", "reason": "no advertised cross-model families",
+            "selected": [], "skipped": [], "missing": [], "parent_family": "claude",
+        }), encoding="utf-8")
 
     def review(self, wave: int, cycle: int, lens: Optional[str], verdict: str) -> None:
         suffix = f".{lens}" if lens else ""
@@ -69,6 +85,81 @@ class BlockedWaveRepairReadyTests(unittest.TestCase):
             task("T001", 1, status="done"),
             task("T002", 2, deps=("T001",)),
         )
+
+    def test_missing_panel_blocks_next_wave_and_completion_readiness(self) -> None:
+        source, ordinary = self.source_and_ordinary()
+        self.panel_plan("gpt")
+        self.review(1, 1, None, "pass")
+        for tasks in ((source, ordinary), (source,)):
+            with self.subTest(tasks=len(tasks)):
+                with self.assertRaises(build_state.BuildStateError) as raised:
+                    self.ready(*tasks)
+                self.assertEqual(raised.exception.code, "review-panel-required")
+                self.assertEqual(raised.exception.details["wave"], 1)
+                self.assertEqual(raised.exception.details["cycle"], 1)
+
+    def test_blocked_review_still_owes_a_panel_before_repair_dispatch(self) -> None:
+        source, ordinary = self.source_and_ordinary()
+        self.panel_plan("gpt")
+        self.review(1, 1, None, "blocked")
+        repair = task("T003", 4, deps=("T001",), review_findings=True)
+        with self.assertRaises(build_state.BuildStateError):
+            self.ready(source, ordinary, repair)
+
+    def test_later_panel_does_not_hide_a_missing_earlier_panel(self) -> None:
+        source, ordinary = self.source_and_ordinary()
+        self.panel_plan("gpt")
+        self.review(1, 1, None, "pass")
+        self.review(1, 2, None, "pass")
+        (self.review_dir / "wave-1.cycle2.panel.md").write_text("# Wave panel\n", encoding="utf-8")
+        with self.assertRaises(build_state.BuildStateError) as raised:
+            self.ready(source, ordinary)
+        self.assertEqual(raised.exception.details["cycle"], 1)
+
+    def test_named_panel_releases_the_next_wave_for_full_and_deep_reviews(self) -> None:
+        for depth in ("full", "deep"):
+            with self.subTest(depth=depth):
+                self.panel_plan("gpt", depth)
+                for path in self.review_dir.iterdir():
+                    path.unlink()
+                for lens in (("contract", "adversarial") if depth == "deep" else (None,)):
+                    self.review(1, 1, lens, "pass")
+                with self.assertRaises(build_state.BuildStateError):
+                    self.ready(*self.source_and_ordinary())
+                (self.review_dir / "wave-1.cycle1.panel.md").write_text("# Wave panel\n", encoding="utf-8")
+                payload = self.ready(*self.source_and_ordinary())
+                self.assertEqual([item["id"] for item in payload["ready"]], ["T002"])
+
+    def test_detected_skip_is_accepted_but_named_skip_is_refused(self) -> None:
+        self.review(1, 1, None, "pass")
+        self.panel_plan("detected")
+        self.skipped_panel()
+        self.assertEqual(self.ready(*self.source_and_ordinary())["current_wave"], 2)
+        self.panel_plan("gpt")
+        with self.assertRaises(build_state.BuildStateError):
+            self.ready(*self.source_and_ordinary())
+
+    def test_invalid_or_duplicate_panel_skip_blocks_dispatch(self) -> None:
+        self.review(1, 1, None, "pass")
+        self.panel_plan("detected")
+        self.skipped_panel()
+        skipped = self.review_dir / "wave-1.cycle1.panel.skipped.json"
+        valid = skipped.read_text()
+        for text in ("{}", "null", "not json"):
+            skipped.write_text(text, encoding="utf-8")
+            with self.subTest(text=text), self.assertRaises(build_state.BuildStateError):
+                self.ready(*self.source_and_ordinary())
+        skipped.write_text(valid, encoding="utf-8")
+        (self.review_dir / "wave-1.cycle1.panel.md").write_text("# Wave panel\n", encoding="utf-8")
+        with self.assertRaises(build_state.BuildStateError):
+            self.ready(*self.source_and_ordinary())
+
+    def test_off_and_verify_only_do_not_require_a_panel(self) -> None:
+        for mode, depth in (("off", "full"), ("gpt", "verify-only")):
+            with self.subTest(mode=mode, depth=depth):
+                self.panel_plan(mode, depth)
+                self.review(1, 1, None, "pass")
+                self.assertEqual(self.ready(*self.source_and_ordinary())["current_wave"], 2)
 
     def test_blocked_latest_lens_cycle_selects_repair_wave(self) -> None:
         source, ordinary = self.source_and_ordinary()

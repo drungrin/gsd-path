@@ -1090,20 +1090,10 @@ def review_cycle_counts(archive: Path) -> Sequence[int]:
                         f"for PLAN depth {depth}"
                     )
                 expected = ((gate[None], depth, None),)
-            receipt = panel_skip_receipts.pop((wave, cycle), None)
-            if panel_config["mode"] != "off" and depth in {"full", "deep"}:
-                has_panel = "panel" in reviews
-                if has_panel == (receipt is not None):
-                    raise ArchiveError(
-                        f"wave {wave} cycle {cycle} requires exactly one panel artifact "
-                        "or canonical skipped-panel receipt"
-                    )
-                if receipt is not None:
-                    archive_milestone.validate_panel_skip_receipt(
-                        receipt, str(panel_config["mode"])
-                    )
-            elif receipt is not None:
-                raise ArchiveError(f"unexpected skipped-panel receipt: {receipt.name}")
+            panel_skip_receipts.pop((wave, cycle), None)
+            archive_milestone.require_wave_panel_evidence(
+                archive / "review", wave, cycle, depth, str(panel_config["mode"])
+            )
 
             wave_verdicts[cycle] = []
             task_verdicts[cycle] = []
@@ -1130,12 +1120,9 @@ def review_cycle_counts(archive: Path) -> Sequence[int]:
                 )
 
         last_cycle = max(cycles)
-        for cycle, verdicts in wave_verdicts.items():
-            if cycle != last_cycle and "blocked" not in verdicts:
-                raise ArchiveError(
-                    f"superseded review cycle {cycle} for wave {wave} "
-                    "must include a blocked Wave verdict"
-                )
+        # A panel finding or a later product change can require another review after
+        # a canonical pass. Earlier verdicts remain the reviewer's recorded history;
+        # only the latest cycle must pass every gate and task.
         if any(verdict != "pass" for verdict in wave_verdicts[last_cycle]):
             raise ArchiveError(f"last review cycle for wave {wave} did not pass")
         if any(task_verdict != "pass" for task_verdict in task_verdicts[last_cycle]):
