@@ -19,6 +19,73 @@ and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
 
+## 1.6.1.7 — 2026-10-16
+
+Upstream package base is now `1.6.1`, synchronized through tag
+[`v1.6.1`](https://github.com/open-gsd/gsd-path/releases/tag/v1.6.1), commit
+[`0549f883`](https://github.com/open-gsd/gsd-path/commit/0549f88332a5001be436b953f48d034fc53cde13).
+No later upstream commits are included. The fork revision continues from 6 to 7.
+
+Implementation:
+[`f137ca05 — synchronize upstream`](https://github.com/drungrin/gsd-path/commit/f137ca0530d48cbfca20b6b57890fc031cddc560),
+[`c1b05c14 — enforce wave panel gates and preserve passing review history`](https://github.com/drungrin/gsd-path/commit/c1b05c14387ac499b4e1286b46da9f7eb11ddf3b),
+[`3c665a80 — adapt upstream promotion fixtures`](https://github.com/drungrin/gsd-path/commit/3c665a809b59e82352932ab18e4fc21394b9ad9d),
+[`c78a2103 — retain individual panel reports`](https://github.com/drungrin/gsd-path/commit/c78a2103f32f7487414bdf0d16de0c5e4839f23e).
+
+### Upstream synchronization
+
+- Include the 1.6.1 fixes for runtime-selected dispatcher subprocess helpers,
+  absolute model-selection record paths, and promotion of lookahead artifacts
+  over a retained documentation-audit carry-forward.
+- Preserve the fork's Azure Repos support, conventional branches, attribution
+  policy, Muse panel family, legacy recovery, and inline review publication.
+- Adapt the three new promotion tests to the fork's conventional branch names.
+- Keep the upstream release evidence and independently versioned desktop app
+  under their existing version policies.
+
+### Review-cycle completion
+
+The 1.6.1 tag still allowed task dispatch after an incomplete panel and rejected
+an earlier canonical `pass` when another review cycle followed it. This
+contradicted the build contract's panel-driven repair flow and could stop a
+milestone only when build completion or archive validation checked its history.
+
+- Share the per-cycle panel requirement between build readiness and archive
+  validation. Task readiness and later review dispatch stop with
+  `review-panel-required` when a recorded cycle owes panel evidence.
+- Cover blocked cycles, focused re-checks, and full/deep reviews. Accept a
+  genuine detected-mode skipped receipt; refuse malformed receipts, named-mode
+  skips, and simultaneous panel and skip artifacts. Off and verify-only modes
+  retain their panel exemptions.
+- Preserve earlier passing and blocked verdicts. A later review can follow a
+  canonical pass after panel findings or product changes; the latest cycle
+  still must pass every canonical lens and task. Never rewrite old verdicts.
+- Accept the dispatcher's individual `wave-N.cycleC.panel.<family>.md` reports
+  as auxiliary archive evidence. Preserve them without counting them as
+  canonical reviews or substituting them for the merged panel. Reject unknown
+  families and malformed filenames.
+- Update the build contract and regenerate the installed skill resources.
+
+Validation: the full Python suite exercised 2,958 cases with 39 skips. Its only
+failures were the three newly imported promotion tests using upstream branch
+names (three failed assertions and one error across their scenarios); after
+adapting those fixtures, all three passed on rerun. After the final archive
+compatibility change, 37 focused Python cases passed, including real local Git
+worktrees that block dispatch before mutation, resume after the panel, complete
+after an additional canonical pass, and retain individual reports through
+completion and archive preflight. A temporary replay of the reported historical
+review sequence passed without modifying its verdicts. The Node suite passed
+116 tests with one skip. All 501 generated resources match their sources;
+package dry run, Python 3.9 syntax, version consistency, and whitespace checks
+passed. No live model inference was performed.
+
+Limits: existing projects retain their pinned runtime until explicitly updated.
+The changes do not fabricate missing panels or skipped receipts, waive required
+evidence, change historical review text, or upgrade a consuming project. Older
+pinned runtimes retain their own readiness behavior.
+
+Upstream status: **not submitted**.
+
 ## 1.6.0.6 — 2026-10-15
 
 Upstream package base remains `1.6.0`.
