@@ -74,6 +74,22 @@ test("update_release_docs puts a new entry above the existing entries", () => {
   assert.match(result.changelog, /older item/);
 });
 
+test("update_release_docs heads the README release section with the version and date", () => {
+  const result = runInTempRepo(["--version", "1.2.0", "--previous-tag", "v1.1.0"]);
+  const date = result.changelog.match(/## \[1\.2\.0\] - ([0-9-]+)/)[1];
+  const block = result.readme.slice(result.readme.indexOf("<!-- release-docs -->"));
+  assert.match(block, new RegExp(`^## What's new in 1\\.2\\.0 — ${date}$`, "m"));
+});
+
+test("README has one What's new section, inside the generated release block", () => {
+  const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+  const start = readme.indexOf("<!-- release-docs -->");
+  const end = readme.indexOf("<!-- /release-docs -->");
+  const headings = [...readme.matchAll(/^## What's new.*$/gm)];
+  assert.equal(headings.length, 1, headings.map((match) => match[0]).join("\n"));
+  assert.ok(headings[0].index > start && headings[0].index < end);
+});
+
 test("README contains release documentation markers", () => {
   const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
   assert.match(readme, /<!-- release-docs -->/);

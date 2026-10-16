@@ -24,6 +24,8 @@ The [host trust matrix](https://github.com/open-gsd/gsd-path/blob/main/docs/trus
 is the source of truth for live milestone proof and each host's guard tier.
 
 <!-- release-docs -->
+## What's new in 1.6.1 — 2026-10-16
+
 **Latest npm release:** [@opengsd/gsd-path@1.6.1](https://www.npmjs.com/package/@opengsd/gsd-path/v/1.6.1) — [release notes](CHANGELOG.md#161---2026-10-16)
 
 **Recent highlights**
@@ -54,25 +56,6 @@ is the source of truth for live milestone proof and each host's guard tier.
 | [daemon/app/CHANGELOG.md](daemon/app/CHANGELOG.md) | Desktop app release notes |
 | [RELEASE.md](RELEASE.md) | Maintainer CI and npm release cycle |
 | [GUIDE.md](GUIDE.md) | Pointer to the guides above |
-
-## What's new — October 2, 2026
-
-These changes are merged into the source checkout; npm installs use the latest
-published release.
-
-- **Desktop app (pre-release):** one app for macOS, Windows, and Linux shows
-  your projects, manages skills in each coding agent, and updates itself. See
-  [Desktop app](#desktop-app).
-- **Skills from the published release:** the monitor installs skills from the
-  npm release, checks the download against the registry's sha512, and refuses
-  one that does not match. A release picker lets you stay on an older version.
-- **Safer monitor writes:** a monitor started by the app accepts changes only
-  with the app's local token, so another web page cannot change your setup.
-- **Environment editor:** edit a project's `.env` files with values masked and
-  a diff before each save.
-- **Usage charts:** tokens and cost per day, time per phase, tasks per wave,
-  and verify history. Missing data shows as missing, never as zero.
-- **Muse Code** is a supported host.
 
 ## Install from npm
 
