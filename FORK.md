@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.1.9**. Upstream package base: **1.6.1**.
+Current fork version: **1.6.1.10**. Upstream package base: **1.6.1**.
 
 ## Version policy
 
@@ -18,6 +18,53 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.1.10 — 2026-10-17
+
+Upstream package base remains `1.6.1`.
+
+Implementation:
+[`7d23cc2d — publish editorial PRs and synchronize delivery items`](https://github.com/drungrin/gsd-path/commit/7d23cc2d7ab7733c22e8636ca39aa3df7acdefcc),
+[`58301f77 — resolve summarized PR repository metadata`](https://github.com/drungrin/gsd-path/commit/58301f77e898cf87c2a080ddac14983bd6219b88).
+
+- Require authored editorial publications for every generated PR: a Conventional
+  Commit title and self-contained problem, changes, scope, validation, and
+  risks/limitations sections. Select `en` or `pt-BR` per project, independently
+  of the language of internal pipeline artifacts.
+- Bind publications to reviewed HEADs and immutable intent, manifest, and final
+  evidence. Persist publication contracts outside archives and preserve human
+  PR edits. Keep direct integration protocol messages and proof tags unchanged.
+- Link only explicitly scoped Azure work items to the correct member PR, with
+  acceptance snapshots and complete/partial/obsolete dispositions. After actual
+  merge and tag validation, atomically apply delivery discussion and state under
+  an expected work item revision. Use actual process state categories and retain
+  removed-item history. No physical work item deletion is implemented.
+- Keep product integration proof separate from resumable Boards synchronization.
+  Service history closes the post-update crash window and prevents duplicate
+  comments, repeated transitions, and automatic reversal of a human reopen.
+- Extend runtime packaging, generated skill resources, ship instructions, and
+  project configuration without rewriting reviewed archives.
+- Resolve Azure list responses through the complete PR before validating its
+  repository identity: list summaries omit the clone and web URLs. Complete
+  responses still reject foreign repositories and fork sources.
+
+Validation: grouped Python regression covered 3,014 tests with 39 skips;
+corrected archive and preferences cases passed on rerun. The live-discovery
+correction and delivery paths passed 81 focused tests, and the root shipment
+source binding passed with all 17 editorial tests (3,016 distinct Python cases
+in total). Node tests passed 116 cases with one skip. Resource synchronization,
+version consistency, syntax, lock usage and whitespace checks passed. A live
+project upgrade passed installer doctor and archive preflight, retained all 71
+archived files unchanged, and published localized copy with four native item
+links. Product verification was reused from its recorded output.
+
+Limits: publication languages are currently `en` and `pt-BR`. Only work items
+explicitly named in approved intent may be synchronized. Ambiguous process
+states and changed acceptance remain pending for review. Actual work item
+completion is deferred until the owner merges the PR and normal integration
+proof passes; it was tested with synthetic service responses. The existing
+historical release-evidence limitation remains as documented under `1.6.1.9`.
+No upstream submission has been made for this change.
 
 ## 1.6.1.9 — 2026-10-16
 
