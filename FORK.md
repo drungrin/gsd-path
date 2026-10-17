@@ -19,6 +19,33 @@ and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
 
+## Unreleased
+
+Upstream package base remains `1.6.1`.
+
+### Review recurrence signal
+
+- Add a read-only recurrence diagnostic for wave reviews and panels. It blames
+  cited evidence lines at the recorded review snapshot and marks current
+  criterion findings on lines last written by a landed repair task. Original
+  lines in the same file, preferences, and unproven commits do not count.
+- Report missing review or member snapshots and unusable citations as explicit
+  partial coverage. The diagnostic never uses current HEAD as a substitute and
+  never changes a verdict, checkpoint, gate, or fix batch.
+- Show recurrence in the existing build questions with an optional approach
+  reconsideration. Cap and reconsideration briefs name the invariant, findings
+  grouped by suspected design decision, input threat model, settled
+  constraints, and alternatives; strategy changes keep the existing plan or
+  define authority.
+- Require approved strategy-change criteria to state class-wide rules with
+  suitable class-level checks, while reviewers inspect an unlisted
+  representative from the recorded evidence.
+
+Validation: synthetic regression covers repair and original lines in one file,
+moved lines after review, missing snapshots, provenance without a product file,
+members, repeated calls, and non-fatal driver receipts. No project artifacts are
+used as fixtures.
+
 ## 1.6.1.11 — 2026-10-17
 
 Upstream package base remains `1.6.1`.

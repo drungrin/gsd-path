@@ -84,6 +84,15 @@ first entry after the last recorded `Orchestrator answer:` leads with
 a timeout or nonzero exit is a failure even if the child wrote a question.
 Canonical reviewer children instead return the `Wave verdict:` line in their
 validated review artifact; they do not need a `RESULT:` line.
+Settled `review` receipts and merged `panel` receipts add `recurrence`: the
+read-only `review_findings.py recurrence` result for the recorded review base.
+It marks current criterion findings that cite lines last written by a landed
+repair task of the current milestone. A missing review or member snapshot, or
+an unusable citation, makes it `partial`; lines from a commit without that
+landing provenance do not count. A failure is `status: error` in that field
+only. It never changes a verdict, checkpoint,
+gate, or fix batch. Manual use names `--review-base <full sha>` and optional
+`--member-head <member>=<full sha>`; without them it does not use current HEAD.
 Panel children write family findings without a Wave verdict. The `{model}`
 command example above is the legacy form; capability-based commands use the
 argument slots defined in the dispatch model policy.

@@ -66,6 +66,9 @@ reruns the helper; then `fix-tasks --wave <N> --cycle <C>` writes one
 lint-clean fix task per batch carrying the failed criteria and observations
 verbatim, or returns `escalate` for structural blockers, skeptic groups, the
 cycle cap, or an all-refuted ruling, which stay with step 7 and the user.
+Each settled `review` receipt and each merged `panel` receipt adds a
+`recurrence` diagnostic for step 7; its `status: error` never changes the
+receipt's review result.
 The driver never writes a `verify-only` file (`status: not-applicable`);
 `in-flight` means call `round` again; `question` means answer from the
 approved artifacts or the user, record it with `answer --task-id <id>
@@ -499,8 +502,33 @@ dispatch contract and perform steps 1–5 by hand.
      failure.
 
 7. **Fix or advance.** A valid canonical `pass` advances unless an
-   actionable review-panel finding is waiting for a user ruling. On
-   `blocked`, run `python3 <absolute review_findings.py> collect --repo
+   actionable review-panel finding is waiting for a user ruling. Read
+   `recurrence` from the driver's `review` or `panel` receipt after the
+   applicable cycle files settle. For manual native review, invoke the same
+   read-only diagnostic with `python3 <absolute review_findings.py>
+   recurrence --repo <absolute primary> --wave <N> --cycle <C> --project-dir
+   <routed project dir> --review-base <recorded review base>`. Without a driver
+   journal, supply that authoritative coordinator review snapshot; never
+   substitute current HEAD. A member snapshot is the coordinator's last member
+   landing record at that base, or the locked build base before any landing;
+   `--member-head <member>=<full sha>` supplies a recorded one explicitly.
+   Missing or unresolvable attribution stays explicit.
+   The diagnostic reports `recurrence.status: ok`, `partial`, or `error`.
+   Its failure is `status: error` inside `recurrence`, not a blocked review,
+   a helper failure for `collect`, or a reason to reject a finding.
+   Recurrence means a new current criterion finding cites lines written by an
+   earlier completed repair Task landing. Original lines in that same file
+   and preference findings do not count. It is informational, not a gate or
+   an automatic architectural diagnosis.
+   In the existing user questions below, show repairs cited per file from
+   `recurrence.files` (`repo`, `path`, `repairs_cited`), including unavailable
+   coverage, and offer `Reconsider the component approach` when any
+   `recurrence.findings[].recurrent` is true.
+   Recommend that option only with a reason drawn from the evidence, not from
+   recurrence alone. Selecting it opens the brief below, not permission to
+   dispatch or change a contract. Add no new question, mandatory artifact,
+   token budget, or default agent.
+   On `blocked`, run `python3 <absolute review_findings.py> collect --repo
    <absolute primary> --wave <N> --cycle <C>`, adding one `--helper-failure
    "<helper and stderr>"` per bundled helper that exited non-zero in this
    cycle. The helper alone reads PLAN.md Config (`max_review_cycles`,
@@ -634,6 +662,19 @@ dispatch contract and perform steps 1–5 by hand.
    milestone under the Milestone abandon procedure — listing the
    orchestrator's recommended option first marked `(recommended)` with a
    one-line reason drawn from the review evidence. Never choose silently.
+   At the cap, or when the user selects `Reconsider the component approach`,
+   first brief in chat: the existing invariant or contract; findings grouped
+   by suspected design decision, marking uncertain grouping; accidental and
+   adversarial inputs only as INTENT.md authorizes; SYNTHESIS.md settled
+   constraints; and options to keep the approach with justification, fail
+   closed at a boundary, or replace the approach or source of truth. Name
+   residual-risk acceptance only through existing user or define authority;
+   it never waives an AC. Keep the cap options above, including program
+   abandon. A strategy change follows the existing plan-defect, build
+   recovery, or define-Corrections route, never the cycle cap alone. Its
+   class-wide AC states the rule, not a substitute list of examples; examples
+   go in Context or Approach. Its Verify uses suitable structural or generated
+   checks and never claims finitely many tests prove a universal rule.
    When the canonical verdict is `pass` and `wave-N.cycleC.panel.md` reports
    `Actionable` greater than 0, do not advance silently: present **Outcome**
    with the canonical pass plus the actionable count, **Review** linking the

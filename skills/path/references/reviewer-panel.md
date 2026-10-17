@@ -14,7 +14,16 @@ isolated patch, recorded Verify) when the brief supplies a verify sidecar.
 On a `deep` wave the brief is the adversarial lens only. Record findings
 the same way as plan panel mode. Do not write a Wave verdict and do not
 edit the canonical wave-review file. The canonical reviewer remains the only
-pass/fail.
+pass/fail. The Wave mode class-wide rule check also applies to an approved
+strategy-change repair: use recorded output plus the isolated diff, and do not
+re-run Verify unless that evidence is insufficient.
+
+Cite current supporting source lines using repo-relative paths with a line or
+range, separating multiple citations with `;`. Unresolvable attribution is an
+explicit warning, not grounds to reject a finding. Only current criterion
+findings on lines written by earlier completed repair Task landings can signal
+recurrence; original lines in the same file and preferences do not count.
+Recurrence is informational, not a criterion or an architectural diagnosis.
 
 ## Muse family
 

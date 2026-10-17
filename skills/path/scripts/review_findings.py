@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import posixpath
 import re
 import sys
 
@@ -816,14 +817,224 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
         raise ReviewFindingsError(str(error)) from error
 
 
+# --- informational repair-line attribution ---------------------------------
+
+EVIDENCE_REF = re.compile(
+    r"(?<![\w/.:\\-])(?P<path>[^\s`;,():]+\.[A-Za-z0-9_]+):"
+    r"(?P<lines>\d+(?:[-–]\d+)?(?:,\d+(?:[-–]\d+)?)*)"
+)
+
+
+def _recurrence_findings(project: Path, wave: int, cycle: int) -> List[dict]:
+    plan = _read(project / "plan/PLAN.md", "plan")
+    tasks = load_wave_tasks(project, wave)
+    findings = []
+    for lens, path in review_paths(project, wave, cycle, wave_depth(plan, wave)).items():
+        parsed = parse_lens(_read(path, "review"), lens, tasks)
+        for item in parsed["findings"]:
+            observation = item["observation"]
+            prefix = f"{item['criterion']} — "
+            # The criterion can contain an em dash; the fix direction names where to change, not evidence.
+            found = (observation[len(prefix):] if observation.startswith(prefix)
+                     else observation.partition(" — ")[2])
+            findings.append({"source": lens, "locator": item["locator"],
+                             "criterion": item["criterion"],
+                             "evidence": re.split(r"(?:^|\s)fix:\s", found, maxsplit=1)[0]})
+    panel = project / "review" / f"wave-{wave}.cycle{cycle}.panel.md"
+    if panel.is_file():
+        text = _read(panel, "panel")
+        # The merged summary already includes every family; By family repeats it.
+        summary = text.split("\n## By family", 1)[0]
+        for block in re.split(r"(?m)(?=^- (?:high|medium|low) / )", summary):
+            heading = re.match(r"- (?:high|medium|low) / criterion — (.+)", block)
+            if not heading:
+                continue
+            evidence = re.search(r"(?m)^  evidence: (.*)$", block)
+            source = re.search(r"(?m)^  source: (.*)$", block)
+            findings.append({"source": "panel:" + (source.group(1) if source else "unknown"),
+                             "criterion": heading.group(1),
+                             "evidence": evidence.group(1) if evidence else ""})
+    return findings
+
+
+def recurrence(repo: Path, project_dir: str, wave: int, cycle: int,
+               review_base: Optional[str] = None,
+               member_heads: Optional[Dict[str, str]] = None) -> dict:
+    """Describe findings on repair-written lines, never change review eligibility.
+
+    Each repository needs a recorded review snapshot. No current HEAD/branch
+    substitution is allowed: later edits can move the cited line numbers.
+    """
+    result = {"status": "ok", "wave": wave, "cycle": cycle, "findings": [],
+              "files": [], "unattributable": []}
+    if not review_base:
+        return {**result, "status": "partial",
+                "unattributable": [{"reason": "missing-review-base"}]}
+    if __package__:
+        from . import isolation
+    else:
+        import isolation
+    project_dir = isolation.relative_posix(project_dir)
+    repo = repo.resolve()
+    project = repo / project_dir
+
+    @functools.lru_cache(maxsize=None)
+    def git(root: Path, *args: str) -> str:
+        completed = _common.run_git(root, *args)
+        if completed.returncode:
+            raise ValueError(completed.stderr.strip() or "git query failed")
+        return completed.stdout
+
+    def commit(root: Path, sha: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("review snapshots must be full commit SHAs")
+        return git(root, "rev-parse", "--verify", f"{sha}^{{commit}}").strip()
+
+    base = commit(repo, review_base)
+    result["review_base"] = base
+    # Read membership from the coordinator snapshot, not today's member branch.
+    roots = [(None, repo, base)]
+    missing_members = []
+    members_path = f"{project_dir}/MEMBERS.md"
+    if git(repo, "ls-tree", base, "--", members_path):
+        membership = git(repo, "show", f"{base}:{members_path}")
+        locked = {}
+        lock = f"{project_dir}/build/members.json"
+        if git(repo, "ls-tree", base, "--", lock):
+            for entry in json.loads(git(repo, "show", f"{base}:{lock}")).get("members", []):
+                if isinstance(entry, dict) and isinstance(entry.get("base"), str):
+                    locked[entry.get("name")] = entry["base"]
+        # The coordinator serializes member landings, newest first on its first-parent history.
+        records: Dict[str, List[str]] = {}
+        for body in git(repo, "log", "--first-parent", "--format=%b%x1e", base).split("\x1e"):
+            match = isolation.MEMBER_RECORD_RE.fullmatch(body.strip())
+            if match:
+                records.setdefault(match.group("member"), []).append(match.group("landing"))
+        for name, body in re.findall(r"(?ms)^## ([a-z0-9-]+)\s*\n(.*?)(?=^## |\Z)", membership):
+            checkout = re.search(r"(?m)^Checkout: (.+)$", body)
+            try:
+                if not checkout:
+                    raise ValueError("member has no checkout")
+                root = Path(checkout.group(1))
+                sha = (member_heads or {}).get(name)
+                if not sha and name in locked:
+                    start = commit(root, locked[name])
+                    # An earlier milestone's record does not descend from this build's locked base.
+                    sha = next((landing for landing in records.get(name, ())
+                                if _common.run_git(root, "merge-base", "--is-ancestor", start, landing).returncode == 0),
+                               start)
+                if not sha:
+                    raise ValueError("member has no recorded snapshot")
+                roots.append((name, root, commit(root, sha)))
+            except (OSError, ValueError):
+                missing_members.append(name)
+    for name in missing_members:
+        result["unattributable"].append({"repo": name, "reason": "missing-member-snapshot"})
+
+    @functools.lru_cache(maxsize=None)
+    def origin(member: Optional[str], root: Path, sha: str, product: str) -> Optional[dict]:
+        body = git(root, "show", "-s", "--format=%B", sha)
+        trailers = re.findall(r"(?m)^Task: (\S+)$", body)
+        landed = re.findall(r"(?m)^Base: ([0-9a-f]{40})$", body)
+        files = re.search(r"(?ms)^Files:\n(?P<items>(?:- .+\n?)+)", body)
+        # Landing bodies name their product files; arbitrary Task text is not provenance.
+        if (len(trailers) != 1 or len(landed) != 1
+                or not files or f"- {product}" not in files.group("items").splitlines()):
+            return None
+        path = trailers[0]
+        if (not re.fullmatch(re.escape(project_dir) + r"/tasks/(T\d{3})-[a-z0-9-]+\.md", path)
+                or not git(repo, "ls-tree", base, "--", path)):
+            return None  # archived with an earlier milestone, or never a task here
+        text = git(repo, "show", f"{base}:{path}")
+        fields, _ = isolation.task_frontmatter(text)
+        # Task ids and fix-task names restart each milestone: the landing must be this task's.
+        if (not fields or fields.get("status") != "done"
+                or fields.get("member_base" if member else "base") != landed[0]):
+            return None
+        parts = text.split("---", 2)
+        section = _strip_comments(_section(parts[2], "Review findings") or "").strip()
+        repair = bool(section and section.casefold() not in {"none", "- none"})
+        item = {"task": Path(path).name.split("-", 1)[0], "commit": sha, "repair": repair}
+        source = re.search(r"-fix-wave-(\d+)-cycle-(\d+)\.md$", path)
+        if source:
+            item.update(source_wave=int(source[1]), source_cycle=int(source[2]))
+        return item
+
+    by_file: dict = {}
+    for finding in _recurrence_findings(project, wave, cycle):
+        evidence = finding.pop("evidence")
+        entry = {**finding, "recurrent": False, "references": []}
+        result["findings"].append(entry)
+        matches = list(EVIDENCE_REF.finditer(evidence))
+        if not matches:
+            result["unattributable"].append({"source": finding["source"], "reason": "missing-file-line"})
+        for match in matches:
+            cited, lines = match.group("path", "lines")
+            issue = {"source": finding["source"], "reference": match.group(0)}
+            try:
+                if cited.startswith("/") or "\\" in cited or cited.startswith("-"):
+                    raise ValueError("unsafe-path")
+                # Landing bodies list normalized paths; `./a` and `a//b` must compare equal.
+                path = posixpath.normpath(cited)
+                if path == ".." or path.startswith("../"):
+                    raise ValueError("unsafe-path")
+                if path.startswith(project_dir + "/"):
+                    continue
+                candidates = [(name, root, tip) for name, root, tip in roots
+                              if git(root, "ls-tree", tip, "--", path).startswith("100")]
+                if not candidates:
+                    raise ValueError("missing-path" if "/" in path else "bare-name-or-missing-path")
+                if len(candidates) != 1 or missing_members:
+                    raise ValueError("ambiguous-repository" if len(candidates) != 1 else "incomplete-membership")
+                name, root, tip = candidates[0]
+                written = {}
+                for span in lines.split(","):
+                    limits = re.split("[-–]", span)
+                    start, end = int(limits[0]), int(limits[-1])
+                    if start < 1 or end < start:
+                        raise ValueError("invalid-line-range")
+                    try:
+                        blame = git(root, "blame", "--porcelain", "-L", f"{start},{end}", tip, "--", path)
+                    except ValueError:
+                        raise ValueError("line-range-outside-reviewed-file") from None
+                    for sha in sorted(set(re.findall(r"(?m)^([0-9a-f]{40}) \d+ \d+(?: \d+)?$", blame))):
+                        item = origin(name, root, sha, path)
+                        if item:
+                            written[sha] = item
+                reference = {"path": path, "repo": name, "lines": lines, "reviewed_commit": tip,
+                             "written_by": list(written.values())}
+                entry["references"].append(reference)
+                repairs = sorted({item["task"] for item in written.values() if item["repair"]})
+                if repairs:
+                    entry["recurrent"] = True
+                    key = (name or "", path)
+                    summary = by_file.setdefault(key, {"path": path, "repo": name, "recurrent_findings": 0,
+                                                       "repairs_cited": set(), "findings": set()})
+                    summary["repairs_cited"].update(repairs)
+                    summary["findings"].add(len(result["findings"]) - 1)
+            except (OSError, ValueError) as error:
+                result["unattributable"].append({**issue, "reason": str(error)})
+    for key in sorted(by_file):
+        summary = by_file[key]
+        summary["recurrent_findings"] = len(summary.pop("findings"))
+        summary["repairs_cited"] = sorted(summary["repairs_cited"])
+        result["files"].append(summary)
+    if result["unattributable"]:
+        result["status"] = "partial"
+    return result
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("command", choices=("collect", "repair-evidence"))
+    result.add_argument("command", choices=("collect", "repair-evidence", "recurrence"))
     result.add_argument("--repo", type=Path, required=True, help="absolute repository root")
     result.add_argument("--project-dir", default=DEFAULT_PROJECT_DIR)
     result.add_argument("--wave", type=int, required=True)
     result.add_argument("--cycle", type=int, required=True)
     result.add_argument("--task", help="landed repair task for repair-evidence")
+    result.add_argument("--review-base", help="full coordinator commit reviewed for recurrence")
+    result.add_argument("--member-head", action="append", default=[],
+                        help="member=full reviewed commit for recurrence; repeatable")
     result.add_argument(
         "--helper-failure",
         action="append",
@@ -841,6 +1052,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if arguments.command == "repair-evidence":
             return emit(repair_evidence(arguments.repo, arguments.project_dir,
                                         arguments.wave, arguments.cycle, arguments.task))
+        if arguments.command == "recurrence":
+            heads = {}
+            for value in arguments.member_head:
+                name, separator, sha = value.partition("=")
+                if not separator or not name or name in heads:
+                    raise ReviewFindingsError("--member-head must be unique member=sha")
+                heads[name] = sha
+            return emit(recurrence(arguments.repo, arguments.project_dir, arguments.wave,
+                                   arguments.cycle, arguments.review_base, heads))
         return emit(
             compute(
                 arguments.repo,

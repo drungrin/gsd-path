@@ -1431,6 +1431,15 @@ def review_base(records: Path, wave: int, cycle: int) -> str:
     return str(base)
 
 
+def recurrence_diagnostic(primary: Path, project_dir: str, wave: int, cycle: int,
+                          base: Optional[object]) -> Dict[str, object]:
+    """Repair-line attribution for the user's existing choice; never a driver failure."""
+    try:
+        return review_findings.recurrence(primary, project_dir, wave, cycle, str(base) if base else None)
+    except Exception as error:  # diagnostic only; gates use their own evidence
+        return {"status": "error", "error": str(error)}
+
+
 def spawn_in_sidecar(root: Path, primary: Path, receipt: Dict[str, object], options: argparse.Namespace,
                      name: str, state: Dict[str, object], brief: Callable[[Dict[str, object]], str],
                      command: Optional[str] = None) -> None:
@@ -1639,6 +1648,8 @@ class Review:
                                                 "helper": state.get("helper"), "stderr_tail": state.get("stderr_tail")})
 
     def conclude(self) -> None:
+        self.receipt["recurrence"] = recurrence_diagnostic(
+            self.primary, self.project_dir, self.wave, self.cycle, self.receipt.get("base"))
         lenses: Dict[str, Dict[str, object]] = self.receipt["lenses"]
         passing = not self.receipt["blocked"] and all(entry.get("verdict") == "pass" for entry in lenses.values())
         failure = self.input_failure(str(self.receipt["base"])) if passing else None
@@ -1993,6 +2004,8 @@ class Panel(Children):
             failure = self.input_failure(str(roster["base"]), paths)
             if failure:
                 raise DriverStop(failure)
+            self.receipt["recurrence"] = recurrence_diagnostic(
+                self.primary, self.project_dir, self.wave, self.cycle, roster.get("base"))
             self.checkpoint(paths, "persist the wave review and its review panel")
             self.receipt["status"] = "pass"
             return self.receipt

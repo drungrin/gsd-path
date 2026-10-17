@@ -19,8 +19,17 @@ tasks in this wave as the rubric. For each task:
 4. Mark `pass` or `fail`. Before the evidence separator (` — `), copy the
    complete task acceptance or interface criterion (see Review file format
    below). Do not substitute an AC id or summary: finding grouping binds
-   this text to the task. Give the observed result, `file:line`, and
-   concrete fix direction for each failure.
+   this text to the task. Give the observed result, repo-relative source
+   paths with a line or range, and concrete fix direction for each failure.
+   Separate multiple source citations with `;` and cite the lines supporting
+   the current failure, not just the file or historical faulty lines.
+
+When an approved strategy-change repair addresses an input class, inspect the
+full class-wide rule, not just its examples. Check an additional representative
+not listed in the task using the recorded output plus the isolated diff.
+Structural or generated checks should suit the class; finitely many examples
+do not prove a universal rule, and an absence test is not suitable for every
+class. Do not re-run Verify unless that evidence is insufficient, as above.
 
 A Log entry `orchestrator regression Verify of <task id> retired: superseded
 by <task id>` is not evidence: judge the superseding task's acceptance
@@ -73,6 +82,13 @@ criterion text does not match. Apply the rules before you write the file.
   as an unfilled template placeholder and is rejected. Write literal markup
   and code in backticks inside a sentence, for example: the output has
   `<b>hello</b>`.
+
+Source attribution is not one of these rejection rules. If a cited line's
+attribution is unresolvable, state why as a warning; it does not invalidate
+the finding. Recurrence is informational: only new current criterion findings
+citing lines written by earlier completed repair Task landings count, not
+original lines in the same file or preferences. Do not infer an architectural
+diagnosis from that signal.
 
 ### Re-review after a proven repair
 

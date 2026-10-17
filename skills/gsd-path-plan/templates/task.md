@@ -21,7 +21,9 @@ files:              # every file this task may touch — dispatch checks overlap
 ## Context
 
 <!-- 3–5 sentences. Everything the coder needs from SYNTHESIS, inlined.
-     The coder reads this file, INTENT.md, and the codebase. -->
+     The coder reads this file, INTENT.md, and the codebase. After an approved
+     strategy change, put illustrative examples here or in Approach; they do
+     not replace a class-wide rule in Acceptance criteria. -->
 
 ## Approach
 
@@ -49,7 +51,11 @@ files:              # every file this task may touch — dispatch checks overlap
 
 ## Acceptance criteria
 
-<!-- Observable. The reviewer checks the diff against exactly these. -->
+<!-- Observable. The reviewer checks the diff against exactly these.
+     When an approved strategy change addresses an input class, state the
+     rule for that whole class and its boundary, not a list of examples in
+     place of the rule. Narrow criteria and illustrative parentheses remain
+     valid; examples of a class-wide rule belong in Context or Approach. -->
 1. <behavior/command/output that must be true>
 
 ## Verify
@@ -60,7 +66,9 @@ files:              # every file this task may touch — dispatch checks overlap
 <!-- Runs in a fresh sidecar worktree at the landed commit with nothing
      installed. Provision dependencies inside the command when the project
      needs them, e.g. `pnpm install --frozen-lockfile && pnpm vitest run
-     src/x.test.ts`. -->
+     src/x.test.ts`. For a strategy-change input class, use suitable structural
+     or generated checks, not only the listed examples. Finite tests do not
+     prove universal behavior; no single absence test covers every class. -->
 
 Heavy: no   <!-- yes when this command must not run beside another heavy Verify -->
 

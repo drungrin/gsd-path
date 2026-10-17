@@ -1797,6 +1797,7 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["base"], head)
         self.assertEqual(receipt["lenses"]["canonical"]["verdict"], "pass")
         self.assertFalse(receipt["panel_required"])
+        self.assertEqual((receipt["recurrence"]["status"], receipt["recurrence"]["review_base"]), ("ok", head))
         review = root / ".project/review/wave-1.cycle1.md"
         self.assertIn("Wave verdict: pass", review.read_text(encoding="utf-8"))
         self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review")
@@ -1817,6 +1818,12 @@ class DispatchDriverTests(unittest.TestCase):
         findings = receipt["findings"]
         self.assertEqual(findings.get("status", "ok"), "ok", findings)
         self.assertTrue(findings["fix_batches"], findings)
+        # The failed lines came from the original landing, so they are attributed but not recurrent.
+        recurrence = receipt["recurrence"]
+        self.assertEqual(recurrence["status"], "ok", recurrence)
+        self.assertFalse(any(finding["recurrent"] for finding in recurrence["findings"]))
+        self.assertEqual({item["task"] for finding in recurrence["findings"]
+                          for reference in finding["references"] for item in reference["written_by"]}, {"T001"})
         self.assertEqual(self.head(root), head)
         self.assertIn(".project/review/wave-1.cycle1.md", run_git(root, "status", "--porcelain", "-uall").stdout)
         self.assertEqual(self.branches(root), ["feature/milestone-001"])
@@ -2624,6 +2631,7 @@ class DispatchDriverTests(unittest.TestCase):
         receipt = self.panel(root, "--wait", "60", default_resources=True)
         self.assertEqual(receipt["status"], "pass", receipt)
         self.assertEqual(receipt["families"]["gpt"]["slug"], "gpt-6-astra")
+        self.assertEqual(receipt["recurrence"]["status"], "ok", receipt["recurrence"])
         self.assertTrue((root / ".project/review/wave-1.cycle1.panel.gpt.md").is_file())
         self.assertTrue((root / receipt["panel"]).is_file())
         self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review")
@@ -2761,6 +2769,18 @@ class DispatchPinnedRuntimeTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+
+class RecurrenceDiagnosticTests(unittest.TestCase):
+    def test_a_failing_diagnostic_is_reported_without_raising(self) -> None:
+        with mock.patch.object(dispatch_driver.review_findings, "recurrence", side_effect=RuntimeError("no git")):
+            result = dispatch_driver.recurrence_diagnostic(Path("."), ".project", 1, 1, "0" * 40)
+        self.assertEqual(result, {"status": "error", "error": "no git"})
+
+    def test_an_unrecorded_base_is_passed_as_missing(self) -> None:
+        with mock.patch.object(dispatch_driver.review_findings, "recurrence", return_value={}) as recurrence:
+            dispatch_driver.recurrence_diagnostic(Path("."), ".project", 1, 2, None)
+        recurrence.assert_called_once_with(Path("."), ".project", 1, 2, None)
 
 
 if __name__ == "__main__":
