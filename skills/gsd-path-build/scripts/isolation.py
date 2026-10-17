@@ -5262,6 +5262,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except IsolationError as error:
         print(str(error), file=sys.stderr)
         return 1
+    if arguments.command in {'land', 'land-member', 'stage-review', 'collect-artifact'}:
+        # The transaction above is complete. Optional accounting runs only in
+        # this CLI wrapper, never inside land()/land_member() or their journals.
+        try:
+            if __package__:
+                from . import usage_collect
+            else:
+                import usage_collect
+            usage = usage_collect.observe(arguments.repo, transcripts=(
+                [arguments.transcript] if arguments.command == 'stage-review' else []))
+            if usage.get('status') != 'not-configured':
+                result['usage_collection'] = usage
+        except (ImportError, OSError, ValueError, RuntimeError) as error:
+            print('usage collection incomplete: ' + str(error), file=sys.stderr)
     print(json.dumps(result, sort_keys=True))
     return 0
 

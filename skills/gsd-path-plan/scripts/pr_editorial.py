@@ -128,6 +128,14 @@ def validate_document(value):
             text(item.get('remaining'), 'partial work remaining')
         if item['disposition'] == 'obsolete':
             text(item.get('reason'), 'obsolete work item reason')
+    if value.get('usage') is not None:
+        if __package__:
+            from . import usage_report
+        else:
+            import usage_report
+        usage_report.validate_snapshot(value['usage'])
+    if value.get('usage_thread') is not None and (type(value['usage_thread']) is not int or value['usage_thread'] < 1):
+        raise EditorialError('usage thread must be a positive native thread id')
     return value
 
 
@@ -149,6 +157,19 @@ def prepare(repo, archive, member, reviewed_head, authored, call=None):
     repo = repo.resolve()
     value = dict(authored, schema=SCHEMA, archive=archive, member=member,
                  reviewed_head=reviewed_head, language=language(repo), sources=sources(repo, archive))
+    usage_status = None
+    if not value.get('usage') and (repo / '.project/STATE.md').exists():
+        if __package__:
+            from . import usage_collect, usage_report
+        else:
+            import usage_collect, usage_report
+        try:
+            config, _ = usage_collect.location(repo)
+            if config.exists():
+                usage_status = usage_collect.observe(repo)
+                value['usage'] = usage_report.report(repo)
+        except (OSError, ValueError) as error:
+            usage_status = {'status': 'incomplete', 'reason': str(error)}
     validate_document(value)
     checkout = repo
     if member != 'coordinator':
@@ -176,7 +197,10 @@ def prepare(repo, archive, member, reviewed_head, authored, call=None):
         raise EditorialError('committed publication contracts are immutable')
     path.parent.mkdir(parents=True, exist_ok=True)
     _common.atomic_write(path, json.dumps(value, ensure_ascii=False, indent=2) + '\n')
-    return {'status': 'prepared', 'path': str(path), 'title': value['title']}
+    result = {'status': 'prepared', 'path': str(path), 'title': value['title']}
+    if usage_status is not None:
+        result['usage_collection'] = usage_status
+    return result
 
 
 def load(repo, archive, member, reviewed_head=None):
@@ -207,7 +231,11 @@ def render(value):
         from urllib.parse import quote
         lines = [f"- [#{item['id']}]({azure.organization_url}/{quote(azure.project, safe='')}/_workitems/edit/{item['id']}) — {item['summary']}" for item in items]
         result += '\n\n## ' + headings[5] + '\n\n' + '\n'.join(lines)
-    return result + '\n'
+    if __package__:
+        from . import usage_publish
+    else:
+        import usage_publish
+    return usage_publish.description(result + '\n', value)
 
 
 def client(value, repository, call):
@@ -330,6 +358,8 @@ def main(argv=None):
             updated = integration.publish_editorial(repo, repository, pull, document, bound, source, default)
             result = {'status': 'published', 'pull_request': updated['html_url'], 'title': updated.get('title'),
                       'linked_work_items': [item['id'] for item in document.get('work_items', [])]}
+            if updated.get('usage_publication'):
+                result['usage_publication'] = updated['usage_publication']
         else:
             value = load(repo, args.archive, args.member, args.reviewed_head)
             result = {'title': value['title'], 'body': render(value), 'path': str(publication_path(repo, args.archive, args.member))}

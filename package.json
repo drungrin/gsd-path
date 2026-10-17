@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/gsd-path",
-  "version": "1.6.1.10",
+  "version": "1.6.1.11",
   "description": "Disk-backed AI agent pipeline. Docs: DOCS.md (start here), QUICK.md, FULL.md, UPDATE.md",
   "license": "MIT",
   "repository": {
@@ -84,7 +84,12 @@
     "!**/__pycache__/**",
     "!**/*.pyc",
     "scripts/pr_editorial.py",
-    "scripts/azure_work_items.py"
+    "scripts/azure_work_items.py",
+    "scripts/usage_collect.py",
+    "scripts/usage_report.py",
+    "scripts/usage_publish.py",
+    "scripts/gen_prices.py",
+    "scripts/usage_prices.py"
   ],
   "engines": {
     "node": ">=18.17"

@@ -286,6 +286,38 @@ The persisted `STATE.archive` field is the transaction identity.
    Azure links, preserving substantive human edits on retries. Missing or
    stale editorial input blocks publication.
 
+   If Claude Code usage collection was started for this milestone, `prepare`
+   also collects the available observations and embeds a portable report in
+   the publication JSON. The window, coverage, raw token totals, price date,
+   source and digest are frozen with that publication. The Git-common ledger
+   is a local cache; the sanitized snapshot ships with coordinator metadata
+   and survives a clone. Never put transcript paths or personal routing aliases
+   in published reports. An incomplete collection or missing model/TTL price
+   remains explicit; do not present unknown costs as zero. The report covers
+   Claude Code transcripts, not unobserved CLI children or other hosts.
+
+   The PR keeps its editorial sections and gets a short usage/cost summary.
+   The complete model table is a single informational comment. Retries recover
+   its marker/receipt and preserve human edits. Azure descriptions must fit
+   4,000 characters including work items and usage; compact authored prose
+   before publication when needed, without truncating it. Comment failures
+   return visible incomplete accounting and can be retried while the PR is
+   open; they do not substitute integration proof or work-item delivery.
+
+   For an explicitly authorized historical import, use `usage_collect.py start
+   --repo <primary> --since <UTC> --until <UTC> --root <historical-checkout>`;
+   roots are transcript scope identities, not repositories to read. Collect,
+   verify the expected window/totals, then use `usage_report.py --repo <primary>
+   --attach --archive <STATE.archive> --member <name>`. An approved existing
+   Azure table can be adopted with `--adopt-thread <id>` only after its author
+   and complete table match. Committed publications and archives stay immutable.
+   Reproduce a shipped report with `usage_report.py --repo <primary> --snapshot
+   <publication.json> --format markdown --language <en-or-pt-BR>`.
+
+   Prices are an offline dated snapshot; refresh them explicitly through
+   `gen_prices.py`, never during landing. Personal aliases live in
+   `~/.gsd-path/usage-model-aliases.json`, mapping raw ids to base catalog ids.
+
    Then run `python3 <absolute archive_milestone.py> preflight --repo <root>` while
    STATE is `ship/active`, or while it is `shipped/done` in the uncommitted
    crash window above. It validates Git root/branch, current target absence from

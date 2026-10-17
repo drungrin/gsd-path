@@ -723,7 +723,10 @@ def state_from_task(primary: Path, task_id: str) -> Dict[str, object]:
 
 def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
     """Verify in the isolate, land, record the ledger, retire. Returns the landing receipt."""
-    landing = land_task(primary, state)
+    try:
+        landing = land_task(primary, state)
+    finally:
+        observe_usage(primary, state)
     try:
         if state["mode"] == "member":
             isolation.retire_member_task(primary, str(state["member"]), str(state["task_id"]))
@@ -735,6 +738,23 @@ def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
                                       "round or finish checks the isolate again and stops if the isolate is "
                                       "still there")
     return landing
+
+
+def observe_usage(primary: Path, state=None):
+    """Optional telemetry never changes a landing or verification verdict."""
+    script = helper_script('usage_collect.py')
+    if not script.is_file():
+        return
+    arguments = [sys.executable, '-B', str(script), 'collect', '--repo', str(primary)]
+    if state and state.get('command'):
+        arguments += ['--unobserved-attempt', str(state.get('task_id')) + '/' + str(state.get('attempt'))]
+    try:
+        result = subprocess.run(arguments, capture_output=True, encoding='utf-8', errors='replace', timeout=30)
+        value = json.loads(result.stdout)
+        if value.get('status') not in ('complete', 'not-configured'):
+            print('usage collection incomplete: ' + str(value.get('reason', value.get('issues', 'unknown'))), file=sys.stderr)
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        print('usage collection incomplete: ' + str(error), file=sys.stderr)
 
 
 def land_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
@@ -1142,6 +1162,7 @@ class Round:
         return False
 
     def classify(self, state: Dict[str, object]) -> bool:
+        observe_usage(self.primary, state)
         attempt_dir = Path(str(state["_path"])).parent
         if self.budgeted and not state.get("usage_recorded"):
             self.budget("record", "--task", str(state["task_id"]), "--events", str(attempt_dir / "stdout"))
@@ -1768,6 +1789,7 @@ class Children:
 def collect_file(primary: Path, receipt: Dict[str, object], state: Dict[str, object],
                  validate: Callable[[Path], Dict[str, object]]) -> None:
     """Validate a child's staged file in its sidecar, copy it to the canonical path, then retire."""
+    observe_usage(primary, state)
     sidecar, relative = Path(str(state["worktree"])), str(state["relative"])
     if state.get("outcome") != "collected":
         if state.get("timed_out") or state.get("exit_code") != 0:

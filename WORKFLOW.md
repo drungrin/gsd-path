@@ -601,6 +601,15 @@ comments occur only after normal integration and tag proof. The runtime uses
 revision tests and service history for optimistic updates and repeat safety;
 pending Boards work remains distinct from a proven product integration.
 
+Claude Code usage starts once per bound milestone, before phase dispatch, via
+`usage_collect.py start`. Collection runs outside landing/artifact transactions,
+and the driver exposes unsupported CLI children as incomplete coverage. Ship
+collects and freezes the numeric report with the editorial publication; a short
+summary goes into the description and one informational model table into a
+comment. Comment receipts/markers make retries repeat-safe. The price snapshot
+is offline and dated, with explicit unknown prices and equivalent-cost wording.
+The portable publication retains reports without copying private transcripts.
+
 A user-approved `coordinator_migration.py` transaction may move a quiet
 single-repo milestone at `ship/active`, before final review/archive, into a
 dedicated coordinator. It preserves original task commits and recorded output,

@@ -1,6 +1,6 @@
 # GSD Path
 
-**Fork version: 1.6.1.10** · upstream base: **1.6.1**.
+**Fork version: 1.6.1.11** · upstream base: **1.6.1**.
 See [FORK.md](FORK.md) for fork changes, implementation commits, and version policy.
 
 A disk-backed project pipeline for AI coding agents. It turns a raw idea into
@@ -544,6 +544,24 @@ uses the process's Completed category; partial delivery stays open; justified
 obsolete work uses Removed, preserving history. API failures remain a visible,
 resumable synchronization pending state. A repeated acknowledgement or crash
 never repeats the merge, project Verify, or delivery comment.
+
+Claude Code milestones can start usage collection with `usage_collect.py start
+--repo <root>` before phase work. Separate post-transaction callbacks collect
+numeric usage, deduplicate streamed/replayed messages, and retain attempts under
+the Git common directory. Unknown schemas, unfinished children and unobserved
+CLI children remain visible as incomplete coverage. Personal model aliases live
+in `~/.gsd-path/usage-model-aliases.json`, outside shared code.
+
+Ship freezes a sanitized report in the publication JSON: model, phase and task
+breakdowns, collection window and coverage, offline price source/date/digest,
+and list-price equivalent costs. It publishes a short description summary and
+one informational model table comment, preserving human edits and avoiding
+duplicates on retries. Azure descriptions are limited to 4,000 characters.
+Snapshots survive clones; `usage_report.py --snapshot <publication.json>` renders
+them without local transcripts. Prices are explicitly refreshed with
+`gen_prices.py` from models.dev (MIT); Anthropic one-hour cache writes use twice
+the input rate, and each request uses its actual context threshold. Missing
+prices or cache TTLs remain unpriced. These values do not represent an invoice.
 
 An active single-repo milestone can move to a dedicated coordinator through the
 owner-approved `scripts/coordinator_migration.py` transaction. Its supported

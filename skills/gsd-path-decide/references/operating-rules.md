@@ -52,6 +52,19 @@ bundles this file; spawned agents follow their role brief instead.
 
 ## Stay in role
 
+- On Claude Code, start usage collection once the milestone is bound, before
+  dispatching phase work: `usage_collect.py start --repo <primary>`. Re-entry
+  retains the original start; do not choose a later window to hide attempts.
+  Other hosts leave this transcript collector unconfigured. Use the selected
+  runtime helper when present. Native `land`, `land-member`, `stage-review`,
+  and `collect-artifact` CLI wrappers collect usage after their transactions;
+  API callers and the dispatch driver collect separately. After other native
+  research, plan, inspect, or review publications, run `usage_collect.py collect
+  --repo <primary>` and supply `--transcript <path>` when the host provides it.
+  Collect failed attempts too. Keep logical assignment names consistent.
+  Collection errors are visible incomplete accounting, never failed product
+  verification. Do not copy transcript text into project artifacts or PRs.
+
 - Before PR publication, ship authors a Conventional Commit title and a
   self-contained description in the configured `editorial_language`, grounded
   in approved intent, manifest, reviewed diff and recorded verification.
