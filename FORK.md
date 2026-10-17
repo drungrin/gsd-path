@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.1.10**. Upstream package base: **1.6.1**.
+Current fork version: **1.6.1.11**. Upstream package base: **1.6.1**.
 
 ## Version policy
 
@@ -18,6 +18,51 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.1.11 — 2026-10-17
+
+Upstream package base remains `1.6.1`.
+
+- Collect Claude Code numeric usage outside landing and artifact transactions,
+  retaining scoped windows, message identities, host versions and task attempts
+  in a Git-common ledger. Final stream accounting replaces provisional cache
+  estimates; retries, replayed blocks and copied messages are deduplicated.
+- Keep collection errors, unfinished transcripts, unsupported CLI children,
+  ambiguous attribution and missing prices explicit. Accounting never changes
+  a product Verify verdict or blocks a proven landing.
+- Generate dated offline primary-provider prices from models.dev (MIT), with
+  conditional downloads and significant-change review. Apply actual per-request
+  context thresholds and cache TTL prices; keep personal aliases outside Git.
+- Freeze sanitized model/task/phase reports inside editorial publications so
+  they survive clones without private transcripts. Publish a short description
+  summary and one repeat-safe informational model table comment. Respect the
+  Azure description limit and preserve human edits, work items and merge proof.
+- Support explicit historical import and adoption of a matching existing table
+  after checking its author. Price dates, collection windows and coverage remain
+  visible in every report; monetary values are API equivalents, not invoices.
+
+Implementation:
+[`b2ac7c94 — collect usage and publish reproducible cost summaries`](https://github.com/drungrin/gsd-path/commit/b2ac7c9403f570bd17669b8af04f077201867ee0).
+
+Validation: grouped Python regression covered 3,049 cases with 39 skips. Final
+provider, accounting, runtime and full-cycle checks passed 143 tests; all 48
+guard cases passed after resource synchronization. Node tests passed 116 cases
+with one skip. Resource synchronization (601 resources), bytecode cleanliness,
+whitespace and lock checks passed. A live historical import reproduced every
+model row and the overall approved reference total. Runtime upgrade, installer
+doctor, archive preflight and portable snapshot rendering passed. Publication
+adopted the existing table after checking its author and values; a repeat
+completed without any remote write. Archived evidence and reviewed product
+heads remained unchanged; product Verify was not repeated.
+
+Limits: collection supports Claude Code 2.x transcript usage; other hosts and
+unobserved CLI children are outside its coverage. Three historical transcripts
+without confirmed completion remain explicitly incomplete. The distributed
+price snapshot initially contains five models; explicit refreshes can add
+primary-provider models, and personal aliases remain local. Reports sum observed
+messages in their recorded window; they do not assert an actual invoice. The
+historical release-evidence limitation remains documented under `1.6.1.9`.
+No upstream submission has been made for this change.
 
 ## 1.6.1.10 — 2026-10-17
 
