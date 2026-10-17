@@ -1,0 +1,44 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "kimi",
+  "run_id": "session_9ed33a7e-4955-437d-ad1d-3c4a7888fcfd",
+  "result": "pass",
+  "step": "child-spawn",
+  "command": "Agent",
+  "child_api": "Agent",
+  "child_id": "build_T001",
+  "child_status": "completed",
+  "output": {
+    "child_id": "build_T001",
+    "status": "completed",
+    "child_api": "Agent",
+    "run": "run-20261017T000200245876Z",
+    "session_id": "session_9ed33a7e-4955-437d-ad1d-3c4a7888fcfd",
+    "tool_call": {
+      "id": "tool_WrdhyMTDOQtpoCjMcfS8CWA6",
+      "input": {
+        "description": "build_T001",
+        "subagent_type": "coder"
+      },
+      "prompt_sha256": "452595d10ede3ceddc0729ee72a0a338a7fb118e1edd72924219c180c32427fe"
+    },
+    "tool_result": {
+      "agent_id": "agent-2",
+      "actual_subagent_type": "coder",
+      "status": "completed",
+      "stop_reason": "completed",
+      "content": "agent_id: agent-2\nactual_subagent_type: coder\nstatus: completed\nstop_reason: completed\n\n[summary]\nThe frontmatter delta (status/agent/base/worktree) predates my work \u2014 it was the orchestrator's dispatch-time edit, already dirty in git status before I touched anything. My only change to the task file is the single appended Log line. All done.\n\n**ready**\n\nChanged paths:\n- `count.py` \u2014 rewritten: argparse CLI with optional `count` positional (bare `int()` in try/except ValueError, normalized by printing the int), `--json` store_true accepted before/after the count and idempotent, `ArgumentParser.error()` overridden to emit a single stderr line (`usage: count.py [-h] [--json] [count]: error: <message>`), exit 2, empty stdout, no traceback. Text `print(f\"{n} widgets\")`, JSON `print(json.dumps({\"widgets\": n}))`.\n- `test_count.py` \u2014 new stdlib `unittest` suite driving the real CLI via `subprocess` with repo root resolved from the test file; 11 tests covering AC1\u2013AC4: exact stdout bytes, empty stderr/stdout, exit codes, one-line stderr, `int()`-accepted forms (`+5`, `007`, `-0`, `\" 5\"`, `1_000`, Unicode and fullwidth digits, arbitrary precision), and the AC2 build-note dash-led forms `-1_000` / `\" -5\"` proven as the count in both flag orders (`--json -1_000`, `-1_000 --json`, etc.).\n- `.project/tasks/T001-count-json-cli.md` \u2014 one append-only Log entry (implementation summary + Verify result; no frontmatter changes by me).\n\nVerify: `python3 test_count.py -v` from repo root \u2192 `Ran 11 tests in 2.541s \u2014 OK`. Spot checks: no-arg stdout bytes exactly `0 widgets\\n` (hexdump-verified), `--json -1_000` \u2192 `{\"widgets\": -1000}`, invalid input \u2192 one-line stderr + exit 2 + empty stdout. Note: Python 3.14.8 argparse natively classifies dash-led int()-valid forms as positionals, so no `_negative_number_matcher` override was needed (verified empirically against the installed argparse before implementing). No git mutations performed. No block.\n\nRESULT: T001 ready\n\nresume_hint: Continue with Agent(resume=\"agent-2\", prompt=\"...\"). Use agent_id only; do not set subagent_type. The subagent retains its prior context; redo any unfinished tool call if its result was lost."
+    },
+    "session_store": {
+      "state": "session_9ed33a7e-4955-437d-ad1d-3c4a7888fcfd",
+      "type": "sub",
+      "labels": {
+        "parentAgentId": "main",
+        "profileName": "coder"
+      },
+      "turn_ended_reasons": [
+        "completed"
+      ]
+    }
+  }
+}

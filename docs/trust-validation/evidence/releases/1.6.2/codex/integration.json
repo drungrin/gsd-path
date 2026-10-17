@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "codex",
+  "run_id": "01a14717-06d1-70c1-9bf9-1f9a686b1dc5",
+  "result": "pass",
+  "step": "integration",
+  "command": "/bin/zsh -lc 'python3 -B /Users/jeremymcspadden/.gsd-path/runtimes/6f95a31e4b8a434672421a604bdce71e5179409eb19496097219cd6cdb5d9f6f/archive_milestone.py integrate --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/codex/quick/repo --slug widget-counter-cli'",
+  "output": "{\"archive\": \".project/archive/001-widget-counter-cli\", \"base\": \"24fcadccadbac0da983e6b0713841db26bdd518a\", \"commit\": \"13595bdabb1d6acff4d4e3cc84f617a8a35d027d\", \"integrate\": \"24fcadccadbac0da983e6b0713841db26bdd518a\", \"landing\": \"24fcadccadbac0da983e6b0713841db26bdd518a\", \"mode\": \"direct\", \"tag\": \"milestone/001-widget-counter-cli\"}\n",
+  "fixture_bundle": "codex/fixture.bundle",
+  "run_manifest": ".project/archive/001-widget-counter-cli/trust-run-manifest.json",
+  "ship_commit": "13595bdabb1d6acff4d4e3cc84f617a8a35d027d",
+  "bound_branch": "gsd-path/M001",
+  "default_branch": "main",
+  "pre_integration_default_commit": "6a4d3ab658a314e14953e340c8d028aea56d9773",
+  "integration_commit": "24fcadccadbac0da983e6b0713841db26bdd518a",
+  "milestone_tag": "milestone/001-widget-counter-cli"
+}
