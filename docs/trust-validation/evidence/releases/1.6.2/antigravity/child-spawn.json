@@ -1,0 +1,47 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "antigravity",
+  "run_id": "b693371b-d50a-478f-a93b-fc73994eda4c",
+  "result": "pass",
+  "step": "child-spawn",
+  "command": "invoke_subagent",
+  "child_api": "invoke_subagent",
+  "child_id": "build_t001",
+  "child_status": "completed",
+  "output": {
+    "child_id": "build_t001",
+    "status": "completed",
+    "child_api": "invoke_subagent",
+    "child_conversation_id": "0c4d8a34-2f9c-40a6-8eb0-d0dd856ad927",
+    "spawn": {
+      "run": "run-20261016T235256175682Z",
+      "step_index": 129,
+      "subagent": {
+        "type_name": "self",
+        "role": "build_t001",
+        "conversation_id": "0c4d8a34-2f9c-40a6-8eb0-d0dd856ad927",
+        "log_uri": "file:///Users/jeremymcspadden/.gemini/antigravity-cli/brain/0c4d8a34-2f9c-40a6-8eb0-d0dd856ad927/.system_generated/logs/transcript.jsonl",
+        "workspace_uris": [
+          "file:///Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/antigravity/quick/repo"
+        ]
+      }
+    },
+    "listing": {
+      "run": "run-20261016T235256175682Z",
+      "step_index": 133,
+      "entry": {
+        "role": "build_t001",
+        "type": "self",
+        "conversationId": "0c4d8a34-2f9c-40a6-8eb0-d0dd856ad927",
+        "transcript": "file:///Users/jeremymcspadden/.gemini/antigravity-cli/brain/0c4d8a34-2f9c-40a6-8eb0-d0dd856ad927/.system_generated/logs/transcript.jsonl",
+        "state": "idle"
+      }
+    },
+    "transcript": {
+      "path": "/Users/jeremymcspadden/.gemini/antigravity-cli/brain/0c4d8a34-2f9c-40a6-8eb0-d0dd856ad927/.system_generated/logs/transcript.jsonl",
+      "steps": 19,
+      "last_type": "PLANNER_RESPONSE",
+      "final_content": "Task T001 implementation and verification completed.\n\nRESULT: T001 ready"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "antigravity",
+  "run_id": "b693371b-d50a-478f-a93b-fc73994eda4c",
+  "result": "pass",
+  "step": "worktrees",
+  "command": "git worktree list --porcelain",
+  "output": "worktree /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/antigravity/quick/repo\nHEAD f4aabb6a856e2239d7cbf7bfdc9d7692dc7a13dc\nbranch refs/heads/gsd-path/M001\n",
+  "primary_worktree": "/Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/antigravity/quick/repo",
+  "integration_worktree": "/Users/jeremymcspadden/.gsd-path/projects/68c532108fdc6310f45711aaade002d60c10e70222c37032cc210e83da5637f2/19d42981e283deb7c4d7a0a792c14b19f7266e0efc9a363c29031ddd23095b33/integrate/M001"
+}

@@ -7,9 +7,11 @@ and required live-check scope.
 The historical results below do not define the current required host set;
 see [Live-check scope](TRUST-VALIDATION-SPEC.md#live-check-scope).
 
-Release 1.6.1 uses frozen candidate `ec116bf9af69af2a1769d73b566b53834fa4c327`
-from main on 2026-10-15, after the 1.6.1 version change (PR #426). Its receipts
-are in `evidence/releases/1.6.1/`. Release 1.6.0 used candidate
+Release 1.6.2 uses frozen candidate `c14248da2eb5db1362175f50382af8ecb9fd1bc3`
+from main on 2026-10-16, after the 1.6.2 version change (PR #433). Its receipts
+are in `evidence/releases/1.6.2/`. Release 1.6.1 used candidate
+`ec116bf9af69af2a1769d73b566b53834fa4c327`; its receipts are in
+`evidence/releases/1.6.1/`. Release 1.6.0 used candidate
 `2aad06114ebf7d4b88ba70d3de63627e4c238c2f`; its receipts are in
 `evidence/releases/1.6.0/`. Release 1.5.0 used candidate
 `cab24a78d31ba41d9d1b357dd72aeae00775ef2d`; its receipts were recorded as
@@ -22,14 +24,14 @@ publication; see the [release contract](../../RELEASE.md#release-contract).
 
 | Host | Install | Native guard installed | Full live milestone | Candidate result |
 |---|---|---|---|---|
-| Codex | automated | git-only tier: the `--ignore-user-config` harness run has no native hook, so Git hooks carry it | [codex.md](evidence/releases/1.6.1/codex.md) | **pass** on `ec116bf` |
-| Claude Code | automated | fail-closed project hook + Git hooks | [claude.md](evidence/releases/1.6.1/claude.md) | **pass** on `ec116bf` |
-| Grok | automated | not installed; Git hooks | [grok.md](evidence/releases/1.6.1/grok.md) | **pass** on `ec116bf` |
-| OpenCode | automated | not installed; Git hooks | [opencode.md](evidence/releases/1.6.1/opencode.md) | **pass** on `ec116bf` |
+| Codex | automated | git-only tier: the `--ignore-user-config` harness run has no native hook, so Git hooks carry it | [codex.md](evidence/releases/1.6.2/codex.md) | **pass** on `c14248d` |
+| Claude Code | automated | fail-closed project hook + Git hooks | [claude.md](evidence/releases/1.6.2/claude.md) | **pass** on `c14248d` |
+| Grok | automated | not installed; Git hooks | [grok.md](evidence/releases/1.6.2/grok.md) | **pass** on `c14248d` |
+| OpenCode | automated | not installed; Git hooks | [opencode.md](evidence/releases/1.6.2/opencode.md) | **pass** on `c14248d` |
 | GitHub Copilot CLI | automated | not installed; Git hooks | not run: account quota exhausted | excluded at the maintainer's request until restored |
-| Antigravity CLI | automated | not installed; Git hooks | [antigravity.md](evidence/releases/1.6.1/antigravity.md) | **pass** on `ec116bf` |
-| Cursor | automated | fail-closed project hook + Git hooks | [cursor.md](evidence/releases/1.6.1/cursor.md) | **pass** on `ec116bf` |
-| Kimi Code | automated | not installed; Git hooks | [kimi.md](evidence/releases/1.6.1/kimi.md) | **pass** on `ec116bf` |
+| Antigravity CLI | automated | not installed; Git hooks | [antigravity.md](evidence/releases/1.6.2/antigravity.md) | **pass** on `c14248d` |
+| Cursor | automated | fail-closed project hook + Git hooks | [cursor.md](evidence/releases/1.6.2/cursor.md) | **pass** on `c14248d` |
+| Kimi Code | automated | not installed; Git hooks | [kimi.md](evidence/releases/1.6.2/kimi.md) | **pass** on `c14248d` |
 | Qwen Code | automated | not installed; Git hooks | not run (API credits) | excluded at the maintainer's request |
 | Zed | automated | no native hook API; Git hooks | not run (API credits) | excluded at the maintainer's request |
 | Kiro | automated | not installed; Git hooks | not run (API credits) | excluded at the maintainer's request |
@@ -37,6 +39,18 @@ publication; see the [release contract](../../RELEASE.md#release-contract).
 
 Historical smoke evidence remains under `evidence/`; release receipts belong
 under `evidence/releases/<version>/` and are never inferred from smoke runs.
+
+## 1.6.2 run notes
+
+All seven hosts in the live-check scope ran a fresh milestone on the 1.6.2
+candidate on 2026-10-16; no earlier receipt was reused, because product
+scripts changed after the 1.6.1 candidate. No attempt was invalid and no
+candidate defect was found. On every host the final review was reused without
+an extra dispatch (#428). GitHub Copilot CLI, Muse Code, Qwen Code, Zed and
+Kiro stay excluded, as in the 1.4.0 notes below. Per-session output-token
+usage over 30,000 is recorded as a finding and did not stop a run (owner
+ruling). See [run notes](evidence/releases/1.6.2/notes/RUNS.md) for gate
+corrections, token usage, and hardening gaps.
 
 ## 1.6.1 run notes
 

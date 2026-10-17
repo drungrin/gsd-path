@@ -1,0 +1,14 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "kimi",
+  "run_id": "session_9ed33a7e-4955-437d-ad1d-3c4a7888fcfd",
+  "result": "pass",
+  "step": "install",
+  "command": "node /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/kimi/plugin/scripts/install.mjs --kimi --local --project /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/kimi/quick/repo --hooks --no-color",
+  "output": "\u2726 GSD Path installer v1.6.2\n  project install into /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/kimi/quick/repo\n\n  \u2713 kimi: installed 16 skills to /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/kimi/quick/repo/.kimi-code/skills\n  \u2713 project: copied AGENTS.md, WORKFLOW.md, .gsd-path/status_runtime.py, .gsd-path/runtime.json, .gsd-path/guard_hook.py, .gsd-path/git_guard.py, .git/hooks/pre-commit, .git/hooks/commit-msg, .git/hooks/pre-push to /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/kimi/quick/repo\n\n  Done. Restart active agent sessions, then invoke the router explicitly.",
+  "host_version": "Kimi Code CLI 0.43.0",
+  "install_root": ".kimi-code/skills",
+  "candidate": "c14248da2eb5db1362175f50382af8ecb9fd1bc3",
+  "package_version": "1.6.2",
+  "exit_code": 0
+}
