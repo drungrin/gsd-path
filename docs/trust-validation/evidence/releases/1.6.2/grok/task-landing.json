@@ -1,0 +1,17 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "grok",
+  "run_id": "01a14717-5d14-78f1-93a0-601724de4c44",
+  "result": "pass",
+  "step": "task-landing",
+  "command": "python3 -B /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/grok/quick/repo/.grok/skills/gsd-path/scripts/dispatch_driver.py finish --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/grok/quick/repo --task-id T001",
+  "output": "commit 90734264d6eb1bea98bee5dc288e88a86f6b3fc0\nAuthor:     Feature Evaluation <evaluation@example.invalid>\nAuthorDate: Fri Oct 16 19:35:17 2026 -0500\nCommit:     Feature Evaluation <evaluation@example.invalid>\nCommitDate: Fri Oct 16 19:35:17 2026 -0500\n\n    T001: Extend count.py CLI and add subprocess tests\n    \n    Task: .project/tasks/T001-widget-count.md\n    Base: 8aeab4aca2bcd0a6075fd4febb0bcdde7bd6f0c8\n    Files:\n    - .project/tasks/T001-widget-count.md\n    - count.py\n    - test_count.py\n\n .project/tasks/T001-widget-count.md | 15 +++++--\n count.py                            | 33 +++++++++++++-\n test_count.py                       | 87 +++++++++++++++++++++++++++++++++++++\n 3 files changed, 130 insertions(+), 5 deletions(-)",
+  "fixture_bundle": "grok/fixture.bundle",
+  "run_manifest": ".project/archive/001-widget-count/trust-run-manifest.json",
+  "fixture_base_commit": "8aeab4aca2bcd0a6075fd4febb0bcdde7bd6f0c8",
+  "task_branch": "gsd-path-verify/task-t001-verify",
+  "task_worktree": "/Users/jeremymcspadden/.gsd-path/projects/3c793fe51879b839f448fc9903dcd68fcf3a20c597db1cf025b44048cba321ec/4e694798681a3808fe3bdeb4ce3d62db909c66d4eb7e8206b76105e8b2821d56/verify/task-t001-verify",
+  "landing_commit": "90734264d6eb1bea98bee5dc288e88a86f6b3fc0",
+  "isolation_mode": "serial",
+  "isolation_note": "A one-task wave uses the helper's serial mode: the coder worked on the bound branch in the primary worktree at the recorded base, and the named branch and worktree are the isolated Task Verify sidecar created for this task and retired after landing."
+}

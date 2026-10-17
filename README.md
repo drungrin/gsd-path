@@ -1,6 +1,6 @@
 # GSD Path
 
-**Fork version: 1.6.1.11** · upstream base: **1.6.1**.
+**Fork version: 1.6.2.12** · upstream base: **1.6.2**.
 See [FORK.md](FORK.md) for fork changes, implementation commits, and version policy.
 
 A disk-backed project pipeline for AI coding agents. It turns a raw idea into
@@ -12,11 +12,11 @@ milestone loop. While a milestone builds, the next one can be planned in
 parallel under `.project/next/` (lookahead); a building milestone can also be
 abandoned on an explicit ruling, archiving its partial work for a re-slice.
 
-**Hosts with a passing full live milestone for release 1.6.1:** Codex, Claude
+**Hosts with a passing full live milestone for release 1.6.2:** Codex, Claude
 Code, Grok, OpenCode, Antigravity CLI, Cursor, and Kimi Code.
 
 **Hosts with an installer and a dispatch contract, but no live milestone for
-release 1.6.1:** GitHub Copilot CLI (account quota exhausted), Qwen Code, Zed,
+release 1.6.2:** GitHub Copilot CLI (account quota exhausted), Qwen Code, Zed,
 and Kiro (API credits), and Muse Code (no live release evidence recorded yet).
 These hosts are excluded from the release evaluation. Exclusion is not a pass.
 
@@ -27,14 +27,16 @@ The [host trust matrix](https://github.com/open-gsd/gsd-path/blob/main/docs/trus
 is the source of truth for live milestone proof and each host's guard tier.
 
 <!-- release-docs -->
-**Latest npm release:** [@opengsd/gsd-path@1.6.0](https://www.npmjs.com/package/@opengsd/gsd-path/v/1.6.0) — [release notes](CHANGELOG.md#160---2026-10-12)
+## What's new in 1.6.1 — 2026-10-16
+
+**Latest npm release:** [@opengsd/gsd-path@1.6.1](https://www.npmjs.com/package/@opengsd/gsd-path/v/1.6.1) — [release notes](CHANGELOG.md#161---2026-10-16)
 
 **Recent highlights**
-- let a later task supersede an earlier task and retire its Verify
-- document the default branch record of a member
-- member paths read the default branch that MEMBERS.md records
-- record the default branch of a member in MEMBERS.md
-- add --uninstall to the skill installers
+- accept GitHub rebase merges in pull-request integration
+- run dispatch_driver subprocess helpers from the selected runtime
+- refuse a relative model_policy --record and check release before locking
+- let promote-next replace a DOCS-AUDIT carry-forward the lookahead keeps
+- let the owner authorize one exact pre-ship push to a task branch
 
 <!-- /release-docs -->
 
@@ -57,25 +59,6 @@ is the source of truth for live milestone proof and each host's guard tier.
 | [daemon/app/CHANGELOG.md](daemon/app/CHANGELOG.md) | Desktop app release notes |
 | [RELEASE.md](RELEASE.md) | Maintainer CI and npm release cycle |
 | [GUIDE.md](GUIDE.md) | Pointer to the guides above |
-
-## What's new — October 2, 2026
-
-These changes are merged into the source checkout; npm installs use the latest
-published release.
-
-- **Desktop app (pre-release):** one app for macOS, Windows, and Linux shows
-  your projects, manages skills in each coding agent, and updates itself. See
-  [Desktop app](#desktop-app).
-- **Skills from the published release:** the monitor installs skills from the
-  npm release, checks the download against the registry's sha512, and refuses
-  one that does not match. A release picker lets you stay on an older version.
-- **Safer monitor writes:** a monitor started by the app accepts changes only
-  with the app's local token, so another web page cannot change your setup.
-- **Environment editor:** edit a project's `.env` files with values masked and
-  a diff before each save.
-- **Usage charts:** tokens and cost per day, time per phase, tasks per wave,
-  and verify history. Missing data shows as missing, never as zero.
-- **Muse Code** is a supported host.
 
 ## Install from npm
 

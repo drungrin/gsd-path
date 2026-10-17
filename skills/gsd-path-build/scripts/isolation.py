@@ -4643,6 +4643,20 @@ def attest(
     }
 
 
+def _committed_ship_active(repo: Path) -> bool:
+    """True when the STATE.md committed at HEAD is ship/active."""
+
+    result = run_git(repo, "show", "HEAD:.project/STATE.md")
+    if result.returncode != 0:
+        return False
+    frontmatter = result.stdout.split("\n---", 1)[0]
+    fields = {
+        key: _unquote(value)
+        for key, value in re.findall(r"(?m)^(phase|status):(.*)$", frontmatter)
+    }
+    return fields.get("phase") == "ship" and fields.get("status") == "active"
+
+
 def checkpoint(
     repo: Path,
     expected_head: str,
@@ -4692,6 +4706,12 @@ def checkpoint(
                 "subject": subject.strip(),
             }
         raise IsolationError("primary HEAD differs from --expected-head")
+    if subject.strip().startswith("build:") and _committed_ship_active(repo):
+        raise IsolationError(
+            "STATE is ship/active: final review creates no pre-ship commit; leave its "
+            "outputs uncommitted for archive_milestone.py, and send findings through "
+            "the patch plan (see SHIP.md)"
+        )
     pending = uncommitted_paths(repo)
     forced: Set[str] = set()
     # Build only: an approval undo resets to a parent without the ledger and would drop it.

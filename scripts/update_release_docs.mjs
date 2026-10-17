@@ -272,6 +272,8 @@ function updateReadme(version, date, highlights) {
   const npmUrl = `https://www.npmjs.com/package/@opengsd/gsd-path/v/${version}`;
   const lines = [
     MARKER_START,
+    `## What's new in ${version} — ${date}`,
+    "",
     `**Latest npm release:** [@opengsd/gsd-path@${version}](${npmUrl}) — [release notes](CHANGELOG.md#${anchor})`,
     "",
   ];

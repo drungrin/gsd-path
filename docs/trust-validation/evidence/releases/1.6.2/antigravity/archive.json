@@ -1,0 +1,11 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "antigravity",
+  "run_id": "b693371b-d50a-478f-a93b-fc73994eda4c",
+  "result": "pass",
+  "step": "archive",
+  "command": "python3 /Users/jeremymcspadden/.gsd-path/runtimes/6f95a31e4b8a434672421a604bdce71e5179409eb19496097219cd6cdb5d9f6f/archive_milestone.py validate --repo /Users/jeremymcspadden/orca/evaluations/gsd-path-release-1.6.2-c14248da/antigravity/quick/repo",
+  "output": "{\"archive\": \".project/archive/001-count-json\", \"commit\": \"f4aabb6a856e2239d7cbf7bfdc9d7692dc7a13dc\"}\r\n",
+  "archive_path": ".project/archive/001-count-json",
+  "validation_exit_code": 0
+}

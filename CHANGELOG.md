@@ -11,6 +11,37 @@ app and the daemon have their own file,
 [daemon/app/CHANGELOG.md](daemon/app/CHANGELOG.md). Release bookkeeping and
 test-only changes are not listed; the Git history has them.
 
+## [1.6.1] - 2026-10-16
+
+### Added
+- accept GitHub rebase merges in pull-request integration
+
+### Changed
+- record 1.6.1 live host release evidence
+- prepare 1.6.1 patch candidate
+- Note PR rebase-merge landing in CONTEXT, WORKFLOW, AGENTS
+- Note owner-authorized push exception in FULL.md and HOOKS.md
+- correct the minimum Git version in TEST_ENVIRONMENT.md
+- prove the landed member base through the file scope check
+- describe project Update with no project install
+- update release notes for v1.6.0
+
+### Fixed
+- run dispatch_driver subprocess helpers from the selected runtime
+- refuse a relative model_policy --record and check release before locking
+- let promote-next replace a DOCS-AUDIT carry-forward the lookahead keeps
+- let the owner authorize one exact pre-ship push to a task branch
+- post Discord changelogs from automated releases
+- stage a landing or checkpoint change set with one git add
+- pass the landing message and member paths to git through stdin
+- do not check the paths that a landed task brief names
+- accept a landed task as the only owner of an Interface contract bullet
+- say why a project has no workflow status in the desktop app
+
+### Other
+- Accept only same value or T### for pending rulings
+- list not-started projects and re-probe after project install
+- sort idle projects with shipped in legacy dashboard
 ## [1.6.0] - 2026-10-12
 
 ### Added

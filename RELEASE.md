@@ -193,8 +193,10 @@ publication paths keep the verified package version unchanged through
 `v*` tag and updates:
 
 - `CHANGELOG.md` — Keep a Changelog format, prepended per release
-- `README.md` — the `<!-- release-docs -->` block with the latest npm version
-  and recent highlights
+- `README.md` — the `<!-- release-docs -->` block: a `## What's new in
+  <version> — <date>` heading, the latest npm version, and recent highlights.
+  This block is the README's only "What's new" section; a test fails on a
+  hand-written one.
 
 The script drafts the new `CHANGELOG.md` entry from commit subjects. Before the
 release, a maintainer rewrites that entry for readers: say what changed for a

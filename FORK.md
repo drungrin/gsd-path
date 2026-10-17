@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.1.11**. Upstream package base: **1.6.1**.
+Current fork version: **1.6.2.12**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -19,9 +19,29 @@ and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
 
-## Unreleased
+## 1.6.2.12 — 2026-10-17
 
-Upstream package base remains `1.6.1`.
+Upstream package base is now `1.6.2`, synchronized through tag
+[`v1.6.2`](https://github.com/open-gsd/gsd-path/releases/tag/v1.6.2), commit
+[`8f705d93`](https://github.com/open-gsd/gsd-path/commit/8f705d93a44292b4e71e24ff504b47279f076826).
+No later upstream commits are included. The fork revision continues from 11 to 12.
+
+### Upstream synchronization
+
+- Include the 1.6.2 fixes: `isolation.py checkpoint` refuses a `build:`
+  subject while the STATE committed at HEAD is `ship/active`, reading quoted
+  STATE values; a reused final-review view keeps the evidence-line citations
+  of held-out and judgment ids; release notes keep the README What's new
+  section current.
+- No fork flow records a `build:` checkpoint during ship; milestone abandon
+  stays a build-phase operation.
+- Keep the upstream release evidence and independently versioned desktop app
+  under their existing version policies. The only conflicts were the package
+  version fields, resolved to the fork version.
+
+Validation: full verification after the merge passed 3,069 Python tests with
+39 skips and 118 of 119 Node tests with one skip; all 601 skill resources stayed
+synchronized.
 
 ### Review recurrence signal
 

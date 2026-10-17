@@ -1,0 +1,34 @@
+{
+  "schema": "gsd-path/live-step-evidence/v1",
+  "host": "codex",
+  "run_id": "01a14717-06d1-70c1-9bf9-1f9a686b1dc5",
+  "result": "pass",
+  "step": "child-spawn",
+  "command": "collaboration.spawn_agent",
+  "child_api": "collaboration.spawn_agent",
+  "child_id": "build_t001",
+  "child_status": "completed",
+  "output": {
+    "child_id": "build_t001",
+    "status": "completed",
+    "spawn_call": {
+      "call_id": "call_7e305afc08024000b372271415cb7101",
+      "name": "spawn_agent",
+      "namespace": "collaboration",
+      "arguments": {
+        "task_name": "build_t001",
+        "agent_type": "worker",
+        "fork_turns": "none"
+      }
+    },
+    "spawn_output": "{\"task_name\":\"/root/build_t001\"}",
+    "list_agents_states": [
+      {
+        "agent_name": "/root/build_t001",
+        "agent_status": {
+          "completed": "T001 ready. Verify: 6 tests passed; original script failed 61 assertions. `git diff --check` passed.\nChanged: count.py, tests/test_count_cli.py, .project/tasks/T001-widget-counter-cli.md (Log only).\nEvidence and CLI walkthrough results appended to task Log.\nRESULT: T001 ready"
+        }
+      }
+    ]
+  }
+}
