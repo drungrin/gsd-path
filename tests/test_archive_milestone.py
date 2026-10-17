@@ -3742,6 +3742,14 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
         archive = self.prepare_archive(repo)
         rendered = self.render_manifest(repo)
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        from tests._editorial_fixtures import publication_fixture
+        from scripts import check_handoffs, members
+        reviewed = check_handoffs._reviewed_head((archive / 'review/FINAL.md').read_text(), 'FINAL.md')
+        remote = self.git(repo, 'config', '--get', 'remote.origin.url').stdout.strip()
+        if members._remote_identity(remote) is None:
+            remote = 'https://github.com/open-gsd/demo.git'
+        publication_fixture(repo, archive.relative_to(repo).as_posix(), 'coordinator', reviewed, remote,
+                            title='feat(project): deliver reviewed behavior')
         checked = self.preflight(repo)
         self.assertEqual(checked.returncode, 0, checked.stderr)
         reviewed_head = self.git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -3783,6 +3791,10 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 "integration: pull-request\n",
             ).encode("utf-8"),
         )
+
+    def editorial_body(self, repo: Path) -> str:
+        state, _, _ = archive_milestone.strict_state(repo)
+        return integration.pr_editorial.render(integration.publication(repo, state.archive, 'coordinator'))
 
     def enable_external_landing_integration(self, repo: Path) -> None:
         state = repo / ".project" / "STATE.md"
@@ -4153,6 +4165,8 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 if "GET" in arguments:
                     return subprocess.CompletedProcess(arguments, 0, "[[]]", "")
                 created = {
+                    "title": next(a.removeprefix("title=") for a in arguments if a.startswith("title=")),
+                    "body": next(a.removeprefix("body=") for a in arguments if a.startswith("body=")),
                     "number": 7,
                     "state": "open",
                     "html_url": "https://github.com/open-gsd/demo/pull/7",
@@ -4183,11 +4197,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.assertIn(f"base={default}", listing)
             post = next(arguments for arguments in requests if "POST" in arguments)
             self.assertIn(
-                f"title=integrate: M001 — merge feature/milestone-001 into {default}", post
+                'title=feat(project): deliver reviewed behavior', post
             )
             self.assertIn(f"base={default}", post)
             body = next(argument for argument in post if argument.startswith("body="))
-            self.assertIn(f"Default: {default}", body)
+            self.assertIn('## Scope', body)
 
             created_base["ref"] = "main"
             with self.assertRaisesRegex(
@@ -4262,6 +4276,8 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                         arguments, 1, "", "unexpected command"
                     )
                 created = {
+                    "title": next(a.removeprefix("title=") for a in arguments if a.startswith("title=")),
+                    "body": next(a.removeprefix("body=") for a in arguments if a.startswith("body=")),
                     "number": 7,
                     "state": "open",
                     "html_url": "https://github.com/open-gsd/demo/pull/7",
@@ -4299,14 +4315,14 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             )
             post = next(arguments for arguments in requests if "POST" in arguments)
             self.assertIn(
-                f"title={pipeline_git.integrate_subject(archive_name, 'main')}",
+                "title=feat(project): deliver reviewed behavior",
                 post,
             )
             self.assertIn("base=main", post)
             self.assertIn("head=feature/milestone-001", post)
             body = next(argument for argument in post if argument.startswith("body="))
             self.assertTrue(
-                "Archive:" in body and "prepared with" not in body.lower()
+                "## Problem" in body and "prepared with" not in body.lower()
             )
 
     def test_pull_request_integration_waits_without_touching_main(self) -> None:
@@ -4331,7 +4347,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                     "sha": ship_sha,
                     "repo": {"full_name": "open-gsd/demo"},
                 },
-                "body": "Reviewed changes.",
+                "body": self.editorial_body(repo),
             }
 
             with (
@@ -4710,7 +4726,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             patch = next(arguments for arguments in requests if "PATCH" in arguments)
             body = next(argument for argument in patch if argument.startswith("body="))
             self.assertTrue(
-                "Archive:" in body and "prepared with" not in body.lower()
+                "## Problem" in body and "prepared with" not in body.lower()
             )
 
     def test_pull_request_integration_rejects_closed_pr_without_editing(self) -> None:

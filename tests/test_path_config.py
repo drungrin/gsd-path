@@ -70,6 +70,13 @@ class PathConfigTests(unittest.TestCase):
         self.assertIn('locked', self.cli('set', 'integration', 'pull-request', ok=False)['error'])
         self.assertEqual(self.state.read_bytes(), before)
 
+    def test_editorial_language_can_be_selected_during_ship_without_unlocking_product_policy(self):
+        self.state.write_bytes(state_text(phase='ship',status='active',branch='feature/milestone-001').encode())
+        self.cli('set','editorial_language','pt-BR')
+        self.assertEqual(self.cli('show')['settings']['editorial_language']['value'],'pt-BR')
+        self.assertIn('locked',self.cli('set','review_panel','off',ok=False)['error'])
+        self.assertIn('editorial_language',self.cli('set','editorial_language','unknown',ok=False)['error'])
+
     def test_review_preferences_do_not_rewrite_approved_contracts(self):
         intent = self.repo / '.project/intent/INTENT.md'
         intent.parent.mkdir()
@@ -168,11 +175,11 @@ class PathConfigTests(unittest.TestCase):
     def test_shipping_retains_project_preferences(self):
         from tests.test_archive_milestone import ArchiveMilestoneTests
         fixture = ArchiveMilestoneTests()
-        fixture.make_repo(self.repo)
         files = {'config.json': {'review_panel': 'detected'},
                  'model-policy.json': {'roles': {'coder': {'model': 'inherit'}}}}
         for name, data in files.items():
             (self.repo / '.project' / name).write_bytes(json.dumps(data).encode("utf-8"))
+        fixture.make_repo(self.repo)
         archive = fixture.prepare_archive(self.repo)
         result = fixture.render_manifest(self.repo)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -181,6 +188,13 @@ class PathConfigTests(unittest.TestCase):
         for name, data in files.items():
             self.assertEqual(json.loads((self.repo / '.project' / name).read_text(encoding="utf-8")), data)
             self.assertFalse((archive / name).exists())
+        config = self.repo / '.project/config.json'
+        config.write_text(json.dumps({'review_panel': 'detected', 'editorial_language': 'pt-BR'}))
+        self.assertEqual(fixture.preflight(self.repo).returncode, 0)
+        config.write_text(json.dumps({'review_panel': 'off', 'editorial_language': 'pt-BR'}))
+        rejected = fixture.preflight(self.repo)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn('only editorial language', rejected.stderr)
 
     def test_config_edits_do_not_block_an_inflight_task_landing(self):
         from scripts import isolation

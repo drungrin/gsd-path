@@ -590,6 +590,17 @@ default branch.
 
 ### Integration
 
+Before PR publication, ship prepares the editorial artifact through
+`pr_editorial.py` using the project `editorial_language`. Every PR uses a
+Conventional Commit title and populated problem, changes, scope, validation,
+and risks/limitations sections; the archive's language does not select the
+publication language. Records persist in `.project/publications/` without
+rewriting archived evidence. Azure publications include an explicit acceptance
+and disposition plan for linked work items. Delivery updates and discussion
+comments occur only after normal integration and tag proof. The runtime uses
+revision tests and service history for optimistic updates and repeat safety;
+pending Boards work remains distinct from a proven product integration.
+
 A user-approved `coordinator_migration.py` transaction may move a quiet
 single-repo milestone at `ship/active`, before final review/archive, into a
 dedicated coordinator. It preserves original task commits and recorded output,

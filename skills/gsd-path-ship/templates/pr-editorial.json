@@ -1,0 +1,11 @@
+{
+  "title": "feat(scope): <describe the delivered behavior in the project language>",
+  "sections": {
+    "problem": "<explain the concrete problem and why the change is needed>",
+    "changes": "<describe delivered behavior and affected contracts>",
+    "scope": "<name included work and relevant exclusions>",
+    "validation": "<summarize recorded commands and results, including skips and limitations>",
+    "risks": "<describe actual integration risks, compatibility and known limitations>"
+  },
+  "work_items": []
+}

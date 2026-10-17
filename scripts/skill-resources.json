@@ -102,7 +102,9 @@
     "AGENTS.md",
     "WORKFLOW.md",
     "!**/__pycache__/**",
-    "!**/*.pyc"
+    "!**/*.pyc",
+    "scripts/pr_editorial.py",
+    "scripts/azure_work_items.py"
   ],
   "phase_resources": {
     "gsd-path-build": [
@@ -121,7 +123,6 @@
       "references/reviewer-final.md",
       "references/reviewer-panel.md",
       "references/spec-probes.md",
-
       "templates/task.md",
       "templates/wave-review.md",
       "templates/wave-panel.md",
@@ -161,14 +162,8 @@
       "templates/docs-audit.md",
       "templates/state.md"
     ],
-    "gsd-path-forensics": [
-      "references/runtime-selection.md",
-      "references/operating-rules.md"
-    ],
-    "gsd-path-migrate": [
-      "references/runtime-selection.md",
-      "references/operating-rules.md"
-    ],
+    "gsd-path-forensics": ["references/runtime-selection.md", "references/operating-rules.md"],
+    "gsd-path-migrate": ["references/runtime-selection.md", "references/operating-rules.md"],
     "gsd-path-loop": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
@@ -216,12 +211,12 @@
       "references/reviewer-final.md",
       "references/reviewer-panel.md",
       "references/spec-probes.md",
-
       "templates/archive-manifest.md",
       "templates/final-review.md",
       "templates/gap-review.md",
       "templates/patch-findings.md",
-      "templates/wave-review.md"
+      "templates/wave-review.md",
+      "templates/pr-editorial.json"
     ],
     "gsd-path-decide": [
       "references/runtime-selection.md",
@@ -231,10 +226,7 @@
       "references/decider.md",
       "templates/synthesis.md"
     ],
-    "gsd-path-undo": [
-      "references/runtime-selection.md",
-      "references/operating-rules.md"
-    ]
+    "gsd-path-undo": ["references/runtime-selection.md", "references/operating-rules.md"]
   },
   "script_targets": [
     ["scripts/coordinator_migration.py", "skills/gsd-path/scripts/coordinator_migration.py"],
@@ -378,18 +370,9 @@
     ["scripts/discussion_records.py", "skills/gsd-path-research/scripts/discussion_records.py"],
     ["scripts/discussion_records.py", "skills/gsd-path-roadmap/scripts/discussion_records.py"],
     ["scripts/discussion_records.py", "skills/gsd-path-ship/scripts/discussion_records.py"],
-    [
-      "scripts/check_docs_audit.py",
-      "skills/gsd-path/scripts/check_docs_audit.py"
-    ],
-    [
-      "scripts/check_docs_audit.py",
-      "skills/gsd-path-docs-audit/scripts/check_docs_audit.py"
-    ],
-    [
-      "scripts/check_docs_audit.py",
-      "skills/gsd-path-inspect/scripts/check_docs_audit.py"
-    ],
+    ["scripts/check_docs_audit.py", "skills/gsd-path/scripts/check_docs_audit.py"],
+    ["scripts/check_docs_audit.py", "skills/gsd-path-docs-audit/scripts/check_docs_audit.py"],
+    ["scripts/check_docs_audit.py", "skills/gsd-path-inspect/scripts/check_docs_audit.py"],
     ["scripts/check_handoffs.py", "skills/gsd-path/scripts/check_handoffs.py"],
     ["scripts/check_handoffs.py", "skills/gsd-path-plan/scripts/check_handoffs.py"],
     ["scripts/check_handoffs.py", "skills/gsd-path-build/scripts/check_handoffs.py"],
@@ -559,7 +542,27 @@
     ["scripts/path_config.py", "skills/gsd-path-roadmap/scripts/path_config.py"],
     ["scripts/path_config.py", "skills/gsd-path-ship/scripts/path_config.py"],
     ["scripts/path_config.py", "skills/gsd-path-undo/scripts/path_config.py"],
-    ["scripts/path_config.py", "skills/gsd-path/scripts/path_config.py"]
+    ["scripts/path_config.py", "skills/gsd-path/scripts/path_config.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path-build/scripts/pr_editorial.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path-decide/scripts/pr_editorial.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path-define/scripts/pr_editorial.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path-docs-audit/scripts/pr_editorial.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path-inspect/scripts/pr_editorial.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path-plan/scripts/pr_editorial.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path-research/scripts/pr_editorial.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path-roadmap/scripts/pr_editorial.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path-ship/scripts/pr_editorial.py"],
+    ["scripts/pr_editorial.py", "skills/gsd-path/scripts/pr_editorial.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path-build/scripts/azure_work_items.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path-decide/scripts/azure_work_items.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path-define/scripts/azure_work_items.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path-docs-audit/scripts/azure_work_items.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path-inspect/scripts/azure_work_items.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path-plan/scripts/azure_work_items.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path-research/scripts/azure_work_items.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path-roadmap/scripts/azure_work_items.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path-ship/scripts/azure_work_items.py"],
+    ["scripts/azure_work_items.py", "skills/gsd-path/scripts/azure_work_items.py"]
   ],
   "phase_contract_targets": [
     ["skills/gsd-path-build/SKILL.md", "skills/gsd-path/BUILD.md"],

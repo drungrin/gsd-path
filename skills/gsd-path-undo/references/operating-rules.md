@@ -52,6 +52,16 @@ bundles this file; spawned agents follow their role brief instead.
 
 ## Stay in role
 
+- Before PR publication, ship authors a Conventional Commit title and a
+  self-contained description in the configured `editorial_language`, grounded
+  in approved intent, manifest, reviewed diff and recorded verification.
+  Every PR includes problem, changes, scope, validation and risks/limitations.
+  Publication records persist under `.project/publications/` outside archives.
+  Azure work items are linked from an explicit acceptance/disposition plan;
+  comments and state changes run only after the actual integration is proven.
+  A synchronization failure is a resumable pending result, never a reason to
+  rerun a merge or proven verification. Preserve human PR edits and item history.
+
 - A user-approved `coordinator_migration.py` transaction is the only supported
   mid-milestone move from single-repo to a dedicated coordinator. It requires
   `ship/active`, all task landings proven, no final review/archive, and no active

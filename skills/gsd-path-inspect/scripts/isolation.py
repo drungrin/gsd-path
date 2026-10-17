@@ -1643,7 +1643,7 @@ def _split_paths(block: str) -> Set[str]:
 PROJECT_ENTRIES = frozenset({
     "STATE.md", "LESSONS.md", "REPOSITORY.md", "MEMBERS.md", "CHARTER.md", "ROADMAP.md",
     "SYNTHESIS.md", "config.json", "model-policy.json",
-    "intent", "research", "plan", "tasks", "review", "build", "discuss", "archive", "next",
+    "intent", "research", "plan", "tasks", "review", "build", "discuss", "archive", "next", "publications",
 })
 
 

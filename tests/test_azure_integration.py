@@ -12,6 +12,7 @@ from tests import test_member_integration as member_tests
 from tests import test_archive_milestone as archive_tests
 from tests import test_pipeline_git as pipeline_tests
 from tests.test_azure_repos import SSH, HTTPS, REPOSITORY
+from tests._editorial_fixtures import publication_fixture
 
 git = member_tests.git
 ARCHIVE = member_tests.ARCHIVE
@@ -30,6 +31,7 @@ class AzureIntegrationTests(unittest.TestCase):
         path.write_text(path.read_text().replace('https://github.com/acme/web.git', SSH))
         self.calls, self.pulls = [], []
         self.bound = 'feature/demo-milestone-001'
+        publication_fixture(self.root, ARCHIVE, 'web', self.member_tip, SSH)
 
     def az(self, *args):
         self.calls.append(args)
@@ -49,6 +51,7 @@ class AzureIntegrationTests(unittest.TestCase):
         elif args[1:4] == ('repos', 'pr', 'create'):
             self.assertEqual(self.remote_ref('refs/heads/' + self.bound), self.member_tip)
             self.pulls.append({'pullRequestId': 7, 'status': 'active',
+                               'title': option('--title'),
                                'sourceRefName': 'refs/heads/' + option('--source-branch'),
                                'targetRefName': 'refs/heads/' + option('--target-branch'),
                                'description': option('--description'),
@@ -62,6 +65,8 @@ class AzureIntegrationTests(unittest.TestCase):
             payload = self.pulls[0]
         elif args[1:4] == ('repos', 'pr', 'update'):
             self.pulls[0]['description'] = option('--description')
+            if '--title' in args:
+                self.pulls[0]['title'] = option('--title')
             payload = self.pulls[0]
         else:
             self.fail(f'unexpected az command: {args}')
@@ -136,9 +141,10 @@ class AzureIntegrationTests(unittest.TestCase):
 
     def test_reused_pr_description_is_repaired_before_publication(self):
         self.integrate()
-        self.pulls[0]['description'] = 'Human explanation\n\n---\nPR prepared with GSD Path.'
+        human = self.pulls[0]['description'] + '\nHuman explanation\n'
+        self.pulls[0]['description'] = human + '\n---\nPR prepared with GSD Path.'
         self.integrate()
-        self.assertEqual(self.pulls[0]['description'], 'Human explanation')
+        self.assertEqual(self.pulls[0]['description'], human.rstrip())
         self.assertTrue(any(args[1:4] == ('repos', 'pr', 'update') for args in self.calls))
 
 

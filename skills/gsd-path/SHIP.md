@@ -249,7 +249,44 @@ The persisted `STATE.archive` field is the transaction identity.
    Never render or edit the manifest directly. `prepare` removes that exact
    temporary after a crash. If the target exists in HEAD, `prepare` and
    `render-manifest` refuse mutation and the only valid action is `validate`.
-4. Run `python3 <absolute archive_milestone.py> preflight --repo <root>` while
+4. Prepare **editorial publications** for the coordinator when it uses PR
+   integration and for every locked member using PR integration, including
+   user-opened Azure external-landing PRs. Resolve `scripts/pr_editorial.py`
+   and `templates/pr-editorial.json` from this skill. Run `pr_editorial.py
+   context --repo <root> --archive <STATE.archive> --member <name-or-coordinator>`.
+   Read archived INTENT, MANIFEST, FINAL, recorded gap output, and the reviewed
+   repository diff. `editorial_language` owns the prose language independently
+   of the pipeline artifacts' language. Select it with `path_config.py set
+   editorial_language <en-or-pt-BR> --repo <root>`; this presentation setting
+   can change during active ship without unlocking product policy.
+
+   Author complete JSON from the editorial template: a Conventional Commit
+   title describing delivered behavior, and populated problem, changes,
+   scope, validation, and risks/limitations sections in the selected language.
+   Keep protocol identifiers in receipts/tags rather than using `integrate:`
+   or a branch name as the PR title. Include recorded commands/results and
+   skips. The description must work for readers without coordinator access;
+   local or temporary evidence paths cannot be published. Reuse recorded
+   evidence instead of executing commands again to write copy.
+
+   For Azure, inspect actual work items referenced by approved intent and
+   select only the items delivered by this repository. Each `work_items`
+   entry has `id`, `disposition` (`complete`, `partial`, `obsolete`), `summary`,
+   and acceptance `evidence`. Partial items also have `remaining`; obsolete
+   items require `reason`. Judge full acceptance, not just matching titles.
+   Set `target_state` when the process has multiple Completed/Removed states.
+   Physical deletion is never part of this workflow.
+
+   Run `pr_editorial.py prepare --repo <root> --archive <STATE.archive>
+   --member <name-or-coordinator> --reviewed-head <reviewed-SHA> --input
+   <authored-JSON>`. It binds copy and Azure acceptance snapshots to the
+   recorded evidence and writes `.project/publications/<archive>/<name>.json`
+   outside the immutable archive. This artifact ships with project metadata
+   and is immutable once committed. The runtime publishes the copy and native
+   Azure links, preserving substantive human edits on retries. Missing or
+   stale editorial input blocks publication.
+
+   Then run `python3 <absolute archive_milestone.py> preflight --repo <root>` while
    STATE is `ship/active`, or while it is `shipped/done` in the uncommitted
    crash window above. It validates Git root/branch, current target absence from
    HEAD, immutable older archives, canonical real files, exact active-root
@@ -286,7 +323,17 @@ The persisted `STATE.archive` field is the transaction identity.
    `remote default must be <recorded>`, stop and report it. When it returns
    `awaiting-merge`, report the member PR
    link, stop, and rerun the same command after the user merges it; never
-   merge a member PR yourself. When it returns `integrated`, keep its `body`
+   merge a member PR yourself. After an actual user merge, the runtime first
+   validates source, landing, ancestry, and published proof tags. Only then
+   does it apply the publication's Azure work-item plan: complete accepted
+   delivery, keep partial items open with remaining work, or mark justified
+   obsolete items Removed. It posts one project-language delivery comment
+   with PR, landing commit and acceptance evidence. Revision checks preserve
+   concurrent edits; service history prevents duplicate comments after a crash.
+   `work-items-pending` means integration was proven but Boards synchronization
+   needs retry: report its reason and resume `close-members`, without rerunning
+   project Verify or merging again. Never substitute a chat acknowledgement
+   for the actual Azure merge proof. When it returns `integrated`, keep its `body`
    for the ship commit below.
 5. Only after preflight passes, record shipment through the journaled helper;
    for a program it atomically replaces both ROADMAP.md and STATE.md, setting
@@ -352,7 +399,8 @@ The persisted `STATE.archive` field is the transaction identity.
      including Azure SSH URLs and encoded project names; never substitute
      GitHub commands for Azure. It publishes the exact ship commit, reuses only the
      single PR from origin's bound branch at that commit or creates one with
-     the canonical integration title and body, without attribution or footers.
+     the prepared Conventional Commit title and editorial description in the
+     project's language, without attribution or tool credits.
      Any competing PR to `main` at the ship commit blocks. While the eligible
      PR is open, the helper returns `status: awaiting-merge`. Present
      **Outcome**, link
@@ -361,7 +409,10 @@ The persisted `STATE.archive` field is the transaction identity.
      **Merge (no fast-forward)** or **Squash commit** method, as permitted by
      its branch policy. Azure auto-complete, policy bypass, and rebase are
      refused. Stop this ship
-     invocation; Path never enables auto-merge or merges the PR. On rerun after
+     invocation; Path never enables auto-merge or merges the PR. A later
+     `work-items-pending` result retains the integration proof and blocks
+     completion until the approved work-item synchronization succeeds; retry
+     integration without rerunning reviews or tests. On rerun after
      the user merges it, the helper requires the PR head to remain
      the ship commit and its landing to be on `origin/main` first-parent
      history as either a two-parent merge with that ship commit as second

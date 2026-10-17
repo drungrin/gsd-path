@@ -142,7 +142,7 @@ def normalize(repository: Repository, value: object, call: Callable[..., object]
             raise AzureError("Azure pull request merge metadata is invalid")
     return {"number": number, "state": "open" if status == "active" else "closed",
             "html_url": f"{repository.web_url}/pullrequest/{number}",
-            "merged_at": merged_at, "merge_commit_sha": merge, "body": value.get("description"),
+            "merged_at": merged_at, "merge_commit_sha": merge, "body": value.get("description"), "title": value.get("title"),
             "base": {"ref": target.removeprefix("refs/heads/")},
             "head": {"ref": source.removeprefix("refs/heads/"), "sha": source_sha,
                      "repo": {"full_name": repository.key}}, "azure": value}

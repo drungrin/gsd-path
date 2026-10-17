@@ -33,8 +33,8 @@ class SquashCoordinatorTests(unittest.TestCase):
             harness.enable_external_landing_integration(self.root)
         else:
             harness.enable_pull_request_integration(self.root)
-        self.archive, self.member_tip = harness.ship_canonical_bound(self.root)
         self.configure_remote(self.root)
+        self.archive, self.member_tip = harness.ship_canonical_bound(self.root)
         self.calls, self.pulls, self.bound = [], [], "feature/milestone-001"
         self.patch = mock.patch.object(integration, "run_command", side_effect=self.az)
         self.patch.start()
@@ -54,7 +54,9 @@ class SquashCoordinatorTests(unittest.TestCase):
             self.assertEqual(first["merge_methods"], ["noFastForward", "squash"])
             # External mode waits for the user's PR instead of creating it.
             repository = integration.pull_request_repository(self.root)
-            integration.create_provider_pull_request(repository, self.bound, "main", "Review milestone", "Review", self.member_tip)
+            document = integration.publication(self.root, '.project/archive/' + self.archive, 'coordinator')
+            integration.create_provider_pull_request(repository, self.bound, "main", document['title'],
+                                                     integration.pr_editorial.render(document), self.member_tip)
         self.assertEqual(self.integrate()["status"], "awaiting-merge")
 
     def completed(self):

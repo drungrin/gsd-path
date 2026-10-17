@@ -64,10 +64,12 @@ else:
 if __package__:
     from . import archive_milestone
     from . import azure_repos
+    from . import pr_editorial
     from .archive_milestone import ArchiveError
 else:
     import archive_milestone
     import azure_repos
+    import pr_editorial
     from archive_milestone import ArchiveError
 
 
@@ -804,14 +806,85 @@ def create_pull_request(
     archive_name: str,
     ship_commit: str,
     base: str = "main",
+    *, editorial: Optional[dict] = None,
 ) -> dict:
-    body = pull_request_body(archive_path, ship_commit, branch, base)
+    if editorial is None:
+        raise ArchiveError("editorial-required: prepare the PR title and description before publication")
+    body = pr_editorial.render(editorial)
     return create_provider_pull_request(repository, branch, base,
-                                        integrate_subject(archive_name, base), body, ship_commit)
+                                        editorial['title'], body, ship_commit)
+
+
+def publication(project: Path, archive_path: str, member: str, reviewed_head: Optional[str] = None) -> dict:
+    try:
+        if reviewed_head is None:
+            if __package__:
+                from . import check_handoffs
+            else:
+                import check_handoffs
+            reviewed_head = check_handoffs._reviewed_head(
+                (project / archive_path / 'review/FINAL.md').read_text(encoding='utf-8'), 'FINAL.md')
+        return pr_editorial.load(project, archive_path, member, reviewed_head)
+    except ValueError as error:
+        raise ArchiveError(str(error)) from error
+
+
+def publish_editorial(project: Path, repository: PullRequestRepository, pull: dict,
+                      document: dict, branch: str, source: str, base: str) -> dict:
+    """Upgrade legacy stubs and retain substantive human edits on retries."""
+    desired = pr_editorial.render(document)
+    current = pull.get('body') or ''
+    clean = _common.without_tool_attribution(current)
+    stub = not clean.strip() or all(
+        not line.strip() or line.startswith(('Archive:', 'Member:', 'Reviewed-HEAD:', 'Ship:', 'Source:', 'Target:', 'Default:', 'Branch:'))
+        for line in clean.splitlines())
+    title = pull.get('title')
+    rewrite_title = (not title and stub) or bool(title and title.startswith('integrate:'))
+    body = desired if stub else clean
+    try:
+        pr_editorial.require_body_format(body, document['language'])
+        if not rewrite_title and not pr_editorial.TITLE.fullmatch(title or document['title']):
+            raise ValueError('PR title must remain a Conventional Commit subject')
+    except ValueError as error:
+        raise ArchiveError(str(error)) from error
+    # Once a user edits substantive copy, it remains theirs. The workflow
+    # never reconstructs it from a protocol message on a retry.
+    if stub or clean != current or rewrite_title:
+        if isinstance(repository, azure_repos.Repository):
+            args = ['repos', 'pr', 'update', '--organization', repository.organization_url,
+                    '--detect', 'false', '--id', str(pull['number']), '--description', body]
+            if rewrite_title:
+                args += ['--title', document['title']]
+            pull = azure_repos.normalize(repository, azure_cli_json(*args), azure_cli_json)
+        else:
+            args = [f'repos/{repository}/pulls/{pull["number"]}', '--method', 'PATCH', '-f', 'body=' + body]
+            if rewrite_title:
+                args += ['-f', 'title=' + document['title']]
+            pull = require_pull_request_shape(github_api_json(*args))
+        require_pull_request_identity(repository, pull, branch, source, base)
+        if pull.get('body') != body or (rewrite_title and pull.get('title') not in (None, document['title'])):
+            raise ArchiveError('forge did not retain the approved PR editorial update')
+    try:
+        pr_editorial.link(document, repository, pull, azure_cli_json)
+    except ValueError as error:
+        raise ArchiveError(str(error)) from error
+    return pull
 
 
 def create_provider_pull_request(repository: PullRequestRepository, branch: str, base: str, title: str,
                                  body: str, ship_commit: str) -> dict:
+    if not pr_editorial.TITLE.fullmatch(title):
+        raise ArchiveError('PR title must be a Conventional Commit subject')
+    valid_format = False
+    for selected in pr_editorial.LANGUAGES:
+        try:
+            pr_editorial.require_body_format(body, selected)
+            valid_format = True
+            break
+        except ValueError:
+            pass
+    if not valid_format:
+        raise ArchiveError('PR description requires the standard editorial sections')
     if isinstance(repository, azure_repos.Repository):
         pull = azure_call(azure_repos.create, repository, branch, base, title, body)
         require_pull_request_identity(repository, pull, branch, ship_commit, base)
@@ -1108,12 +1181,16 @@ def integrate_pull_request(
     repository = pull_request_repository(project)
     base = state.default_branch
     pull = find_pull_request(repository, branch, ship_commit, base)
+    if pull is not None and pull['merged_at'] is None and pull['state'] != 'open':
+        raise ArchiveError('pull request was closed without merging')
+    editorial = publication(project, archive_path, 'coordinator') if pull is None or pull['merged_at'] is None else None
     if pull is None:
         publish_bound_branch(project, branch, ship_commit)
         if external_landing:
             return {"status": "awaiting-merge", "mode": "external-landing", "archive": archive_path,
                     "commit": ship_commit, "branch": branch, "base": base,
-                    "repository": repository.web_url, "merge_methods": ["noFastForward", "squash"]}
+                    "repository": repository.web_url, "merge_methods": ["noFastForward", "squash"],
+                    "title": editorial['title'], "description": pr_editorial.render(editorial)}
         pull = create_pull_request(
             repository,
             branch,
@@ -1121,23 +1198,17 @@ def integrate_pull_request(
             archive_name,
             ship_commit,
             base,
+            editorial=editorial,
         )
     elif pull["merged_at"] is None:
         if pull["state"] != "open":
             raise ArchiveError("pull request was closed without merging")
-        pull = update_pull_request_body(
-            repository,
-            pull,
-            archive_path,
-            ship_commit,
-            branch,
-            base=base,
-        )
     if pull["merged_at"] is None:
         if pull["state"] != "open":
             raise ArchiveError("pull request was closed without merging")
         publish_bound_branch(project, branch, ship_commit)
         require_pull_request_merge_provenance(repository, pull["number"])
+        pull = publish_editorial(project, repository, pull, editorial, branch, ship_commit, base)
         return {
             "status": "awaiting-merge",
             "mode": "external-landing" if external_landing else "pull-request",
@@ -1194,7 +1265,16 @@ def integrate_pull_request(
             ),
             "refresh local milestone-tag ref",
         )
-    return validate_integrated(project, archive_milestone.milestone_slug(state))
+    proven = validate_integrated(project, archive_milestone.milestone_slug(state), check_work_items=False)
+    path = pr_editorial.publication_path(project, archive_path, 'coordinator')
+    if path.exists() and json.loads(path.read_text(encoding='utf-8')).get('work_items'):
+        document = publication(project, archive_path, 'coordinator')
+        synchronization = pr_editorial.synchronize(project, archive_path, 'coordinator', document['reviewed_head'],
+                                                   repository, pull, merge_commit, azure_cli_json, source_head=ship_commit)
+        if synchronization['status'] == 'pending':
+            return dict(proven, status='work-items-pending', work_items=synchronization)
+        proven['work_items'] = synchronization
+    return proven
 
 
 def integrate_external_landing(
@@ -1277,7 +1357,7 @@ def integrate_external_landing(
             ),
             "refresh local milestone-tag ref",
         )
-    return validate_integrated(project, archive_milestone.milestone_slug(state))
+    return validate_integrated(project, archive_milestone.milestone_slug(state), check_work_items=False)
 
 
 def integrate(repo: Path, slug: str) -> dict:
@@ -1324,15 +1404,16 @@ def integrate(repo: Path, slug: str) -> dict:
         run_git(project, "rev-parse", remote_default), "resolve remote default"
     )
     if state.integration == "pull-request":
-        return integrate_pull_request(
+        result = integrate_pull_request(
             project,
             state,
             archive_path,
             archive_name,
             ship_commit,
         )
+        return finish_delivery(project, result)
     if state.integration == "external-landing":
-        return integrate_external_landing(
+        result = integrate_external_landing(
             project,
             state,
             archive_path,
@@ -1342,6 +1423,7 @@ def integrate(repo: Path, slug: str) -> dict:
             default_name,
             bound_branch,
         )
+        return finish_delivery(project, result)
     publishable_bound_branch(project, bound_branch, ship_commit)
     integration_branch, worktree = integration_names(project, archive_name, pin=True)
     interrupted_worktree = registered_worktree(project, integration_branch)
@@ -1477,7 +1559,40 @@ def integrate(repo: Path, slug: str) -> dict:
             if ancestor.returncode != 0:
                 raise ArchiveError(f"integration branch {integration_branch} moved unexpectedly")
         delete_integration_branch(project, integration_branch, branch_tip)
-    return validate_integrated(project, slug)
+    return finish_delivery(project, validate_integrated(project, slug, check_work_items=False))
+
+
+def finish_delivery(project: Path, proven: dict) -> dict:
+    """Recover delivery side effects only after the normal integration proof.
+
+    A fresh clone may lack local Boards receipts. Rebuild them from service
+    history; never make product-proof validation depend on mutating Boards.
+    """
+    if 'landing' not in proven:
+        return proven
+    archive = proven['archive']
+    outcomes = []
+    for row in proven.get('members', []):
+        member = row['name']
+        path = pr_editorial.publication_path(project, archive, member)
+        if not path.exists() or not json.loads(path.read_text(encoding='utf-8')).get('work_items'):
+            continue
+        try:
+            pr_editorial.require_synchronized(project, archive, member, row['merge'])
+            continue
+        except ValueError:
+            pass
+        checkout, _, bound, _, _, default = _member_names(project, member, archive)
+        repository = pull_request_repository(checkout)
+        pull = find_pull_request(repository, bound, row['reviewed_head'], default)
+        if pull is None:
+            raise ArchiveError('merged member PR is missing during delivery recovery')
+        outcome = pr_editorial.synchronize(project, archive, member, row['reviewed_head'],
+                                           repository, pull, row['merge'], azure_cli_json)
+        outcomes.append(dict(outcome, member=member))
+    if any(row['status'] == 'pending' for row in outcomes):
+        return dict(proven, status='work-items-pending', work_items=outcomes)
+    return proven
 
 
 def find_integrate_commit(
@@ -1522,7 +1637,7 @@ def find_integrate_commit(
 
 
 def validate_integrated(
-    repo: Path, slug: str, *, refresh: bool = True, historical: bool = False
+    repo: Path, slug: str, *, refresh: bool = True, historical: bool = False, check_work_items: bool = True
 ) -> dict:
     project = repo.resolve()
     active_root = archive_milestone.require_project_layout(project)
@@ -1720,8 +1835,18 @@ def validate_integrated(
         proven = validate_member_integrated(project, row["name"], configured, row["reviewed_head"], refresh=refresh)
         if (proven["merge"], proven["tag"]) != (row["merge"], row["tag"]):
             raise ArchiveError(f"member {row['name']} integration differs from the ship commit")
+        if check_work_items:
+            try:
+                pr_editorial.require_synchronized(project, configured, row['name'], row['merge'])
+            except ValueError as error:
+                raise ArchiveError(str(error)) from error
     if "members" in shipped:
         result["members"] = shipped["members"]
+    if check_work_items:
+        try:
+            pr_editorial.require_synchronized(project, configured, 'coordinator', result['landing'])
+        except ValueError as error:
+            raise ArchiveError(str(error)) from error
     return result
 
 
@@ -1977,15 +2102,12 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
     if pull is None or pull["merged_at"] is None:
         if pull is not None and pull["state"] != "open":
             raise ArchiveError(f"member {member} pull request was closed without merging")
+        document = publication(coordinator, archive_path, member, reviewed_head)
         _publish_member_bound(checkout, project, member, bound, reviewed_head)
         if pull is None:
-            pull = create_provider_pull_request(repository, bound, default, subject,
-                                                body, reviewed_head)
-        else:
-            pull = update_pull_request_body(
-                repository, pull, archive_path, reviewed_head, bound,
-                body, default,
-            )
+            pull = create_provider_pull_request(repository, bound, default, document['title'],
+                                                pr_editorial.render(document), reviewed_head)
+        pull = publish_editorial(coordinator, repository, pull, document, bound, reviewed_head, default)
         require_pull_request_merge_provenance(repository, pull["number"])
         return {"status": "awaiting-merge", "mode": "pull-request", "member": member,
                 "pull_request": pull["html_url"]}
@@ -2006,11 +2128,16 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
         archive_milestone.require_git_success(
             run_git(checkout, "update-ref", f"refs/remotes/origin/tags/{tag_name}", tag_object),
             "refresh member milestone-tag ref")
-    return validate_member_integrated(coordinator, member, archive_path, reviewed_head)
+    proven = validate_member_integrated(coordinator, member, archive_path, reviewed_head, check_work_items=False)
+    synchronization = pr_editorial.synchronize(coordinator, archive_path, member, reviewed_head,
+                                               repository, pull, merge, azure_cli_json)
+    if synchronization['status'] == 'pending':
+        return dict(proven, status='work-items-pending', work_items=synchronization)
+    return dict(proven, work_items=synchronization) if synchronization.get('items') else proven
 
 
 def validate_member_integrated(
-    coordinator: Path, member: str, archive_path: str, reviewed_head: str, *, refresh: bool = True
+    coordinator: Path, member: str, archive_path: str, reviewed_head: str, *, refresh: bool = True, check_work_items: bool = False
 ) -> dict:
     """Prove the member merge is on the member default branch and its published tag points at it."""
     checkout, _, bound, subject, tag_name, default = _member_names(coordinator, member, archive_path)
@@ -2069,6 +2196,11 @@ def validate_member_integrated(
         if published is None:
             raise ArchiveError(f"member {member} tag {tag_name} is not published")
         require_annotated_tag(checkout, tracking, merge, f"member tag {tag_name}")
+    if check_work_items:
+        try:
+            pr_editorial.require_synchronized(coordinator, archive_path, member, merge)
+        except ValueError as error:
+            raise ArchiveError(str(error)) from error
     return {"member": member, "merge": merge, "tag": tag_name, "tag_object": published}
 
 
@@ -2174,9 +2306,15 @@ def close_members(repo: Path) -> dict:
         if row["reviewed_head"] != heads[name] or row["mode"] != mode:
             raise ArchiveError(f"member-close journal for {name} differs from FINAL.md or MEMBERS.md")
         if row["status"] == "integrated":
-            result = validate_member_integrated(project, name, state.archive, heads[name])
+            result = validate_member_integrated(project, name, state.archive, heads[name], check_work_items=False)
             if (result["merge"], result["tag"]) != (row["merge"], row["tag"]):
                 raise ArchiveError(f"member {name} integration differs from its member-close journal")
+            if mode != 'direct':
+                result = integrate_member_pull_request(project, name, state.archive, heads[name])
+                row['work_items'] = result.get('work_items')
+                save()
+                if result.get('status') == 'work-items-pending':
+                    return dict(result, member=name)
             closed.append(row)
             continue
         # Journal pending before the member moves; a later member waits for this one.
@@ -2191,6 +2329,10 @@ def close_members(repo: Path) -> dict:
             save()
             return {"status": "awaiting-merge", "member": name, "pull_request": result["pull_request"]}
         row.update(status="integrated", merge=result["merge"], tag=result["tag"])
+        if 'work_items' in result:
+            row['work_items'] = result['work_items']
         save()
+        if result.get('status') == 'work-items-pending':
+            return dict(result, member=name)
         closed.append(row)
     return {"status": "integrated", "members": closed, "body": ship_commit_body(state.archive, reviewed, closed)}

@@ -1736,6 +1736,7 @@ def require_clean_older_archives(project: Path, configured: str) -> None:
         "--ignored=matching",
         "--",
         ".project/archive",
+        ".project/publications",
     )
     if result.returncode != 0:
         require_git_success(result, "inspect archive worktree status")
@@ -1761,6 +1762,9 @@ def require_clean_older_archives(project: Path, configured: str) -> None:
             and path != configured
             and not path.startswith(current_prefix)
         ):
+            dirty.add(path)
+        if (path.startswith('.project/publications/')
+                and not path.startswith('.project/publications/' + Path(configured).name + '/')):
             dirty.add(path)
     if ignored_current:
         raise ArchiveError(
@@ -1798,7 +1802,25 @@ def require_clean_active_root(active_root: Path, archive: Path) -> None:
     archived_audit = archive / "research" / "DOCS-AUDIT.md"
     carried_forward = pending_ruling_count(archived_audit)
     # Persistent project metadata ships but never archives with a milestone.
-    allowed = {"STATE.md", "REPOSITORY.md", "MEMBERS.md", "archive", "LESSONS.md", "next"}
+    allowed = {"STATE.md", "REPOSITORY.md", "MEMBERS.md", "archive", "LESSONS.md", "next", "publications"}
+    publications = active_root / "publications"
+    if publications.exists() or publications.is_symlink():
+        if publications.is_symlink() or not publications.is_dir():
+            raise ArchiveError("publications must be a real directory")
+        try:
+            if __package__:
+                from . import pr_editorial
+            else:
+                import pr_editorial
+            for path in publications.rglob('*'):
+                if path.is_symlink():
+                    raise ValueError('publication paths must not be symlinks')
+                if path.is_file():
+                    if path.suffix != '.json':
+                        raise ValueError('unexpected publication file: ' + path.name)
+                    pr_editorial.validate_document(json.loads(pr_editorial.regular(path).read_text(encoding='utf-8')))
+        except ValueError as error:
+            raise ArchiveError(str(error)) from error
     for name in ("config.json", "model-policy.json"):
         path = active_root / name
         if path.exists() or path.is_symlink():
@@ -1929,6 +1951,16 @@ def preflight(repo: Path) -> dict:
         raise ArchiveError("archive preflight requires ship/active or uncommitted shipped/done")
     require_stageable_carry_forward(project, archive)
     require_clean_older_archives(project, configured)
+    settings_path = project / '.project/config.json'
+    previous = run_git(project, 'show', 'HEAD:.project/config.json')
+    old_settings = json.loads(previous.stdout) if previous.returncode == 0 else {}
+    current_settings = json.loads(settings_path.read_text(encoding='utf-8')) if settings_path.exists() else {}
+    for settings in (old_settings, current_settings):
+        if not isinstance(settings, dict):
+            raise ArchiveError('project settings must be an object')
+        settings.pop('editorial_language', None)
+    if old_settings != current_settings:
+        raise ArchiveError('only editorial language may change in settings during ship')
     head = require_git_success(run_git(project, "rev-parse", "HEAD"), "resolve preflight HEAD")
     if not reviewed_head_covers(project, reviewed_head, head):
         raise ArchiveError(
@@ -2119,6 +2151,8 @@ def validate(repo: Path, *, historical: bool = False) -> dict:
         for path in changed_paths
         if path != ".project/STATE.md"
         and path != ".project/LESSONS.md"
+        and path != ".project/config.json"
+        and not path.startswith(f".project/publications/{archive.name}/")
         and path not in persistent_program_files
         and not path.startswith(archive_prefix)
         and not path.startswith(allowed_active_prefixes)
@@ -2127,6 +2161,17 @@ def validate(repo: Path, *, historical: bool = False) -> dict:
         raise ArchiveError(
             f"ship commit changes unexpected .project paths: {', '.join(unexpected_project_paths)}"
         )
+    if '.project/config.json' in changed_paths:
+        before = run_git(project, 'show', f'{ship_commit}^:.project/config.json')
+        after = require_git_success(run_git(project, 'show', f'{ship_commit}:.project/config.json'), 'read project settings')
+        old_settings = json.loads(before.stdout) if before.returncode == 0 else {}
+        new_settings = json.loads(after)
+        for settings in (old_settings, new_settings):
+            if not isinstance(settings, dict):
+                raise ArchiveError('project settings must be an object')
+            settings.pop('editorial_language', None)
+        if old_settings != new_settings:
+            raise ArchiveError('only editorial language may change in settings during ship')
 
     required_paths = {
         ".project/STATE.md",

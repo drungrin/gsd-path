@@ -1,6 +1,6 @@
 # GSD Path
 
-**Fork version: 1.6.1.9** · upstream base: **1.6.1**.
+**Fork version: 1.6.1.10** · upstream base: **1.6.1**.
 See [FORK.md](FORK.md) for fork changes, implementation commits, and version policy.
 
 A disk-backed project pipeline for AI coding agents. It turns a raw idea into
@@ -525,6 +525,25 @@ Azure DevOps Server, and
 an atomic close across repos.
 
 ## Handoff contract
+
+Every generated PR has an editorial publication: a Conventional Commit title
+and self-contained problem, changes, scope, validation, and risks/limitations
+sections. Ship authors this copy from approved intent, the manifest, reviewed
+diff, and recorded verification; the runtime validates and publishes it.
+Choose the project language with `path_config.py set editorial_language pt-BR`
+(`en` is the default). Presentation language can change during active ship;
+integration and review policy remain locked. Prepared publications live in
+`.project/publications/<archive>/<member>.json`, outside immutable archives,
+and ship with project metadata. Substantive human PR edits survive retries.
+
+For Azure PRs, the publication can name explicitly scoped work items and their
+acceptance evidence. The runtime creates native links before merge. After the
+actual user merge and integration/tag proof, it atomically updates each item's
+state and delivery discussion under its current revision. Complete delivery
+uses the process's Completed category; partial delivery stays open; justified
+obsolete work uses Removed, preserving history. API failures remain a visible,
+resumable synchronization pending state. A repeated acknowledgement or crash
+never repeats the merge, project Verify, or delivery comment.
 
 An active single-repo milestone can move to a dedicated coordinator through the
 owner-approved `scripts/coordinator_migration.py` transaction. Its supported

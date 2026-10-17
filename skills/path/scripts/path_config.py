@@ -79,6 +79,9 @@ def validate_value(key, value):
         if any(char.isspace() for char in value):
             raise ValueError('use off, detected, or comma-separated families without spaces')
         sibling('review_panel').parse_review_panel_value(value)
+    elif key == 'editorial_language':
+        if value not in ('en', 'pt-BR'):
+            raise ValueError('editorial_language must be en or pt-BR')
     else:
         model_key(key)
 
@@ -103,7 +106,7 @@ def validate_models(data):
 
 def preferences(path, user=False):
     data = read_object(path)
-    allowed = {'integration', 'review_panel', 'models'} if user else {'review_panel'}
+    allowed = {'integration', 'review_panel', 'models', 'editorial_language'} if user else {'review_panel', 'editorial_language'}
     if set(data) - allowed:
         raise ValueError(f'{path}: unknown setting')
     for key, value in data.items():
@@ -135,6 +138,8 @@ def show(repo, scope='project'):
               for key, value in flatten(defaults.get('models', {}), 'models').items()}
     result = {'scope': scope, 'settings': values, 'models': models, 'roles': ROLES,
               'hosts': HOSTS, 'locked': None, 'approved_review_panel': None}
+    values['editorial_language'] = {'value': defaults.get('editorial_language', 'en'),
+                                    'source': str(user_path()) if 'editorial_language' in defaults else 'built-in'}
     if scope == 'project':
         state_api = sibling('pipeline_state')
         repo = state_api._repo_root(repo)
@@ -143,6 +148,8 @@ def show(repo, scope='project'):
         local = preferences(config)
         if 'review_panel' in local:
             values['review_panel'] = {'value': local['review_panel'], 'source': str(config)}
+        if 'editorial_language' in local:
+            values['editorial_language'] = {'value': local['editorial_language'], 'source': str(config)}
         policy_path = repo / '.project/model-policy.json'
         policy = validate_models(read_object(policy_path))
         models.update({key: {'value': value, 'source': str(policy_path)}
@@ -166,10 +173,10 @@ def set_value(repo, scope, key, value, reset=False):
     repo = repo.resolve()
     if not reset:
         validate_value(key, value)
-    elif key not in ('integration', 'review_panel'):
+    elif key not in ('integration', 'review_panel', 'editorial_language'):
         model_key(key)
     current = show(repo, scope)
-    if current['locked']:
+    if current['locked'] and key != 'editorial_language':
         raise ValueError(current['locked'])
     if scope == 'project':
         state, _, _ = sibling('pipeline_state').load_state(repo)
@@ -195,7 +202,7 @@ def set_value(repo, scope, key, value, reset=False):
             else sibling('loop_run').log_lock({'log': str(path)}))
     with lock:
         current = show(repo, scope)
-        if current['locked']:
+        if current['locked'] and key != 'editorial_language':
             raise ValueError(current['locked'])
         data = read_object(path)
         bits = key.split('.')
