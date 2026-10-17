@@ -48,8 +48,9 @@ cases passed. The final migration and plan gates passed 204 cases, including
 cases again. Node tests passed 116 cases with one platform skip. Generated
 resource synchronization and whitespace checks passed. A live migration
 preserved all 24 original task proofs, completed native cutover, and passed
-installer doctor with a clean coordinator worktree. The full Python suite is
-checked separately before delivery.
+installer doctor. The full Python test set passed 2,995 cases with 39 skips,
+run in four groups. Archived migration receipts and original task proofs
+also passed validation after moving artifacts to an archive path.
 
 Limits: early preparation interruptions retain their staging for inspection;
 publication and final cutover support retries. Rewriting Git refs does not erase
