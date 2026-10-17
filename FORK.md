@@ -46,6 +46,17 @@ moved lines after review, missing snapshots, provenance without a product file,
 members, repeated calls, and non-fatal driver receipts. No project artifacts are
 used as fixtures.
 
+### Fork maintenance rules out of the installed AGENTS.md
+
+- Move the fork's versioning, `FORK.md`, synthetic-data, and no-pull-request
+  rules from `AGENTS.md`, which every consumer project installs, to the
+  repository-only `CLAUDE.md`. Consumer projects keep the Git metadata rule in
+  the shipped operating rules, and the runtime keeps enforcing it for generated
+  branches, commits, and PR text.
+
+Validation: install, Git metadata policy, and daemon plugin tests pass with the
+shortened installed `AGENTS.md`.
+
 ## 1.6.1.11 — 2026-10-17
 
 Upstream package base remains `1.6.1`.
