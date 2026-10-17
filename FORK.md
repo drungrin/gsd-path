@@ -26,6 +26,11 @@ Upstream package base is now `1.6.2`, synchronized through tag
 [`8f705d93`](https://github.com/open-gsd/gsd-path/commit/8f705d93a44292b4e71e24ff504b47279f076826).
 No later upstream commits are included. The fork revision continues from 11 to 12.
 
+Implementation:
+[`3ddf354a — synchronize upstream`](https://github.com/drungrin/gsd-path/commit/3ddf354ad1d4394ff01af3014596e7109378e767),
+[`15ffb5ea — flag review findings on repair-written lines`](https://github.com/drungrin/gsd-path/commit/15ffb5eae9de811b5a81468ca1566083d2eb6e8b),
+[`52a5c7e0 — keep fork maintenance rules out of the installed AGENTS.md`](https://github.com/drungrin/gsd-path/commit/52a5c7e08014bf7ddd8d68e81d2d55783e745723).
+
 ### Upstream synchronization
 
 - Include the 1.6.2 fixes: `isolation.py checkpoint` refuses a `build:`
