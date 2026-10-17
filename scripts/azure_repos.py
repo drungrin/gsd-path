@@ -174,7 +174,9 @@ def find(repository: Repository, branch: str, base: str, call: Callable[..., obj
             seen.add(number)
             if (item.get("sourceRefName"), item.get("targetRefName")) == (
                     f"refs/heads/{branch}", f"refs/heads/{base}"):
-                require_repository(repository, item.get("repository"))
+                # Azure list responses contain repository summaries without
+                # clone/web URLs. show() validates the complete repository
+                # identity before any caller can use this candidate.
                 matches.append(number)
         if len(page) < 100:
             break

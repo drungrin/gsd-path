@@ -129,6 +129,20 @@ class AzurePullMetadataTests(unittest.TestCase):
             with self.assertRaisesRegex(ArchiveError, 'ship commit'):
                 integration.find_pull_request(REPOSITORY, 'feature/milestone-001', 'c' * 40)
 
+    def test_list_repository_summary_is_resolved_through_the_complete_pr(self):
+        def summaries(*args):
+            result = self.call(*args)
+            if args[:3] == ('repos', 'pr', 'list'):
+                result[0]['repository'] = {'id': 'repo-id', 'name': REPOSITORY.name,
+                    'project': {'name': REPOSITORY.project}, 'remoteUrl': None}
+            return result
+        found = azure_repos.find(REPOSITORY, 'feature/milestone-001', 'main', summaries)
+        self.assertEqual(found['number'], 7)
+        self.assertIn(('repos', 'pr', 'show'), [args[:3] for args in self.commands])
+        self.pull['repository']['remoteUrl'] = HTTPS.replace('example-org', 'other')
+        with self.assertRaisesRegex(azure_repos.AzureError, 'repository is not origin'):
+            azure_repos.find(REPOSITORY, 'feature/milestone-001', 'main', summaries)
+
     def test_completion_requires_actual_user_merge_without_automation_or_policy_bypass(self):
         self.complete()
         azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)

@@ -160,6 +160,16 @@ class EditorialTests(unittest.TestCase):
         self.assertEqual(len(self.boards.writes),1)
         pr_editorial.require_synchronized(self.repo,ARCHIVE,'coordinator',LANDING)
 
+    def test_root_delivery_uses_the_ship_commit_with_the_reviewed_parent_evidence(self):
+        self.prepare('complete');self.boards.links.add(101)
+        self.pull['head']['sha'] = 'c' * 40
+        with self.assertRaisesRegex(pr_editorial.EditorialError, 'validated merged PR'):
+            self.sync()
+        result = pr_editorial.synchronize(self.repo, ARCHIVE, 'coordinator', HEAD, AZURE,
+            self.pull, LANDING, self.boards, source_head='c' * 40)
+        self.assertEqual(result['status'], 'complete')
+        self.assertEqual(len(self.boards.writes), 1)
+
     def test_partial_and_obsolete_items_preserve_their_history(self):
         for disposition,expected in (('partial','Active'),('obsolete','Removed')):
             with self.subTest(disposition=disposition):
