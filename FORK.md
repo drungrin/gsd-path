@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.12**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.13**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,103 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.13 — 2026-10-19
+
+Upstream package base remains `1.6.2`. The fork revision continues from 12 to 13.
+
+Implementation: branch `feature/member-rebase-adoption`; its commit links are
+recorded here when it lands on `main`.
+
+### Owner-ruled member rebase adoption
+
+- Add `isolation.py adopt-member-rebase --repo <coordinator> --member <name>
+  --onto <full SHA> --ruling '<verbatim>'`, with a read-only `--dry-run` and an
+  `--abort` for an unpublished interrupted apply. When a locked member's
+  recorded default branch moves, an explicit owner ruling can rebase the member
+  bound branch onto it. The bound branch still never receives a merge, and the
+  primary `adopt-rebase` is unchanged.
+- The helper runs only with no task in flight: `plan/active`, `plan/blocked`,
+  `build/blocked`, or ship while STATE.archive is null. It refuses pending
+  helper journals, member task branches or authorizations, a dirty Path bound
+  checkout, an unlocked or already integrated member, and an empty ruling with
+  typed error codes. `--onto` must equal the live and freshly fetched
+  `origin/<recorded default>`, descend from the locked base, and not contain the
+  bound tip. The remote bound branch must be absent or at the local tip.
+- The preview fetches into a disposable object store and simulates the replay
+  with `git merge-tree --merge-base`. Apply repeats that simulation, journals,
+  and cherry-picks the linear locked range on
+  `chore/rebase-<project>-milestone-NNN-<member>`. It proves one replay per
+  original commit with the same message, author, and ordered edits, and checks
+  that the landing task contracts still hold. A conflict, empty commit, or
+  failed proof rolls back without a trace. It keeps the old lineage under a
+  local `refs/gsd-path/member-rebase/` ref, pushes with an exact lease (an
+  absent-ref lease when unpublished), compare-and-swaps the local bound branch,
+  and refreshes Path's bound checkout. If an undone archive left a pending
+  member close, the helper proves the same PR is open and unmerged before
+  and after the push, preserves its close row and old evidence unchanged,
+  and records that prior close/source proof in the receipt. Completed,
+  abandoned, ambiguous, or auto-complete PRs refuse. It then commits the new lock base with
+  `.project/build/member-rebase-adoption.json`
+  (`gsd-path/member-rebase-adoption/v1`) as one `.project/`-only coordinator
+  commit. A rerun restarts an interrupted `prepared` replay and reuses a fully
+  proven `replayed` tip. The journal records `publishing` before the push.
+  From then on the adoption only rolls forward and `--abort` refuses. The
+  exception is a push the remote reports as rejected while the ref keeps its
+  lease, after an attempt that began at `replayed`: it returns to `replayed`
+  with `publish-refused`. Every resume revalidates its targets, contracts, and
+  replay. The `advanced` and `recorded` resumes also require the local and
+  remote bound branch at the new tip. The receipt pins the
+  coordinator task inventory, and the adoption commit binds all semantic
+  receipt fields with `Receipt-SHA256`, including the verbatim ruling.
+- Member landing proofs (`recover`, `verify-landed`), the coordinator-migration
+  baseline and legacy projections, ship inputs, `close-members`, and repair
+  evidence follow the receipt chain. A receipt whose commit map no longer
+  recomputes, or whose last base differs from the lock, blocks them. Status lists
+  a pending journal as `member_rebase`; undo refuses it and the adoption commit;
+  diagnose names the rerun or `--abort`; member isolation and landing wait for
+  it. Member pre-push now reserves `chore/rebase-<coordinator>-`.
+- Refuse `define/active` without touching a surviving pending PR close; the
+  normal definition/plan gates must first reach a quiet legal state. After
+  adoption and repair tasks, `close-members` may rebind the preserved pending
+  close only to a fresh FINAL member head. It requires fresh publication
+  evidence, proves every repair commit after the adopted tip, lease-advances
+  that source, and reuses the same PR. Old source/review/Verify proofs remain
+  old evidence; a missing or closed PR is not silently replaced.
+- Hardening from independent review:
+  - The receipt authenticates through the full coordinator history, so an
+    archived receipt still proves after a `--no-ff` integration and a later
+    milestone branch. A changed committed receipt still refuses.
+  - Commits with an explicit or non-UTF-8 encoding refuse before any
+    mutation, as does a non-UTF-8 `i18n.commitEncoding`.
+  - A coordinator-migrated member refuses pipeline metadata in the new default
+    commits during the preview and again before publication.
+  - The journal records each helper-produced replay SHA. Cleanup after a
+    rejected proof or an interrupted replay removes only owned commits.
+
+Validation:
+- The full Python suite passed 3,134 tests with 39 skips. That includes 64
+  synthetic member rebase adoption tests, which cover a mocked Azure adapter
+  for the pending open-PR close.
+- Node tests: 118 of 119 passed, with one skip.
+- All 601 skill resources stayed synchronized. The lock-usage check and
+  `git diff --check` passed.
+- Every independent-review reproduction now refuses or verifies as intended.
+- No real member, coordinator, or pull request was used.
+
+Limits: the adoption attests identical edits, not behavior. Verify ledger entries,
+final reviews, and editorial publications bound to old member commits do not
+carry over: ship reruns project Verify and the member final review at the new
+tip, and the publication is prepared again. Only a linear locked range is
+supported; a merge commit refuses. The preview needs Git 2.40 or later. A forge
+that reports a refusal of the leased force push returns the journal to
+`replayed`, where `--abort` rolls it back. A push interrupted without that
+report keeps `publishing`. Only a successful rerun or an owner decision closes
+it. The retention ref is local, so a later proof of the
+adoption needs the member checkout that keeps it; a fresh clone without the old
+commits cannot recompute the receipt. A coordinator-migrated member still requires
+history without pipeline metadata, including the new default-branch commits. No
+upstream submission has been made for this change.
 
 ## 1.6.2.12 — 2026-10-17
 
