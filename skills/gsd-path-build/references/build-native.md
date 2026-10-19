@@ -147,6 +147,54 @@ dispatch contract and perform steps 1–5 by hand.
      reason and stop.
    - `none`: take no recovery action for that task.
 
+   **Member rebase adoption.** A member bound branch never receives a merge
+   of its default branch. When a locked member's recorded default branch has
+   moved and the member work must include the new commits (for example the
+   member PR's merge result fails the project's checks), only an explicit
+   owner ruling may rebase that branch, and only the helper performs it. With
+   no task in flight (`plan/active`, `plan/blocked`, `build/blocked`, or ship
+   before archive preparation), present the preview and ask for the ruling,
+   then apply it with the same arguments:
+
+   ```text
+   python3 <absolute isolation.py> adopt-member-rebase --repo <absolute primary> \
+     --member <name> --onto <full SHA of origin/<recorded default>> \
+     --ruling '<ruling verbatim>' [--dry-run]
+   ```
+
+   `--dry-run` is read-only: it checks every precondition and simulates the
+   replay in a disposable object store. Apply fetches the member's default
+   branch, requires `--onto` to equal it and to descend from the locked base,
+   requires the remote bound branch to be absent or at the local tip, then
+   journals and replays the locked range on a `chore/rebase-…` sidecar branch.
+   Each original commit must have exactly one replay with the same message,
+   author, and ordered edits; a conflict, an empty commit, or a failed proof
+   rolls back with no trace. It then pushes with an exact lease, moves the
+   local bound branch by compare-and-swap, writes the lock base and
+   `.project/build/member-rebase-adoption.json`, and commits both as one
+   `.project/`-only coordinator commit. An interrupted apply is rerun with the
+   same arguments: an incomplete replay restarts, a proven replay is reused,
+   and once the journal records `publishing` (before the push) the adoption
+   only rolls forward. Every resume revalidates its owned targets, task files,
+   and replay; `--abort` rolls back only a `prepared` or `replayed` adoption.
+   A push the forge reports as rejected while the ref keeps its lease returns
+   to `replayed` (`publish-refused`); any other push failure stays at
+   `publishing`, so preserve that journal and rerun or ask the owner. Recovered
+   member tasks then report `recovered` with the replayed `landing`,
+   `recorded_landing`, and `provenance: owner-ruled-member-rebase`.
+   If an undone archive left a pending member PR close, the helper first
+   proves the same PR is open/unmerged without auto-complete, checks it again
+   after the push, and preserves the pending close row and old evidence. Its
+   receipt records that prior close/source proof. Never erase that journal.
+   `define/active` refuses adoption; finish the normal definition/plan gates
+   first and wait for planner/task dispatch to be quiet. Later `close-members`
+   requires fresh final review and publication, proves and lease-publishes any
+   repair landings after the adopted tip, and reuses that same PR.
+   The adoption proves identical edits, not behavior: Verify ledger entries and
+   final reviews recorded at old member commits do not carry over. Ship
+   reruns project Verify and the member final review at the new tip, and a
+   repair that needs a task Verify at a replayed landing records a new run.
+
 2. **Prepare the ready set.** Run `python3 <absolute build_state.py> ready
    --repo <absolute primary>`. It is read-only: it validates every task's
    frontmatter against its dispatch metadata and the recovery report, then

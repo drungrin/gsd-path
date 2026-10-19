@@ -152,6 +152,8 @@ PROJECT_PROBE_PATHS = (
     ".project/build/members.json",
     ".project/build/evidence.json",
     ".project/build/coordinator-migration.json",
+    ".project/build/member-rebase-adoption.json",
+    ".project/archive/001-probe/build/member-rebase-adoption.json",
     ".project/publications/001-probe/code.json",
     ".project/archive/001-probe/build/evidence.json",
     ".project/archive/001-probe/build/verify-ledger.jsonl",

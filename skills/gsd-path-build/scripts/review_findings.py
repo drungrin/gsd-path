@@ -660,7 +660,9 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
             item = {"task": landing["task_id"], "base": landing["base"], "commit": landing["commit"], "files": paths}
             if member:
                 if "landing" in landing:
-                    item.update(member_base=isolation.task_frontmatter(_read(path, "task"))[0]["member_base"],
+                    # A landing proven through an owner-ruled member rebase reports its replayed base.
+                    item.update(member_base=landing.get("member_base")
+                                or isolation.task_frontmatter(_read(path, "task"))[0]["member_base"],
                                 member_commit=landing["landing"])
                 else:
                     if __package__:
@@ -920,9 +922,31 @@ def recurrence(repo: Path, project_dir: str, wave: int, cycle: int,
                 if not sha and name in locked:
                     start = commit(root, locked[name])
                     # An earlier milestone's record does not descend from this build's locked base.
-                    sha = next((landing for landing in records.get(name, ())
-                                if _common.run_git(root, "merge-base", "--is-ancestor", start, landing).returncode == 0),
-                               start)
+                    def descends(landing: str) -> bool:
+                        return _common.run_git(root, "merge-base", "--is-ancestor", start, landing).returncode == 0
+
+                    def replayed(landing: str) -> str:
+                        # Only the receipt committed at this review snapshot may
+                        # resolve its landings; today's working receipt is not evidence.
+                        path = f"{project_dir}/{isolation.MEMBER_REBASE_RECEIPT}"
+                        if not git(repo, "ls-tree", base, "--", path):
+                            return landing
+                        try:
+                            receipt = isolation._validate_member_rebase(
+                                repo, git(repo, "show", f"{base}:{path}").encode("utf-8"),
+                                git(repo, "show", f"{base}:{lock}").encode("utf-8"))
+                            isolation._prove_member_rebase_record(repo, receipt)
+                        except isolation.IsolationError as error:
+                            raise ValueError(str(error)) from error
+                        for adoption in receipt["adoptions"]:
+                            if adoption["member"] == name:
+                                mapping = {row["original"]: row["rebased"] for row in adoption["commits"]}
+                                landing = mapping.get(landing, landing)
+                        return landing
+
+                    landings = records.get(name, [])
+                    sha = next((landing for landing in landings if descends(landing)), None) or next(
+                        (moved for moved in map(replayed, landings) if descends(moved)), start)
                 if not sha:
                     raise ValueError("member has no recorded snapshot")
                 roots.append((name, root, commit(root, sha)))

@@ -584,6 +584,27 @@ a member pull request targets `<recorded>`. When the remote default of the
 member no longer agrees with the record, `members.py validate` and member
 close stop with `remote default must be <recorded>`.
 
+The member bound branch keeps its locked base until an explicit owner ruling
+says otherwise. When the member's recorded default branch moves and the member
+work must include those commits, `isolation.py adopt-member-rebase` rebases the
+member bound branch onto the freshly fetched `origin/<recorded>`. It runs only
+with no task in flight (`plan/active`, `plan/blocked`, `build/blocked`, or ship
+before archive preparation) and offers a read-only `--dry-run`. The helper
+replays the range in its own `chore/rebase-…` sidecar and proves that each
+landing kept its message, author, and ordered edits. It publishes with an exact
+lease, moves the local branch by compare-and-swap, and commits the new lock base
+with `.project/build/member-rebase-adoption.json`. Landing proofs, migrated
+milestones, ship checks, and member close follow that receipt chain. A tampered
+receipt blocks them. A pending PR close left by an undone archive is not
+removed: the helper proves the same PR is open/unmerged before and after
+publication, preserves its old row/source/Verify evidence, and records that
+snapshot in the receipt. `define/active` must finish its normal gates before
+adoption can run at a quiet legal state. Final review of the member heads
+starts over. After repair tasks and fresh final/publication evidence,
+`close-members` can rebind that pending close and lease-publish only canonical
+repair landings to the same PR. It never silently replaces or completes the
+PR. The member bound branch still never receives a merge.
+
 Not supported: a new repository that Path creates uses `main`. This includes
 `members.py add --create`, which stops when the new repository has another
 default branch.

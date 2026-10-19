@@ -25,6 +25,18 @@ class GitMetadataPolicyTests(unittest.TestCase):
         self.assertTrue(pipeline_git.is_bound_branch(values[0]))
         self.assertEqual(pipeline_git.milestone_number(values[0]), 1)
 
+    def test_member_rebase_branch_and_commit_follow_the_metadata_rule(self):
+        branch = isolation.member_rebase_branch_name('feature/acme-milestone-001', 'web')
+        self.assertEqual(branch, 'chore/rebase-acme-milestone-001-web')
+        self.assertRegex(branch, PURPOSE_BRANCH)
+        self.assertNotRegex(branch, r'(?i)gsd|claude|codex|copilot|cursor|opencode')
+        message = isolation._member_rebase_message({
+            'member': 'web', 'branch': 'feature/acme-milestone-001', 'onto': 'a' * 40,
+            'old_base': 'b' * 40, 'old_tip': 'c' * 40, 'new_tip': 'd' * 40, 'receipt_digest': 'e' * 64})
+        self.assertTrue(message.startswith('chore: adopt rebased member web onto aaaaaaaaaaaa\n\n'))
+        self.assertIsNone(_common.TOOL_ATTRIBUTION_RE.search(message))
+        self.assertNotRegex(message, r'(?i)gsd|generated|co-authored-by|claude')
+
     def test_pr_body_and_subject_have_no_tool_credit(self):
         branch = pipeline_git.bound_branch_name(1)
         body = integration.pull_request_body('.project/archive/001-example', 'a' * 40, branch)

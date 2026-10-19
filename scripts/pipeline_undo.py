@@ -1031,6 +1031,9 @@ def classify_undo(repo: Path) -> dict[str, object]:
         return _blocked(["HEAD is a milestone-abandon commit; abandoned entries are immutable"])
     if subject.startswith(INTEGRATE_PREFIX):
         return _blocked(["HEAD is an integration merge; undo never rewrites main"])
+    if subject.startswith(isolation.MEMBER_REBASE_SUBJECT_PREFIX):
+        return _blocked(["HEAD records an owner-ruled member rebase adoption; undo never rewrites the published "
+                         "member branch or its receipt"])
     return _blocked([f"HEAD is not an undoable pipeline commit: {subject or '<empty>'}"])
 
 

@@ -204,6 +204,7 @@ Waves checked: {', '.join(str(wave) for wave in waves)}
 
 def _require_ship_inputs(repo, expected_head):
     contracts._require_state(repo, "ship", "active", ".project")
+    isolation.require_no_member_rebase(repo, "")
     if _git(repo, "rev-parse", "HEAD") != expected_head:
         raise contracts.HandoffError("primary HEAD changed")
     isolation.prune_host_scratch(repo / ".project")
@@ -220,6 +221,8 @@ def _require_ship_inputs(repo, expected_head):
     if adoption_path in dirty:
         build_state.verify_landed_tasks(str(repo), ".project", expected_head)
         outputs.add(adoption_path)
+    # A member rebase receipt is always committed by its helper and must still prove.
+    isolation.validate_member_rebase(repo, ".project")
     if any(path not in outputs and not path.startswith(".project/review/") for path in dirty):
         raise contracts.HandoffError("verification inputs have uncommitted changes")
 

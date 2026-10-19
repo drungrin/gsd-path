@@ -265,3 +265,73 @@ recovered. A full quick-lane wave explicitly covering final scope supplies FINAL
 when every criterion and surface walkthrough is proven and Git shows unchanged
 product and contracts. Other scopes retain final review. The output names whether
 review is needed; models do not route reuse by comparing prose or file sizes.
+
+`prepare-final`'s landing proof and ship-input check also validate a member
+rebase receipt (below). A receipt that no longer proves stops final
+verification before project Verify runs.
+
+## Member rebase adoption
+
+`isolation.py adopt-member-rebase --repo <coordinator> --member <name> --onto
+<full SHA> --ruling '<verbatim>'` is the only supported way to bring a moved
+member default branch into a locked member bound branch. It needs an explicit
+owner ruling and a quiet coordinator: `plan/active`, `plan/blocked`,
+`build/blocked`, or ship before archive preparation, with no task in flight
+and no pending helper journal. `--dry-run` checks every precondition, fetches
+into a disposable object store, and simulates the replay with
+`git merge-tree --merge-base` (Git 2.40 or later); it writes no repository
+ref, object, index, worktree, or project file. `--abort` rolls back an
+unpublished interrupted apply.
+
+Apply journals under the coordinator's Git common directory
+(`gsd-path/member-rebase/<member>.json`) before the first member mutation.
+Stages are `prepared`, `replayed`, `publishing`, `published`, `advanced`, and
+`recorded`. A rerun with the same `--onto` and `--ruling` restarts an
+interrupted `prepared` replay and reuses a fully proven `replayed` tip.
+`publishing` is written before the push. From then on a rerun only rolls
+forward and `--abort` refuses, because the push may have landed even when the
+remote has since moved or vanished. One exception keeps a forge refusal
+abortable. If the remote's per-ref push report says it rejected the update, the
+ref still names the lease, and the attempt began at `replayed`, the journal
+returns to `replayed` with error `publish-refused`. Other push failures stay at
+`publishing`. Every resume revalidates its owned targets, contracts, and replay.
+The `advanced` and `recorded` resumes also require the local and remote bound
+branch at the new tip.
+The replay runs on the named sidecar
+branch `chore/rebase-<project>-milestone-NNN-<member>`, which member pre-push
+reserves for the coordinator. A local
+`refs/gsd-path/member-rebase/<project>/<member>/<old tip>` ref keeps the
+replaced lineage reachable for later proofs. Publication pushes the replayed tip
+under an exact lease: the old tip when the branch was published, an absent ref
+otherwise. A pending member-close row for the old tip, left by an undone
+archive, is preserved verbatim. The helper queries the existing PR through the
+GitHub/Azure adapter before and after the push: it must remain the same open,
+unmerged PR, without auto-complete or policy bypass. It neither creates,
+edits, closes, nor completes that PR. The receipt records its prior close row
+and old-source proof; old Verify evidence is not relabelled.
+
+The receipt `.project/build/member-rebase-adoption.json`
+(`gsd-path/member-rebase-adoption/v1`) holds one entry per adoption: member,
+branch, recorded default branch, the verbatim ruling, old base and tip, new base
+and tip, the ordered `original` → `rebased` commit map with subject and task,
+the retention ref, the publication lease, any `prior_close` snapshot and its
+open-PR source proof, and the
+coordinator contract revision with its task blob inventory. The adoption
+commit binds the semantic receipt with a `Receipt-SHA256` field, so changes to
+a nonempty ruling or lease also fail proof. Every reader recomputes the map
+from member Git objects and requires the lock's base
+to equal the last adoption's new base. Member landing proofs, `verify-landed`,
+the coordinator-migration baseline and legacy projections, ship inputs, and
+`close-members` read the chain. The receipt archives with `build/`.
+
+`define/active` is not a rebase-adoption entry point. A surviving pending PR
+close remains intact while the normal definition/plan gates run. Once the
+coordinator is quiet in a legal state, the owner-ruled helper can adopt its
+member source. After subsequent repair tasks and fresh final review,
+`close-members` may rebind the original pending close to the new reviewed
+member head. It proves every intervening commit is a canonical member task
+landing, requires fresh editorial sources for that head, lease-publishes the
+source advance, and reuses the same PR. A pending-close snapshot does not
+permit reuse of old Verify output or review evidence at a new SHA. A concurrent
+external PR completion or an unavailable provider fails closed; the journal
+and original close evidence remain for recovery, never automatic PR replacement.

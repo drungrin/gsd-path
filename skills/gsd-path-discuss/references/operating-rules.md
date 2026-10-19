@@ -125,7 +125,10 @@ bundles this file; spawned agents follow their role brief instead.
   Integration at ship is the only path from the bound branch to the default
   branch — either Path's direct merge or a Path-owned PR merged by the user.
   The bound branch never receives merges or back-merges and is never the
-  GitHub default.
+  GitHub default. A member bound branch follows the same rule; its only way
+  to take newer member default-branch commits is an explicit owner ruling
+  applied through `isolation.py adopt-member-rebase`, which rebases, proves,
+  publishes, and records the branch itself. Never rebase it by hand.
 - The default branch is the one that STATE `default_branch` records at
   initialization; a STATE file without the field means `main`. `main` and
   `origin/main` in these rules mean that branch. Never change the record and

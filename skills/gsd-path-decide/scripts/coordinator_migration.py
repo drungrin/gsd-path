@@ -447,8 +447,34 @@ def validate(repo: Path, project_dir: str = ".project", *, allow_pending: bool =
     current_intent = (location / "intent/INTENT.md").read_text(encoding="utf-8")
     if check_handoffs._success_criteria(original_intent) != check_handoffs._success_criteria(current_intent):
         raise MigrationError("migration changed the approved success criteria")
+    try:
+        isolation.validate_member_rebase(repo, project_dir)
+        # Even with only legacy tasks, a replaced or missing member receipt may
+        # not silently leave the original export disconnected from the bound tip.
+        _, _, members, _ = _modules()
+        lock_path = location / "build/members.json"
+        if lock_path.is_file():
+            locks = json.loads(lock_path.read_text(encoding="utf-8"))["members"]
+            listed = {row["name"]: row for row in members.read_members(repo)}
+            for entry in locks:
+                if entry["name"] == receipt["member"]:
+                    checkout = Path(listed[entry["name"]]["checkout"])
+                    tip = isolation._optional_sha(checkout, f"refs/heads/{entry['branch']}")
+                    if tip is not None:
+                        require_member_baseline(repo, entry["name"], checkout, tip, project_dir)
+    except isolation.IsolationError as error:
+        raise MigrationError(f"member rebase adoption receipt is invalid: {error}") from error
     return {"schema": SCHEMA, "source_head": source, "export_head": receipt["export_head"],
             "member": receipt["member"], "tasks": len(receipt["tasks"]), "status": "verified"}
+
+
+def _member_lineage(repo: Path, project_dir: str, member: str, commit: str) -> str:
+    """A projected member commit as the current bound lineage holds it, through any owner-ruled rebase."""
+    _, isolation, _, _ = _modules()
+    try:
+        return isolation.resolve_member_commit(repo, repo / project_dir, member, commit)
+    except isolation.IsolationError as error:
+        raise MigrationError(f"member rebase adoption receipt is invalid: {error}") from error
 
 
 def legacy_proof(repo: Path, task_id: str, commit: str, project_dir: str = ".project") -> Optional[dict]:
@@ -458,13 +484,16 @@ def legacy_proof(repo: Path, task_id: str, commit: str, project_dir: str = ".pro
         return None
     if task["commit"] != commit:
         raise MigrationError("original task landing differs from its migration receipt")
-    return {"member_base": receipt["mapping"][task["base"]], "member_commit": receipt["mapping"][commit]}
+    return {"member_base": _member_lineage(repo, project_dir, receipt["member"], receipt["mapping"][task["base"]]),
+            "member_commit": _member_lineage(repo, project_dir, receipt["member"], receipt["mapping"][commit])}
 
 
 def require_member_baseline(coordinator: Path, member: str, checkout: Path, reviewed: str, project_dir: str) -> None:
     receipt = load(coordinator, project_dir)
     if receipt and member == receipt["member"]:
-        if _text(checkout, "merge-base", receipt["export_head"], reviewed) != receipt["export_head"]:
+        # After an owner-ruled member rebase the baseline is the replay of export_head.
+        baseline = _member_lineage(coordinator, project_dir, member, receipt["export_head"])
+        if _text(checkout, "merge-base", baseline, reviewed) != baseline:
             raise MigrationError("member reviewed head does not preserve the migrated product baseline")
         _require_clean_history(checkout, [reviewed])
 

@@ -436,12 +436,17 @@ def diagnose(repo: Path) -> dict[str, object]:
         }
         pending_members = [row["name"] for row in status.get("members") or [] if row["close"] == "pending"]
         if pending_members:
+            prepared_close = (status.get("state") or {}).get("archive") is not None
+            retry = (_command(archive_milestone, "close-members", "--repo", resolved) if prepared_close else
+                     "preserve the pending PR close and its old reviewed head; follow the current define/plan gates, "
+                     "then use isolation.py adopt-member-rebase --dry-run at a quiet legal state with the owner ruling; "
+                     "resume close-members only after fresh member review and archive preparation")
             findings.append(
                 _finding(
                     "member-close",
                     "stuck",
                     "member close is pending for: " + ", ".join(pending_members),
-                    _command(archive_milestone, "close-members", "--repo", resolved),
+                    retry,
                 )
             )
         common = _run_git(resolved, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
@@ -455,6 +460,30 @@ def diagnose(repo: Path) -> dict[str, object]:
                     "stuck",
                     "member landing journal is pending: " + ", ".join(path.stem for path in landings),
                     "resume build; the dispatch driver finishes pending member landings before new work",
+                )
+            )
+        rebases = sorted(
+            (Path(common.stdout.strip()) / "gsd-path" / "member-rebase").glob("*.json")
+        ) if common.returncode == 0 else []
+        for journal in rebases:
+            try:
+                recorded = json.loads(journal.read_text(encoding="utf-8"))
+                stage, onto = str(recorded["stage"]), str(recorded["onto"])
+            except (OSError, ValueError, KeyError, TypeError):
+                stage, onto = "unreadable", "<recorded onto>"
+            unpublished = stage in {"prepared", "replayed"}
+            findings.append(
+                _finding(
+                    "member-rebase",
+                    "stuck",
+                    f"member rebase adoption of {journal.stem} is pending at stage {stage}: {journal}",
+                    _command(isolation, "adopt-member-rebase", "--repo", resolved, "--member", journal.stem,
+                             "--abort")
+                    if unpublished
+                    else _needs_user(
+                        f"rerun isolation.py adopt-member-rebase --member {journal.stem} --onto {onto} "
+                        "with the recorded ruling to finish or inspect the possibly published adoption; preserve its journal"
+                    ),
                 )
             )
         undo_probe = by_name["undo-preview"]

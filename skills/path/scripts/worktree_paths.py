@@ -132,7 +132,7 @@ def release_workspace(primary: Path) -> bool:
 
 def worktree_path(primary: Path, kind: str, name: str, *, pin: bool = False) -> Path:
     primary = primary.resolve()
-    if kind not in {"task", "verify", "integrate", "bound"} or not name or Path(name).name != name or name in {".", ".."}:
+    if kind not in {"task", "verify", "integrate", "bound", "rebase"} or not name or Path(name).name != name or name in {".", ".."}:
         raise ValueError("invalid managed worktree kind or name")
     if kind == "bound":
         return _workspace(primary, pin) / kind / name

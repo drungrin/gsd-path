@@ -660,6 +660,7 @@ def isolate_task(
     if worktree_root(primary) != primary:
         raise IsolationError(f"primary is not its Git root: {primary}")
     bound = require_bound(primary)
+    require_no_member_rebase(primary, "")
     resolved_base = require_commit(primary, require_full_sha(base))
     validate_task_id(task_id)
     if round_size < 1:
@@ -782,6 +783,7 @@ def member_bound_checkout(coordinator: Path, member: str) -> Dict[str, object]:
 def isolate_member_task(coordinator: Path, member: str, task_id: str) -> Dict[str, object]:
     """Member tasks always run in a sidecar at the member bound branch tip."""
     validate_task_id(task_id)
+    require_no_member_rebase(require_directory(coordinator, "coordinator"), member)
     bound = member_bound_checkout(coordinator, member)
     bound_checkout = Path(bound["checkout"])
     dirty = uncommitted_paths(bound_checkout)
@@ -1353,6 +1355,7 @@ def land_member(
                 raise IsolationError(
                     f"member {member} has pending landing {pending.stem}; run recover_member_landing first"
                 )
+        require_no_member_rebase(coordinator, member)
         checkout, project, _ = _member_context(coordinator, member)
         bound = Path(member_bound_checkout(coordinator, member)["checkout"])
         sidecar = sidecar_root(checkout, "task", f"{project}-{task_id}")
@@ -3035,9 +3038,13 @@ def member_log_delta(contract: str, copy: str) -> str:
 
 def _prove_member_task(
     coordinator: Path, task_file: str, fields: Dict[str, object], subject: str,
-    history: Dict[str, list[tuple[str, str]]],
+    history: Dict[str, list[tuple[str, str]]], project_root: Optional[Path] = None,
 ) -> Dict[str, object]:
-    """A done member task: one coordinator record naming a proven member landing."""
+    """A done member task: one coordinator record naming a proven member landing.
+
+    After an owner-ruled member rebase, the receipt under `project_root` maps
+    the recorded landing and member base to their replays on the bound branch.
+    """
     if fields.get("status") != "done":
         return {"verdict": "block", "reason": "member task must have status: done"}
     member = str(fields.get("repo"))
@@ -3074,22 +3081,34 @@ def _prove_member_task(
             raise IsolationError(f"task artifact contract differs from {match['base']}: {task_file}")
     except IsolationError as error:
         return {"verdict": "block", "reason": str(error)}
-    landing = match["landing"]
+    recorded_landing = landing = match["landing"]
+    member_base = match["member_base"]
+    if project_root is not None:
+        try:
+            landing = resolve_member_commit(coordinator, project_root, member, recorded_landing)
+            member_base = resolve_member_commit(coordinator, project_root, member, member_base)
+        except IsolationError as error:
+            return {"verdict": "block", "reason": f"member rebase adoption receipt is invalid: {error}"}
     history_on_bound = git_output(checkout, "rev-list", "--first-parent", f"refs/heads/{entry['branch']}").split()
     if landing not in history_on_bound:
         return {"verdict": "block", "reason": f"landing {landing[:12]} is not on the member bound branch"}
     parent, error = _single_parent(checkout, landing)
     if error or parent is None or run_git(
-            checkout, "merge-base", "--is-ancestor", match["member_base"], parent).returncode != 0:
+            checkout, "merge-base", "--is-ancestor", member_base, parent).returncode != 0:
         return {"verdict": "block", "reason": error or "member landing does not descend from member_base"}
     paths = git_output(checkout, "diff-tree", "--no-commit-id", "--name-only", "-r", "--no-renames",
                        parent, landing).splitlines()
+    # A replay keeps the original message, so the body names the recorded member base.
     body = member_commit_body(task_file, paths, match["member_base"], match["base"])
     error = _prove_member_commit(checkout, landing, parent, subject, body, allowed)
     if error:
         return {"verdict": "block", "reason": f"member landing proof failed: {error}"}
-    return {"verdict": "recovered", "commit": record, "base": match["base"],
-            "landing": landing, "member": member}
+    result = {"verdict": "recovered", "commit": record, "base": match["base"],
+              "landing": landing, "member": member}
+    if landing != recorded_landing:
+        result.update(recorded_landing=recorded_landing, member_base=member_base,
+                      provenance=MEMBER_REBASE_PROVENANCE)
+    return result
 
 
 def _recover_task(
@@ -3136,7 +3155,8 @@ def _recover_task(
                    for _, body in history.get(subject, [])):
                 return result("block", reason="member task has a landing record but is not done")
             return result(**_recover_unfinished_member_task(primary, task_id, str(fields["repo"])))
-        return result(**_prove_member_task(primary, task_file, fields, subject, history))
+        # .project or .project/archive/<n>: the receipt archives with its tasks.
+        return result(**_prove_member_task(primary, task_file, fields, subject, history, path.parent.parent))
     task_branch = task_branch_name(task_id)
     branch_exists = task_branch in branches
     sidecar = sidecar_root(primary, "task", task_id)
@@ -3563,11 +3583,29 @@ def recover(primary: Path, tasks_dir: Path) -> Dict[str, object]:
         _recover_task(primary, path, history, branches, head, bound)
         for path in task_paths
     ]
+    try:
+        _validate_task_member_receipts(primary, task_paths)
+    except IsolationError as error:
+        reason = f"member rebase adoption receipt is invalid: {error}"
+        for task in tasks:
+            task.update(verdict="block", reason=reason)
+        return {"bound_branch": bound, "tasks": tasks, "verdict": "block", "reason": reason}
     return {
         "bound_branch": bound,
         "tasks": tasks,
         "verdict": "block" if any(t["verdict"] == "block" for t in tasks) else "ok",
     }
+
+
+def _validate_task_member_receipts(primary: Path, paths: Sequence[Path]) -> None:
+    # Legacy migrated tasks retain their original repo-less contracts. They
+    # still owe the member receipt proof, even without a native Member record.
+    for root in {path.parent.parent for path in paths}:
+        relative = root.relative_to(primary).as_posix()
+        if not (root / MEMBER_REBASE_RECEIPT).exists() and git_output(
+                primary, "ls-tree", "HEAD", "--", f"{relative}/{MEMBER_REBASE_RECEIPT}"):
+            raise IsolationError("the recorded member rebase adoption receipt is missing")
+        validate_member_rebase(primary, relative)
 
 
 def verify_landed_task_files(
@@ -3641,6 +3679,7 @@ def verify_landed_task_files(
             for task in blocked
         )
         raise IsolationError(reasons)
+    _validate_task_member_receipts(primary, task_paths)
     return {"bound_branch": bound, "head": resolved_head, "tasks": tasks}
 
 
@@ -4227,11 +4266,19 @@ def _committed_task_paths(repo: Path, revision: str) -> list[str]:
 def _ordered_edits(repo: Path, sha: str) -> list[bytes]:
     """Every changed byte, path, mode and binary payload of `sha`; hunk
     coordinates and content-addressed index headers excluded."""
+    return _ordered_edits_between(repo, sha + "^", sha)
+
+
+def _ordered_edits_between(
+    repo: Path, old: str, new: str, env: Optional[Dict[str, str]] = None
+) -> list[bytes]:
+    """`_ordered_edits` of the change from `old` to `new`, optionally in another object store."""
     result = subprocess.run(
         ("git", "-C", str(repo), "diff", "--binary", "--full-index", "--no-renames",
-         "--unified=0", sha + "^", sha),
+         "--unified=0", old, new),
         capture_output=True,
         check=False,
+        env=env,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
@@ -4511,6 +4558,1317 @@ def publication_base(repo: Path, branch: str, ship_commit: str) -> Optional[str]
         if _read_task_text(task)[0] != row["adopted_task"]:
             raise IsolationError("archived task differs from adopted record")
     return parent
+
+
+# Owner-ruled member rebase adoption. While a coordinator milestone is quiet
+# (no task in flight), the owner may move a locked member's bound branch onto
+# the member's freshly fetched default branch. The helper replays the locked
+# range itself, proves every replayed commit, publishes with a lease, then
+# records the new lock base and a receipt that maps each original commit to
+# its replay. Proofs of member history read that receipt chain.
+MEMBER_REBASE_SCHEMA = "gsd-path/member-rebase-adoption/v1"
+MEMBER_REBASE_JOURNAL_SCHEMA = "gsd-path/member-rebase-journal/v1"
+MEMBER_REBASE_RECEIPT = "build/member-rebase-adoption.json"
+MEMBER_REBASE_PATH = ".project/" + MEMBER_REBASE_RECEIPT
+MEMBER_REBASE_DIR = ("gsd-path", "member-rebase")
+MEMBER_REBASE_RETENTION_PREFIX = "refs/gsd-path/member-rebase/"
+MEMBER_REBASE_BRANCH_PREFIX = "chore/rebase-"
+MEMBER_REBASE_PROVENANCE = "owner-ruled-member-rebase"
+MEMBER_REBASE_SUBJECT_PREFIX = "chore: adopt rebased member "
+# Quiet coordinator states: a plan, a blocked build, or ship before archive preparation.
+MEMBER_REBASE_STATES = frozenset({
+    ("plan", "active"), ("plan", "blocked"), ("build", "blocked"), ("ship", "active"), ("ship", "blocked"),
+})
+MEMBER_REBASE_ADOPTION_KEYS = frozenset({
+    "member", "branch", "default_branch", "ruling", "old_base", "old_tip", "new_base", "new_tip",
+    "commits", "retention_ref", "published_from", "prior_close", "contract_head", "task_contracts",
+})
+
+
+class MemberRebaseError(IsolationError):
+    """A refused member rebase adoption; `code` names the failed precondition."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _members_module():
+    try:
+        import members
+    except ImportError:  # pragma: no cover - package import used by tests
+        from scripts import members
+    return members
+
+
+def _pipeline_state_module():
+    if __package__:
+        from . import pipeline_state
+    else:
+        try:
+            import pipeline_state
+        except ImportError:  # pragma: no cover - package import used by tests
+            from scripts import pipeline_state
+    return pipeline_state
+
+
+def member_rebase_journal_dir(coordinator: Path) -> Path:
+    directory = common_git_dir(coordinator).joinpath(*MEMBER_REBASE_DIR)
+    if directory.resolve() != directory.absolute() or (directory.exists() and not directory.is_dir()):
+        raise MemberRebaseError("journal-invalid", f"unsafe member rebase journal directory: {directory}")
+    return directory
+
+
+def member_rebase_journals(coordinator: Path) -> list[Path]:
+    """Pending member rebase adoption journals; empty when none is in progress."""
+    directory = member_rebase_journal_dir(coordinator)
+    return sorted(directory.glob("*.json")) if directory.is_dir() else []
+
+
+def _member_rebase_journal_path(coordinator: Path, member: str) -> Path:
+    if not isinstance(member, str) or not _members_module().NAME_RE.fullmatch(member):
+        raise MemberRebaseError("member-invalid", f"invalid member name: {member!r}")
+    return member_rebase_journal_dir(coordinator) / f"{member}.json"
+
+
+def require_no_member_rebase(coordinator: Path, member: str) -> None:
+    """Member work waits while an adoption of that member's branch is unfinished."""
+    pending = member_rebase_journals(coordinator)
+    if pending:
+        raise IsolationError(
+            f"member {pending[0].stem} has a pending rebase adoption; rerun isolation.py adopt-member-rebase "
+            "with its recorded arguments to finish it, or --abort it before publication"
+        )
+
+
+def member_rebase_branch_name(bound_branch: str, member: str) -> str:
+    """The helper-owned replay branch: chore/rebase-<project>-milestone-NNN-<member>."""
+    return MEMBER_REBASE_BRANCH_PREFIX + _common.branch_slug(bound_branch.removeprefix("feature/") + "-" + member)
+
+
+def member_rebase_retention_ref(project: str, member: str, old_tip: str) -> str:
+    """A local member ref that keeps the replaced lineage reachable for later proofs."""
+    return f"{MEMBER_REBASE_RETENTION_PREFIX}{project}/{member}/{require_full_sha(old_tip)}"
+
+
+def _linear_member_range(repo: Path, base: str, tip: str) -> list[str]:
+    """The single-parent commits of base..tip in order; anything else is refused."""
+    if base == tip:
+        return []
+    if run_git(repo, "merge-base", "--is-ancestor", base, tip).returncode != 0:
+        raise IsolationError(f"{tip[:12]} does not descend from {base[:12]}")
+    previous, commits = base, []
+    for row in git_output(repo, "rev-list", "--first-parent", "--reverse", "--parents", f"{base}..{tip}").splitlines():
+        fields = row.split()
+        if len(fields) != 2 or fields[1] != previous:
+            raise IsolationError("member branch history is not a linear run of single-parent commits on its base")
+        commits.append(fields[0])
+        previous = fields[0]
+    if previous != tip:
+        raise IsolationError("member branch history does not lead from its base to its tip")
+    return commits
+
+
+def _commit_identity(repo: Path, sha: str) -> tuple[bytes, bytes]:
+    """The author (and any encoding) header and the raw message of a commit."""
+    result = subprocess.run(_common.git_command(repo, "cat-file", "commit", sha), capture_output=True, check=False)
+    if result.returncode != 0:
+        raise IsolationError(result.stderr.decode("utf-8", "replace").strip() or f"cannot read commit {sha}")
+    header, _, message = result.stdout.partition(b"\n\n")
+    kept = [line for line in header.split(b"\n") if line.startswith((b"author ", b"encoding "))]
+    return b"\n".join(kept), message
+
+
+def _require_member_replay_identity(repo: Path, originals: Sequence[str]) -> None:
+    """Reject identities cherry-pick cannot preserve before creating any replay objects."""
+    configured = run_git(repo, "config", "--get", "i18n.commitEncoding")
+    if configured.returncode == 0 and configured.stdout.strip().casefold().replace("_", "-") not in {"utf-8", "utf8"}:
+        raise MemberRebaseError("unsupported-identity", "member rebase adoption requires a UTF-8 commit writer")
+    for sha in originals:
+        identity, message = _commit_identity(repo, sha)
+        if any(line.startswith(b"encoding ") for line in identity.splitlines()):
+            raise MemberRebaseError("unsupported-identity", f"{sha[:12]} has an explicit commit encoding; "
+                                    "an identical-identity replay is unsupported and was refused before mutation")
+        try:
+            (identity + message).decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise MemberRebaseError("unsupported-identity", f"{sha[:12]} has a non-UTF-8 identity or message") from error
+
+
+def _member_replay_error(repo: Path, original: str, rebased: str, parent: str) -> Optional[str]:
+    """Why `rebased` is not the replay of `original` on `parent`; None when it is."""
+    found, error = _single_parent(repo, rebased)
+    if error or found != parent:
+        return error or "rebased commit does not follow the previous rebased commit"
+    if _commit_identity(repo, original) != _commit_identity(repo, rebased):
+        return "rebased commit message or author differs"
+    edits = _ordered_edits(repo, original)
+    if not edits:
+        return "original commit changes nothing"
+    if edits != _ordered_edits(repo, rebased):
+        return "rebased commit changes different bytes, paths or modes"
+    return None
+
+
+def _member_commit_summary(repo: Path, sha: str) -> tuple[str, Optional[str]]:
+    message = git_text(repo, "-c", "i18n.logOutputEncoding=UTF-8", "show", "-s", "--format=%B", sha)
+    tasks = re.findall(r"(?m)^Task: (\S+)$", message)
+    return message.split("\n", 1)[0], tasks[0] if len(tasks) == 1 else None
+
+
+def _member_adoption_commits(
+    checkout: Path, old_base: str, old_tip: str, new_base: str, new_tip: str
+) -> list[Dict[str, object]]:
+    """Recompute the original-to-rebased map from Git; refuse anything but an exact replay."""
+    if old_base == new_base:
+        raise IsolationError("adoption must move the member base")
+    if run_git(checkout, "merge-base", "--is-ancestor", old_base, new_base).returncode != 0:
+        raise IsolationError("new member base does not descend from the locked base")
+    originals = _linear_member_range(checkout, old_base, old_tip)
+    rebased = _linear_member_range(checkout, new_base, new_tip)
+    if len(originals) != len(rebased):
+        raise IsolationError(f"rebase has {len(rebased)} commits for {len(originals)} original commits")
+    rows: list[Dict[str, object]] = []
+    parent = new_base
+    for original, replayed in zip(originals, rebased):
+        error = _member_replay_error(checkout, original, replayed, parent)
+        if error:
+            raise IsolationError(f"{original[:12]} -> {replayed[:12]}: {error}")
+        subject, task = _member_commit_summary(checkout, original)
+        rows.append({"original": original, "rebased": replayed, "subject": subject, "task": task})
+        parent = replayed
+    return rows
+
+
+def _member_rebase_receipt_path(project_root: Path) -> Path:
+    """The member rebase receipt beside a live (.project/) or archived project root."""
+    path = project_root / MEMBER_REBASE_RECEIPT
+    try:
+        resolved = path.resolve()
+    except (RuntimeError, OSError) as error:
+        raise IsolationError(f"unsafe member rebase receipt path: {error}") from error
+    if resolved != path.absolute():
+        raise IsolationError("unsafe member rebase receipt path")
+    return path
+
+
+def _read_member_rebase(project_root: Path) -> Optional[bytes]:
+    path = _member_rebase_receipt_path(project_root)
+    if not os.path.lexists(path):
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise IsolationError("member rebase receipt is not a regular file")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise IsolationError(str(error)) from error
+
+
+def _member_rebase_lock_entries(raw: bytes) -> list[Dict[str, str]]:
+    try:
+        value = json.loads(raw)
+        entries = value["members"]
+        if value.get("schema") != "gsd-path/member-lock/v1" or not isinstance(entries, list):
+            raise ValueError("invalid lock schema")
+        names = set()
+        for entry in entries:
+            if (not isinstance(entry, dict) or set(entry) != {"name", "branch", "base"}
+                    or any(not isinstance(entry[key], str) for key in ("name", "branch", "base"))
+                    or not _members_module().NAME_RE.fullmatch(entry["name"])
+                    or not re.fullmatch(r"[0-9a-f]{40}", entry["base"]) or entry["name"] in names):
+                raise ValueError("invalid or duplicate lock entry")
+            names.add(entry["name"])
+        return entries
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise IsolationError(f"unreadable member lock: {error}") from error
+
+
+def _validate_member_rebase(
+    coordinator: Path, raw: bytes, lock_raw: bytes
+) -> Dict[str, object]:
+    """Recompute every adoption from Git and bind the last one to the member lock."""
+    members = _members_module()
+    try:
+        receipt = json.loads(raw)
+    except ValueError as error:
+        raise IsolationError(f"unreadable member rebase receipt: {error}") from error
+    if (not isinstance(receipt, dict) or set(receipt) != {"schema", "adoptions"}
+            or receipt["schema"] != MEMBER_REBASE_SCHEMA
+            or not isinstance(receipt["adoptions"], list) or not receipt["adoptions"]):
+        raise IsolationError("unknown member rebase receipt schema")
+    latest: Dict[str, Dict[str, object]] = {}
+    processed = []
+    for adoption in receipt["adoptions"]:
+        if not isinstance(adoption, dict) or set(adoption) != MEMBER_REBASE_ADOPTION_KEYS:
+            raise IsolationError("member rebase adoption has unexpected fields")
+        member = adoption["member"]
+        if not isinstance(member, str) or not members.NAME_RE.fullmatch(member):
+            raise IsolationError("member rebase adoption names an invalid member")
+        for key in ("old_base", "old_tip", "new_base", "new_tip"):
+            if not isinstance(adoption[key], str):
+                raise IsolationError(f"{key} must be a full lowercase SHA")
+            require_full_sha(adoption[key])
+        for key in ("ruling", "branch", "default_branch"):
+            if not isinstance(adoption[key], str) or not adoption[key].strip():
+                raise IsolationError(f"{key} must be a non-empty string")
+        if adoption["published_from"] not in (None, adoption["old_tip"]):
+            raise IsolationError("published_from must be null or the old tip")
+        prior = adoption["prior_close"]
+        if prior is not None:
+            if not (isinstance(prior, dict) and set(prior) == {"archive", "row", "pull_request"}
+                    and isinstance(prior["archive"], str)
+                    and re.fullmatch(r"\d{3,}-[a-z0-9][a-z0-9-]*", prior["archive"])
+                    and isinstance(prior["row"], dict) and prior["row"].get("name") == member
+                    and prior["row"].get("status") == "pending"
+                    and isinstance(prior["row"].get("reviewed_head"), str)
+                    and _resolve_member_adoptions(processed, member, prior["row"]["reviewed_head"]) == adoption["old_tip"]
+                    and isinstance(prior["pull_request"], dict)
+                    and prior["pull_request"].get("source") == adoption["old_tip"]
+                    and prior["pull_request"].get("url") == prior["row"].get("pull_request")
+                    and prior["pull_request"].get("target") == adoption["default_branch"]):
+                raise IsolationError("prior_close must preserve the old pending row and its open-PR source proof")
+        checkout, project = member_checkout(coordinator, member)
+        if (not re.fullmatch(r"feature/" + re.escape(_common.branch_slug(project)) + r"-milestone-\d{3,}",
+                             adoption["branch"])
+                or adoption["default_branch"] != member_default_branch(coordinator, member)):
+            raise IsolationError("adoption branch or recorded default branch differs from membership")
+        head = adoption["contract_head"]
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise IsolationError("contract_head must be a full lowercase SHA")
+        if adoption["task_contracts"] != _member_rebase_contracts(coordinator, head):
+            raise IsolationError("task contract inventory differs from its recorded coordinator revision")
+        if adoption["retention_ref"] != member_rebase_retention_ref(project, member, adoption["old_tip"]):
+            raise IsolationError("retention_ref is not the canonical ref of the old tip")
+        commits = _member_adoption_commits(
+            checkout, adoption["old_base"], adoption["old_tip"], adoption["new_base"], adoption["new_tip"])
+        if adoption["commits"] != commits:
+            raise IsolationError("commit map does not match recomputed Git evidence")
+        previous = latest.get(member)
+        if previous is not None and (
+                adoption["old_base"] != previous["new_base"] or adoption["branch"] != previous["branch"]
+                or run_git(checkout, "merge-base", "--is-ancestor",
+                           str(previous["new_tip"]), adoption["old_tip"]).returncode != 0):
+            raise IsolationError(f"member {member} adoption chain is broken")
+        latest[member] = adoption
+        processed.append(adoption)
+    entries = _member_rebase_lock_entries(lock_raw) if lock_raw else []
+    for member, adoption in latest.items():
+        entry = next((item for item in entries if isinstance(item, dict) and item.get("name") == member), None)
+        if entry is None or entry.get("branch") != adoption["branch"] or entry.get("base") != adoption["new_base"]:
+            raise IsolationError(f"member lock does not record the adopted base of {member}")
+    return receipt
+
+
+def _member_rebase_receipt(coordinator: Path, project_root: Path) -> Optional[Dict[str, object]]:
+    """The validated receipt of a live or archived project root; None without one."""
+    raw = _read_member_rebase(project_root)
+    if raw is None:
+        return None
+    lock = project_root / "build" / "members.json"
+    lock_raw = lock.read_bytes() if lock.is_file() and not lock.is_symlink() else b""
+    key = ("member-rebase", str(coordinator), hashlib.sha256(raw).hexdigest(),
+           hashlib.sha256(lock_raw).hexdigest())
+    receipt = _memoized(key, lambda: _validate_member_rebase(coordinator, raw, lock_raw))
+    # The helper owns publication of the receipt. Recomputed patches alone
+    # cannot authenticate an edited (but still nonempty) ruling or lease.
+    relative = (project_root / MEMBER_REBASE_RECEIPT).relative_to(coordinator).as_posix()
+    committed = run_git(coordinator, "show", f"HEAD:{relative}")
+    if committed.returncode and project_root != coordinator / ".project":
+        # During archive preparation the exact committed live receipt is moved.
+        committed = run_git(coordinator, "show", f"HEAD:{MEMBER_REBASE_PATH}")
+    try:
+        matches = not committed.returncode and json.loads(committed.stdout) == receipt
+    except ValueError:
+        matches = False
+    if not matches:
+        raise IsolationError("member rebase receipt differs from its committed owner adoption record")
+    _memoized(("member-rebase-record", str(coordinator), current_sha(coordinator), hashlib.sha256(raw).hexdigest()),
+              lambda: _prove_member_rebase_record(coordinator, receipt))
+    return receipt
+
+
+def _member_rebase_digest(receipt: Dict[str, object]) -> str:
+    return hashlib.sha256(json.dumps(receipt, sort_keys=True, ensure_ascii=False,
+                                    separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _prove_member_rebase_record(coordinator: Path, receipt: Dict[str, object]) -> None:
+    """Bind all semantic receipt fields, including the ruling, to the helper's atomic commit."""
+    # After normal integration the milestone is reachable through a merge's
+    # second parent. Full path history keeps its authenticated adoption commit
+    # visible even though the live receipt was deleted by the archive move.
+    revisions = git_output(coordinator, "log", "--full-history", "--no-renames", "--diff-filter=AM",
+                           "--format=%H", "HEAD", "--", MEMBER_REBASE_PATH).splitlines()
+    for sha in revisions:
+        shown = run_git(coordinator, "show", f"{sha}:{MEMBER_REBASE_PATH}")
+        try:
+            matches = not shown.returncode and json.loads(shown.stdout) == receipt
+        except ValueError:
+            matches = False
+        if not matches:
+            continue
+        last = receipt["adoptions"][-1]
+        expected = _member_rebase_message({**last, "onto": last["new_base"],
+                                           "receipt_digest": _member_rebase_digest(receipt)})
+        parent, error = _single_parent(coordinator, sha)
+        paths = git_output(coordinator, "diff-tree", "--no-commit-id", "--name-only", "-r", sha).splitlines()
+        if (error or parent is None or git_text(coordinator, "show", "-s", "--format=%B", sha).strip() != expected.strip()
+                or set(paths) != {".project/build/members.json", MEMBER_REBASE_PATH}):
+            raise IsolationError("member rebase receipt has no canonical owner adoption commit")
+        return
+    raise IsolationError("member rebase receipt has no recorded owner adoption commit")
+
+
+def _resolve_member_adoptions(adoptions: list, member: str, sha: str) -> str:
+    for adoption in adoptions:
+        if adoption["member"] != member:
+            continue
+        mapping = {row["original"]: row["rebased"] for row in adoption["commits"]}
+        if sha in mapping:
+            sha = mapping[sha]
+        elif sha == adoption["old_base"]:
+            sha = adoption["new_base"]
+    return sha
+
+
+def resolve_member_commit(coordinator: Path, project_root: Path, member: str, sha: str) -> str:
+    """Resolve a recorded commit through the validated, owner-ruled receipt chain."""
+    receipt = _member_rebase_receipt(coordinator, project_root)
+    return _resolve_member_adoptions(receipt["adoptions"] if receipt else [], member, sha)
+
+
+def validate_member_rebase(repo: Path, project_dir: str = ".project") -> Optional[Dict[str, object]]:
+    """Validate a milestone's member rebase receipt; None when the milestone has none."""
+    repo = Path(repo)
+    receipt = _member_rebase_receipt(repo, repo / project_dir)
+    if receipt is None:
+        return None
+    # A valid old replay cannot authorize resetting the current branch back to
+    # the replaced lineage (especially when every task is a migrated legacy task).
+    latest = {item["member"]: item for item in receipt["adoptions"]}
+    for member, item in latest.items():
+        checkout, _ = member_checkout(repo, member)
+        tip = _optional_sha(checkout, f"refs/heads/{item['branch']}")
+        if tip is not None and run_git(checkout, "merge-base", "--is-ancestor", item["new_tip"], tip).returncode:
+            raise IsolationError(f"member {member} bound branch does not preserve its adopted tip")
+        if tip is None and project_dir == ".project":
+            raise IsolationError(f"member {member} adopted bound branch is missing")
+    return {"schema": MEMBER_REBASE_SCHEMA, "status": "verified",
+            "adoptions": [{"member": item["member"], "old_tip": item["old_tip"], "new_base": item["new_base"],
+                           "new_tip": item["new_tip"], "commits": len(item["commits"])}
+                          for item in receipt["adoptions"]]}
+
+
+def member_rebase_prior_close(coordinator: Path, project_dir: str, member: str) -> Optional[dict]:
+    """The immutable pending-close snapshot carried by this member's adoption, if any."""
+    receipt = _member_rebase_receipt(coordinator, coordinator / project_dir)
+    return next((row["prior_close"] for row in reversed(receipt["adoptions"])
+                 if row["member"] == member and row["prior_close"]), None) if receipt else None
+
+
+def require_member_rebase_head(coordinator: Path, project_dir: str, member: str, head: str) -> None:
+    """Integration may review/close a descendant of the latest adopted member tip, never its old lineage."""
+    receipt = _member_rebase_receipt(coordinator, coordinator / project_dir)
+    latest = next((item for item in reversed(receipt["adoptions"]) if item["member"] == member), None) if receipt else None
+    if latest:
+        checkout, _ = member_checkout(coordinator, member)
+        if run_git(checkout, "merge-base", "--is-ancestor", latest["new_tip"], head).returncode:
+            raise IsolationError(f"member {member} reviewed head does not preserve its adopted tip")
+
+
+def _remote_ref(checkout: Path, ref: str) -> Optional[str]:
+    """The live origin value of `ref`; None when origin has no such ref."""
+    result = run_git(checkout, "ls-remote", "origin", ref)
+    if result.returncode != 0:
+        raise MemberRebaseError("remote-unavailable", (result.stderr or result.stdout).strip()
+                                or f"cannot read origin {ref}")
+    matches = [line.split("\t")[0] for line in result.stdout.splitlines() if line.split("\t")[-1] == ref]
+    if len(matches) > 1:
+        raise MemberRebaseError("remote-unavailable", f"origin reports {ref} more than once")
+    return matches[0] if matches else None
+
+
+def _remote_default(checkout: Path) -> Optional[str]:
+    result = run_git(checkout, "ls-remote", "--symref", "origin", "HEAD")
+    if result.returncode != 0:
+        raise MemberRebaseError("remote-unavailable", (result.stderr or result.stdout).strip()
+                                or "cannot read the origin default branch")
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r"ref: refs/heads/(\S+)\tHEAD", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _optional_sha(repo: Path, ref: str) -> Optional[str]:
+    result = run_git(repo, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def _member_bound_holder(checkout: Path, branch: str) -> Optional[Path]:
+    """Path's checkout of the member bound branch; None when no worktree holds it."""
+    holders = [path for path, ref in _registered_worktrees(checkout).items() if ref == f"refs/heads/{branch}"]
+    if not holders:
+        return None
+    expected = sidecar_root(checkout, "bound", branch.removeprefix("feature/")).resolve()
+    if holders != [expected]:
+        raise MemberRebaseError("bound-held", f"{branch} is checked out outside Path's workspace: {holders[0]}")
+    return holders[0]
+
+
+def _stale_member_close(
+    coordinator: Path, common: Path, milestone: int, member: str, old_tip: str
+) -> Optional[Dict[str, object]]:
+    """A pending close left by an undone archive; never erase or complete its live PR."""
+    members = _members_module()
+    found = None
+    for path in sorted((common / "gsd-path" / "member-close").glob(f"{milestone:03d}-*.json")):
+        try:
+            rows = members.read_member_close(common, path.stem)
+        except (members.MembersError, ValueError) as error:
+            raise MemberRebaseError("close-journal", str(error)) from error
+        for row in rows:
+            if row.get("name") != member:
+                continue
+            if row.get("status") == "integrated":
+                raise MemberRebaseError("integrated", f"member {member} is already integrated by {path.name}")
+            reviewed = row.get("reviewed_head")
+            if (row.get("status") != "pending" or not isinstance(reviewed, str)
+                    or resolve_member_commit(coordinator, coordinator / ".project", member, reviewed) != old_tip
+                    or found is not None):
+                raise MemberRebaseError("close-journal", f"member-close journal {path} names another head of {member}")
+            if not isinstance(row.get("pull_request"), str) or not row["pull_request"]:
+                raise MemberRebaseError("close-journal", "pending member close has no open PR to prove; "
+                                        "retain its journal and resolve that close transaction first")
+            found = {"archive": path.stem, "row": row}
+    return found
+
+
+def _prove_open_member_pull_request(
+    checkout: Path, branch: str, default: str, source: str, url: str
+) -> Dict[str, object]:
+    """Read-only provider proof of the existing PR; no creation, update, merge or close."""
+    if __package__:
+        from . import integration
+    else:
+        import integration
+    try:
+        repository = integration.pull_request_repository(checkout)
+        pull = integration.find_pull_request(repository, branch, source, default)
+        if (pull is None or pull["html_url"] != url or pull["state"] != "open" or pull["merged_at"] is not None):
+            raise MemberRebaseError("pull-request", "the pending member close must still name the same open, unmerged PR")
+        checked = integration.require_pull_request_merge_provenance(repository, pull["number"])
+        if checked is not None:
+            integration.require_pull_request_identity(repository, checked, branch, source, default)
+        return {"url": url, "number": pull["number"], "source": source, "target": default}
+    except (integration.ArchiveError, OSError, ValueError) as error:
+        raise MemberRebaseError("pull-request", f"cannot prove the pending open member PR: {error}") from error
+
+
+def _member_rebase_contracts(coordinator: Path, head: str) -> Dict[str, str]:
+    """Pin every coordinator task file without changing its landing metadata."""
+    result = {}
+    for name in _committed_task_paths(coordinator, head):
+        result[name] = _regular_blob_oid(coordinator, head, name)
+    return result
+
+
+def _require_member_rebase_contracts(coordinator: Path, journal: Dict[str, object]) -> None:
+    expected = journal["task_contracts"]
+    paths = {path.relative_to(coordinator).as_posix(): path
+             for path in (coordinator / ".project/tasks").glob("*.md")}
+    if set(paths) != set(expected) or any(
+            path.is_symlink() or not path.is_file()
+            or _clean_blob_oid(coordinator, name, _read_task_text(path)[0], write=False) != expected[name]
+            for name, path in paths.items()):
+        raise MemberRebaseError("task-contract", "coordinator task files changed during member rebase adoption")
+
+
+def _member_rebase_plan(coordinator: Path, member: str, onto: str, ruling: str) -> Dict[str, object]:
+    """Read-only preconditions that need no objects of `onto`; the journal's content."""
+    members = _members_module()
+    pipeline_state = _pipeline_state_module()
+    if not isinstance(ruling, str) or not ruling.strip():
+        raise MemberRebaseError("ruling-required", "an explicit owner ruling is required")
+    if not isinstance(onto, str) or not re.fullmatch(r"[0-9a-f]{40}", onto):
+        raise MemberRebaseError("invalid-onto", "--onto must be the full 40-character SHA of the fetched origin default branch")
+    if not isinstance(member, str) or not members.NAME_RE.fullmatch(member):
+        raise MemberRebaseError("member-invalid", f"invalid member name: {member!r}")
+    coordinator = require_directory(coordinator, "coordinator")
+    if worktree_root(coordinator) != coordinator:
+        raise MemberRebaseError("coordinator-root", f"coordinator is not its Git root: {coordinator}")
+    try:
+        state, _, _ = pipeline_state.load_state(coordinator)
+    except pipeline_state.PipelineStateError as error:
+        raise MemberRebaseError("state-invalid", str(error)) from error
+    if (state.phase, state.status) not in MEMBER_REBASE_STATES or state.archive is not None:
+        where = f"{state.phase}/{state.status}" + (f" with archive {state.archive}" if state.archive else "")
+        raise MemberRebaseError(
+            "illegal-state", "member rebase adoption requires plan/active, plan/blocked, build/blocked, "
+            f"or ship before archive preparation; STATE is {where}")
+    try:
+        _require_member_coordinator_branch(coordinator)
+    except IsolationError as error:
+        raise MemberRebaseError("coordinator-branch", str(error)) from error
+    bound = _common.BOUND_BRANCH_RE.fullmatch(state.branch or "")
+    if bound is None:
+        raise MemberRebaseError("coordinator-branch", f"coordinator branch is not a bound branch: {state.branch}")
+    ignored = _common.project_ignore_error(coordinator)
+    if ignored:
+        raise MemberRebaseError("project-ignored", ignored)
+    try:
+        journals = pipeline_state.transaction_journals(coordinator)
+    except (pipeline_state.PipelineStateError, IsolationError) as error:
+        raise MemberRebaseError("journal-pending", str(error)) from error
+    pending = [f"{name}: {path}" for name, path in sorted(journals.items()) if path and name != "member_rebase"]
+    common = common_git_dir(coordinator)
+    pending += [f"member landing: {path}" for path in sorted(common.joinpath(*MEMBER_LANDING_DIR).glob("*.json"))]
+    migration = common / "gsd-path" / "coordinator-migration.json"
+    if os.path.lexists(migration):
+        try:
+            stage = json.loads(migration.read_text(encoding="utf-8")).get("stage")
+        except (OSError, ValueError, AttributeError):
+            stage = None
+        if stage != "complete":
+            pending.append(f"coordinator migration: {migration}")
+    pending += [f"member rebase: {path}" for path in member_rebase_journals(coordinator)]
+    pending += [f"member create: {path}" for path in sorted((common / "gsd-path/member-create").glob("*.json"))]
+    discussion = coordinator / ".project/discuss/.discussion-append-transaction.json"
+    if os.path.lexists(discussion):
+        pending.append(f"discussion append: {discussion}")
+    if pending:
+        raise MemberRebaseError("journal-pending", "finish or abort the pending helper journals first: "
+                                + "; ".join(pending))
+    lock_path = coordinator / members.LOCK_PATH
+    try:
+        if lock_path.resolve() != lock_path.absolute() or lock_path.is_symlink():
+            raise IsolationError("member lock must be a real regular file")
+        entries = _member_rebase_lock_entries(lock_path.read_bytes()) if lock_path.is_file() else []
+    except (IsolationError, OSError) as error:
+        raise MemberRebaseError("member-not-locked", str(error)) from error
+    entry = next((item for item in entries if item.get("name") == member), None)
+    if entry is None:
+        raise MemberRebaseError("member-not-locked", f"member {member} is not in {members.LOCK_PATH}")
+    # Read-only probes: `git status` could rewrite the index.
+    recorded = (members.LOCK_PATH, MEMBER_REBASE_PATH)
+    tracked = run_git(coordinator, "ls-files", "--error-unmatch", "--", members.LOCK_PATH)
+    dirty = (git_output(coordinator, "diff", "--name-only", "HEAD", "--", *recorded)
+             or git_output(coordinator, "diff", "--name-only", "--cached", "--", *recorded)
+             or git_output(coordinator, "ls-files", "--others", "--", *recorded))
+    if tracked.returncode != 0 or dirty:
+        raise MemberRebaseError("coordinator-dirty", f"{members.LOCK_PATH} must be committed and "
+                                f"{MEMBER_REBASE_PATH} clean before an adoption")
+    try:
+        checkout, project = member_checkout(coordinator, member)
+        default = member_default_branch(coordinator, member)
+    except IsolationError as error:
+        raise MemberRebaseError("member-invalid", str(error)) from error
+    branch, old_base = str(entry["branch"]), require_full_sha(str(entry["base"]))
+    expected_branch = f"feature/{_common.branch_slug(project)}-milestone-{bound.group(1)}"
+    if branch != expected_branch:
+        raise MemberRebaseError("member-invalid", f"member lock must name {expected_branch}, got {branch}")
+    listed = next(row for row in members.read_members(coordinator) if row["name"] == member)
+    if git_output(checkout, "config", "--get", "remote.origin.url") != listed["remote"]:
+        raise MemberRebaseError("remote-changed", "member origin differs from MEMBERS.md")
+    contract_head = current_sha(coordinator)
+    task_contracts = _member_rebase_contracts(coordinator, contract_head)
+    _require_member_rebase_contracts(coordinator, {"task_contracts": task_contracts})
+    # Validate any previous chain before adding to it, including legacy-only work.
+    validate_member_rebase(coordinator)
+    in_flight = []
+    for path in sorted((coordinator / ".project" / "tasks").glob("*.md")):
+        fields, error = task_frontmatter(path.read_text(encoding="utf-8"))
+        if error or fields is None:
+            raise MemberRebaseError("task-contract", f"{path.name}: {error or 'unreadable task'}")
+        if fields.get("status") == "in-progress":
+            in_flight.append(path.name)
+    # A native member's running copy is not in coordinator task frontmatter.
+    for locked in entries:
+        where, _ = member_checkout(coordinator, locked["name"])
+        prefixes = (f"refs/heads/{TASK_BRANCH_PREFIX}{_common.branch_slug(project)}-",
+                    f"{TASK_AUTHORIZATION_PREFIX}{project}-")
+        in_flight += [ref for ref in git_output(where, "for-each-ref", "--format=%(refname)",
+                                                "refs/heads/", "refs/gsd-path/").splitlines()
+                      if ref.startswith(prefixes)]
+    records = common / "gsd-path" / "dispatch" / str(state.branch).replace("/", "-")
+    for path in records.rglob("state.json"):
+        try:
+            attempt = json.loads(path.read_text(encoding="utf-8"))
+            exit_path = path.with_name("exit.json")
+            if exit_path.is_file():
+                attempt.update(json.loads(exit_path.read_text(encoding="utf-8")))
+            if not attempt.get("finished_at") and attempt.get("pid") and _common.process_alive(int(attempt["pid"])):
+                in_flight.append(str(path))
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            raise MemberRebaseError("task-in-flight", f"unreadable dispatch record {path}: {error}") from error
+    if in_flight:
+        raise MemberRebaseError("task-in-flight", "retire, recover or land these tasks first: " + ", ".join(in_flight))
+    replay_branch = member_rebase_branch_name(branch, member)
+    if _optional_sha(checkout, f"refs/heads/{replay_branch}") is not None:
+        raise MemberRebaseError("replay-leftover", f"replay branch {replay_branch} already exists in {checkout}")
+    replay_worktree = sidecar_root(checkout, "rebase", replay_branch.removeprefix(MEMBER_REBASE_BRANCH_PREFIX))
+    if os.path.lexists(replay_worktree):
+        raise MemberRebaseError("replay-leftover", f"replay worktree path is occupied: {replay_worktree}")
+    old_tip = _optional_sha(checkout, f"refs/heads/{branch}")
+    if old_tip is None:
+        raise MemberRebaseError("bound-missing", f"member bound branch {branch} is missing in {checkout}")
+    holder = _member_bound_holder(checkout, branch)
+    if holder is not None and (git_output(holder, "branch", "--show-current") != branch
+                               or uncommitted_paths(holder)):
+        raise MemberRebaseError("bound-dirty", f"member bound checkout must be clean on {branch}: {holder}")
+    try:
+        originals = _linear_member_range(checkout, old_base, old_tip)
+    except IsolationError as error:
+        raise MemberRebaseError("history-not-linear", str(error)) from error
+    _require_member_replay_identity(checkout, originals)
+    commits = []
+    for sha in originals:
+        subject, task = _member_commit_summary(checkout, sha)
+        message = git_text(checkout, "-c", "i18n.logOutputEncoding=UTF-8", "show", "-s", "--format=%B", sha)
+        if _common.TOOL_ATTRIBUTION_RE.search(message):
+            raise MemberRebaseError("metadata", f"{sha[:12]} has prohibited attribution; an identical-message replay is refused")
+        contract = re.findall(r"(?m)^Contract: ([0-9a-f]{40})$", message)
+        if task is not None and len(contract) == 1:
+            # A member landing names its coordinator task contract; it must still hold.
+            try:
+                _member_contract(coordinator, contract[0], task, member)
+            except IsolationError as error:
+                raise MemberRebaseError("task-contract", f"{sha[:12]} {subject!r}: {error}") from error
+        commits.append({"original": sha, "subject": subject, "task": task})
+    live_default = _remote_default(checkout)
+    if live_default != default:
+        raise MemberRebaseError("remote-default", f"member remote default must be {default}, got {live_default!r}")
+    live = _remote_ref(checkout, f"refs/heads/{default}")
+    if live != onto:
+        raise MemberRebaseError("onto-mismatch", f"--onto must be the current origin/{default} ({live}); "
+                                "preview again with that SHA")
+    remote_bound = _remote_ref(checkout, f"refs/heads/{branch}")
+    if remote_bound not in (None, old_tip):
+        raise MemberRebaseError("remote-moved", f"origin/{branch} is at {remote_bound}, not the local tip {old_tip}")
+    close = _stale_member_close(coordinator, common, int(bound.group(1)), member, old_tip)
+    if close is not None:
+        close["pull_request"] = _prove_open_member_pull_request(checkout, branch, default, old_tip,
+                                                               str(close["row"]["pull_request"]))
+    authorization = members._authorization_ref(project, "push", f"refs/heads/{branch}")
+    return {
+        "coordinator": str(coordinator), "member": member, "project": project, "checkout": str(checkout),
+        "branch": branch, "default_branch": default, "onto": onto, "ruling": ruling,
+        "contract_head": contract_head, "task_contracts": task_contracts, "origin": listed["remote"],
+        "old_base": old_base, "old_tip": old_tip, "remote_before": remote_bound, "commits": commits,
+        "replay_branch": replay_branch,
+        "replay_worktree": str(replay_worktree),
+        "retention_ref": member_rebase_retention_ref(project, member, old_tip),
+        "retention_before": _optional_ref(checkout, member_rebase_retention_ref(project, member, old_tip)),
+        "authorization_ref": authorization,
+        "authorization_before": _optional_ref(checkout, authorization),
+        "close": close,
+    }
+
+
+def _optional_ref(repo: Path, ref: str) -> Optional[str]:
+    result = run_git(repo, "rev-parse", "--verify", "--quiet", ref)
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def _git_in(repo: Path, env: Optional[Dict[str, str]], *arguments: str) -> subprocess.CompletedProcess:
+    return subprocess.run(_common.git_command(repo, *arguments), capture_output=True,
+                          encoding="utf-8", errors="replace", env=env, check=False)
+
+
+def _require_onto(checkout: Path, plan: Dict[str, object], env: Optional[Dict[str, str]] = None) -> None:
+    """`--onto` is present, moves the base, and does not already contain the bound branch."""
+    onto, old_base, old_tip = str(plan["onto"]), str(plan["old_base"]), str(plan["old_tip"])
+    if _git_in(checkout, env, "cat-file", "-e", onto + "^{commit}").returncode != 0:
+        raise MemberRebaseError("onto-not-fetched", f"{onto} is not present in {checkout}")
+    if onto == old_base:
+        raise MemberRebaseError("already-based", f"member {plan['member']} is already based on {onto}")
+    if _git_in(checkout, env, "merge-base", "--is-ancestor", old_base, onto).returncode != 0:
+        raise MemberRebaseError("onto-not-descendant", f"{onto} does not descend from the locked base {old_base}")
+    if old_tip != old_base and _git_in(checkout, env, "merge-base", "--is-ancestor", old_tip, onto).returncode == 0:
+        raise MemberRebaseError("already-integrated", f"origin/{plan['default_branch']} already contains {old_tip}")
+
+
+@contextlib.contextmanager
+def _disposable_objects(checkout: Path) -> Iterator[Dict[str, str]]:
+    """An environment whose Git object writes land in a temporary store."""
+    objects = git_output(checkout, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+    environment = os.environ.copy()
+    alternates = [objects]
+    if environment.get("GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+        alternates.append(environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"])
+    environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = os.pathsep.join(alternates)
+    for role in ("AUTHOR", "COMMITTER"):
+        environment[f"GIT_{role}_NAME"] = "member rebase preview"
+        environment[f"GIT_{role}_EMAIL"] = "preview@example.invalid"
+    with tempfile.TemporaryDirectory(prefix="member-rebase-") as temporary:
+        environment["GIT_OBJECT_DIRECTORY"] = temporary
+        yield environment
+
+
+def _fetch_into(checkout: Path, default: str, env: Optional[Dict[str, str]]) -> None:
+    """Fetch origin's default branch; with `env`, objects only, no ref or FETCH_HEAD."""
+    arguments = ["fetch", "--quiet", "--no-tags", "--no-recurse-submodules"]
+    if env is None:
+        arguments += ["origin", f"+refs/heads/{default}:refs/remotes/origin/{default}"]
+    else:
+        arguments = ["-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "fetch.writeCommitGraph=false",
+                     *arguments, "--no-write-fetch-head", "--no-prune", "--refmap=", "origin",
+                     f"refs/heads/{default}"]
+    fetched = _git_in(checkout, env, *arguments)
+    if fetched.returncode != 0:
+        raise MemberRebaseError("remote-unavailable", (fetched.stderr or fetched.stdout).strip()
+                                or f"cannot fetch origin/{default}")
+
+
+def _require_member_rebase_product_history(
+    checkout: Path, plan: Dict[str, object], heads: Sequence[str], env: Optional[Dict[str, str]] = None
+) -> None:
+    """A migrated product member must keep the migration's clean-history invariant."""
+    if __package__:
+        from . import coordinator_migration
+    else:
+        import coordinator_migration
+    try:
+        migration = coordinator_migration.load(Path(str(plan["coordinator"])))
+    except (ValueError, OSError) as error:
+        raise MemberRebaseError("migration-history", f"cannot prove coordinator migration: {error}") from error
+    if migration is None or migration["member"] != plan["member"]:
+        return
+    history = _git_in(checkout, env, "log", "--format=%H", *heads, "--", *sorted(coordinator_migration.METADATA))
+    if history.returncode or history.stdout.strip():
+        raise MemberRebaseError("migration-history", "migrated member candidate history contains pipeline metadata "
+                                "or cannot be inspected; adoption refused before publication")
+
+
+def _simulate_member_replay(checkout: Path, plan: Dict[str, object], env: Dict[str, str]) -> None:
+    """Replay every original commit with Git's merge in a disposable object store."""
+    current = str(plan["onto"])
+    for row in plan["commits"]:
+        original, subject = str(row["original"]), str(row["subject"])
+        parent = git_output(checkout, "rev-parse", original + "^")
+        merged = _git_in(checkout, env, "merge-tree", "--write-tree", f"--merge-base={parent}", current, original)
+        if merged.returncode == 1:
+            conflicts = [line for line in merged.stdout.splitlines() if line.startswith("CONFLICT")]
+            raise MemberRebaseError("conflict", f"replaying {original[:12]} {subject!r} onto origin/"
+                                    f"{plan['default_branch']} conflicts: " + ("; ".join(conflicts) or "conflict"))
+        if merged.returncode != 0 or not merged.stdout.strip():
+            raise MemberRebaseError("replay-unavailable", "cannot simulate the replay (Git 2.40 or later is "
+                                    "required): " + (merged.stderr or merged.stdout).strip())
+        tree = merged.stdout.splitlines()[0]
+        if tree == _git_in(checkout, env, "rev-parse", current + "^{tree}").stdout.strip():
+            raise MemberRebaseError("empty-commit", f"{original[:12]} {subject!r} is already in origin/"
+                                    f"{plan['default_branch']}; the replay would drop it")
+        created = _git_in(checkout, env, "commit-tree", tree, "-p", current, "-m", "member rebase preview")
+        if created.returncode != 0:
+            raise MemberRebaseError("replay-unavailable", (created.stderr or created.stdout).strip())
+        replayed = created.stdout.strip()
+        if _ordered_edits_between(checkout, current, replayed, env) != _ordered_edits(checkout, original):
+            raise MemberRebaseError("edits-differ", f"replaying {original[:12]} {subject!r} would change "
+                                    "different bytes than the original commit")
+        current = replayed
+
+
+def _member_rebase_report(plan: Dict[str, object]) -> Dict[str, object]:
+    lease = plan["remote_before"] or "absent"
+    return {
+        "member": plan["member"], "branch": plan["branch"], "default_branch": plan["default_branch"],
+        "onto": plan["onto"], "old_base": plan["old_base"], "old_tip": plan["old_tip"],
+        "remote_bound": plan["remote_before"], "lease": lease,
+        "commits": [{"original": row["original"], "subject": row["subject"], "task": row["task"]}
+                    for row in plan["commits"]],
+        "replay_branch": plan["replay_branch"], "retention_ref": plan["retention_ref"],
+        "preserve_close": plan["close"], "receipt": MEMBER_REBASE_PATH,
+    }
+
+
+def preview_member_rebase(coordinator: Path, member: str, onto: str, ruling: str) -> Dict[str, object]:
+    """Read-only: every precondition, plus the replay simulated in a disposable object store."""
+    plan = _member_rebase_plan(coordinator, member, onto, ruling)
+    checkout = Path(str(plan["checkout"]))
+    with _disposable_objects(checkout) as env:
+        if _git_in(checkout, env, "cat-file", "-e", str(plan["onto"]) + "^{commit}").returncode != 0:
+            _fetch_into(checkout, str(plan["default_branch"]), env)
+        _require_onto(checkout, plan, env)
+        _require_member_rebase_product_history(checkout, plan, [str(plan["onto"]), str(plan["old_tip"])], env)
+        _simulate_member_replay(checkout, plan, env)
+    branch = plan["branch"]
+    return {
+        **_member_rebase_report(plan), "status": "preview", "verdict": "ready",
+        "effects": [
+            f"replay {len(plan['commits'])} commit(s) of {branch} onto {plan['onto']} in {plan['replay_branch']}",
+            f"publish {branch} to origin with lease {plan['remote_before'] or 'absent'}",
+            f"advance local {branch} from {plan['old_tip']} by compare-and-swap",
+            f"set the {member} lock base to {plan['onto']} and append {MEMBER_REBASE_PATH}",
+            "commit both as one .project/-only coordinator commit",
+        ] + ([f"preserve the pending open-PR close and old review binding in {plan['close']['archive']}; "
+              "fresh final review is required"] if plan["close"] else []),
+    }
+
+
+def _write_member_rebase_journal(path: Path, journal: Dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _common.atomic_write(path, json.dumps(journal, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+
+
+def _read_member_rebase_journal(path: Path) -> Dict[str, object]:
+    if path.is_symlink() or not path.is_file():
+        raise MemberRebaseError("journal-invalid", f"member rebase journal is not a regular file: {path}")
+    try:
+        journal = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise MemberRebaseError("journal-invalid", f"unreadable member rebase journal {path}: {error}") from error
+    if not isinstance(journal, dict) or journal.get("schema") != MEMBER_REBASE_JOURNAL_SCHEMA or journal.get(
+            "stage") not in {"prepared", "replayed", "publishing", "published", "advanced", "recorded"}:
+        raise MemberRebaseError("journal-invalid", f"member rebase journal is invalid: {path}")
+    return journal
+
+
+def _validate_member_rebase_journal(
+    coordinator: Path, member: str, journal: Dict[str, object]
+) -> None:
+    """Resume only the same coordinator, member, origin, sidecar and proven replay."""
+    try:
+        state, _, _ = _pipeline_state_module().load_state(coordinator)
+        if (state.phase, state.status) not in MEMBER_REBASE_STATES or state.archive is not None:
+            raise MemberRebaseError("illegal-state", "finish the adoption in its quiet, unarchived coordinator state")
+        _require_member_coordinator_branch(coordinator)
+        checkout, project = member_checkout(coordinator, member)
+        branch = f"feature/{_common.branch_slug(project)}-milestone-{str(state.branch).rsplit('-', 1)[1]}"
+        replay = member_rebase_branch_name(branch, member)
+        if (journal["coordinator"] != str(coordinator) or journal["member"] != member
+                or journal["checkout"] != str(checkout) or journal["project"] != project
+                or journal["branch"] != branch or journal["replay_branch"] != replay
+                or journal["default_branch"] != member_default_branch(coordinator, member)
+                or journal["origin"] != git_output(checkout, "config", "--get", "remote.origin.url")
+                or journal["replay_worktree"] != str(sidecar_root(checkout, "rebase", replay.removeprefix(
+                    MEMBER_REBASE_BRANCH_PREFIX)))
+                or journal["retention_ref"] != member_rebase_retention_ref(project, member, journal["old_tip"])
+                or journal["authorization_ref"] != _members_module()._authorization_ref(
+                    project, "push", f"refs/heads/{branch}")):
+            raise MemberRebaseError("journal-invalid", "member rebase journal no longer matches its owned targets")
+        for key in ("onto", "old_base", "old_tip", "contract_head"):
+            require_full_sha(journal[key])
+        if journal["remote_before"] not in (None, journal["old_tip"]):
+            raise MemberRebaseError("journal-invalid", "invalid publication lease in member rebase journal")
+        if (not isinstance(journal["ruling"], str) or not journal["ruling"].strip()
+                or journal["task_contracts"] != _member_rebase_contracts(coordinator, journal["contract_head"])):
+            raise MemberRebaseError("journal-invalid", "member rebase journal has invalid contracts or ruling")
+        _require_member_rebase_contracts(coordinator, journal)
+        originals = _linear_member_range(checkout, journal["old_base"], journal["old_tip"])
+        if [row["original"] for row in journal["commits"]] != originals:
+            raise MemberRebaseError("journal-invalid", "member rebase journal changed the original commit range")
+        produced = journal["produced_commits"]
+        if (not isinstance(produced, list) or len(produced) > len(originals)
+                or any(not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha) for sha in produced)):
+            raise MemberRebaseError("journal-invalid", "invalid helper-produced commit inventory")
+        if journal["stage"] != "prepared":
+            if produced != [row["rebased"] for row in journal["commits"]]:
+                raise MemberRebaseError("journal-invalid", "proven replay differs from helper-produced commits")
+            require_full_sha(journal["new_tip"])
+            actual = _member_adoption_commits(checkout, journal["old_base"], journal["old_tip"],
+                                              journal["onto"], journal["new_tip"])
+            if actual != journal["commits"]:
+                raise MemberRebaseError("journal-invalid", "member rebase journal's replay does not prove")
+    except MemberRebaseError:
+        raise
+    except (IsolationError, KeyError, TypeError, ValueError, OSError) as error:
+        raise MemberRebaseError("journal-invalid", f"invalid member rebase journal: {error}") from error
+
+
+def _rollback_member_rebase(path: Path, journal: Dict[str, object]) -> None:
+    """Undo an adoption only before any publication intent was recorded."""
+    if journal["stage"] not in {"prepared", "replayed"}:
+        raise MemberRebaseError("published", "publication may have occurred; preserve the journal and lineage evidence")
+    checkout = Path(str(journal["checkout"]))
+    ref = f"refs/heads/{journal['replay_branch']}"
+    destination = Path(str(journal["replay_worktree"]))
+    tip = _optional_ref(checkout, ref)
+    if tip is not None:
+        originals = _linear_member_range(checkout, str(journal["old_base"]), str(journal["old_tip"]))
+        partial = _linear_member_range(checkout, str(journal["onto"]), tip)
+        if len(partial) > len(originals):
+            raise MemberRebaseError("replay-leftover", "replay branch contains unowned commits; cleanup refused")
+        produced = journal["produced_commits"]
+        for index, (old, new) in enumerate(zip(originals, partial)):
+            if index < len(produced):
+                if new != produced[index]:
+                    raise MemberRebaseError("replay-leftover", "helper-produced replay ref changed; cleanup refused")
+            elif _ordered_edits(checkout, old) != _ordered_edits(checkout, new):
+                # A kill can occur after Git commits but before the SHA record.
+                # Only unchanged ordered edits may close that unrecorded window.
+                raise MemberRebaseError("replay-leftover", "unrecorded replay changed edits; cleanup refused")
+    holders = [holder for holder, branch in _registered_worktrees(checkout).items() if branch == ref]
+    for holder in holders:
+        if holder != destination.resolve():
+            raise MemberRebaseError("replay-leftover", f"{journal['replay_branch']} is checked out elsewhere: {holder}")
+        run_git(holder, "cherry-pick", "--abort")
+        _remove_worktree(checkout, holder, True)
+    if not holders and destination.is_dir() and not destination.is_symlink() and not any(destination.iterdir()):
+        destination.rmdir()
+    with contextlib.suppress(OSError):
+        destination.parent.rmdir()  # only when empty
+    if tip is not None:
+        git_output(checkout, "update-ref", "-d", ref, tip)
+    old_tip = str(journal["old_tip"])
+    if (journal["retention_before"] is None
+            and _optional_ref(checkout, str(journal["retention_ref"])) == old_tip
+            and _optional_ref(checkout, f"refs/heads/{journal['branch']}") == old_tip):
+        git_output(checkout, "update-ref", "-d", str(journal["retention_ref"]), old_tip)
+    authorization, before = str(journal["authorization_ref"]), journal["authorization_before"]
+    current = _optional_ref(checkout, authorization)
+    if current != before:
+        if current != journal.get("new_tip"):
+            raise MemberRebaseError("authorization-changed", "member push authorization changed; journal retained")
+        if before:
+            git_output(checkout, "update-ref", authorization, str(before), str(current))
+        elif current:
+            git_output(checkout, "update-ref", "-d", authorization, current)
+    release_workspace_quietly(checkout)
+    _remove_member_rebase_journal(path)
+
+
+def _remove_member_rebase_journal(path: Path) -> None:
+    path.unlink()
+    with contextlib.suppress(OSError):
+        path.parent.rmdir()  # only when no other member's adoption is pending
+
+
+def _replay_member_rebase(journal: Dict[str, object]) -> None:
+    """Cherry-pick the locked range onto `onto` in a named sidecar and prove the result."""
+    checkout = Path(str(journal["checkout"]))
+    branch = str(journal["replay_branch"])
+    destination = sidecar_root(checkout, "rebase", branch.removeprefix(MEMBER_REBASE_BRANCH_PREFIX), pin=True)
+    if destination != Path(str(journal["replay_worktree"])):
+        raise MemberRebaseError("replay-failed", f"replay worktree placement changed: {destination}")
+    create_named_worktree(checkout, branch, destination, str(journal["onto"]), bound=str(journal["branch"]))
+    for row in journal["commits"]:
+        original, subject = str(row["original"]), str(row["subject"])
+        picked = run_git(destination, "-c", "rerere.enabled=false", "cherry-pick", original)
+        if picked.returncode != 0:
+            conflicts = run_git(destination, "diff", "--name-only", "--diff-filter=U").stdout.split()
+            detail = (picked.stderr or picked.stdout).strip()
+            run_git(destination, "cherry-pick", "--abort")
+            if conflicts:
+                raise MemberRebaseError("conflict", f"replaying {original[:12]} {subject!r} conflicts: "
+                                        + ", ".join(conflicts))
+            code = "empty-commit" if "empty" in detail.lower() else "replay-failed"
+            raise MemberRebaseError(code, f"replaying {original[:12]} {subject!r} failed: {detail}")
+        # Ownership evidence precedes the semantic proof. A rejected encoding,
+        # message or edit must not make our own disposable replay unretirable.
+        journal["produced_commits"].append(current_sha(destination))
+        _write_member_rebase_journal(_member_rebase_journal_path(
+            Path(str(journal["coordinator"])), str(journal["member"])), journal)
+    if uncommitted_paths(destination):
+        raise MemberRebaseError("replay-failed", "replay left uncommitted changes")
+    new_tip = current_sha(destination)
+    try:
+        commits = _member_adoption_commits(checkout, str(journal["old_base"]), str(journal["old_tip"]),
+                                           str(journal["onto"]), new_tip)
+    except IsolationError as error:
+        raise MemberRebaseError("proof-failed", str(error)) from error
+    if [row["original"] for row in commits] != [row["original"] for row in journal["commits"]]:
+        raise MemberRebaseError("proof-failed", "replay does not cover the planned commits")
+    _remove_worktree(checkout, destination, False)
+    with contextlib.suppress(OSError):
+        destination.parent.rmdir()  # only when empty
+    retention, old_tip = str(journal["retention_ref"]), str(journal["old_tip"])
+    created = run_git(checkout, "update-ref", retention, old_tip, "")
+    if created.returncode != 0 and _optional_ref(checkout, retention) != old_tip:
+        raise MemberRebaseError("replay-failed", f"cannot keep the old lineage at {retention}")
+    journal["new_tip"], journal["commits"] = new_tip, commits
+
+
+def _advance_member_bound(journal: Dict[str, object]) -> None:
+    """Compare-and-swap the local bound branch, then refresh Path's bound checkout."""
+    checkout, branch = Path(str(journal["checkout"])), str(journal["branch"])
+    ref, old_tip, new_tip = f"refs/heads/{branch}", str(journal["old_tip"]), str(journal["new_tip"])
+    holder = _member_bound_holder(checkout, branch)
+    tip = _optional_sha(checkout, ref)
+    if tip == old_tip:
+        if holder is not None and (git_output(holder, "branch", "--show-current") != branch
+                                   or uncommitted_paths(holder)):
+            raise MemberRebaseError("bound-dirty", f"member bound checkout must be clean on {branch}: {holder}")
+        moved = run_git(checkout, "update-ref", "-m", f"member rebase adoption onto {journal['onto']}",
+                        ref, new_tip, old_tip)
+        if moved.returncode != 0:
+            raise MemberRebaseError("bound-moved", (moved.stderr or moved.stdout).strip() or f"{branch} moved")
+    elif tip != new_tip:
+        raise MemberRebaseError("bound-moved", f"local {branch} moved to {tip} during the adoption; origin already "
+                                f"holds {new_tip}")
+    if holder is not None and uncommitted_paths(holder):
+        stale = (run_git(holder, "diff", "--quiet", old_tip).returncode == 0
+                 and run_git(holder, "diff", "--cached", "--quiet", old_tip).returncode == 0
+                 and not git_output(holder, "ls-files", "--others", "--exclude-standard"))
+        if not stale:
+            raise MemberRebaseError("bound-dirty", f"member bound checkout changed during the adoption: {holder}")
+        git_output(holder, "reset", "-q", "--hard", new_tip)
+
+
+def _member_push_refused(output: str, ref: str) -> bool:
+    """True only when Git received the remote's report that it did not update `ref`.
+
+    `--porcelain` prints one status row per ref and `Done` once the exchange
+    completes. A transport failure, a local hook refusal, or a `[remote
+    failure]` row is ambiguous: the remote may still have applied the update.
+    """
+    lines = output.splitlines()
+    if not lines or lines[-1] != "Done":
+        return False
+    rows = [line.split("\t") for line in lines if line.count("\t") >= 2]
+    return any(row[0] == "!" and row[1].rpartition(":")[2] == ref
+               and row[2].startswith(("[rejected]", "[remote rejected]")) for row in rows)
+
+
+def _publish_member_rebase(journal: Dict[str, object]) -> None:
+    """Push the replayed tip with an exact lease on the remote value the plan verified."""
+    members = _members_module()
+    entry = journal["stage"]
+    checkout, branch = Path(str(journal["checkout"])), str(journal["branch"])
+    ref, old_tip, new_tip = f"refs/heads/{branch}", str(journal["old_tip"]), str(journal["new_tip"])
+    _require_member_rebase_product_history(checkout, journal, [new_tip])
+    remote = _remote_ref(checkout, ref)
+    if remote != new_tip:
+        if remote != journal["remote_before"] or _optional_sha(checkout, ref) != old_tip:
+            raise MemberRebaseError("remote-moved", f"origin/{branch} or local {branch} moved before publication")
+        holder = _member_bound_holder(checkout, branch)
+        if holder is not None and uncommitted_paths(holder):
+            raise MemberRebaseError("bound-dirty", f"member bound checkout became dirty before publication: {holder}")
+        if journal["close"]:
+            _prove_open_member_pull_request(checkout, branch, str(journal["default_branch"]), old_tip,
+                                             str(journal["close"]["row"]["pull_request"]))
+        # A later ref value cannot tell us whether an earlier push succeeded
+        # and was advanced again. Persist intent before any push can be sent.
+        journal["published_from"] = remote
+        journal["stage"] = "publishing"
+        _write_member_rebase_journal(_member_rebase_journal_path(
+            Path(str(journal["coordinator"])), str(journal["member"])), journal)
+        members.authorize_push(checkout, str(journal["project"]), ref, new_tip)
+        pushed = run_git(checkout, "push", "--porcelain", f"--force-with-lease={ref}:{remote or ''}",
+                         "origin", f"{new_tip}:{ref}")
+        if pushed.returncode != 0:
+            after = _remote_ref(checkout, ref)
+            if after != new_tip:
+                detail = (pushed.stderr or pushed.stdout).strip() or "push refused"
+                if entry == "replayed" and after == remote and _member_push_refused(pushed.stdout, ref):
+                    # The remote reported that it kept the leased value, and no
+                    # earlier attempt can have published: the replay stays abortable.
+                    journal.pop("published_from", None)
+                    journal["stage"] = "replayed"
+                    _write_member_rebase_journal(_member_rebase_journal_path(
+                        Path(str(journal["coordinator"])), str(journal["member"])), journal)
+                    raise MemberRebaseError("publish-refused", f"origin refused {branch}; nothing was published. "
+                                            f"Rerun once the forge accepts the leased push, or --abort: {detail}")
+                code = "remote-moved" if after != remote else "publish-failed"
+                raise MemberRebaseError(code, f"publishing {branch} failed: {detail}")
+        if _remote_ref(checkout, ref) != new_tip:
+            raise MemberRebaseError("publish-failed", f"origin/{branch} does not name {new_tip} after the push")
+        journal["published_from"] = remote
+    else:
+        journal.setdefault("published_from", journal.get("remote_before"))
+        if journal["stage"] == "replayed":
+            journal["stage"] = "publishing"
+            _write_member_rebase_journal(_member_rebase_journal_path(
+                Path(str(journal["coordinator"])), str(journal["member"])), journal)
+    if journal["close"]:
+        _prove_open_member_pull_request(checkout, branch, str(journal["default_branch"]), new_tip,
+                                         str(journal["close"]["row"]["pull_request"]))
+    git_output(checkout, "update-ref", f"refs/remotes/origin/{branch}", new_tip)
+
+
+def _member_rebase_message(journal: Dict[str, object]) -> str:
+    return (f"{MEMBER_REBASE_SUBJECT_PREFIX}{journal['member']} onto {str(journal['onto'])[:12]}\n\n"
+            f"Member: {journal['member']}\nBranch: {journal['branch']}\n"
+            f"Old-Base: {journal['old_base']}\nOld-Tip: {journal['old_tip']}\n"
+            f"New-Base: {journal['onto']}\nNew-Tip: {journal['new_tip']}\n"
+            f"Receipt: {MEMBER_REBASE_PATH}\nReceipt-SHA256: {journal['receipt_digest']}\n")
+
+
+def _record_member_rebase(coordinator: Path, journal: Dict[str, object]) -> str:
+    """Commit the new lock and receipt, preserving any pending open-PR close row verbatim."""
+    members = _members_module()
+    _require_member_coordinator_branch(coordinator)
+    member, onto = str(journal["member"]), str(journal["onto"])
+    lock_path = coordinator / members.LOCK_PATH
+    receipt_path = _member_rebase_receipt_path(coordinator / ".project")
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    entry = next((item for item in lock["members"] if item.get("name") == member), None)
+    if entry is None or entry["branch"] != journal["branch"] or entry["base"] not in (journal["old_base"], onto):
+        raise MemberRebaseError("lock-changed", f"member lock for {member} changed during the adoption")
+    entry["base"] = onto
+    adoption = {
+        "member": member, "branch": journal["branch"], "default_branch": journal["default_branch"],
+        "ruling": journal["ruling"], "old_base": journal["old_base"], "old_tip": journal["old_tip"],
+        "new_base": onto, "new_tip": journal["new_tip"], "commits": journal["commits"],
+        "retention_ref": journal["retention_ref"], "published_from": journal.get("published_from"),
+        "prior_close": journal["close"],
+        "contract_head": journal["contract_head"], "task_contracts": journal["task_contracts"],
+    }
+    _require_member_rebase_contracts(coordinator, journal)
+    raw = _read_member_rebase(coordinator / ".project")
+    adoptions = json.loads(raw)["adoptions"] if raw is not None else []
+    if not adoptions or adoptions[-1] != adoption:
+        if any(item.get("member") == member and item.get("old_tip") == journal["old_tip"] for item in adoptions):
+            raise MemberRebaseError("receipt-conflict", f"{MEMBER_REBASE_PATH} already records another adoption "
+                                    f"of {journal['old_tip']}")
+        adoptions.append(adoption)
+    lock_text = json.dumps(lock, indent=2) + "\n"
+    receipt_text = json.dumps({"schema": MEMBER_REBASE_SCHEMA, "adoptions": adoptions},
+                              indent=2, ensure_ascii=False) + "\n"
+    # Never record a receipt that its own validator would refuse.
+    _validate_member_rebase(coordinator, receipt_text.encode("utf-8"), lock_text.encode("utf-8"))
+    _common.atomic_write(lock_path, lock_text)
+    _common.atomic_write(receipt_path, receipt_text)
+    close = journal["close"]
+    if close:
+        common = common_git_dir(coordinator)
+        rows = members.read_member_close(common, str(close["archive"]))
+        if [row for row in rows if row.get("name") == member] != [close["row"]]:
+            raise MemberRebaseError("close-journal", "member-close row changed during adoption; preserve and inspect it")
+    paths = (members.LOCK_PATH, MEMBER_REBASE_PATH)
+    git_output(coordinator, "add", "--", *paths)
+    if run_git(coordinator, "diff", "--cached", "--quiet", "HEAD", "--", *paths).returncode == 0:
+        # Resumed after the commit: the adoption commit is the last one that wrote the receipt.
+        return git_output(coordinator, "log", "-1", "--format=%H", "--", MEMBER_REBASE_PATH)
+    journal["receipt_digest"] = _member_rebase_digest({"schema": MEMBER_REBASE_SCHEMA, "adoptions": adoptions})
+    committed = run_git(coordinator, "commit", "-q", "--only", "-F", "-", "--", *paths,
+                        input=_member_rebase_message(journal))
+    if committed.returncode != 0:
+        raise MemberRebaseError("record-failed", (committed.stderr or committed.stdout).strip()
+                                or "coordinator commit failed")
+    _require_member_rebase_contracts(coordinator, journal)
+    return current_sha(coordinator)
+
+
+def _member_rebase_result(journal: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "verdict": "adopted", "member": journal["member"], "branch": journal["branch"],
+        "default_branch": journal["default_branch"], "old_base": journal["old_base"],
+        "old_tip": journal["old_tip"], "new_base": journal["onto"], "new_tip": journal["new_tip"],
+        "commits": len(journal["commits"]), "coordinator_commit": journal["coordinator_commit"],
+        "receipt": MEMBER_REBASE_PATH, "retention_ref": journal["retention_ref"],
+        "published": {"ref": f"refs/heads/{journal['branch']}",
+                      "lease": journal.get("published_from") or "absent", "remote": journal["new_tip"]},
+        "preserved_close": journal["close"],
+    }
+
+
+def _require_member_rebase_postconditions(journal: Dict[str, object]) -> None:
+    """An advanced/recorded transaction must still hold its exact local and remote result."""
+    checkout, branch = Path(str(journal["checkout"])), str(journal["branch"])
+    if _optional_sha(checkout, f"refs/heads/{branch}") != journal["new_tip"]:
+        raise MemberRebaseError("bound-moved", "local adopted member branch drifted; journal and lineage retained")
+    if _remote_ref(checkout, f"refs/heads/{branch}") != journal["new_tip"]:
+        raise MemberRebaseError("remote-moved", "published member source drifted; journal and lineage retained")
+    holder = _member_bound_holder(checkout, branch)
+    if holder is not None and uncommitted_paths(holder):
+        raise MemberRebaseError("bound-dirty", "adopted member checkout is dirty; journal retained")
+
+
+def _finish_member_rebase(coordinator: Path, path: Path, journal: Dict[str, object]) -> Dict[str, object]:
+    """Roll a replayed adoption forward: publish, advance, record, clean up."""
+    _validate_member_rebase_journal(coordinator, str(journal["member"]), journal)
+    checkout = Path(str(journal["checkout"]))
+    if journal["stage"] in {"replayed", "publishing"}:
+        if _optional_ref(checkout, f"refs/heads/{journal['replay_branch']}") != journal["new_tip"]:
+            raise MemberRebaseError("replay-lost", "the replay branch moved; journal retained, refusing publication or deletion")
+        try:
+            _publish_member_rebase(journal)
+        except MemberRebaseError as error:
+            if error.code == "remote-moved" and journal["stage"] == "replayed":
+                _rollback_member_rebase(path, journal)
+            # Once publication intent exists, preserve all evidence even when
+            # the current remote differs: it may have advanced after our push.
+            raise
+        journal["stage"] = "published"
+        _write_member_rebase_journal(path, journal)
+    if journal["stage"] == "published":
+        if _remote_ref(checkout, f"refs/heads/{journal['branch']}") != journal["new_tip"]:
+            raise MemberRebaseError("remote-moved", "published member bound branch moved; adoption remains journaled")
+        _advance_member_bound(journal)
+        journal["stage"] = "advanced"
+        _write_member_rebase_journal(path, journal)
+    if journal["stage"] in {"advanced", "recorded"}:
+        _require_member_rebase_postconditions(journal)
+    if journal["stage"] == "advanced":
+        journal["coordinator_commit"] = _record_member_rebase(coordinator, journal)
+        journal["stage"] = "recorded"
+        _write_member_rebase_journal(path, journal)
+    _require_member_rebase_postconditions(journal)
+    replay = f"refs/heads/{journal['replay_branch']}"
+    tip = _optional_ref(checkout, replay)
+    if tip is not None:
+        if tip != journal["new_tip"]:
+            raise MemberRebaseError("replay-leftover", f"{journal['replay_branch']} moved to {tip}")
+        git_output(checkout, "update-ref", "-d", replay, tip)
+    release_workspace_quietly(checkout)
+    result = _member_rebase_result(journal)
+    _remove_member_rebase_journal(path)
+    return result
+
+
+def adopt_member_rebase(coordinator: Path, member: str, onto: str, ruling: str) -> Dict[str, object]:
+    """Apply, or resume, an owner-ruled rebase of a locked member's bound branch onto `onto`.
+
+    Every precondition and a simulated replay run before the journal. The
+    journal precedes every member mutation: before publication an interruption
+    rolls back; from publication on, a rerun with the same arguments rolls forward.
+    """
+    coordinator = require_directory(coordinator, "coordinator")
+    path = _member_rebase_journal_path(coordinator, member)
+    # Refusals are read-only, including conflict/empty/range checks. Do not
+    # create even the landing lock or fetch into the member before they pass.
+    if not os.path.lexists(path):
+        preview_member_rebase(coordinator, member, onto, ruling)
+    with _member_landing_lock(coordinator):
+        if os.path.lexists(path):
+            journal = _read_member_rebase_journal(path)
+            _validate_member_rebase_journal(coordinator, member, journal)
+            if (journal["onto"], journal["ruling"]) != (onto, ruling):
+                raise MemberRebaseError("journal-pending", f"member {member} has a pending adoption onto "
+                                        f"{journal['onto']}; rerun with its recorded --onto and --ruling, or --abort")
+            if journal["stage"] != "prepared":
+                return _finish_member_rebase(coordinator, path, journal)
+            _rollback_member_rebase(path, journal)
+        plan = _member_rebase_plan(coordinator, member, onto, ruling)
+        checkout = Path(str(plan["checkout"]))
+        journal = {"schema": MEMBER_REBASE_JOURNAL_SCHEMA, "stage": "prepared", "produced_commits": [], **plan}
+        _write_member_rebase_journal(path, journal)
+        try:
+            _fetch_into(checkout, str(plan["default_branch"]), None)
+            fetched = _optional_sha(checkout, f"refs/remotes/origin/{plan['default_branch']}")
+            if fetched != onto:
+                raise MemberRebaseError("onto-mismatch", f"freshly fetched origin/{plan['default_branch']} is {fetched}, "
+                                        "not --onto; preview again")
+            _require_onto(checkout, plan)
+            _replay_member_rebase(journal)
+        except BaseException:
+            # A failed cleanup must remain visible, with the journal retained.
+            _rollback_member_rebase(path, journal)
+            raise
+        journal["stage"] = "replayed"
+        _write_member_rebase_journal(path, journal)
+        return _finish_member_rebase(coordinator, path, journal)
+
+
+def abort_member_rebase(coordinator: Path, member: str) -> Dict[str, object]:
+    """Roll back an interrupted adoption that has not been published."""
+    coordinator = require_directory(coordinator, "coordinator")
+    path = _member_rebase_journal_path(coordinator, member)
+    if not os.path.lexists(path):
+        return {"verdict": "none", "member": member}
+    with _member_landing_lock(coordinator):
+        if not os.path.lexists(path):
+            return {"verdict": "none", "member": member}
+        journal = _read_member_rebase_journal(path)
+        _validate_member_rebase_journal(coordinator, member, journal)
+        published = journal["stage"] not in {"prepared", "replayed"} or (
+            journal.get("new_tip") and _remote_ref(Path(str(journal["checkout"])),
+                                                   f"refs/heads/{journal['branch']}") == journal["new_tip"])
+        if published:
+            raise MemberRebaseError("published", "publication may have occurred; preserve the journal, replay and "
+                                    "retained lineage, then resume the recorded adoption or resolve source drift with the owner")
+        _rollback_member_rebase(path, journal)
+        return {"verdict": "aborted", "member": member, "old_tip": journal["old_tip"], "onto": journal["onto"]}
 
 
 def attest(
@@ -5130,6 +6488,20 @@ def parser() -> argparse.ArgumentParser:
     adopt_parser.add_argument("--head", required=True, help="rebased HEAD being adopted, full SHA")
     adopt_parser.add_argument("--ruling", required=True)
 
+    member_rebase_parser = subparsers.add_parser(
+        "adopt-member-rebase",
+        help="owner-ruled rebase of a locked member bound branch onto its fetched default branch",
+    )
+    member_rebase_parser.add_argument("--repo", type=Path, required=True, help="coordinator root")
+    member_rebase_parser.add_argument("--member", required=True)
+    member_rebase_parser.add_argument("--onto", help="full SHA of the fetched origin/<recorded default>")
+    member_rebase_parser.add_argument("--ruling", help="the owner ruling, verbatim")
+    member_rebase_mode = member_rebase_parser.add_mutually_exclusive_group()
+    member_rebase_mode.add_argument("--dry-run", action="store_true",
+                                    help="read-only preview, including a simulated replay")
+    member_rebase_mode.add_argument("--abort", action="store_true",
+                                    help="roll back an interrupted adoption that is not yet published")
+
     recover_parser = subparsers.add_parser(
         "recover", help="prove landed task commits from git; read-only"
     )
@@ -5243,6 +6615,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = record_rebase_adoption(
                 arguments.repo, arguments.original_head, arguments.head, arguments.ruling
             )
+        elif arguments.command == "adopt-member-rebase":
+            if arguments.abort:
+                result = abort_member_rebase(arguments.repo, arguments.member)
+            elif arguments.onto is None or arguments.ruling is None:
+                raise MemberRebaseError("arguments", "--onto and --ruling are required unless --abort")
+            elif arguments.dry_run:
+                result = preview_member_rebase(arguments.repo, arguments.member, arguments.onto, arguments.ruling)
+            else:
+                result = adopt_member_rebase(arguments.repo, arguments.member, arguments.onto, arguments.ruling)
         elif arguments.command == "recover":
             result = recover(arguments.repo, arguments.tasks_dir)
         elif arguments.command == "collect-artifact":
@@ -5279,8 +6660,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 arguments.landed_commit,
                 arguments.task_file,
             )
-    except IsolationError as error:
-        print(str(error), file=sys.stderr)
+    except MemberRebaseError as error:
+        print(json.dumps({"code": error.code, "error": str(error), "verdict": "refused"}, sort_keys=True),
+              file=sys.stderr)
+        return 1
+    except (IsolationError, OSError, ValueError) as error:
+        if arguments.command == "adopt-member-rebase":
+            print(json.dumps({"code": "invalid-input", "error": str(error), "verdict": "refused"}, sort_keys=True),
+                  file=sys.stderr)
+        elif isinstance(error, IsolationError):
+            print(str(error), file=sys.stderr)
+        else:
+            raise
         return 1
     if arguments.command in {'land', 'land-member', 'stage-review', 'collect-artifact'}:
         # The transaction above is complete. Optional accounting runs only in

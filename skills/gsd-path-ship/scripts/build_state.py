@@ -21,6 +21,7 @@ if __package__:
         IsolationError,
         recover as recover_isolation,
         verify_landed_task_files,
+        validate_member_rebase,
     )
     from .pipeline_git import task_commit_subject
     from .pipeline_state import PipelineStateError, load_state
@@ -33,6 +34,7 @@ else:
             IsolationError,
             recover as recover_isolation,
             verify_landed_task_files,
+            validate_member_rebase,
         )
         from pipeline_git import task_commit_subject
         from pipeline_state import PipelineStateError, load_state
@@ -45,6 +47,7 @@ else:
             IsolationError,
             recover as recover_isolation,
             verify_landed_task_files,
+            validate_member_rebase,
         )
         from scripts.pipeline_git import task_commit_subject
         from scripts.pipeline_state import PipelineStateError, load_state
@@ -1049,6 +1052,13 @@ def verify_landed_tasks(
         migration = _common.validate_migration(repository, artifact_dir)
     except ValueError as error:
         raise BuildStateError("invalid-migration", str(error)) from error
+    try:
+        # Legacy-only member work has no member landing record to carry the receipt check.
+        member_rebase = validate_member_rebase(repository, artifact_dir)
+    except IsolationError as error:
+        raise BuildStateError(
+            "invalid-member-rebase", f"member rebase adoption receipt is invalid: {error}"
+        ) from error
     return {
         "command": "verify-landed",
         "project_dir": artifact_dir,
@@ -1056,6 +1066,7 @@ def verify_landed_tasks(
         "head": head,
         "tasks": evidence,
         **({"migration": migration} if migration else {}),
+        **({"member_rebase": member_rebase} if member_rebase else {}),
     }
 
 

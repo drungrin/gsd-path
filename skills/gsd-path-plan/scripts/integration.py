@@ -25,7 +25,7 @@ if __package__:
         ship_subject,
     )
     from .pipeline_state import PipelineState
-    from .isolation import publication_base
+    from .isolation import publication_base, member_rebase_prior_close
     from . import _common
     from . import worktree_paths
 else:
@@ -41,7 +41,7 @@ else:
             ship_subject,
         )
         from pipeline_state import PipelineState
-        from isolation import publication_base
+        from isolation import publication_base, member_rebase_prior_close
         import _common
         import worktree_paths
     except ImportError:  # pragma: no cover - package import used by tests
@@ -56,7 +56,7 @@ else:
             ship_subject,
         )
         from scripts.pipeline_state import PipelineState
-        from scripts.isolation import publication_base
+        from scripts.isolation import publication_base, member_rebase_prior_close
         from scripts import _common
         from scripts import worktree_paths
 
@@ -2081,6 +2081,8 @@ def integrate_member(coordinator: Path, member: str, archive_path: str, reviewed
     origin_default = f"origin/{default}"
     body = _member_merge_body(archive_path, member, reviewed_head)
     _require_member_close(checkout, member, bound, reviewed_head, default)
+    _advance_adopted_member_source(coordinator, member, archive_path, reviewed_head,
+                                   checkout, project, bound, default)
     merge = _find_member_merge(checkout, subject, body, reviewed_head, default)
     if merge is None:
         origin_main = archive_milestone.require_git_success(
@@ -2110,13 +2112,74 @@ def integrate_member(coordinator: Path, member: str, archive_path: str, reviewed
     return validate_member_integrated(coordinator, member, archive_path, reviewed_head)
 
 
+def _advance_adopted_member_source(
+    coordinator: Path, member: str, archive_path: str, reviewed_head: str,
+    checkout: Path, project: str, bound: str, default: str, repository: Optional[PullRequestRepository] = None,
+) -> None:
+    """After fresh review, lease-publish only proven repair landings beyond an adopted source.
+
+    The ordinary publisher remains strict. This exception is bounded by the
+    committed adoption receipt, the current FINAL head, the existing open PR,
+    fresh editorial sources, and canonical task landing proofs.
+    """
+    if __package__:
+        from . import isolation
+    else:
+        import isolation
+    try:
+        receipt = isolation._member_rebase_receipt(coordinator, coordinator / archive_path)
+        adoptions = [row for row in receipt["adoptions"] if row["member"] == member] if receipt else []
+        if not adoptions:
+            return
+        isolation.require_member_rebase_head(coordinator, archive_path, member, reviewed_head)
+        remote = live_remote_ref(checkout, f"refs/heads/{bound}")
+        if remote == reviewed_head or remote is None:
+            return
+        adopted = adoptions[-1]["new_tip"]
+        commits = isolation._linear_member_range(checkout, adopted, reviewed_head)
+        if remote not in [adopted, *commits]:
+            raise ArchiveError("member PR source moved outside the adopted repair lineage")
+        paths = sorted((coordinator / archive_path / "tasks").glob("*.md"))
+        if not paths:
+            raise ArchiveError("adopted member source advance requires its archived task landing proofs")
+        proof = isolation.verify_landed_task_files(coordinator, paths, ".project/tasks",
+                                                    isolation.current_sha(coordinator))
+        landings = {row["landing"] for row in proof["tasks"] if row.get("member") == member and row.get("landing")}
+        if any(commit not in landings for commit in commits):
+            raise ArchiveError("member PR source advance contains an unproven repair commit")
+        prior = next((row["prior_close"] for row in reversed(adoptions) if row["prior_close"]), None)
+        if repository is not None:
+            # Publication metadata tied to an old member head is not evidence for this one.
+            publication(coordinator, archive_path, member, reviewed_head)
+            pull = find_pull_request(repository, bound, remote, default)
+            if prior and (pull is None or pull["html_url"] != prior["row"]["pull_request"]):
+                raise ArchiveError("the pending member close's original PR is missing or changed")
+            if pull is not None:
+                if pull["state"] != "open" or pull["merged_at"] is not None:
+                    raise ArchiveError("cannot advance the source of a completed or abandoned member PR")
+                require_pull_request_merge_provenance(repository, pull["number"])
+        elif prior:
+            raise ArchiveError("the preserved pending member PR cannot switch to direct integration")
+        _push_member_ref(checkout, project, reviewed_head, f"refs/heads/{bound}", reviewed_head, remote)
+    except isolation.IsolationError as error:
+        raise ArchiveError(f"member rebase publication proof failed: {error}") from error
+
+
 def integrate_member_pull_request(coordinator: Path, member: str, archive_path: str, reviewed_head: str) -> dict:
     """Pull-request member close: open one PR for the bound branch; after a human merge, tag it."""
     checkout, project, bound, subject, tag_name, default = _member_names(coordinator, member, archive_path)
     body = _member_merge_body(archive_path, member, reviewed_head)
     _require_member_close(checkout, member, bound, reviewed_head, default)
     repository = pull_request_repository(checkout)
+    _advance_adopted_member_source(coordinator, member, archive_path, reviewed_head,
+                                   checkout, project, bound, default, repository)
     pull = find_pull_request(repository, bound, reviewed_head, default)
+    try:
+        prior = member_rebase_prior_close(coordinator, archive_path, member)
+    except RuntimeError as error:
+        raise ArchiveError(f"member rebase close proof failed: {error}") from error
+    if prior and (pull is None or pull["html_url"] != prior["row"]["pull_request"]):
+        raise ArchiveError("the original pending member PR must be reused; do not create another PR")
     if pull is None or pull["merged_at"] is None:
         if pull is not None and pull["state"] != "open":
             raise ArchiveError(f"member {member} pull request was closed without merging")
@@ -2166,6 +2229,14 @@ def validate_member_integrated(
 ) -> dict:
     """Prove the member merge is on the member default branch and its published tag points at it."""
     checkout, _, bound, subject, tag_name, default = _member_names(coordinator, member, archive_path)
+    if __package__:
+        from . import isolation
+    else:
+        import isolation
+    try:
+        isolation.require_member_rebase_head(coordinator, archive_path, member, reviewed_head)
+    except isolation.IsolationError as error:
+        raise ArchiveError(f"member rebase adoption receipt is invalid: {error}") from error
     tracking = f"refs/remotes/origin/tags/{tag_name}"
     if refresh:
         refresh_origin(checkout)
@@ -2310,6 +2381,17 @@ def close_members(repo: Path) -> dict:
         raise ArchiveError(str(error)) from error
     if sorted(heads) != sorted(entry["name"] for entry in locked):
         raise ArchiveError("FINAL.md Member reviewed HEAD lines must name each locked member")
+    try:
+        import isolation
+    except ImportError:  # pragma: no cover - package import used by tests
+        from scripts import isolation
+    try:
+        # An owner-ruled member rebase must still prove before its rebased branch is closed.
+        isolation.validate_member_rebase(project, state.archive)
+        for name, head in heads.items():
+            isolation.require_member_rebase_head(project, state.archive, name, head)
+    except isolation.IsolationError as error:
+        raise ArchiveError(f"member rebase adoption receipt is invalid: {error}") from error
     common = Path(archive_milestone.require_git_success(
         run_git(project, "rev-parse", "--path-format=absolute", "--git-common-dir"), "resolve Git common dir"))
     archive_name = PurePosixPath(state.archive).name
@@ -2328,8 +2410,25 @@ def close_members(repo: Path) -> dict:
         mode = state.integration if mode == "default" else mode
         row = rows.get(name) or {"name": name, "mode": mode, "reviewed_head": heads[name],
                                  "status": "pending", "merge": None, "tag": None}
-        if row["reviewed_head"] != heads[name] or row["mode"] != mode:
-            raise ArchiveError(f"member-close journal for {name} differs from FINAL.md or MEMBERS.md")
+        if row["mode"] != mode:
+            raise ArchiveError(f"member-close journal for {name} differs from MEMBERS.md")
+        if row["reviewed_head"] != heads[name]:
+            # Rebind only a preserved pending PR close after a fresh FINAL.
+            # The adoption keeps the original row and PR snapshot as old evidence.
+            prior = member_rebase_prior_close(project, state.archive, name)
+            valid = bool(prior and prior["archive"] == archive_name and row["status"] == "pending"
+                         and row.get("merge") is None and row.get("tag") is None
+                         and row.get("pull_request") == prior["row"]["pull_request"])
+            if valid and row != prior["row"]:
+                try:
+                    isolation.require_member_rebase_head(project, state.archive, name, row["reviewed_head"])
+                    checkout, _ = isolation.member_checkout(project, name)
+                    valid = not run_git(checkout, "merge-base", "--is-ancestor", row["reviewed_head"], heads[name]).returncode
+                except isolation.IsolationError:
+                    valid = False
+            if not valid:
+                raise ArchiveError(f"member-close journal for {name} differs from FINAL.md; no adoption proves a pending-PR rebind")
+            row = dict(row, previous_reviewed_head=row["reviewed_head"], reviewed_head=heads[name])
         if row["status"] == "integrated":
             result = validate_member_integrated(project, name, state.archive, heads[name], check_work_items=False)
             if (result["merge"], result["tag"]) != (row["merge"], row["tag"]):

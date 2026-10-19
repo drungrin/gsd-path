@@ -370,6 +370,16 @@ such as `rm -rf scratch` passes the archive check; other guard rules still apply
 - **allows** adding files to archive during the ship transaction, before the
   branch closes
 
+In a verified member repository, pre-push uses the coordinator's exact-ref,
+exact-object authorizations instead of the single-repo STATE rules above.
+`chore/rebase-<coordinator>-` is reserved alongside the member task, verify,
+integration, and bound branch prefixes. `isolation.py adopt-member-rebase`
+records the exact replayed tip's authorization and uses an exact-SHA (or
+absent-ref) lease for its push. This requires an explicit owner ruling; it does
+not allow a manual force push, a different tip, or publication of the replay
+sidecar branch. The pre-tool force-push restriction remains unchanged: call
+the supported helper, never hand-build its Git commands.
+
 These local hooks cover pushes made by plain Git and clients that invoke
 Git with hooks enabled. Creating a PR from an already published ref does not
 run the pre-push hook. A branch cut from `main` carrying `shipped/done` passes;

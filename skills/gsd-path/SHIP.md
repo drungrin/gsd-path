@@ -70,7 +70,21 @@ so the position is unchanged. Then:
    `proven-landed` or `attested` entry per task. For rebase recovery, see
    `$gsd-path-build` step 1. Its receipt
    `.project/build/rebase-adoption.json` may remain uncommitted only after
-   the runtime's `build_state.verify_landed_tasks` check passes. Keep bookkeeping in STATE.md
+   the runtime's `build_state.verify_landed_tasks` check passes. When a
+   member's default branch moved, an owner-ruled member rebase adoption
+   (`$gsd-path-build` step 1) may run in `ship/active` or `ship/blocked`
+   only while STATE.archive is null. Its helper commits
+   `.project/build/member-rebase-adoption.json`; the landing check, ship
+   inputs, and `close-members` reject a receipt that no longer proves, and the
+   receipt archives with `build/`. The adoption moves HEAD and the member
+   tip, so final review and its member reviewed HEADs start over at the new
+   tips. An undone archive's pending open-PR close is preserved by adoption,
+   not erased. After fresh FINAL and publication evidence, `close-members`
+   rebinds that pending close to the new member reviewed HEAD and lease-publishes
+   only proven repair landings beyond the adopted tip. It must reuse the same
+   PR; a completed, abandoned, missing, or changed PR blocks recovery rather
+   than creating another one or treating its old source as newly verified.
+   Keep bookkeeping in STATE.md
    and assigned artifacts; never create extra `.project/` execution reports. Reuse an output only when its
    `Reviewed HEAD` equals that SHA and the complete numbered gap-risk mapping
    still equals the freshly derived risk list. Regenerate the exact assigned

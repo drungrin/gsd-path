@@ -162,6 +162,7 @@ run the panel step for the named wave and cycle before advancing.
 | Blocked review with findings | Read step 7 in [native build](references/build-native.md); use `skeptics` or `fix-tasks` only as the finding receipt directs. |
 | `question` | Answer from approved artifacts or escalate; record with `answer --task-id <id> --answer '<answer> — <citation>'`, then resume round. |
 | Task/recovery `blocked` or structural escalation | Read the matching recovery or plan-defect branch in [native build](references/build-native.md). |
+| Member default branch moved and the owner rules the member branch must include it | Never merge it into the bound branch. Set `build/blocked`, then follow member rebase adoption in step 1 of [native build](references/build-native.md); it needs the owner ruling verbatim. |
 
 Without an owner-supplied child command, read [native build](references/build-native.md)
 and the [dispatch contract](references/dispatch.md). That path uses native child

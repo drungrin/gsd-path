@@ -33,6 +33,7 @@ if __package__:
         authorized_task_worktree,
         checkpoint as isolation_checkpoint,
         collect_artifact_recoveries,
+        member_rebase_journals,
     )
     from . import _common
     from . import roadmap
@@ -43,6 +44,7 @@ else:
             authorized_task_worktree,
             checkpoint as isolation_checkpoint,
             collect_artifact_recoveries,
+            member_rebase_journals,
         )
         import _common
         import roadmap
@@ -54,6 +56,7 @@ else:
             authorized_task_worktree,
             checkpoint as isolation_checkpoint,
             collect_artifact_recoveries,
+            member_rebase_journals,
         )
         from scripts import _common, roadmap
 
@@ -543,9 +546,11 @@ def transaction_journals(repo: Path) -> dict[str, Optional[str]]:
     )
     try:
         collect = collect_artifact_recoveries(resolved)
+        rebases = member_rebase_journals(resolved)
     except IsolationError as error:
         raise PipelineStateError(str(error)) from error
     found["collect_artifact"] = str(collect[0]["journal"]) if collect else None
+    found["member_rebase"] = str(rebases[0]) if rebases else None
     return found
 
 
@@ -741,6 +746,7 @@ def status_state(repo: Path, project_dir: str = ".project") -> dict[str, object]
         "bind_next": None,
         "undo": None,
         "collect_artifact": None,
+        "member_rebase": None,
     }
     completion = _completion_status(resolved, state, project_dir)
     member_rows = _member_status(resolved, state) if has_git and project_dir == ".project" else None
@@ -1204,6 +1210,11 @@ def _route_state(repo: Path, project_dir: str = ".project") -> dict[str, object]
     if not lookahead:
         git_dir = _run_git(resolved, "rev-parse", "--git-dir", check=False)
         if git_dir.returncode == 0:
+            rebases = member_rebase_journals(resolved)
+            if rebases:
+                result = _route_result(state, "block", reason="finish or abort the pending member rebase adoption before phase work")
+                result["route"]["journal"] = str(rebases[0])
+                return result
             migration = _git_path(resolved, "gsd-path/coordinator-migration.json")
             if migration.exists() or migration.is_symlink():
                 transaction = _read_json(migration)

@@ -44,7 +44,8 @@ GITHUB_REMOTE_RE = re.compile(
 )
 # Member-side Path refs carry the coordinator name, so they cannot collide with
 # a member's own Path history.
-MEMBER_BRANCH_FORMATS = ("feature/{}-milestone-", "chore/task-{}-", "chore/verify-{}-", "chore/integrate-{}-")
+MEMBER_BRANCH_FORMATS = ("feature/{}-milestone-", "chore/task-{}-", "chore/verify-{}-", "chore/integrate-{}-",
+                         "chore/rebase-{}-")
 MEMBER_TAG_FORMAT = "refs/tags/milestone/{}-"
 # The coordinator records one authorization per (ref, object) before it
 # publishes a member Path ref; member pre-push accepts only a matching one.
@@ -451,6 +452,10 @@ def lock_build_members(coordinator: Path) -> Optional[list[dict[str, str]]]:
     each member's bound branch at its recorded default branch on origin. None when
     no task names a member."""
     root, state = _coordinator(coordinator)
+    if __package__:
+        from . import isolation
+    else:
+        import isolation
     named = _task_members(root)
     lock_path = root / LOCK_PATH
     build_dir = lock_path.parent
@@ -458,6 +463,11 @@ def lock_build_members(coordinator: Path) -> Optional[list[dict[str, str]]]:
         raise MembersError(f"member lock directory must be real: {build_dir}")
     if lock_path.is_symlink() or (lock_path.exists() and not lock_path.is_file()):
         raise MembersError(f"member lock must be a regular file: {lock_path}")
+    try:
+        isolation.require_no_member_rebase(root, "")
+        isolation.validate_member_rebase(root)
+    except isolation.IsolationError as error:
+        raise MembersError(str(error)) from error
     if not named:
         lock_path.unlink(missing_ok=True)
         return None

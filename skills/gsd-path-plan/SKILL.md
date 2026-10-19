@@ -424,6 +424,18 @@ first.
    write `- None`. Do not edit existing coverage rows or existing task Owns.
    Cross-finding dependencies stay inside the patch
    wave, split into further waves only if file scopes force it.
+   When a finding needs commits that a member's default branch gained after
+   the member lock (for example the member PR merge result fails), a patch
+   task cannot merge them in. Ask the owner first; with an explicit ruling,
+   run the member rebase adoption of `$gsd-path-build` step 1 while
+   `plan/active`, before the planner writes tasks for that member, so the
+   patch wave is planned and built on the rebased member branch. If a planner
+   is already running, wait for it to settle or stop it through the normal
+   lifecycle first; never move its member input under an active assignment.
+   Recheck the resulting plan/briefs against the adopted branch through the
+   normal gates. Preserve any pending open-PR close left by an undone archive;
+   the helper records its old binding, and ship rebinds it only after fresh
+   final review/publication.
 3. Gate exactly as in step 3 above, scoped to the new tasks plus one extra
    check: patch tasks must not touch a scope-out veto or contradict a
    SYNTHESIS decision — a finding that requires either goes back to the
