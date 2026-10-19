@@ -23,8 +23,8 @@ records in `CHANGELOG.md`; record fork changes here.
 
 Upstream package base remains `1.6.2`. The fork revision continues from 12 to 13.
 
-Implementation: branch `feature/member-rebase-adoption`; its commit links are
-recorded here when it lands on `main`.
+Implementation:
+[`40a390e6 — rebase locked member branches by owner ruling`](https://github.com/drungrin/gsd-path/commit/40a390e6752f95d5ed045e8019bdae0d62cfcba7).
 
 ### Owner-ruled member rebase adoption
 
