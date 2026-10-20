@@ -792,7 +792,10 @@ dispatch contract and perform steps 1–5 by hand.
    milestone under the Milestone abandon procedure — listing the
    orchestrator's recommended option first marked `(recommended)` with a
    one-line reason drawn from the review evidence and the `cap` lenses for
-   `wave <N> cycle <C>`, whose `lenses` Log event is recorded first. Never
+   `wave <N> cycle <C>`, whose `lenses` Log event is recorded first. When the
+   cap cycle is later than 1 and a blocking group in its `groups` has
+   `first_seen_cycle` 1, recommend sending it to define: fix cycles since
+   cycle 1 have not closed that criterion, so it is likely unbounded. Never
    choose silently. Record the ruling as for an all-refuted ruling,
    appending `wave <N> cycle <C> cap ruling: <selected option verbatim>` and
    checkpointing with subject `build: record wave <N> cycle <C> cap ruling`,
