@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.13**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.14**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,51 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.14 — 2026-10-20
+
+Upstream package base remains `1.6.2`. The fork revision continues from 13 to 14.
+
+Implementation: branch `feature/model-policy-host-flag`; its commit links are
+recorded here when it lands on `main`.
+
+### Host id as a flag for model policy
+
+- `model_policy.py resolve` and `reassign`, and the driver commands that take
+  `--model-capabilities` (`round`, the review commands, `reassign-model`), take
+  `--host <id>`. The id must be one of `path_config.HOSTS`, the same list as the
+  installed hosts in `skill-resources.json`. The helper refuses a missing or
+  unknown id and lists the valid ones.
+- A `host` field in the capability file is deprecated. If present it must equal
+  `--host`. Before this change the id was free text that the orchestrating
+  model wrote into that file for each project. A spelling the policy did not
+  know (`claude-code` for Claude Code, whose id is `claude`) made every
+  `hosts.<id>` preference silently miss, so each role fell back to `inherit`
+  and children ran on the orchestrator's model.
+- The old spelling `claude-code` is read as `claude` when comparing against
+  old records and capability files, so those assignments resolve again and stay
+  pinned. It is never accepted as `--host`.
+- A driver that runs over a project runtime older than this change keeps that
+  runtime's contract: the flag only fills a missing `host` field and never
+  overrides a recorded one. `path_config` joins the driver's runtime activation
+  order because `model_policy` now imports it when it loads.
+- `model-policy.md` lists the host ids. Each host dispatch doc names its own id,
+  and the shared-agents doc maps each tool branch to its id.
+
+Validation: the full Python suite passed (3,147 tests, 39 skipped) and the Node tests
+passed (118 of 119, one skipped). All 601 skill resources stayed synchronized
+and `git diff --check` passed. New tests cover the flag, an unknown or missing
+id, a file that names another host, the legacy spelling in files and records,
+preferences keyed by the flag host, and the driver over a runtime older than
+this change; removing the legacy-record comparison or the declared-host check
+makes its test fail. No real project or pull request was used.
+
+Limits: the policy yields the native selection, and the orchestrator still has
+to apply it to the child tool; nothing enforces that. Existing records stay
+pinned until an owner `reassign`. A project gets the stricter helper only after
+its runtime is upgraded. `usage_report.py` (`claude-code`) and `token_budget.py`
+(`codex-cli`) keep their own host strings, which are persisted in publications
+and ledgers. No upstream submission has been made for this change.
 
 ## 1.6.2.13 — 2026-10-19
 
