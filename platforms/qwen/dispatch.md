@@ -28,7 +28,7 @@ Apply this contract whenever a GSD Path skill delegates work:
 - Model selection: before every child launch or continuation, follow
   [the model-policy contract](model-policy.md) and apply its recorded
   native arguments. It owns defaults, project settings, task overrides,
-  capability failures, and reassignment. Do not ask Qwen Code to create another
+  capability failures, and reassignment. Pass `--host qwen`. Do not ask Qwen Code to create another
   worktree: GSD Path supplies the exact repository or linked-worktree root,
   and the child must work only there. Host isolation: none.
 - Give every child a self-contained prompt with absolute input, template, and

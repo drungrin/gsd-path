@@ -28,7 +28,7 @@ Apply this contract whenever a GSD Path skill delegates work:
 - Model selection: before every child launch or continuation, follow
   [the model-policy contract](model-policy.md) and apply its recorded
   native arguments. It owns defaults, project settings, task overrides,
-  capability failures, and reassignment. Host isolation: none. Use the exact GSD Path supplied root; create no extra checkout.
+  capability failures, and reassignment. Pass `--host cursor`. Host isolation: none. Use the exact GSD Path supplied root; create no extra checkout.
 - Give every child a self-contained prompt with absolute input, template, and
   output paths plus its bounded responsibility. A coder prompt also names its
   isolated linked-worktree root; no child may infer the primary worktree.

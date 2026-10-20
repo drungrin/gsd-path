@@ -30,7 +30,7 @@ Apply this contract whenever a GSD Path skill delegates work:
 - Model selection: before every child launch or continuation, follow
   [the model-policy contract](model-policy.md) and apply its recorded
   native arguments. It owns defaults, project settings, task overrides,
-  capability failures, and reassignment. Do not ask Claude Code to create
+  capability failures, and reassignment. Pass `--host claude`. Do not ask Claude Code to create
   another worktree: GSD Path supplies the exact repository or
   linked-worktree root in the brief, and the child must work only there.
   Host isolation: none.

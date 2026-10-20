@@ -13,20 +13,48 @@ from pathlib import Path
 try:
     from ._common import atomic_write
     from .loop_run import log_lock
+    from .path_config import HOSTS
     from .review_panel import family_of_slug
 except ImportError:
     from _common import atomic_write
     from loop_run import log_lock
+    from path_config import HOSTS
     from review_panel import family_of_slug
 
 FIELDS = ('model', 'effort')
 HEAVY = ('plan', 'plan_patch', 'decide', 'roadmap')
 LIGHT = ('inspect_docs', 'docs_audit')
 SCHEMA = 'gsd-path/model-selection/v1'
+# Host ids that earlier runtimes recorded for the same host. They are read from
+# old records and capability files, never accepted as the id of a new selection.
+LEGACY_HOST_IDS = {'claude-code': 'claude'}
 
 
 class PolicyError(ValueError):
     """An explicit selection cannot be honored."""
+
+
+def canonical_host(value):
+    return LEGACY_HOST_IDS.get(value, value) if isinstance(value, str) else value
+
+
+def require_host(value, label='host'):
+    if not isinstance(value, str) or value not in HOSTS:
+        raise PolicyError(f'{label} {value!r} is not a known host id; use one of: {", ".join(HOSTS)}')
+    return value
+
+
+def load_capabilities(path, host):
+    """Read advertised capabilities. The host id belongs to the caller, never to the file."""
+    if host is None:
+        raise PolicyError(f'--host is required with capabilities; use one of: {", ".join(HOSTS)}')
+    host = require_host(host, '--host')
+    capabilities = read_json(path)
+    declared = capabilities.get('host')
+    if declared is not None and canonical_host(declared) != host:
+        raise PolicyError(f'capabilities declare host {declared!r} but --host is {host!r}; '
+                          'remove the host field or correct --host')
+    return dict(capabilities, host=host)
 
 
 def object_value(value, label):
@@ -77,8 +105,9 @@ def resolve(repo, project_dir, role, capabilities, overrides, previous=None):
     host = caps.get('host')
     if not isinstance(host, str) or not host:
         raise PolicyError(f'{role}: host identity is required for model selection')
+    require_host(host, f'{role}: capabilities host')
     if previous is not None:
-        if (previous.get('schema'), previous.get('role'), previous.get('host')) != (SCHEMA, role, host):
+        if (previous.get('schema'), previous.get('role'), canonical_host(previous.get('host'))) != (SCHEMA, role, host):
             raise PolicyError(f'{role}: recorded selection belongs to another role or host')
         selected = dict(previous['selected'])
         sources = dict(previous['sources'])
@@ -223,7 +252,7 @@ def native_record(args):
                 raise PolicyError('capabilities are required')
             if args.action == 'reassign' and (data is None or data['active'] or not args.ruling):
                 raise PolicyError('reassign requires an inactive assignment and an explicit owner ruling')
-            caps = read_json(args.capabilities)
+            caps = load_capabilities(args.capabilities, args.host)
             overrides = task_settings(args.task) if args.task else {}
             for field in FIELDS:
                 value = getattr(args, field)
@@ -269,6 +298,7 @@ def main(argv=None):
     parser.add_argument('--role', required=True)
     parser.add_argument('--record', type=Path, required=True)
     parser.add_argument('--capabilities', type=Path)
+    parser.add_argument('--host', choices=HOSTS, help='id of the host that runs the child; required with --capabilities')
     parser.add_argument('--task', type=Path)
     parser.add_argument('--model')
     parser.add_argument('--effort')

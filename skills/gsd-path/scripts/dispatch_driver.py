@@ -97,6 +97,7 @@ _RUNTIME_ACTIVATION_ORDER = (
     "archive_milestone",
     "discussion_validate",
     "review_findings",
+    "path_config",
     "model_policy",
 )
 RECOVERY_BLOCKED = "recovery blocked"
@@ -515,6 +516,21 @@ def brief_text(state: Dict[str, object], role_brief: Path, task_template: Path) 
     return "\n".join(lines) + "\n"
 
 
+def advertised_capabilities(path: Path, host: Optional[str]) -> Dict[str, object]:
+    """Advertised controls with the host id from --host.
+
+    A pinned runtime older than the --host contract keeps its own: it reads the host from the
+    capability file, so the flag only fills a missing field and never overrides a recorded one.
+    """
+    load = getattr(model_policy, "load_capabilities", None)
+    if load is not None:
+        return load(path, host)
+    capabilities = model_policy.read_json(path)
+    if host is not None:
+        capabilities.setdefault("host", host)
+    return capabilities
+
+
 def selected_command(state: Dict[str, object], options: argparse.Namespace, command: str):
     """Shared selection for every CLI child; legacy unconfigured commands remain unchanged."""
     primary = Path(getattr(options, 'repo', state['worktree']))
@@ -546,7 +562,7 @@ def selected_command(state: Dict[str, object], options: argparse.Namespace, comm
         if overrides or previous or model_policy.policy_path(primary, project_dir).exists():
             raise model_policy.PolicyError('model policy requires --model-capabilities for this dispatch')
         return _common.split_command(command), None
-    caps = model_policy.read_json(caps_path)
+    caps = advertised_capabilities(caps_path, getattr(options, 'host', None))
     action = getattr(options, 'action', 'round')
     role = {'round': 'coder', 'review': 'reviewer', 'panel': 'review_panel',
             'skeptics': 'skeptic'}.get(action, action)
@@ -2435,7 +2451,8 @@ def reassign_model(root: Path, task_id: str, options: argparse.Namespace) -> Dic
     if any(field in task and task[field] != value for field, value in changes.items()):
         raise DriverStop('reassignment conflicts with the approved task contract')
     selection = model_policy.resolve(options.repo, options.project_dir, old['role'],
-                                     model_policy.read_json(options.model_capabilities),
+                                     advertised_capabilities(options.model_capabilities,
+                                                             getattr(options, 'host', None)),
                                      dict(old['selected'], **changes))
     for field in model_policy.FIELDS:
         if field not in changes:
@@ -2504,6 +2521,8 @@ def main(argv=None) -> int:
     for child in (round_parser, cycle_child):
         child.add_argument('--model-capabilities', type=Path,
                            help='advertised model/effort controls; required with project model policy')
+        child.add_argument('--host', choices=model_policy.HOSTS,
+                           help='id of the host that runs the child; required with --model-capabilities')
     cycle_child.add_argument('--model', help='explicit model override for this review assignment')
     cycle_child.add_argument('--effort', help='explicit effort override for this review assignment')
     cycle_child.add_argument('--model-overrides', type=Path,
@@ -2546,6 +2565,8 @@ def main(argv=None) -> int:
     model_parser.add_argument('--project-dir', default='.project')
     model_parser.add_argument('--task-id', required=True)
     model_parser.add_argument('--model-capabilities', type=Path, required=True)
+    model_parser.add_argument('--host', choices=model_policy.HOSTS, required=True,
+                              help='id of the host that runs the child')
     model_parser.add_argument('--model')
     model_parser.add_argument('--effort')
     model_parser.add_argument('--ruling', required=True)

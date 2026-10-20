@@ -78,7 +78,7 @@ For every branch:
 - Model selection: before every child launch or continuation, follow
   [the model-policy contract](model-policy.md) and apply its recorded
   native arguments. It owns defaults, project settings, task overrides,
-  capability failures, and reassignment. Host isolation: none. Use the exact GSD Path supplied root; create no extra checkout.
+  capability failures, and reassignment. Pass `--host` with the id of the matched branch above: `codex`, `zed`, `antigravity`, `grok`, `cursor`, `opencode`, `copilot`, `kiro`, or `muse`. Host isolation: none. Use the exact GSD Path supplied root; create no extra checkout.
 - Send a self-contained prompt with absolute input, template, and output paths
   plus the child's bounded responsibility. Every brief also names the absolute
   `AGENTS.md` and `WORKFLOW.md` paths (or explicitly says they are absent), the

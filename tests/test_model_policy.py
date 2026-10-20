@@ -33,7 +33,7 @@ class DispatchPolicyTests(unittest.TestCase):
         self.child.write_bytes('import json, sys\nprint(json.dumps(sys.argv[1:]))\n'.encode("utf-8"))
         self.options = argparse.Namespace(
             repo=self.root, project_dir='.project', action='round',
-            model_capabilities=self.caps, model=None, effort=None,
+            host='codex', model_capabilities=self.caps, model=None, effort=None,
             child_timeout=None, child_command=shlex.join(
                 [sys.executable, str(self.child), '{model_args}', '{effort_args}']))
         self.state = {'task_id': 'T001', 'worktree': str(self.root)}
@@ -125,7 +125,7 @@ class DispatchPolicyTests(unittest.TestCase):
         result = subprocess.run([
             sys.executable, '-B', str(script), action, '--repo', str(self.root),
             '--scope', scope, '--assignment', 'plan', '--role', 'plan',
-            '--record', str(self.root / 'native.json'), '--capabilities', str(self.caps),
+            '--record', str(self.root / 'native.json'), '--host', 'codex', '--capabilities', str(self.caps),
             *extra], capture_output=True, encoding="utf-8", errors="replace")
         self.assertNotEqual(result.stdout, '', result.stderr)
         return result.returncode, json.loads(result.stdout)
@@ -151,7 +151,7 @@ class DispatchPolicyTests(unittest.TestCase):
                 sys.executable, '-B', str(script), action, '--repo', str(self.root),
                 '--scope', 'M001/active/plan', '--assignment', 'plan', '--role', 'plan',
                 '--record', '.git/gsd-path/model-selection/M001/plan.json',
-                '--capabilities', str(self.caps), '--terminal-result', 'host:completed/plan'],
+                '--host', 'codex', '--capabilities', str(self.caps), '--terminal-result', 'host:completed/plan'],
                 cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn('--record must be an absolute path', json.loads(result.stdout)['reason'])
@@ -277,7 +277,7 @@ class DispatchPolicyTests(unittest.TestCase):
                 result = subprocess.run([
                     sys.executable, '-B', str(script), 'resolve', '--repo', str(self.root),
                     '--scope', 'M001/active', '--assignment', 'T001', '--role', 'coder',
-                    '--record', str(self.root / f'{skill}.json'), '--capabilities', str(self.caps)],
+                    '--record', str(self.root / f'{skill}.json'), '--host', 'codex', '--capabilities', str(self.caps)],
                     cwd=self.root, capture_output=True, encoding="utf-8", errors="replace")
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 self.assertEqual(json.loads(result.stdout)['selection']['native'],
@@ -292,7 +292,7 @@ class DispatchPolicyTests(unittest.TestCase):
                          + child.read_text(encoding="utf-8")).encode("utf-8"))
         subprocess.run(['git', '-C', str(self.root), 'commit', '-qam', 'fixture argv assertion'], check=True,
                        capture_output=True)
-        result = fixture.round(self.root, '--model-capabilities', str(self.caps), '--child-command',
+        result = fixture.round(self.root, '--host', 'codex', '--model-capabilities', str(self.caps), '--child-command',
                                shlex.join([sys.executable, str(child), '{model_args}', '{effort_args}']),
                                '--wait', '60')
         self.assertEqual(result['status'], 'done', result)
@@ -303,7 +303,7 @@ class DispatchPolicyTests(unittest.TestCase):
         fixture = DispatchDriverTests()
         self.policy.write_bytes(json.dumps({'roles': {'coder': {'model': 'unavailable'}}}).encode("utf-8"))
         fixture.fixture(self.root)
-        result = fixture.round(self.root, '--model-capabilities', str(self.caps))
+        result = fixture.round(self.root, '--host', 'codex', '--model-capabilities', str(self.caps))
         self.assertEqual(result['status'], 'blocked', result)
         self.assertIn('unavailable', json.dumps(result))
         self.assertEqual(fixture.branches(self.root), ['feature/milestone-001'])
@@ -358,7 +358,7 @@ class DispatchPolicyTests(unittest.TestCase):
         subprocess.run(['git', '-C', str(self.root), 'commit', '-qam', 'fixture task override'],
                        check=True, capture_output=True)
         result = fixture.round(
-            self.root, '--model-capabilities', str(self.caps),
+            self.root, '--host', 'codex', '--model-capabilities', str(self.caps),
             '--child-command', shlex.join([sys.executable, str(self.root / 'fake_coder.py'),
                                           '{model_args}', '{effort_args}']),
             '--capacity', '1', '--wait', '60')
@@ -409,12 +409,12 @@ class DispatchPolicyTests(unittest.TestCase):
         self.assertEqual(fixture.round(self.root, '--wait', '60')['status'], 'done')
         review = fixture.review(
             self.root, '--wait', '60', '--model', 'claude-opus',
-            '--model-capabilities', str(self.caps), '--child-command',
+            '--host', 'codex', '--model-capabilities', str(self.caps), '--child-command',
             shlex.join([sys.executable, str(self.root / 'fake_reviewer.py'), '{model_args}']))
         self.assertEqual(review['status'], 'pass', review)
         result = fixture.panel(
             self.root, '--wait', '60', '--parent-slug', 'gpt-6-astra',
-            '--model-capabilities', str(self.caps), '--child-command',
+            '--host', 'codex', '--model-capabilities', str(self.caps), '--child-command',
             shlex.join([sys.executable, str(self.root / 'fake_panelist.py'), '{model_args}']),
             advertised='gpt-6-astra,claude-opus,grok-4')
         self.assertEqual(result['status'], 'pass', result)
@@ -434,7 +434,7 @@ class DispatchPolicyTests(unittest.TestCase):
         fixture.set_deep_review_with_skeptics(self.root)
         self.assertEqual(fixture.round(self.root, '--wait', '60')['status'], 'done')
         result = fixture.review(
-            self.root, '--wait', '60', '--model-capabilities', str(self.caps),
+            self.root, '--wait', '60', '--host', 'codex', '--model-capabilities', str(self.caps),
             '--model-overrides', str(overrides), '--child-command',
             shlex.join([sys.executable, str(self.root / 'fake_reviewer.py'), '{model_args}']))
         self.assertEqual(set(result['lenses']), {'adversarial'}, result)
@@ -452,7 +452,7 @@ class DispatchPolicyTests(unittest.TestCase):
         original = artifact.read_bytes()
         corrected = records / 'corrected-overrides.json'
         corrected.write_bytes(json.dumps({rejected: {'model': 'small'}}).encode("utf-8"))
-        arguments = ('--wait', '60', '--model-capabilities', str(self.caps),
+        arguments = ('--wait', '60', '--host', 'codex', '--model-capabilities', str(self.caps),
                      '--model-overrides', str(corrected), '--child-command',
                      shlex.join([sys.executable, str(self.root / 'fake_reviewer.py'), '{model_args}']))
         for path, content in (
@@ -489,7 +489,7 @@ class DispatchPolicyTests(unittest.TestCase):
                        check=True, capture_output=True)
         command = shlex.join([sys.executable, str(self.root / 'fake_coder.py'),
                               '{model_args}', '{effort_args}'])
-        first = fixture.round(self.root, '--wait', '60', '--model-capabilities', str(self.caps),
+        first = fixture.round(self.root, '--wait', '60', '--host', 'codex', '--model-capabilities', str(self.caps),
                               '--child-command', command, mode='question')
         self.assertEqual(len(first['questions']), 2, first)
         for task_id in ('T001', 'T002'):
@@ -500,7 +500,7 @@ class DispatchPolicyTests(unittest.TestCase):
         caps['model']['values'] = ['large']
         changed_caps = records / 'capabilities.json'
         changed_caps.write_bytes(json.dumps(caps).encode("utf-8"))
-        result = fixture.round(self.root, '--wait', '60', '--model-capabilities', str(changed_caps),
+        result = fixture.round(self.root, '--wait', '60', '--host', 'codex', '--model-capabilities', str(changed_caps),
                                '--child-command', command)
         self.assertEqual([row['task'] for row in result['landed']], ['T002'], result)
         self.assertEqual(result['status'], 'blocked', result)
@@ -538,6 +538,163 @@ class DispatchPolicyTests(unittest.TestCase):
         self.options.child_command += ' -m {model}'
         with self.assertRaisesRegex(Exception, 'model.*placeholder'):
             self.launch()
+
+    def test_driver_requires_the_host_flag_with_capabilities(self):
+        from scripts import model_policy
+        self.options.host = None
+        with self.assertRaisesRegex(model_policy.PolicyError, '--host is required'):
+            self.launch()
+
+    def test_driver_refuses_a_capabilities_file_that_names_another_host(self):
+        from scripts import model_policy
+        self.options.host = 'claude'
+        with self.assertRaisesRegex(model_policy.PolicyError, "declare host 'codex' but --host is 'claude'"):
+            self.launch()
+
+    def test_a_pinned_runtime_older_than_the_host_flag_keeps_reading_the_file(self):
+        # The bundled driver can run over an older project runtime whose model_policy has no
+        # load_capabilities; that runtime keeps the host the capability file declares.
+        self.options.host = None
+        with mock.patch.object(dispatch_driver.model_policy, 'load_capabilities', None):
+            _, received = self.launch()
+        self.assertEqual(received, ['--model', 'small', '--effort', 'low'])
+
+    def test_a_pinned_runtime_older_than_the_host_flag_takes_it_only_to_fill_a_gap(self):
+        caps = json.loads(self.caps.read_text(encoding='utf-8'))
+        del caps['host']
+        self.caps.write_text(json.dumps(caps), encoding='utf-8')
+        with mock.patch.object(dispatch_driver.model_policy, 'load_capabilities', None):
+            _, received = self.launch()
+            self.assertEqual(received, ['--model', 'small', '--effort', 'low'])
+            self.options.host = 'claude'
+            self.caps.write_text(json.dumps(dict(caps, host='codex')), encoding='utf-8')
+            state, _ = self.launch({'task_id': 'T002', 'worktree': str(self.root)})
+        self.assertEqual(state['model_selection']['host'], 'codex')
+
+    def test_driver_reassignment_requires_the_host_flag(self):
+        from scripts import model_policy
+        state, _ = self.launch()
+        dispatch_driver.update_state(state, finished_at='completed')
+        self.options.model, self.options.effort, self.options.ruling = 'large', None, 'Use large.'
+        self.options.host = None
+        with self.assertRaisesRegex(model_policy.PolicyError, '--host is required'):
+            dispatch_driver.reassign_model(self.root / 'records', 'T001', self.options)
+
+
+class HostIdentityTests(unittest.TestCase):
+    """The host id is a flag the caller states, not a field the model types into a JSON file."""
+
+    SCRIPT = Path(__file__).parents[1] / 'scripts/model_policy.py'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'repo'
+        self.home = Path(self.tmp.name) / 'home'
+        (self.root / '.project').mkdir(parents=True)
+        self.home.mkdir()
+        self.caps = Path(self.tmp.name) / 'capabilities.json'
+        self.write_caps({})
+        self.count = 0
+
+    def write_caps(self, extra):
+        self.caps.write_text(json.dumps(dict({'model': {'field': 'model', 'values': ['small', 'large'],
+                                                        'args': ['--model', '{value}']}}, **extra)),
+                             encoding='utf-8')
+
+    def policy(self, value):
+        (self.root / '.project/model-policy.json').write_text(json.dumps(value), encoding='utf-8')
+
+    def user_config(self, value):
+        (self.home / '.gsd-path').mkdir(exist_ok=True)
+        (self.home / '.gsd-path/config.json').write_text(json.dumps(value), encoding='utf-8')
+
+    def resolve(self, *extra, record=None, action='resolve'):
+        """Run the helper with an isolated home so the developer's real preferences never apply."""
+        self.count += 1
+        record = record or self.tmp.name + f'/record-{self.count}.json'
+        env = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home))
+        result = subprocess.run([
+            sys.executable, '-B', str(self.SCRIPT), action, '--repo', str(self.root),
+            '--scope', 'M001/active', '--assignment', 'T001', '--role', 'coder',
+            '--record', str(record), '--capabilities', str(self.caps), *extra],
+            env=env, capture_output=True, encoding='utf-8', errors='replace')
+        output = json.loads(result.stdout) if result.stdout.strip() else None
+        return result, output, Path(record)
+
+    def test_project_policy_for_the_flag_host_reaches_the_selection(self):
+        self.policy({'hosts': {'claude': {'coder': {'model': 'small'}}}})
+        result, out, _ = self.resolve('--host', 'claude')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(out['selection']['host'], 'claude')
+        self.assertEqual(out['selection']['native'], {'model': 'small'})
+        self.assertEqual(out['selection']['sources']['model'], 'hosts.claude.coder')
+        _, other, _ = self.resolve('--host', 'codex')
+        self.assertEqual(other['selection']['selected']['model'], 'inherit')
+
+    def test_user_preference_for_the_flag_host_reaches_the_selection(self):
+        self.user_config({'models': {'hosts': {'claude': {'coder': {'model': 'small'}}}}})
+        result, out, _ = self.resolve('--host', 'claude')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(out['selection']['sources']['model'], 'user.hosts.claude.coder')
+        self.assertEqual(out['selection']['native'], {'model': 'small'})
+
+    def test_unknown_host_is_refused_with_the_valid_ids(self):
+        result, out, record = self.resolve('--host', 'claude-code')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('invalid choice', result.stderr)
+        self.assertRegex(result.stderr, r'choose from.*codex.*claude')
+        self.assertFalse(record.exists())
+        from scripts import model_policy
+        with self.assertRaisesRegex(model_policy.PolicyError, "not a known host id; use one of: codex, claude"):
+            model_policy.load_capabilities(self.caps, 'claude-code')
+
+    def test_missing_host_is_refused_before_any_record_is_written(self):
+        result, out, record = self.resolve()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('--host is required', out['reason'])
+        self.assertFalse(record.exists())
+
+    def test_a_host_field_in_the_file_must_match_the_flag(self):
+        self.write_caps({'host': 'codex'})
+        result, out, record = self.resolve('--host', 'claude')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("declare host 'codex' but --host is 'claude'", out['reason'])
+        self.assertFalse(record.exists())
+        result, out, _ = self.resolve('--host', 'codex')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_the_legacy_file_spelling_is_tolerated_but_never_recorded(self):
+        self.write_caps({'host': 'claude-code'})
+        result, out, record = self.resolve('--host', 'claude')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(json.loads(record.read_text(encoding='utf-8'))['selection']['host'], 'claude')
+
+    def test_a_record_written_with_the_legacy_spelling_resolves_again_and_stays_pinned(self):
+        self.policy({'hosts': {'claude': {'coder': {'model': 'small'}}}})
+        record = Path(self.tmp.name) / 'legacy.json'
+        legacy = {'identity': {'repo': str(self.root.resolve()), 'project_dir': '.project',
+                               'scope': 'M001/active', 'assignment': 'T001', 'role': 'coder'},
+                  'selection': {'schema': 'gsd-path/model-selection/v1', 'role': 'coder', 'host': 'claude-code',
+                                'selected': {'model': 'inherit', 'effort': 'inherit'},
+                                'sources': {'model': 'default', 'effort': 'default'},
+                                'native': {}, 'cli': {'model': [], 'effort': []},
+                                'controls': {'model': [], 'effort': []}, 'policy_hash': 'old',
+                                'effective_model': None, 'identity_evidence': 'legacy'},
+                  'history': [], 'active': True}
+        record.write_text(json.dumps(legacy), encoding='utf-8')
+        result, out, _ = self.resolve('--host', 'claude', record=record)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(out['selection']['selected']['model'], 'inherit')
+        self.assertEqual(out['selection']['host'], 'claude')
+        self.assertEqual(out['selection']['policy_hash'], 'old')
+
+    def test_a_record_of_another_host_is_still_refused(self):
+        record = Path(self.tmp.name) / 'first.json'
+        self.assertEqual(self.resolve('--host', 'codex', record=record)[0].returncode, 0)
+        result, out, _ = self.resolve('--host', 'claude', record=record)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('another role or host', out['reason'])
 
 
 if __name__ == '__main__':

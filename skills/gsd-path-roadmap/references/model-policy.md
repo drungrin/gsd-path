@@ -51,7 +51,6 @@ unsupported controls. The values below are fixture examples, not a host catalog:
 
 ```json
 {
-  "host": "codex",
   "model": {"field": "model", "values": ["example-model"],
             "args": ["--model", "{value}"]},
   "effort": {"field": "reasoning_effort", "values": ["low", "high"],
@@ -65,6 +64,28 @@ fields, or CLI flags from a host name. Every existing host uses this contract,
 including hosts with no model or effort controls. Their explicit unsupported
 settings block; their default inheritance remains usable.
 
+## Host id
+
+The host id is not part of the capability file. Pass it as `--host <id>` to the
+helper and to every driver command that takes capabilities. It keys the user and
+project `hosts.<id>` settings and identifies the recorded selection. The helper
+refuses a missing or unknown id and lists the valid ones. A `host` field in the
+capability file is deprecated: if present it must equal `--host`.
+
+| Host | Id | Host | Id |
+| --- | --- | --- | --- |
+| Codex | `codex` | Cursor | `cursor` |
+| Claude Code | `claude` | Zed | `zed` |
+| Grok | `grok` | Kiro | `kiro` |
+| OpenCode | `opencode` | Kimi Code | `kimi` |
+| GitHub Copilot CLI | `copilot` | Muse Code | `muse` |
+| Qwen Code | `qwen` | Antigravity | `antigravity` |
+
+Earlier runtimes accepted a free-text host in the capability file, and some
+projects recorded `claude-code` for Claude Code. The helper reads that spelling
+from old records and files as `claude`, so those assignments resolve again and
+stay pinned, but it never accepts it as `--host`.
+
 ## Native lifecycle
 
 Resolve the bundled helper to an absolute path. Use one record under the Git
@@ -75,7 +96,7 @@ refuses a relative `--record`, and `release` of a missing record names the
 path and creates nothing.
 
 ```text
-python3 -B <helper> resolve --repo <primary> --scope <milestone/track/cycle> --assignment <logical-name> --role <role> --record <absolute-record> --capabilities <advertised-json>
+python3 -B <helper> resolve --repo <primary> --scope <milestone/track/cycle> --assignment <logical-name> --role <role> --record <absolute-record> --host <host-id> --capabilities <advertised-json>
 ```
 
 Only `status: ready` authorizes launch. Apply `selection.native` exactly to
@@ -88,7 +109,7 @@ child after terminal completion of the earlier one.
 
 After terminal completion, release the assignment with `release` using the
 same identity arguments and `--terminal-result <host-completion-evidence>`.
-To change the selection, use `reassign` with the same identity, current
+To change the selection, use `reassign` with the same identity, `--host`, current
 capabilities, explicit model/effort changes, and `--ruling <verbatim-owner-ruling>`.
 It requires an inactive assignment and preserves prior selection history.
 Resolve again before starting the replacement. A project-policy edit alone
@@ -111,7 +132,7 @@ unproven; report that limitation rather than asserting an identity.
 
 ## CLI lifecycle
 
-Pass `--model-capabilities <advertised-json>` to the driver. Commands use whole
+Pass `--host <host-id> --model-capabilities <advertised-json>` to the driver. Commands use whole
 argument slots `{model_args}` and `{effort_args}`; the resolver expands these
 to argument arrays. They are not shell substitutions. Remove fixed model and
 effort flags when using these slots; conflicting controls block dispatch.
@@ -133,7 +154,7 @@ slots; legacy panel commands may retain their existing `{model}` placeholder.
 
 The driver persists selection before launch and retains it on retry. Use
 `dispatch_driver.py reassign-model --repo <primary> --task-id <logical-name>
---model-capabilities <advertised-json> --model <slug> --ruling <owner-ruling>`
+--host <host-id> --model-capabilities <advertised-json> --model <slug> --ruling <owner-ruling>`
 for an inactive unfinished assignment. Finished work and pinned panel rosters
 require a new legal assignment. Earlier attempt evidence is retained.
 
