@@ -23,8 +23,8 @@ records in `CHANGELOG.md`; record fork changes here.
 
 Upstream package base remains `1.6.2`. The fork revision continues from 13 to 14.
 
-Implementation: branch `feature/model-policy-host-flag`; its commit links are
-recorded here when it lands on `main`.
+Implementation:
+[`f9bf5cf9 — take the host id as a flag instead of a capability file field`](https://github.com/drungrin/gsd-path/commit/f9bf5cf9f441e4e4043442f140b00d4e6848899f).
 
 ### Host id as a flag for model policy
 
