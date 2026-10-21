@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.14**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.15**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,71 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.15 — 2026-10-21
+
+Upstream package base remains `1.6.2`. The fork revision continues from 14 to 15.
+
+Implementation:
+[`22e6dde3 — preserve milestone budgets and authenticate repair anchors`](https://github.com/drungrin/gsd-path/commit/22e6dde362de399244f47cb7a3ae3e554bc84165).
+
+### Review budget and redesign checkpoints across recoveries
+
+- `review_findings.py collect` reads earlier wave reviews under
+  `plan/build-recovery-<base>/review/`. A wave's effective cycle is the current
+  cycle number plus the blocked cycles that recoveries set aside. The existing
+  `max_review_cycles` limit now applies across the milestone, not separately
+  in each recovery. Git-proven restorations count once; independently published
+  identical reports still count separately. Missing or invalid required lenses
+  remain blocked in history. A deep review still counts as one cycle, not one
+  per lens. History reports the recovery,
+  cycle, verdict and blocking criterion locators.
+- When a current fix group's criterion blocked two earlier cycles of the same
+  wave, `collect` requests a redesign ruling. `fix-tasks` escalates instead of
+  writing another fix. The owner may reconsider the component approach or
+  explicitly open another fix task. Only the committed current-cycle ruling,
+  unchanged in the working STATE.md Log and recorded since the latest recovery,
+  releases that gate. It does not override the cycle cap, structural blockers,
+  or skeptic verdicts. Reviewer-line recurrence stays informational.
+- When unrelated landings changed the original product before a repair base,
+  `repair-evidence` first keeps its existing linked-landing check, then can
+  anchor on the product an explicitly assigned current-product source review
+  judged. `review --current-product` pins the combined coordinator/member
+  snapshots and validates matching report metadata. Each lens needs successful
+  execution and a validated, collected, hash-bound record; older recovery
+  namespaces remain usable for restored reports. Manual review records the
+  same scope and snapshots in its report and supplies `--review-base` and,
+  when necessary, `--member-head member=sha`; flags cannot override report pins.
+  An ordinary isolated-task review does not certify its collection base.
+  Only linked repairs may change checked files after that snapshot. Reports
+  must remain unchanged, the repair still needs its
+  isolated passing Verify, and changes after its landing remain guarded.
+  Receipts name `anchor: source-review` and the reviewed snapshot.
+- Build, recovery, reviewer, plan and runtime contracts document these rules;
+  AGENTS.md allows the earlier redesign escalation.
+
+Validation: the full Python suite passed (3,163 tests, 39 skipped). The three
+current-product scope and compatibility tests also passed after the final
+older-runtime refusal was added. Node passed 118 of 119 tests, with one skipped.
+All 601 resources are synchronized; lock-usage checks, the seven Git metadata
+policy tests and `git diff --check` pass. An independent check reproduced six
+initial defects, then verified their closure with eight targeted tests. New
+controls cover independent identical publications versus Git-proven restores,
+missing deep lenses, committed and recovery-scoped rulings, collected report
+identity/hash/exit status, member-pin overrides, explicit current-product scope,
+and provenance retained in earlier recovery namespaces. All reproductions used
+synthetic temporary repositories; no consumer project or remote was used.
+
+Limits: the redesign checkpoint groups canonical criterion locators, not
+semantic guesses about root causes or advisory panel findings. History does
+not include archived earlier milestones. Passing cycles set aside by a recovery
+are not charged again; the current recovery retains ordinary cycle numbering.
+Legacy reports without explicit current-product scope cannot supply the new
+anchor; the runtime never retroactively adds reviewer claims or treats the
+collection base as reviewed. Their supported fallback remains a full review
+with explicitly pinned current-product scope. A project receives the new
+behavior only after an explicit runtime upgrade. No consumer project has been
+upgraded, and no upstream submission has been made.
 
 ## 1.6.2.14 — 2026-10-20
 
