@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.16**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.17**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,84 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.17 — 2026-10-21
+
+Upstream package base remains `1.6.2`. The fork revision continues from 16 to 17.
+
+Implementation:
+[`7771d75d — map and audit member repositories`](https://github.com/drungrin/gsd-path/commit/7771d75d4fa5f0e684191e27d72ef79b14139f09).
+
+### Member inspection for multi-repo projects
+
+- A coordinator that is a dedicated program repository (supported by the
+  multi-repo plan) never mapped its members: `detect_project.initialize`
+  runs before `MEMBERS.md` can exist, and inspect, its gates and the docs
+  queue knew one repository. Inspect now maps and audits each brownfield
+  member at a pinned commit, never the team's working checkout, into
+  `research/evidence-codebase-<member>.md` and `research/DOCS-AUDIT-<member>.md`
+  headed `Repo root`, `Member`, `Default branch` and `Member HEAD`.
+  `detect_project.classify_revision` applies the brownfield rules to the
+  pinned Git tree; `members.py inspection` reports each member's pin, verdict
+  and evidence state read-only, without fetching.
+- Pins: the active track uses the member's local `origin/<recorded default>`
+  (the inspect skill fetches first); a lookahead track uses a member's bound
+  branch tip when the active build locks it, else origin. A missing checkout,
+  marker, origin identity or ref, or a malformed lock blocks. Evidence off the
+  pin's history counts as missing; evidence behind a moved pin is stale and
+  advisory at define, plan and build start.
+- At `define/active` with no INTENT.md and either no CHARTER.md or a
+  ROADMAP.md, the router routes brownfield members lacking evidence to
+  inspect (`member inspection started`); the transition re-checks the same
+  conditions, and the guard and installer status tables accept it.
+  Completing inspect requires a valid pair for every brownfield member.
+  `bind-initial` accepts an untracked `MEMBERS.md`, which blocked
+  `init → members add → bind`.
+- `workflow_run.py` runs member inspection in stages, because a member's
+  mapper and auditor share one isolated checkout: `prepare-inspect` freezes
+  pins and pinned docs inventories before creating sidecars, `advance-inspect`
+  gates each map and starts that member's auditor at the same pin, and
+  `finish-inspect` gates everything before collecting, retires the sidecars
+  and transitions. Lookahead member inspection writes only `.project/next`
+  and copies pending audits that receive no fresh audit. New
+  `isolation.py` member inspect sidecars use `chore/verify-<coord>-inspect-<member>`
+  and fail closed; project Verify names a leftover inspection and its exact
+  retirement command. An in-tree Markdown alias symlink is audited through
+  its target; other Markdown symlinks block.
+- Each `DOCS-AUDIT*.md` is its own ruling queue keyed by (audit, Queue #):
+  quick pre-approval, the router alignment offer, plan selections
+  (`repo: <member>` tasks), ship and abandon carry-forward (whole files,
+  manifest rows summed) and promotion (each audit's append-only history)
+  cover every audit, including a removed member's queue, which is kept and
+  never retargeted. The ship count and the shared ruling parser accept the
+  same rulings heading. Standalone docs audit stays coordinator-only.
+- Define, research and the planner receive every codebase map (the planner
+  previously received none). Dispatch contracts name
+  `inspect_codebase_<member>` and `inspect_docs_<member>` under the unchanged
+  model-policy roles. Skills, roles, templates, WORKFLOW, README, CONTEXT,
+  ADR 0002 and the multi-repo plan (slice S6) document the behavior.
+  Without `MEMBERS.md`, every path is unchanged.
+
+Validation: the canonical full Python suite passed (3,328 tests, 39 skipped).
+Node passed 118 of 119 tests, with one skipped; lock-usage checks and
+`git diff --check` pass. All 601 skill resources are synchronized. Two
+independent reviews found six runtime defects (coverage re-run on leaving
+inspect creating dead ends, sidecars leaked by a failed advance, non-ancestor
+evidence labelled stale, an unhelpful Verify collision, unvalidated receipt
+carry paths, Markdown alias symlinks blocking) and three queue issues (two
+ruling parsers disagreeing on a padded heading, two contract wording errors).
+Each was fixed with a regression test, and the reviewers' synthetic repros
+then passed. All fixtures use synthetic repositories; no consumer repository
+or remote was used.
+
+Limits: a member added after INTENT.md exists, or after a lookahead track has
+finished inspect, is not inspected in that milestone. If `advance-inspect` is
+killed after retiring a mapper but before recording it, retire the pair and
+prepare again. A lookahead inspection and ship's project Verify share the
+`verify/<member>` path and must not run at the same time; the second refuses.
+A Markdown symlink whose target is excluded or outside the pinned tree blocks
+member docs inspection. A project gets this behavior only after an explicit
+runtime and skill upgrade. No upstream submission has been made.
 
 ## 1.6.2.16 — 2026-10-21
 
