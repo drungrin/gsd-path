@@ -65,7 +65,8 @@ its own sidecar at the review base, validates and collects each file, and
 reruns the helper; then `fix-tasks --wave <N> --cycle <C>` writes one
 lint-clean fix task per batch carrying the failed criteria and observations
 verbatim, or returns `escalate` for structural blockers, skeptic groups, the
-cycle cap, or an all-refuted ruling, which stay with step 7 and the user.
+cycle cap, an all-refuted ruling, or a pending redesign ruling, which stay with
+step 7 and the user.
 Each settled `review` receipt and each merged `panel` receipt adds a
 `recurrence` diagnostic for step 7; its `status: error` never changes the
 receipt's review result.
@@ -574,8 +575,9 @@ dispatch contract and perform steps 1–5 by hand.
    `recurrence.findings[].recurrent` is true.
    Recommend that option only with a reason drawn from the evidence, not from
    recurrence alone. Selecting it opens the brief below, not permission to
-   dispatch or change a contract. Add no new question, mandatory artifact,
-   token budget, or default agent.
+   dispatch or change a contract. Recurrence adds no question, mandatory
+   artifact, token budget, or default agent; the redesign checkpoint below
+   comes from `collect`, not from this diagnostic.
    On `blocked`, run `python3 <absolute review_findings.py> collect --repo
    <absolute primary> --wave <N> --cycle <C>`, adding one `--helper-failure
    "<helper and stderr>"` per bundled helper that exited non-zero in this
@@ -584,7 +586,16 @@ dispatch contract and perform steps 1–5 by hand.
    skeptic file of the wave; it groups blocking findings by criterion
    locator, collapses true duplicates, carries earlier refutations forward,
    separates structural blockers, batches fix groups by disjoint file scope,
-   and reports `cap_reached`. Exit 2 blocks the wave. Never regroup,
+   and reports `cap_reached`. The cap counts blocked cycles per wave for the
+   whole milestone. `history` lists the earlier cycles, including those a
+   build recovery moved to `plan/build-recovery-<base>/review/`; an identical
+   restored review counts once only when Git proves the same publication;
+   independently published identical text is another attempt. `history.prior_blocked` counts the blocked
+   cycles set aside, and `cap_reached` is true when
+   `history.effective_cycle`, those plus the current cycle number, reaches
+   `max_review_cycles`. A recovery never refills the budget. `redesign` lists
+   each fix group whose criterion already blocked two earlier cycles of the
+   wave, with those cycles. Exit 2 blocks the wave. Never regroup,
    re-derive a locator, or re-decide refutation in model reasoning; act on
    the result in this order:
    - `structural_blockers` non-empty: a missing or invalid lens, panel, or
@@ -635,6 +646,27 @@ dispatch contract and perform steps 1–5 by hand.
      refuted groups. Preserve their skeptic verdicts and eligibility
      history. After a crash, resume the recorded choice without asking
      again.
+   - `redesign_pending` true: two fixes of the same criterion already
+     failed, so stop before another fix task. First give the brief at the
+     end of this step for the `redesign` groups, with their
+     `blocked_before` cycles and the `recurrence` files. Then ask, with
+     **Outcome** naming each criterion and how many cycles it blocked,
+     **Review** linking the current review files and the earlier ones that
+     `blocked_before` names, and **Next** listing
+     `Reconsider the component approach` and `Open fix tasks anyway`. Mark
+     one `(recommended)` only with a reason drawn from the review evidence.
+     Record the ruling exactly as for an all-refuted ruling, appending
+     `wave <N> cycle <C> redesign ruling: <selected option verbatim>` and
+     checkpointing with subject `build: record wave <N> cycle <C> redesign
+     ruling`, body `Why: persist the redesign ruling before acting`, and
+     `Wave: <N>`. The helper reads the committed STATE.md Log and requires
+     that ruling to be unchanged in the working file: `Open fix tasks anyway`
+     (with an optional parenthesized recommendation) clears `redesign_pending`,
+     and `fix-tasks` then batches as below. `Reconsider the component approach` leaves it
+     pending; continue with that brief's options through the plan-defect,
+     build recovery, or define-Corrections route. A build recovery starts
+     a new ruling scope, because it numbers the changed wave from cycle 1
+     again. After a crash, resume the recorded choice without asking again.
    - Otherwise batch `fix_batches` into complete fix tasks from the task
      template — one task per batch, never one per finding — each carrying
      its groups' failed criteria and observed evidence verbatim. Each batch
@@ -649,6 +681,8 @@ dispatch contract and perform steps 1–5 by hand.
      landed gets the next fix task. After a build recovery, a changed wave
      is reviewed again from cycle 1; the fix tasks and PLAN.md repair wave
      of the review that recovery set aside do not count for the new one.
+     Its blocked cycles still count toward the cap and the redesign
+     checkpoint through `history`.
      Write each fix task to `.project/tasks/` with `wave`
      set to the current wave or a newly appended `## Wave N` heading in
      PLAN.md before dispatch. Its dependencies include every source task of
@@ -681,7 +715,27 @@ dispatch contract and perform steps 1–5 by hand.
      joined to the repair by `deps`. A finding on an acceptance criterion of
      a fix task counts as the finding that this fix task carries with the
      same criterion; the same criterion text under another locator is
-     another finding. Linked
+     another finding. When another landing changed those files before the
+     repair base, for example a task of a recovery plan, the helper anchors
+     on the product that the source review judged instead of the original
+     landing. This requires an explicitly assigned current-product source
+     review, not an ordinary review of each task's isolated product. Dispatch
+     the full fallback with `review --current-product`; it pins each member
+     and validates the same snapshots in the report. The helper authenticates
+     every collected lens by its identity, successful execution, validated
+     artifact hash and path, including records retained in earlier recovery
+     namespaces. A native/manual source report must likewise record
+     `Product scope: current`, `Reviewed HEAD: <sha>` and each
+     `Reviewed member: <name> <sha>` before the repair. Pass
+     `--review-base <recorded review base>`, and optionally
+     `--member-head <member>=<full sha>`. These flags must match the
+     report's pinned snapshots; they cannot replace a member pin with a later
+     unreviewed commit. The base must precede the
+     publication of the source review and be in the repair base. From that
+     product to the repair base, only linked repairs may change the files.
+     Such originals carry `anchor: source-review`, and the receipt adds
+     `source_review` with `review_base` and, for a member, `member_head`.
+     Linked
      repairs in the repair base are in `earlier_repairs`. Linked repairs
      after the repair are in `later_repairs`; then the landing and the
      recorded Verify of the last one are the evidence, and `chain_files`
@@ -695,16 +749,22 @@ dispatch contract and perform steps 1–5 by hand.
      Preserve prior verdicts and source tasks. On helper rejection, resolve
      the evidence blocker rather than redispatching an already proven fix.
      When the blocker cannot be resolved, for example `repair base contains
-     unlinked changes to original product` or `product changed after the
+     unlinked changes to original product` with no recorded review base, or
+     with a change after it, or `product changed after the
      repair landing` because a task that is not a linked repair changed the
      same files, run the next review cycle of the source wave in full at the
-     current HEAD, without the receipt. This is the supported fallback: it
+     current HEAD, without the receipt, explicitly assigning current-product
+     scope (`review --current-product`, or the same scope and pinned metadata
+     in a native review brief). This is the supported fallback: it
      needs no ruling and no plan change.
    At the cap, record all attempts in the STATE.md log and ask the user —
    through an interactive user-input tool when available — after linking
    the resolved absolute blocking wave review, every deep lens file for the
    cycle, and every skeptic file collected for the wave, plus the STATE.md
-   attempt log. Ask whether to redirect the approach, raise the cap, or send
+   attempt log. Show `history.cycles` (recovery, cycle, verdict, locators)
+   and `history.prior_blocked`, so the question counts the blocked cycles
+   that earlier build recoveries set aside. Ask whether to redirect the
+   approach, raise the cap to a value above `history.effective_cycle`, or send
    define to amend INTENT.md `## Corrections` — never rewrite an AC from a
    Log waiver — or, in program flow (ROADMAP.md exists), to abandon the
    milestone under the Milestone abandon procedure — listing the

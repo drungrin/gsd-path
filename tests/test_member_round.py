@@ -146,10 +146,10 @@ class MemberRoundTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "done", json.dumps(receipt, indent=1)[:4000])
         return {item["task"]: item for item in receipt["landed"]}
 
-    def repair_evidence(self, task: str) -> tuple:
+    def repair_evidence(self, task: str, extra=()) -> tuple:
         completed = subprocess.run(
             [sys.executable, "-B", str(ROOT / "scripts/review_findings.py"), "repair-evidence", "--repo", str(self.root),
-             "--wave", "1", "--cycle", "1", "--task", task], capture_output=True, encoding="utf-8", errors="replace",
+             "--wave", "1", "--cycle", "1", "--task", task, *extra], capture_output=True, encoding="utf-8", errors="replace",
             env=dict(os.environ, GSD_PATH_WORKTREE_ROOT=str(self.workspace)))
         self.assertTrue(completed.stdout.strip(), completed.stderr)
         return completed.returncode, json.loads(completed.stdout)
@@ -221,6 +221,37 @@ class MemberRoundTests(unittest.TestCase):
         self.land_repairs()
         self.assertEqual(self.repair_evidence("T004"),
                          (2, {"status": "error", "error": "repair base contains unlinked changes to original product"}))
+
+    def test_member_repair_can_anchor_on_the_member_product_the_source_review_judged(self) -> None:
+        self.assertEqual(self.round()["status"], "done")
+        # Another task changed T002's product before the source review, like a task of a recovery plan.
+        self.change_member_product("print('pre-reviewed change')\n")
+        member_head = git(self.member, "rev-parse", "feature/demo-milestone-001")
+        review_base = git(self.root, "rev-parse", "HEAD")
+        self.review(1, 1, "blocked", "T001", "T002")
+        report = self.root / ".project/review/wave-1.cycle1.md"
+        report.write_text(report.read_text() + f"\nProduct scope: current\nReviewed HEAD: {review_base}\n"
+                          + f"Reviewed member: web {member_head}\n")
+        landed = self.land_repairs()["T004"]
+        self.assertEqual(self.repair_evidence("T004")[0], 2)
+        code, evidence = self.repair_evidence("T004", ("--review-base", review_base,
+                                                     "--member-head", f"web={member_head}"))
+        self.assertEqual(code, 0, evidence)
+        self.assertEqual(evidence["source_review"], {"review_base": review_base, "member_head": member_head})
+        self.assertEqual(evidence["originals"][0]["anchor"], "source-review")
+        self.assertEqual((evidence["repair"]["member_base"], evidence["repair"]["member_commit"]),
+                         (member_head, landed["landing"]))
+        self.assertEqual((evidence["verification"]["entry"]["repo"], evidence["verification"]["entry"]["commit"]),
+                         ("web", landed["landing"]))
+        # The review artifact itself pins the member. The CLI cannot advance that pin past an unreviewed edit.
+        self.assertEqual(self.repair_evidence("T004", ("--review-base", review_base))[0], 0)
+        self.change_member_product("print('later')\n")
+        later = git(self.member, "rev-parse", "feature/demo-milestone-001")
+        code, refused = self.repair_evidence("T004", ("--review-base", review_base, "--member-head", f"web={later}"))
+        self.assertEqual((code, refused["error"]), (2, "--member-head differs from the source review snapshot"))
+        code, evidence = self.repair_evidence("T004", ("--review-base", review_base,
+                                                     "--member-head", f"web={member_head}"))
+        self.assertEqual((code, evidence["error"]), (2, "product changed after the repair landing"))
 
     def test_fix_tasks_resumes_the_member_half_of_a_two_repo_finding(self) -> None:
         self.blocked_wave()

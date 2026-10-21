@@ -86,6 +86,10 @@ Return through `plan/done → build/active` with event `build started`. The disp
 driver uses a separate record directory for this recovery base, while retaining
 the milestone budget ledger. Resume only from the new approved task inventory.
 Unchanged wave evidence remains usable; changed waves need review in the new
-record directory. Retained task Verify receipts remain historical evidence for
+record directory. A changed wave restarts at review cycle 1, but recovery does
+not refill its review budget: `review_findings.py collect` counts the blocked
+cycles kept under `plan/build-recovery-<base>/review/` toward
+`max_review_cycles` and toward the redesign checkpoint, as
+[build-native](build-native.md) step 7 describes. Retained task Verify receipts remain historical evidence for
 their original task and base, never proof for a changed task. Final review still
 requires current-HEAD evidence before shipment.

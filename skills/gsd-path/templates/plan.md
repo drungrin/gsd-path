@@ -12,7 +12,10 @@ Project verify: `<command that installs dependencies, builds + tests the whole p
 
 ## Config
 
-- max_review_cycles: 3   <!-- review→fix→re-review loops per wave before escalating -->
+- max_review_cycles: 3   <!-- per-wave milestone cap: blocked cycles set aside by
+                             build recovery + current cycle number. Recovery does
+                             not refill it. The third blocking occurrence of one
+                             criterion also asks for a redesign ruling. -->
 - wave_budget: none      <!-- none | optional per-wave resource cap: wall-clock,
                              tokens, or cost (e.g. 2h, 500k tokens). Reaching the
                              cap blocks the wave like an exhausted cycle cap and

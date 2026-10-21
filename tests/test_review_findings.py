@@ -1,6 +1,7 @@
 """review_findings.py computes the build step 7 finding sets from disk."""
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -572,6 +573,182 @@ class CapAndConfigTest(unittest.TestCase):
     def test_config_defaults_when_keys_absent(self):
         config = review_findings.parse_config("## Config\n\n- review_panel: off\n\n## Wave 1 — x\n")
         self.assertEqual(config, {"max_review_cycles": 3, "finding_skeptics": "off", "wave_budget": "none"})
+
+
+A_BASE, B_BASE = "a" * 40, "b" * 40
+PARSES = "Parses CSV rows — found: {}, parser.py:1"
+REJECTS = "Rejects malformed rows — found: {}, parser.py:9"
+
+
+class RecoveryHistoryTest(unittest.TestCase):
+    """A build recovery moves review/ aside and restarts at cycle 1; the budget and the criterion history stay."""
+
+    def fixture(self, cycles=3, skeptics="off", depth="full"):
+        return Fixture(self, cycles=cycles, skeptics=skeptics, depth=depth)
+
+    def full(self, fixture, directory, cycle, **kwargs):
+        write(directory / f"wave-1.cycle{cycle}.md", lens_text(cycle=cycle, depth="full", lens="canonical", **kwargs))
+
+    def backup(self, fixture, base):
+        return fixture.project / "plan" / f"build-recovery-{base}" / "review"
+
+    def state(self, fixture, *events, commit=True):
+        write(fixture.project / "STATE.md",
+              "# Project State\n\n## Log\n\n" + "".join(f"- 2026-10-21 — build — {event}\n" for event in events))
+        if commit:
+            def git(*args):
+                subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.test", *args],
+                               cwd=fixture.root, check=True, capture_output=True)
+            if not (fixture.root / ".git").is_dir():
+                git("init", "-q")
+            git("add", ".project/STATE.md")
+            git("commit", "-qm", "record ruling", "--allow-empty")
+
+    @staticmethod
+    def recovery(base):
+        return 'build recovery: {"base": "%s", "branch": "feature/milestone-001", "kind": "define", "source": "build"}' % base
+
+    def test_blocked_cycles_a_recovery_set_aside_count_toward_the_cap(self):
+        fixture = self.fixture(cycles=3)
+        self.full(fixture, self.backup(fixture, A_BASE), 1, t001_fails=[PARSES.format("no")])
+        self.full(fixture, self.backup(fixture, A_BASE), 2, verdict="pass")
+        self.full(fixture, fixture.project / "review", 1, t001_fails=[PARSES.format("still no")])
+        _, result = fixture.run()
+        self.assertEqual((result["history"]["prior_blocked"], result["history"]["effective_cycle"]), (1, 2))
+        self.assertFalse(result["cap_reached"])
+        self.full(fixture, self.backup(fixture, B_BASE), 1, t001_fails=[REJECTS.format("accepts them")])
+        # STATE.md records B before A, so the history lists B first.
+        self.state(fixture, self.recovery(B_BASE), self.recovery(A_BASE))
+        code, result = fixture.run()
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result["cap_reached"])
+        self.assertEqual(result["history"], {"prior_blocked": 2, "effective_cycle": 3, "cycles": [
+            {"recovery": B_BASE, "cycle": 1, "verdict": "blocked", "locators": ["t001_ac2"]},
+            {"recovery": A_BASE, "cycle": 1, "verdict": "blocked", "locators": ["t001_ac1"]},
+            {"recovery": A_BASE, "cycle": 2, "verdict": "pass", "locators": []},
+        ]})
+
+    def git(self, fixture, *args):
+        return subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.test", *args],
+                              cwd=fixture.root, check=True, capture_output=True, text=True).stdout.strip()
+
+    def test_a_restored_review_counts_once(self):
+        fixture = self.fixture(cycles=5)
+        self.full(fixture, fixture.project / "review", 1, t001_fails=[PARSES.format("no")])
+        self.git(fixture, "init", "-q")
+        self.git(fixture, "add", ".")
+        self.git(fixture, "commit", "-qm", "publish original review")
+        first = self.git(fixture, "rev-parse", "HEAD")
+        self.git(fixture, "commit", "--allow-empty", "-qm", "restore unchanged review without republishing")
+        second = self.git(fixture, "rev-parse", "HEAD")
+        for base in (first, second):
+            self.full(fixture, self.backup(fixture, base), 1, t001_fails=[PARSES.format("no")])
+        self.full(fixture, fixture.project / "review", 2, t001_fails=[PARSES.format("still no")])
+        _, result = fixture.run(cycle=2)
+        self.assertEqual(result["history"], {"prior_blocked": 0, "effective_cycle": 2, "cycles": [
+            {"recovery": None, "cycle": 1, "verdict": "blocked", "locators": ["t001_ac1"]}]})
+        shutil.rmtree(fixture.project / "review")
+        self.full(fixture, fixture.project / "review", 1, t001_fails=[PARSES.format("still no")])
+        self.assertEqual(fixture.run()[1]["history"]["prior_blocked"], 1)
+
+    def test_identical_independently_published_cycles_still_reach_both_gates(self):
+        fixture = self.fixture(cycles=3)
+        self.git(fixture, "init", "-q")
+        for index in range(2):
+            self.full(fixture, fixture.project / "review", 1, t001_fails=[PARSES.format("no")])
+            self.git(fixture, "add", ".")
+            self.git(fixture, "commit", "-qm", f"independent review {index}")
+            base = self.git(fixture, "rev-parse", "HEAD")
+            self.full(fixture, self.backup(fixture, base), 1, t001_fails=[PARSES.format("no")])
+            shutil.rmtree(fixture.project / "review")
+            self.git(fixture, "add", ".")
+            self.git(fixture, "commit", "-qm", "recovery resets changed wave")
+        self.full(fixture, fixture.project / "review", 1, t001_fails=[PARSES.format("no")])
+        _, result = fixture.run()
+        self.assertEqual(result["history"]["effective_cycle"], 3)
+        self.assertTrue(result["cap_reached"])
+        self.assertTrue(result["redesign_pending"])
+
+    def test_missing_historical_deep_lens_stays_blocked(self):
+        fixture = self.fixture(cycles=2)
+        write(self.backup(fixture, A_BASE) / "wave-1.cycle1.contract.md", lens_text(verdict="pass"))
+        self.full(fixture, fixture.project / "review", 1, t001_fails=[PARSES.format("no")])
+        _, result = fixture.run()
+        self.assertTrue(result["cap_reached"])
+        self.assertEqual(result["history"]["cycles"][0]["verdict"], "blocked")
+
+    def test_no_backup_keeps_the_cycle_number_as_the_cap_count(self):
+        fixture = self.fixture(cycles=2)
+        self.full(fixture, fixture.project / "review", 1, t001_fails=[PARSES.format("no")])
+        self.full(fixture, fixture.project / "review", 2, t001_fails=[PARSES.format("still no")])
+        _, result = fixture.run(cycle=2)
+        self.assertEqual((result["history"]["prior_blocked"], result["cap_reached"]), (0, True))
+        self.assertEqual(result["redesign"], [])
+        self.assertFalse(result["redesign_pending"])
+
+    def criterion_blocked_three_times(self, cycles=5):
+        """t001_ac1 blocked before the recovery and in cycles 1 and 2 after it; t001_ac2 blocks only now."""
+        fixture = self.fixture(cycles=cycles)
+        self.full(fixture, self.backup(fixture, A_BASE), 1, t001_fails=[PARSES.format("no")])
+        self.full(fixture, fixture.project / "review", 1, t001_fails=[PARSES.format("still no")])
+        self.full(fixture, fixture.project / "review", 2,
+                  t001_fails=[PARSES.format("not yet"), REJECTS.format("accepts them")])
+        return fixture
+
+    def test_a_criterion_that_blocked_two_earlier_cycles_asks_for_a_redesign_ruling(self):
+        fixture = self.criterion_blocked_three_times()
+        _, first = fixture.run(cycle=1)
+        self.assertEqual((first["redesign"], first["redesign_pending"]), ([], False))
+        code, result = fixture.run(cycle=2)
+        self.assertEqual(code, 0, result)
+        self.assertFalse(result["cap_reached"])
+        self.assertEqual(result["fix_groups"], ["t001_ac1", "t001_ac2"])
+        self.assertEqual(result["redesign"], [{"locator": "t001_ac1", "criterion": "Parses CSV rows", "blocked_before": [
+            {"recovery": A_BASE, "cycle": 1}, {"recovery": None, "cycle": 1}]}])
+        self.assertEqual((result["redesign_ruling"], result["redesign_pending"]), (None, True))
+
+    def test_only_the_open_ruling_of_this_cycle_since_the_last_recovery_releases_fix_tasks(self):
+        fixture = self.criterion_blocked_three_times()
+        open_ruling = "wave 1 cycle 2 redesign ruling: Open fix tasks anyway (recommended — the counterexamples are real)"
+        for events, ruling, pending in (
+            (["wave 1 cycle 2 redesign ruling: Reconsider the component approach"],
+             "Reconsider the component approach", True),
+            (["wave 1 cycle 1 redesign ruling: Open fix tasks anyway"], None, True),
+            ([open_ruling, self.recovery(A_BASE)], None, True),
+            ([self.recovery(A_BASE), "wave 1 cycle 2 redesign ruling: Reconsider the component approach", open_ruling],
+             open_ruling.split(": ", 1)[1], False),
+        ):
+            with self.subTest(events=events):
+                self.state(fixture, *events)
+                _, result = fixture.run(cycle=2)
+                self.assertEqual((result["redesign_ruling"], result["redesign_pending"]), (ruling, pending))
+                self.assertEqual(len(result["redesign"]), 1)
+        self.state(fixture, self.recovery(A_BASE), open_ruling, commit=False)
+        # The same choice was the last committed fixture: change it before the pending-ruling assertion.
+        self.state(fixture, self.recovery(A_BASE), "wave 1 cycle 2 redesign ruling: Reconsider the component approach")
+        self.state(fixture, self.recovery(A_BASE), open_ruling, commit=False)
+        _, result = fixture.run(cycle=2)
+        self.assertEqual((result["redesign_ruling"], result["redesign_pending"]), (None, True))
+        self.state(fixture, self.recovery(A_BASE), "wave 1 cycle 2 redesign ruling: Open fix tasks anyway-never")
+        self.assertTrue(fixture.run(cycle=2)[1]["redesign_pending"])
+
+    def test_a_group_that_is_not_a_fix_group_never_asks_for_a_redesign(self):
+        fixture = self.fixture(cycles=5, skeptics="on", depth="deep")
+        observation = PARSES.format("not yet")
+        for directory, cycle, text in ((self.backup(fixture, A_BASE), 1, PARSES.format("no")),
+                                       (fixture.project / "review", 1, PARSES.format("still no")),
+                                       (fixture.project / "review", 2, observation)):
+            write(directory / f"wave-1.cycle{cycle}.contract.md", lens_text(cycle=cycle, t001_fails=[text]))
+            write(directory / f"wave-1.cycle{cycle}.adversarial.md",
+                  lens_text(cycle=cycle, lens="adversarial", verdict="pass"))
+        _, waiting = fixture.run(cycle=2)
+        self.assertEqual((waiting["skeptic_groups"], waiting["redesign"]), (["t001_ac1"], []))
+        self.assertEqual([entry["locators"] for entry in waiting["history"]["cycles"]], [["t001_ac1"], ["t001_ac1"]])
+        fixture.skeptic("t001_ac1", 2, "refuted", [observation + " fix: correct it"])
+        _, refuted = fixture.run(cycle=2)
+        self.assertEqual((refuted["refuted_groups"], refuted["redesign"], refuted["redesign_pending"]),
+                         (["t001_ac1"], [], False))
+        self.assertTrue(refuted["all_refuted"])
 
 
 class FixBatchRepoTest(unittest.TestCase):

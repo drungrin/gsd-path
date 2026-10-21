@@ -193,7 +193,8 @@ full-repo suite on a tiny edit outrank the phase brief.
 Stop and ask the user only when:
 
 - proceeding would violate a hard constraint or veto;
-- the review loop reaches its cycle cap;
+- the review loop reaches its cycle cap, or one review criterion keeps
+  blocking after two failed fixes;
 - a `NEEDS-USER` item reaches a phase checkpoint; or
 - sources of truth conflict and INTENT.md does not make the resolution clear.
 

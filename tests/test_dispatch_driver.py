@@ -100,6 +100,11 @@ FAKE_REVIEWER = textwrap.dedent(
     if lens:
         lines.append(f"Lens: {lens.group(1)}")
     lines.append(f"Tasks reviewed: {len(tasks)}")
+    if "Current-product scope explicitly assigned" in brief:
+        sha = re.search(r"Record `Product scope: current` and `Reviewed HEAD: ([0-9a-f]{40})`", brief).group(1)
+        lines += ["Product scope: current", f"Reviewed HEAD: {sha}"]
+        lines += [f"Reviewed member: {name} {head}" for name, head in
+                  re.findall(r"record `Reviewed member: ([a-z0-9-]+) ([0-9a-f]{40})`", brief)]
     for task in tasks:
         criterion, _ = criteria[task]
         failed = verdict == "blocked" and task == tasks[0]
@@ -2431,6 +2436,81 @@ class DispatchDriverTests(unittest.TestCase):
         receipt = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
         self.assertEqual(receipt["status"], "escalate", receipt)
         self.assertEqual(receipt["escalation"], ["structural_blockers"])
+
+    def test_fix_tasks_stops_for_redesign_until_its_ruling_is_committed(self) -> None:
+        root = self.root
+        self.fixture(root)
+        plan = root / ".project/plan/PLAN.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace("max_review_cycles: 3", "max_review_cycles: 6"),
+                        encoding="utf-8")
+        run_git(root, "commit", "-qam", "fixture: allow six milestone cycles")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60", verdict="blocked")["status"], "blocked")
+        text = (root / ".project/review/wave-1.cycle1.md").read_text(encoding="utf-8")
+        for index, base in enumerate(("a" * 40, "b" * 40)):
+            review = root / f".project/plan/build-recovery-{base}/review/wave-1.cycle1.md"
+            review.parent.mkdir(parents=True)
+            review.write_text(text + f"\nEarlier counterexample {index}.\n", encoding="utf-8")
+        before = self.head(root)
+        tasks = sorted((root / ".project/tasks").iterdir())
+        receipt = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+        self.assertEqual((receipt["status"], receipt["escalation"]), ("escalate", ["redesign_pending"]))
+        self.assertEqual(self.head(root), before)
+        self.assertEqual(sorted((root / ".project/tasks").iterdir()), tasks)
+        self.assertTrue(receipt["findings"]["redesign"])
+        state = root / ".project/STATE.md"
+        state.write_text(state.read_text(encoding="utf-8")
+                         + "- 2026-10-21 — build — wave 1 cycle 1 redesign ruling: Open fix tasks anyway\n",
+                         encoding="utf-8")
+        self.assertEqual(self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")["status"], "escalate")
+        run_git(root, "add", ".project")
+        run_git(root, "commit", "-qm", "build: record wave 1 cycle 1 redesign ruling")
+        receipt = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+        self.assertEqual(receipt["status"], "created", receipt)
+        self.assertEqual([item["task"] for item in receipt["created"]], ["T003"])
+        self.assertFalse(receipt["findings"]["redesign_pending"])
+        again = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+        self.assertEqual(again["status"], "exists", again)
+        self.assertEqual(again["created"], [])
+
+    def test_current_product_review_pins_and_validates_its_actual_scope(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        snapshot = self.head(root)
+        receipt = self.review(root, "--current-product", "--wait", "60", verdict="blocked")
+        self.assertEqual(receipt["status"], "blocked", receipt)
+        report = (root / ".project/review/wave-1.cycle1.md").read_text()
+        self.assertIn(f"Product scope: current\nReviewed HEAD: {snapshot}", report)
+        record = dispatch_driver.review_findings._recorded_review(root, root / ".project", 1, 1, "full", snapshot)
+        self.assertEqual((record["product_scope"], record["member_heads"]), ("current", {}))
+        resumed = self.review(root, "--wait", "60", verdict="blocked")
+        self.assertEqual(resumed["status"], "blocked", resumed)
+        self.assertIn("scope differs", str(resumed))
+
+    def test_current_product_review_refuses_an_older_selected_runtime(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        options = argparse.Namespace(project_dir=".project", wave=1, cycle=1, current_product=True,
+                                     repair_evidence=None)
+        with mock.patch.dict(dispatch_driver.review_findings.__dict__):
+            del dispatch_driver.review_findings.__dict__["current_product_scope"]
+            with self.assertRaisesRegex(dispatch_driver.DriverStop, "upgrade it explicitly"):
+                dispatch_driver.Review(root, options).dispatch(
+                    {"canonical": ".project/review/wave-1.cycle1.md"}, "full")
+        self.assertFalse((root / ".project/review/wave-1.cycle1.md").exists())
+
+    def test_current_product_review_refuses_a_report_without_the_assigned_snapshot(self) -> None:
+        root = self.root
+        self.fixture(root)
+        reviewer = root / "fake_reviewer.py"
+        reviewer.write_text(reviewer.read_text().replace('"Current-product scope explicitly assigned" in brief', 'False'))
+        run_git(root, "commit", "-qam", "fixture: omit current-product metadata")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        receipt = self.review(root, "--current-product", "--wait", "60")
+        self.assertEqual(receipt["status"], "blocked", receipt)
+        self.assertIn("does not match assigned snapshots", str(receipt))
 
     def panel_options(self) -> argparse.Namespace:
         return argparse.Namespace(project_dir=".project", wave=1, cycle=1, wait=60,

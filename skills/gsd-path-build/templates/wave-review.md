@@ -16,6 +16,13 @@ Review scope: final
      from PLAN.md's Surface contract; put walkthrough detail in Check and Observed.
      The `- ✅` line may summarize Observed; do not omit it. -->
 
+<!-- Only for an explicitly assigned current-product review, also record:
+Product scope: current
+Reviewed HEAD: <full coordinator SHA>
+Reviewed member: <name> <full member SHA>
+     Repeat Reviewed member once per supplied member; omit it in a single repo.
+     An ordinary isolated-task review must not claim current-product scope. -->
+
 Wave verdict: <pass | blocked — blocked if any task fails>
 Cycle: <C>
 Depth: <full | deep | verify-only — verify-only is orchestrator-written from

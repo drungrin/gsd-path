@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -99,10 +100,10 @@ Prints good — found: prints bad, count.py:1 fix: print good
         self.commit(f"plan {task_id}")
         return self.land(task_id, "Repair", task_file, output, target)
 
-    def cli(self, task="T002", cycle=1):
+    def cli(self, task="T002", cycle=1, extra=()):
         result = subprocess.run(
             [sys.executable, "-B", str(SCRIPT), "repair-evidence", "--repo", str(self.repo),
-             "--wave", "1", "--cycle", str(cycle), "--task", task],
+             "--wave", "1", "--cycle", str(cycle), "--task", task, *extra],
             capture_output=True, encoding="utf-8", errors="replace",
         )
         return result, json.loads(result.stdout) if result.stdout else {}
@@ -167,6 +168,92 @@ Prints good — found: prints bad, count.py:1 fix: print good
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(evidence.get("status"), "error", result.stderr or evidence)
                 self.assertIn(error, evidence["error"])
+
+    def plan_task_before_the_review(self):
+        """A recovery plan task lands on the original file, then the source review judges that product.
+
+        Returns the review base: the last commit before the review is published.
+        """
+        review, repair = self.review.read_bytes(), (self.repo / self.repair_file).read_bytes()
+        self.review.unlink()
+        (self.repo / self.repair_file).unlink()
+        plan_task = self.task("T005", "Plan task", 2, "T001", "")
+        self.commit("plan T005")
+        self.land("T005", "Plan task", plan_task, "still bad")
+        review_base = run_git(self.repo, "rev-parse", "HEAD")
+        self.review.write_bytes(review + f"\nProduct scope: current\nReviewed HEAD: {review_base}\n".encode())
+        (self.repo / self.repair_file).write_bytes(repair)
+        return review_base
+
+    def test_review_base_anchors_an_original_product_that_a_recovery_plan_task_changed(self):
+        review_base = self.plan_task_before_the_review()
+        repair = self.finish_repair()
+        result, evidence = self.cli()
+        self.assertEqual(result.returncode, 2, evidence)
+        self.assertIn("unlinked changes", evidence["error"])
+        result, evidence = self.cli(extra=("--review-base", review_base))
+        self.assertEqual(result.returncode, 0, result.stderr or evidence)
+        self.assertEqual(evidence["source_review"], {"review_base": review_base})
+        self.assertEqual(evidence["originals"], [{"task": "T001", "commit": self.original, "files": ["count.py"],
+                                                  "base": run_git(self.repo, "rev-parse", f"{self.original}^"),
+                                                  "anchor": "source-review"}])
+        self.assertEqual(evidence["repair"]["commit"], repair)
+        self.assertNotIn("earlier_repairs", evidence)
+        self.assertEqual(evidence["verification"]["entry"]["execution"]["stdout"], "good\n")
+
+    def test_review_base_anchor_refuses_a_product_the_source_review_did_not_judge(self):
+        for fault, error in (("before the plan task", "differs from the source review snapshot"),
+                             ("change after the review base", "unlinked changes"),
+                             ("review published at the base", "differs from the source review snapshot"),
+                             ("short commit", "full commit SHAs")):
+            with self.subTest(fault=fault):
+                self.setUp()
+                review_base = self.plan_task_before_the_review()
+                if fault == "change after the review base":
+                    (self.repo / "count.py").write_bytes("print('unrelated')\n".encode("utf-8"))
+                repair = self.finish_repair()
+                given = {"before the plan task": self.original,
+                         "review published at the base": run_git(self.repo, "rev-parse", f"{repair}^"),
+                         "short commit": review_base[:12]}.get(fault, review_base)
+                result, evidence = self.cli(extra=("--review-base", given))
+                self.assertEqual(result.returncode, 2, evidence)
+                self.assertIn(error, evidence["error"])
+
+    def test_the_driver_recorded_review_base_anchors_without_the_flag(self):
+        from scripts import review_findings
+
+        review_base = self.plan_task_before_the_review()
+        self.finish_repair()
+        records = self.repo / ".git/gsd-path/dispatch/feature-milestone-001"
+        # The collected record lives in an earlier recovery namespace, not the current one.
+        state_path = records / ("a" * 40) / "reviews/review_wave_1_cycle_1/attempt-1/state.json"
+        state_path.parent.mkdir(parents=True)
+        import hashlib
+        state = {"task_id": "review_wave_1_cycle_1", "wave": 1, "cycle": 1, "lens": None,
+                 "relative": ".project/review/wave-1.cycle1.md", "base": review_base,
+                 "validated": True, "validated_sha256": hashlib.sha256(self.review.read_bytes()).hexdigest(),
+                 "outcome": "collected", "exit_code": 0, "finished_at": "2026-10-21T12:00:00Z",
+                 "product_scope": "current", "member_heads": {}}
+        state_path.write_text(json.dumps(state))
+        evidence = review_findings.repair_evidence(self.repo, ".project", 1, 1, "T002")
+        self.assertEqual(evidence["source_review"], {"review_base": review_base})
+        for fault in ({"validated": False}, {"outcome": "blocked"}, {"validated_sha256": "0" * 64},
+                      {"exit_code": 1}, {"finished_at": None}, {"relative": ".project/review/other.md"}):
+            with self.subTest(fault=fault):
+                state_path.write_text(json.dumps({**state, **fault}))
+                with self.assertRaisesRegex(review_findings.ReviewFindingsError, "no validated collected provenance"):
+                    review_findings.repair_evidence(self.repo, ".project", 1, 1, "T002", review_base)
+        state_path.write_text(json.dumps({**state, "product_scope": "isolated"}))
+        with self.assertRaisesRegex(review_findings.ReviewFindingsError, "did not assign a current-product review"):
+            review_findings.repair_evidence(self.repo, ".project", 1, 1, "T002", review_base)
+
+    def test_ordinary_isolated_review_never_certifies_the_combined_collection_product(self):
+        review_base = self.plan_task_before_the_review()
+        self.review.write_text(self.review.read_text().split("\nProduct scope: current")[0])
+        self.finish_repair()
+        result, evidence = self.cli(extra=("--review-base", review_base))
+        self.assertEqual(result.returncode, 2, evidence)
+        self.assertIn("unlinked changes", evidence["error"])
 
     def test_repair_files_need_not_stay_in_the_batch_but_are_never_none(self):
         # A repair with no files lands only its task file, so it leaves the product at "bad".

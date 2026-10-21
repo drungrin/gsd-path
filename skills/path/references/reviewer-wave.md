@@ -90,6 +90,21 @@ citing lines written by earlier completed repair Task landings count, not
 original lines in the same file or preferences. Do not infer an architectural
 diagnosis from that signal.
 
+### Explicit current-product review
+
+Only when the brief explicitly assigns current-product scope, inspect the
+complete product at the supplied coordinator and member commits instead of
+reconstructing each historical task product. This is the full fallback after
+repair provenance cannot be reused. Judge every wave criterion, including
+regressions from intervening tasks, against that pinned product. Task Verify
+outputs remain isolated historical evidence; do not rerun them or infer that
+they tested the combination. State any claim they cannot establish.
+Record `Product scope: current`, `Reviewed HEAD: <full coordinator SHA>` and
+one `Reviewed member: <name> <full SHA>` per supplied member in the report.
+Never derive the scope from the sidecar's base, and never substitute a member's
+current branch tip. An ordinary wave review does not certify the collection
+base as a reviewed product.
+
 ### Re-review after a proven repair
 
 When the brief supplies a `review_findings.py repair-evidence` receipt, use
@@ -100,7 +115,11 @@ Reconstruct the receipt's repair `base` plus only its `commit^..commit` patch
 for `files` inside the supplied sidecar. For a member repair (the receipt
 names `member`), use `member_base` and `member_commit` in that member's
 repository. `earlier_repairs` are linked repairs of the same findings that
-are already in the repair base. When the receipt has `later_repairs`, linked
+are already in the repair base. An original with `anchor: source-review` was
+also changed by other landings before the repair base; the source review
+already judged that product at the receipt's `source_review` snapshot, so its
+verdicts there are the prior evidence, and the repair base adds only linked
+repairs after it. When the receipt has `later_repairs`, linked
 repairs changed the same files after this repair: apply their patches in
 order too. Read the repair task's recorded
 Verify, or with `later_repairs` that of the last one, which is the receipt's

@@ -63,10 +63,10 @@ skeptic attempts under `skeptics/`.
 | Command | Result |
 | --- | --- |
 | `round --repo <root> --wave <N> --child-command '<cmd>' [--wait <s>] [--child-timeout <s>] [--capacity <N>] [--max-attempts <N>] [--task-limit <N> --session-limit <N> --budget-authority '<policy>']` | Enter `build/active` from `plan/done` or `build/blocked` (event `build started`, checkpoint `build: start milestone`); recover, settle exited children, `ready`, checkpoint bookkeeping, lint, isolate, dispatch; Verify, land, record, retire each result in task-id order. Receipt status `done`, `in-flight`, `question`, or `blocked`; a dependency deadlock or blocked recovery also sets `build/blocked` and checkpoints it. |
-| `review --repo <root> --wave <N> --cycle <C> --child-command '<cmd>' [--wait <s>] [--child-timeout <s>] [--repair-evidence <receipt>]` | Step 6 at `full` or `deep` depth: clean review base, one verify sidecar and reviewer child per lens, validate in the sidecar, collect, retire; after every lens settles, checkpoint a `pass` when no panel is configured, or return the `review_findings.py collect` grouping on `blocked`. `verify-only` returns `not-applicable`; `panel_required` reports the PLAN panel setting. |
+| `review --repo <root> --wave <N> --cycle <C> --child-command '<cmd>' [--wait <s>] [--child-timeout <s>] [--repair-evidence <receipt>] [--current-product]` | Step 6 at `full` or `deep` depth: clean review base, one verify sidecar and reviewer child per lens, validate in the sidecar, collect, retire; after every lens settles, checkpoint a `pass` when no panel is configured, or return the `review_findings.py collect` grouping on `blocked`. `verify-only` returns `not-applicable`; `panel_required` reports the PLAN panel setting. |
 | `panel --repo <root> --wave <N> --cycle <C> --advertised <slugs> [--parent-slug <slug>] --child-command '<cmd with {model}>' [--wait <s>]` | Step 6 panel: `review_panel.py resolve`; `off`, a persisted skipped receipt, or one panelist per family in its own sidecar; collect, `review_panel.py merge`, then the single on-pass checkpoint with the review. |
 | `skeptics --repo <root> --wave <N> --cycle <C> --child-command '<cmd>' [--wait <s>] [--child-timeout <s>]` | Step 7 skeptic branch: one read-only skeptic per `skeptic_groups` locator in its own sidecar at the recorded review base, briefed with the criterion, every observation, and the cited tasks verbatim; validate with `review_findings.py`, collect, retire, then rerun the helper. `none` without skeptic groups; `escalate` for structural blockers or the cycle cap. The skeptic files stay uncommitted for the fix-task or ruling checkpoint. |
-| `fix-tasks --repo <root> --wave <N> --cycle <C>` | Step 7 batching: one fix task per `review_findings.py collect` batch with the failed criteria and observations verbatim, lint-checked; `escalate` for structural blockers, skeptic groups, cycle cap, or all-refuted. |
+| `fix-tasks --repo <root> --wave <N> --cycle <C>` | Step 7 batching: one fix task per `review_findings.py collect` batch with the failed criteria and observations verbatim, lint-checked; `escalate` for structural blockers, skeptic groups, cycle cap, all-refuted, or a pending redesign ruling. |
 | `complete --repo <root>` | Completion: clean primary at `build/active` (or a crash-left `build/done`), no unfinished wave, the archive-time review cycle check (`discussion_validate.review_cycle_counts`: contiguous cycles, passing last cycle, panel and skeptic artifacts present); `workflow_run.py build-evidence` at HEAD; `pipeline_state.py transition` to `ship/active` with event `build done; final review pending`; checkpoint `build: complete milestone`. |
 | `finish --repo <root> --task-id <id>` | Recover first; return a proven landing without repeating Verify, or verify, land, record, and retire one returned task. Without a dispatch record, or when the newest record is settled and its base differs from the task's current in-progress base (a native retry after a driver block), read the primary task's in-progress state; if it lacks a recorded base, use the parallel task isolate's state only if that worktree is authorized. A blocked record at the same base still refuses the retry, except a host-dispatched record (no child command) while the task is still in progress at that base: `finish` may run again after a failed Verify. A deactivated isolate stays blocked. |
 | `answer --repo <root> --task-id <id> --answer '<text>'` | Append `Orchestrator answer:` to the isolate's task Log; the next `round` redispatches that isolate. |
@@ -93,6 +93,20 @@ landing provenance do not count. A failure is `status: error` in that field
 only. It never changes a verdict, checkpoint,
 gate, or fix batch. Manual use names `--review-base <full sha>` and optional
 `--member-head <member>=<full sha>`; without them it does not use current HEAD.
+`collect` additionally reports `history`: blocked cycles set aside by build
+recoveries still count toward the wave's milestone cap, with identical restored
+reviews counted once only when Git proves they retain the same publication.
+Independent publications with identical text still count separately. Its `redesign_pending` asks for an owner ruling when a fix
+group's criterion blocked two earlier cycles. Only a committed current-cycle
+`Open fix tasks anyway` ruling since the latest recovery releases `fix-tasks`;
+it does not override the other escalations. When a repair needs the product the
+source review judged as its anchor, `repair-evidence` requires explicit
+current-product scope and pinned snapshots in every source lens. Dispatch that
+fallback with `review --current-product`; the driver records and checks those
+pins. Only validated, collected, hash-matching records authorize the source,
+including retained records before an unchanged-wave recovery. A manual review
+supplies the same metadata plus `--review-base`/`--member-head`, which must match
+the report. An ordinary isolated-task review never certifies the collection tip.
 Panel children write family findings without a Wave verdict. The `{model}`
 command example above is the legacy form; capability-based commands use the
 argument slots defined in the dispatch model policy.

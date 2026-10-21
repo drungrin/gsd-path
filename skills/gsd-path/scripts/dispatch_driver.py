@@ -1502,6 +1502,14 @@ def review_brief(state: Dict[str, object], options: argparse.Namespace, primary:
         lines.append(f"Previous cycle review to re-check: {previous}")
     if options.repair_evidence:
         lines.append(f"Repair evidence receipt (re-review after a proven repair): {options.repair_evidence}")
+    if state.get("product_scope") == "current":
+        lines += [
+            "Current-product scope explicitly assigned: inspect the complete pinned product, not each historical task isolate.",
+            f"Record `Product scope: current` and `Reviewed HEAD: {state['base']}` in your report.",
+            *[f"Member {name}: inspect pinned commit {sha}; record `Reviewed member: {name} {sha}`."
+              for name, sha in sorted(state.get("member_heads", {}).items())],
+            "Judge every task and owned INTENT criterion against that pinned product, reusing recorded Verify evidence.",
+        ]
     if final_scope:
         lines.append(f"Final scope applies: record `Review scope: final` and `Reviewed HEAD: {state['base']}`, "
                      "check every INTENT success criterion and PLAN.md's Surface contract, and add "
@@ -1570,11 +1578,25 @@ class Review:
                 raise DriverStop(f"previous cycle review is missing: {previous}")
         base = base or isolation.current_sha(self.primary)
         self.receipt["base"] = base
+        current_product = bool(getattr(self.options, "current_product", False))
+        if current_product and self.options.repair_evidence:
+            raise DriverStop("current-product scope cannot use a focused repair receipt")
+        member_heads = {}
+        if current_product:
+            if not hasattr(review_findings, "current_product_scope"):
+                raise DriverStop("selected runtime does not support current-product review; upgrade it explicitly")
+            git, commit = review_findings._git_reader()
+            snapshots, missing = review_findings.review_snapshots(
+                self.primary, self.project_dir, base, None, git, commit)
+            if missing:
+                raise DriverStop("current-product member snapshots are missing", members=missing)
+            member_heads = {name: sha for name, _, sha in snapshots if name}
         for key, relative in lenses.items():
             name = f"wave-{self.wave}-cycle-{self.cycle}" + ("" if key == "canonical" else f"-{key}")
             previous = earlier.get(key)
             state = {"task_id": self.lens_name(key), "lens": None if key == "canonical" else key,
-                     "wave": self.wave, "cycle": self.cycle, "base": base, "relative": relative}
+                     "wave": self.wave, "cycle": self.cycle, "base": base, "relative": relative,
+                     "product_scope": "current" if current_product else "isolated", "member_heads": member_heads}
             spawn_in_sidecar(self.root, self.primary, self.receipt, self.options, name, state,
                              lambda fresh, previous=previous: review_brief(fresh, self.options, self.primary, tasks,
                                                                             final_scope, previous))
@@ -1601,7 +1623,11 @@ class Review:
             else:
                 try:
                     validated = contracts.validate_wave_evidence(sidecar, self.project_dir, relative)
-                except contracts.HandoffError as error:
+                    if state.get("product_scope") == "current":
+                        scope = review_findings.current_product_scope(staged.read_text(encoding="utf-8"))
+                        if scope != {"base": state["base"], "member_heads": state.get("member_heads", {})}:
+                            raise contracts.HandoffError("current-product report does not match assigned snapshots")
+                except (contracts.HandoffError, review_findings.ReviewFindingsError) as error:
                     update_state(state, outcome="blocked", reason=str(error), helper="check_handoffs.py wave")
                     return
                 update_state(state, verdict=validated["verdict"], owned=validated.get("owned"), validated=True,
@@ -1708,6 +1734,9 @@ class Review:
             lenses = {key: path.relative_to(self.primary).as_posix() for key, path in
                       review_findings.review_paths(project, self.wave, self.cycle, depth).items()}
             states = self.current_states(list(lenses))
+            requested_scope = "current" if getattr(self.options, "current_product", False) else "isolated"
+            if any(state.get("product_scope", "isolated") != requested_scope for state in states.values()):
+                raise DriverStop("review scope differs from the recorded assignment; use a new cycle")
             missing = {key: relative for key, relative in lenses.items() if key not in states}
             if missing:
                 base = None
@@ -2205,8 +2234,8 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
                    for locator in item["locators"]}
         findings = review_findings.compute(primary, options.project_dir, options.wave, options.cycle)
         receipt["findings"] = findings
-        escalation = [key for key in ("structural_blockers", "skeptic_groups", "cap_reached", "all_refuted")
-                      if findings.get(key)]
+        escalation = [key for key in ("structural_blockers", "skeptic_groups", "cap_reached", "all_refuted",
+                                      "redesign_pending") if findings.get(key)]
         if escalation:  # step 7's branch table for these stays with the parent and the user
             receipt.update(status="escalate", escalation=escalation)
             return receipt
@@ -2532,6 +2561,8 @@ def main(argv=None) -> int:
     review_parser.add_argument("--repair-evidence", type=Path,
                                help="review_findings.py repair-evidence receipt for a re-review")
     review_parser.add_argument("--template", type=Path, default=default_resource("templates/wave-review.md"))
+    review_parser.add_argument("--current-product", action="store_true",
+                               help="review the pinned combined product instead of historical task isolates")
     panel_parser = commands.add_parser("panel", parents=[cycle_child],
                                        help="run the optional review panel for a collected wave review")
     panel_parser.add_argument("--advertised", required=True, help="comma-separated model slugs the host advertises")

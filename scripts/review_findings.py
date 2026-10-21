@@ -10,13 +10,17 @@ blocking findings by canonical criterion locator (`t001_ac2`, `sc3`,
 observations, selects the groups that need a skeptic, carries refutations
 forward across cycles, batches fix-task groups by repo and disjoint file
 scope, keeps structural blockers out of skeptic accounting, and reports
-whether the cycle cap is reached. It never decides the wave verdict.
+whether the cycle cap is reached. Blocked cycles that a build recovery set
+aside still count toward that cap, and a criterion that keeps blocking asks
+for a redesign ruling before another fix task. It never decides the wave
+verdict.
 """
 
 from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import json
 import posixpath
 import re
@@ -50,6 +54,14 @@ SKEPTIC_FILE_NAME = re.compile(
 SKEPTIC_OBSERVATION = re.compile(r"^### Observation (?P<n>\d+) — (?P<lens>contract|adversarial|both)$")
 SKEPTIC_OBSERVATION_VERDICT = re.compile(r"^### Observation (?P<n>\d+): (?P<verdict>refuted|stands)$")
 FAIL_MARKER = "- ❌ "
+REVIEW_CYCLE_FILE = re.compile(
+    r"^wave-(?P<wave>[1-9]\d*)\.cycle(?P<cycle>[1-9]\d*)(?:\.(?P<lens>contract|adversarial))?\.md$"
+)
+RECOVERY_BACKUP = re.compile(r"^build-recovery-(?P<base>[0-9a-f]{40})$")
+RECOVERY_RECORD = "build recovery: "
+# A fix group needs a redesign ruling when its criterion already blocked this many earlier cycles of the wave.
+REDESIGN_AFTER_BLOCKS = 2
+REDESIGN_OPEN = "Open fix tasks anyway"
 
 
 class ReviewFindingsError(Exception):
@@ -457,6 +469,150 @@ def _earlier_lens_locators(project: Path, wave: int, cycle: int, depth: str, tas
     return first_seen
 
 
+# --- review history across build recoveries ---------------------------------
+
+
+def _cycle_reviews(directory: Path, wave: int) -> Dict[int, Dict[str, str]]:
+    """The canonical or lens review texts of each cycle of one wave in one review directory."""
+    cycles: Dict[int, Dict[str, str]] = {}
+    if not directory.is_dir():
+        return cycles
+    for path in sorted(directory.iterdir()):
+        named = REVIEW_CYCLE_FILE.fullmatch(path.name)
+        if named and int(named.group("wave")) == wave and path.is_file() and not path.is_symlink():
+            cycles.setdefault(int(named.group("cycle")), {})[named.group("lens") or "canonical"] = _read(path, "review")
+    return cycles
+
+
+def _cycle_outcome(texts: Dict[str, str], tasks: Dict[str, dict], depth: Optional[str] = None) -> dict:
+    """Missing or invalid required lenses are blocked too, even if the surviving lens passed."""
+    deep = depth == "deep" or any(re.search(r"(?m)^Depth:\s*deep\s*$", text) for text in texts.values())
+    expected = {"contract", "adversarial"} if deep else {"canonical"}
+    verdicts, locators = [], set()
+    for lens, text in texts.items():
+        try:
+            parsed = parse_lens(text, lens, tasks)
+        except ReviewFindingsError:
+            verdicts.append("blocked")
+            continue
+        verdicts.append(parsed["verdict"])
+        if parsed["problems"]:
+            verdicts.append("blocked")
+        locators.update(finding["locator"] for finding in parsed["findings"])
+    passed = set(texts) == expected and set(verdicts) == {"pass"}
+    return {"verdict": "pass" if passed else "blocked", "locators": sorted(locators)}
+
+
+def _review_origin(repo: Path, relative: str, snapshot: str, text: str) -> Optional[str]:
+    """A committed publication, not a content hash: only an unchanged Git path proves restoration."""
+    content = _common.run_git(repo, "show", f"{snapshot}:{relative}")
+    if content.returncode or content.stdout != text:
+        return None
+    origin = _common.run_git(repo, "log", "-1", "--format=%H", snapshot, "--", relative)
+    return origin.stdout.strip() if origin.returncode == 0 else None
+
+
+def _state_log(project: Path) -> List[str]:
+    state = project / "STATE.md"
+    return _read(state, "STATE.md").splitlines() if state.is_file() else []
+
+
+def _recovery_bases(project: Path) -> List[str]:
+    """Build recovery bases in the order the STATE.md Log records them."""
+    bases: List[str] = []
+    for line in _state_log(project):
+        position = line.find(RECOVERY_RECORD)
+        if position < 0:
+            continue
+        try:
+            base = json.loads(line[position + len(RECOVERY_RECORD):]).get("base")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(base, str) and base not in bases:
+            bases.append(base)
+    return bases
+
+
+def review_history(repo: Path, project: Path, wave: int, cycle: int, tasks: Dict[str, dict]) -> dict:
+    """The earlier review cycles of a wave in this milestone, including those a build recovery set aside.
+
+    A build recovery moves `review/` to `plan/build-recovery-<base>/review/`, and a changed wave starts
+    again at cycle 1. Its blocked cycles still count: a recovery does not refill the review budget. Plan
+    approval restores an unchanged wave without a new Git publication. Only those proven restorations
+    count once; independently published identical reports are still separate attempts.
+    """
+    current = _cycle_reviews(project / "review", wave)
+
+    def key(texts, number, snapshot):
+        origins = []
+        for lens, text in sorted(texts.items()):
+            suffix = "" if lens == "canonical" else f".{lens}"
+            relative = (project / "review" / f"wave-{wave}.cycle{number}{suffix}.md").relative_to(repo).as_posix()
+            origin = _review_origin(repo, relative, snapshot, text)
+            if not origin:
+                return None  # Without provenance, never erase an attempt merely because its text matches.
+            origins.append((relative, origin, hashlib.sha256(text.encode("utf-8")).hexdigest()))
+        return tuple(origins)
+
+    seen = {identity for number, texts in current.items() if number <= cycle
+            if (identity := key(texts, number, "HEAD")) is not None}
+    backups = {}
+    plan = project / "plan"
+    if plan.is_dir():
+        for path in plan.iterdir():
+            named = RECOVERY_BACKUP.fullmatch(path.name)
+            if named and (path / "review").is_dir() and not path.is_symlink():
+                backups[named.group("base")] = path / "review"
+    order = _recovery_bases(project)
+    entries: List[dict] = []
+    for base in sorted(backups, key=lambda name: (order.index(name) if name in order else len(order), name)):
+        for number, texts in sorted(_cycle_reviews(backups[base], wave).items()):
+            identity = key(texts, number, base)
+            if identity is None or identity not in seen:
+                if identity is not None:
+                    seen.add(identity)
+                old_plan = _common.run_git(repo, "show", f"{base}:{(project / 'plan/PLAN.md').relative_to(repo).as_posix()}")
+                try:
+                    depth = wave_depth(old_plan.stdout, wave) if old_plan.returncode == 0 else None
+                except ReviewFindingsError:
+                    depth = None
+                entries.append({"recovery": base, "cycle": number, **_cycle_outcome(texts, tasks, depth)})
+    for number, texts in sorted(current.items()):
+        if number < cycle:
+            entries.append({"recovery": None, "cycle": number, **_cycle_outcome(texts, tasks)})
+    prior = sum(1 for entry in entries if entry["recovery"] and entry["verdict"] == "blocked")
+    return {"prior_blocked": prior, "effective_cycle": prior + cycle, "cycles": entries}
+
+
+def redesign_ruling(repo: Path, project: Path, wave: int, cycle: int) -> Optional[str]:
+    """The committed ruling on this cycle since the latest build recovery, unchanged in the working STATE.
+
+    A recovery numbers a changed wave from cycle 1 again, so a ruling recorded before it names another review.
+    """
+    marker = f"wave {wave} cycle {cycle} redesign ruling: "
+
+    def last(lines):
+        recovery, ruling = None, None
+        for line in lines:
+            event = re.match(r"^- \d{4}-\d{2}-\d{2} — (?:build|define|plan) — (.*)$", line)
+            if not event:
+                continue
+            if event[1].startswith(RECOVERY_RECORD):
+                recovery, ruling = event[1], None
+            elif event[1].startswith(marker):
+                ruling = event[1][len(marker):].strip()
+        return recovery, ruling
+
+    current = _state_log(project)
+    recorded = _common.run_git(repo, "show", f"HEAD:{(project / 'STATE.md').relative_to(repo).as_posix()}")
+    if recorded.returncode:
+        return None
+    committed_event = last(recorded.stdout.splitlines())
+    if last(current) != committed_event:
+        return None
+    return committed_event[1]
+
+
 def _fix_batches(groups: Sequence[dict], tasks: Dict[str, dict]) -> List[dict]:
     """One batch per repo and disjoint file scope: groups whose task files overlap in one repo share a batch.
 
@@ -530,7 +686,11 @@ def compute(
             panel = {"path": str(panel_path), "actionable": int(actionable.group(1))}
 
     skeptics_active = config["finding_skeptics"] == "on" and depth == "deep"
+    history = review_history(repo, project, wave, cycle, tasks)
     first_seen = _earlier_lens_locators(project, wave, cycle, depth, tasks)
+    for entry in history["cycles"]:
+        for locator in entry["locators"]:
+            first_seen.setdefault(locator, entry["cycle"])
     earlier_refuted: Dict[str, dict] = {}
     for earlier in sorted(skeptics_by_cycle):
         if earlier >= cycle:
@@ -575,7 +735,17 @@ def compute(
     fix_groups = [g for g in groups if g["disposition"] == "fix"]
     skeptic_groups = [g["locator"] for g in groups if g["disposition"] == "needs-skeptic"]
     lens_blocked = any(value != "pass" for value in verdicts.values())
-    cap_reached = cycle >= config["max_review_cycles"]
+    cap_reached = history["effective_cycle"] >= config["max_review_cycles"]
+    blocked_before: Dict[str, List[dict]] = {}
+    for entry in history["cycles"]:
+        if entry["verdict"] == "blocked":
+            for locator in entry["locators"]:
+                blocked_before.setdefault(locator, []).append({"recovery": entry["recovery"], "cycle": entry["cycle"]})
+    # Two fixes of the same criterion already failed: another fix task needs the user's ruling first.
+    redesign = [{"locator": group["locator"], "criterion": group["criterion"],
+                 "blocked_before": blocked_before[group["locator"]]}
+                for group in fix_groups if len(blocked_before.get(group["locator"], [])) >= REDESIGN_AFTER_BLOCKS]
+    ruling = redesign_ruling(repo, project, wave, cycle) if redesign else None
     return {
         "status": "ok",
         "wave": wave,
@@ -598,6 +768,11 @@ def compute(
         "structural_blockers": structural,
         "all_refuted": bool(refuted) and not fix_groups and not skeptic_groups and not structural and not cap_reached,
         "panel": panel,
+        "history": history,
+        "redesign": redesign,
+        "redesign_ruling": ruling,
+        "redesign_pending": bool(redesign) and not (
+            ruling == REDESIGN_OPEN or (ruling or "").startswith(REDESIGN_OPEN + " (")),
     }
 
 
@@ -607,8 +782,79 @@ def emit(payload: dict) -> int:
     return 0
 
 
-def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id: str) -> dict:
-    """Bind a carried finding batch to a proven, independently verified repair."""
+def current_product_scope(text: str) -> Optional[dict]:
+    """Explicit current-product scope authored by the reviewer, never inferred from a sidecar base."""
+    text = _strip_comments(text)
+    if not re.search(r"(?m)^Product scope: current$", text):
+        return None
+    heads = re.findall(r"(?m)^Reviewed HEAD: ([0-9a-f]{40})$", text)
+    members = re.findall(r"(?m)^Reviewed member: ([a-z0-9-]+) ([0-9a-f]{40})$", text)
+    if len(heads) != 1 or len({name for name, _ in members}) != len(members):
+        raise ReviewFindingsError("current-product review needs unique full reviewed snapshots")
+    return {"base": heads[0], "member_heads": dict(members)}
+
+
+def _recorded_review(repo: Path, project: Path, wave: int, cycle: int, depth: str, snapshot: str) -> Optional[dict]:
+    """Collected, hash-bound lens records, including those retained before an unchanged-wave recovery."""
+    if __package__:
+        from . import isolation
+    else:
+        import isolation
+    try:
+        root = isolation.common_git_dir(repo) / "gsd-path/dispatch" / isolation.require_bound(repo).replace("/", "-")
+    except isolation.IsolationError:
+        return None
+    matches = {}
+    paths = review_paths(project, wave, cycle, depth)
+    for lens, path in paths.items():
+        relative = path.relative_to(repo).as_posix()
+        expected_task = f"review_wave_{wave}_cycle_{cycle}" + ("" if lens == "canonical" else f"_{lens}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        candidates, attempted = [], False
+        namespaces = [root, *sorted(root.glob("[0-9a-f]" * 40))]
+        for namespace in namespaces:
+            records = namespace / "reviews" / expected_task
+            for record in records.glob("attempt-*/state.json"):
+                state = json.loads(_read(record, "review record"))
+                if state.get("base") != snapshot:
+                    continue
+                attempted = True
+                exit_path = record.with_name("exit.json")
+                execution = json.loads(_read(exit_path, "review exit")) if exit_path.is_file() else state
+                if (state.get("task_id") == expected_task and state.get("wave") == wave
+                        and state.get("cycle") == cycle and state.get("relative") == relative
+                        and state.get("lens") == (None if lens == "canonical" else lens)
+                        and state.get("outcome") == "collected" and state.get("validated") is True
+                        and state.get("validated_sha256") == digest
+                        and execution.get("finished_at") and execution.get("exit_code") == 0
+                        and not execution.get("timed_out")):
+                    candidates.append(state)
+        if not candidates:
+            if attempted:
+                raise ReviewFindingsError("source review has no validated collected provenance")
+            return None
+        # An identical report from different snapshots is ambiguous, not authority to choose a newer one.
+        identities = {(item.get("base"), item.get("product_scope"),
+                       json.dumps(item.get("member_heads", {}), sort_keys=True)) for item in candidates}
+        if len(identities) != 1:
+            raise ReviewFindingsError("collected review records disagree on the reviewed snapshot")
+        matches[lens] = candidates[0]
+    snapshots = {(item.get("base"), item.get("product_scope"),
+                  json.dumps(item.get("member_heads", {}), sort_keys=True)) for item in matches.values()}
+    if len(snapshots) != 1:
+        raise ReviewFindingsError("collected review lenses disagree on the reviewed snapshot")
+    return next(iter(matches.values()))
+
+
+def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id: str,
+                    review_base: Optional[str] = None,
+                    member_heads: Optional[Dict[str, str]] = None) -> dict:
+    """Bind a carried finding batch to a proven, independently verified repair.
+
+    The original landings must reach the repair base through linked repairs only. When other landings
+    changed those files first, the product the source review judged is the anchor instead: the driver's
+    recorded review base, or `review_base` (and `member_heads`) for a review that the driver did not run.
+    """
     try:
         from . import _common, build_state, isolation
     except ImportError:  # installed standalone helper
@@ -772,13 +1018,58 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
         original_proofs = isolation.verify_landed_task_files(
             repo, original_paths, f"{project_dir}/tasks", head
         )["tasks"]
-        landed, earlier = [], set()
+
+        @functools.lru_cache(maxsize=None)
+        def source_review() -> Optional[tuple]:
+            """The product the source review judged: (coordinator commit, commit in `where`), or None if unrecorded."""
+            scopes = [current_product_scope(_read(path, "source review"))
+                      for path in review_paths(project, wave, cycle, source["depth"]).values()]
+            if not all(scopes):
+                return None  # An ordinary review of isolated task products did not judge the collection tip.
+            scope = scopes[0]
+            recorded = _recorded_review(repo, project, wave, cycle, source["depth"], scope["base"])
+            if any(item != scope for item in scopes):
+                raise ReviewFindingsError("source review lenses disagree on current-product scope")
+            if recorded is not None:
+                if recorded.get("product_scope") != "current":
+                    raise ReviewFindingsError("driver did not assign a current-product review")
+                if {"base": recorded["base"], "member_heads": recorded.get("member_heads", {})} != scope:
+                    raise ReviewFindingsError("current-product report differs from its collected assignment")
+            elif not review_base:
+                return None  # Native/manual publication needs its explicit recorded base too.
+            git, commit = _git_reader()
+            snapshot = commit(repo, scope["base"])
+            if review_base and commit(repo, review_base) != snapshot:
+                raise ReviewFindingsError("--review-base differs from the source review snapshot")
+            if any(scope["member_heads"].get(name) != sha for name, sha in (member_heads or {}).items()):
+                raise ReviewFindingsError("--member-head differs from the source review snapshot")
+            for path in review_paths(project, wave, cycle, source["depth"]).values():
+                if git(repo, "ls-tree", snapshot, "--", path.relative_to(repo).as_posix()):
+                    raise ReviewFindingsError("source review must postdate its review base")
+            if isolation.run_git(repo, "merge-base", "--is-ancestor", snapshot, base).returncode:
+                raise ReviewFindingsError("review base is not in the repair base")
+            if not member:
+                return snapshot, snapshot
+            product = scope["member_heads"].get(member)
+            if product is None:
+                raise ReviewFindingsError("member review snapshot is not recorded in source review")
+            return snapshot, commit(where, product)
+
+        landed, earlier, anchored = [], set(), None
         for landing in original_proofs:
             links = None
             if landing["verdict"] == "recovered":
                 original = entry(landing, Path(sources[landing["task_id"]]["path"]), sources[landing["task_id"]]["files"])
                 if before(at(original), at(repair, "base")):
                     links = linked_changes(at(original), [at(repair, "base")], original["files"])
+                # Another landing changed these files before the repair base, for example a task of a recovery plan.
+                # The source review judged the product at its base, so only the changes after it must be linked.
+                snapshot = source_review() if links is None else None
+                if snapshot and before(at(original), snapshot[1]) and before(snapshot[1], at(repair, "base")):
+                    links = linked_changes(snapshot[1], [at(repair, "base")], original["files"])
+                    if links is not None:
+                        original["anchor"] = "source-review"
+                        anchored = snapshot
             if links is None:
                 raise ReviewFindingsError("repair base contains unlinked changes to original product")
             landed.append(original)
@@ -810,6 +1101,8 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
             "status": "ok", "command": "repair-evidence", "head": head,
             "source": {"wave": wave, "cycle": cycle}, "groups": groups,
             "originals": landed, "repair": repair,
+            **({"source_review": {"review_base": anchored[0], **({"member_head": anchored[1]} if member else {})}}
+               if anchored else {}),
             **({"earlier_repairs": [link for link in linked() if link["task"] in earlier]} if earlier else {}),
             **({"later_repairs": later, "chain_files": chain_files} if later else {}),
             "verification": verification,
@@ -817,6 +1110,99 @@ def repair_evidence(repo: Path, project_dir: str, wave: int, cycle: int, task_id
         }
     except (isolation.IsolationError, build_state.BuildStateError, ValueError) as error:
         raise ReviewFindingsError(str(error)) from error
+
+
+# --- reviewed snapshots ------------------------------------------------------
+
+
+def _git_reader():
+    """Read-only git queries cached for one helper call; a failed query raises ValueError."""
+
+    @functools.lru_cache(maxsize=None)
+    def git(root: Path, *args: str) -> str:
+        completed = _common.run_git(root, *args)
+        if completed.returncode:
+            raise ValueError(completed.stderr.strip() or "git query failed")
+        return completed.stdout
+
+    def commit(root: Path, sha: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("review snapshots must be full commit SHAs")
+        return git(root, "rev-parse", "--verify", f"{sha}^{{commit}}").strip()
+
+    return git, commit
+
+
+def review_snapshots(repo: Path, project_dir: str, base: str, member_heads: Optional[Dict[str, str]],
+                     git, commit) -> tuple:
+    """Each repository's reviewed commit at the coordinator review `base`, and the members without one.
+
+    Returns ([(member or None, root, commit)], [member]). A member snapshot is the supplied head, else the
+    coordinator's last member landing record at `base`, else the locked build base before any landing.
+    """
+    if __package__:
+        from . import isolation
+    else:
+        import isolation
+    # Read membership from the coordinator snapshot, not today's member branch.
+    roots = [(None, repo, base)]
+    missing_members = []
+    members_path = f"{project_dir}/MEMBERS.md"
+    if git(repo, "ls-tree", base, "--", members_path):
+        membership = git(repo, "show", f"{base}:{members_path}")
+        locked = {}
+        lock = f"{project_dir}/build/members.json"
+        if git(repo, "ls-tree", base, "--", lock):
+            for entry in json.loads(git(repo, "show", f"{base}:{lock}")).get("members", []):
+                if isinstance(entry, dict) and isinstance(entry.get("base"), str):
+                    locked[entry.get("name")] = entry["base"]
+        # The coordinator serializes member landings, newest first on its first-parent history.
+        records: Dict[str, List[str]] = {}
+        for body in git(repo, "log", "--first-parent", "--format=%b%x1e", base).split("\x1e"):
+            match = isolation.MEMBER_RECORD_RE.fullmatch(body.strip())
+            if match:
+                records.setdefault(match.group("member"), []).append(match.group("landing"))
+        for name, body in re.findall(r"(?ms)^## ([a-z0-9-]+)\s*\n(.*?)(?=^## |\Z)", membership):
+            checkout = re.search(r"(?m)^Checkout: (.+)$", body)
+            try:
+                if not checkout:
+                    raise ValueError("member has no checkout")
+                root = Path(checkout.group(1))
+                sha = (member_heads or {}).get(name)
+                if not sha and name in locked:
+                    start = commit(root, locked[name])
+                    # An earlier milestone's record does not descend from this build's locked base.
+                    def descends(landing: str) -> bool:
+                        return _common.run_git(root, "merge-base", "--is-ancestor", start, landing).returncode == 0
+
+                    def replayed(landing: str) -> str:
+                        # Only the receipt committed at this review snapshot may
+                        # resolve its landings; today's working receipt is not evidence.
+                        path = f"{project_dir}/{isolation.MEMBER_REBASE_RECEIPT}"
+                        if not git(repo, "ls-tree", base, "--", path):
+                            return landing
+                        try:
+                            receipt = isolation._validate_member_rebase(
+                                repo, git(repo, "show", f"{base}:{path}").encode("utf-8"),
+                                git(repo, "show", f"{base}:{lock}").encode("utf-8"))
+                            isolation._prove_member_rebase_record(repo, receipt)
+                        except isolation.IsolationError as error:
+                            raise ValueError(str(error)) from error
+                        for adoption in receipt["adoptions"]:
+                            if adoption["member"] == name:
+                                mapping = {row["original"]: row["rebased"] for row in adoption["commits"]}
+                                landing = mapping.get(landing, landing)
+                        return landing
+
+                    landings = records.get(name, [])
+                    sha = next((landing for landing in landings if descends(landing)), None) or next(
+                        (moved for moved in map(replayed, landings) if descends(moved)), start)
+                if not sha:
+                    raise ValueError("member has no recorded snapshot")
+                roots.append((name, root, commit(root, sha)))
+            except (OSError, ValueError):
+                missing_members.append(name)
+    return roots, missing_members
 
 
 # --- informational repair-line attribution ---------------------------------
@@ -880,78 +1266,10 @@ def recurrence(repo: Path, project_dir: str, wave: int, cycle: int,
     repo = repo.resolve()
     project = repo / project_dir
 
-    @functools.lru_cache(maxsize=None)
-    def git(root: Path, *args: str) -> str:
-        completed = _common.run_git(root, *args)
-        if completed.returncode:
-            raise ValueError(completed.stderr.strip() or "git query failed")
-        return completed.stdout
-
-    def commit(root: Path, sha: str) -> str:
-        if not re.fullmatch(r"[0-9a-f]{40}", sha):
-            raise ValueError("review snapshots must be full commit SHAs")
-        return git(root, "rev-parse", "--verify", f"{sha}^{{commit}}").strip()
-
+    git, commit = _git_reader()
     base = commit(repo, review_base)
     result["review_base"] = base
-    # Read membership from the coordinator snapshot, not today's member branch.
-    roots = [(None, repo, base)]
-    missing_members = []
-    members_path = f"{project_dir}/MEMBERS.md"
-    if git(repo, "ls-tree", base, "--", members_path):
-        membership = git(repo, "show", f"{base}:{members_path}")
-        locked = {}
-        lock = f"{project_dir}/build/members.json"
-        if git(repo, "ls-tree", base, "--", lock):
-            for entry in json.loads(git(repo, "show", f"{base}:{lock}")).get("members", []):
-                if isinstance(entry, dict) and isinstance(entry.get("base"), str):
-                    locked[entry.get("name")] = entry["base"]
-        # The coordinator serializes member landings, newest first on its first-parent history.
-        records: Dict[str, List[str]] = {}
-        for body in git(repo, "log", "--first-parent", "--format=%b%x1e", base).split("\x1e"):
-            match = isolation.MEMBER_RECORD_RE.fullmatch(body.strip())
-            if match:
-                records.setdefault(match.group("member"), []).append(match.group("landing"))
-        for name, body in re.findall(r"(?ms)^## ([a-z0-9-]+)\s*\n(.*?)(?=^## |\Z)", membership):
-            checkout = re.search(r"(?m)^Checkout: (.+)$", body)
-            try:
-                if not checkout:
-                    raise ValueError("member has no checkout")
-                root = Path(checkout.group(1))
-                sha = (member_heads or {}).get(name)
-                if not sha and name in locked:
-                    start = commit(root, locked[name])
-                    # An earlier milestone's record does not descend from this build's locked base.
-                    def descends(landing: str) -> bool:
-                        return _common.run_git(root, "merge-base", "--is-ancestor", start, landing).returncode == 0
-
-                    def replayed(landing: str) -> str:
-                        # Only the receipt committed at this review snapshot may
-                        # resolve its landings; today's working receipt is not evidence.
-                        path = f"{project_dir}/{isolation.MEMBER_REBASE_RECEIPT}"
-                        if not git(repo, "ls-tree", base, "--", path):
-                            return landing
-                        try:
-                            receipt = isolation._validate_member_rebase(
-                                repo, git(repo, "show", f"{base}:{path}").encode("utf-8"),
-                                git(repo, "show", f"{base}:{lock}").encode("utf-8"))
-                            isolation._prove_member_rebase_record(repo, receipt)
-                        except isolation.IsolationError as error:
-                            raise ValueError(str(error)) from error
-                        for adoption in receipt["adoptions"]:
-                            if adoption["member"] == name:
-                                mapping = {row["original"]: row["rebased"] for row in adoption["commits"]}
-                                landing = mapping.get(landing, landing)
-                        return landing
-
-                    landings = records.get(name, [])
-                    sha = next((landing for landing in landings if descends(landing)), None) or next(
-                        (moved for moved in map(replayed, landings) if descends(moved)), start)
-                if not sha:
-                    raise ValueError("member has no recorded snapshot")
-                roots.append((name, root, commit(root, sha)))
-            except (OSError, ValueError):
-                missing_members.append(name)
+    roots, missing_members = review_snapshots(repo, project_dir, base, member_heads, git, commit)
     for name in missing_members:
         result["unattributable"].append({"repo": name, "reason": "missing-member-snapshot"})
 
@@ -1056,9 +1374,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--wave", type=int, required=True)
     result.add_argument("--cycle", type=int, required=True)
     result.add_argument("--task", help="landed repair task for repair-evidence")
-    result.add_argument("--review-base", help="full coordinator commit reviewed for recurrence")
+    result.add_argument("--review-base",
+                        help="full coordinator commit the review judged, for recurrence or repair-evidence")
     result.add_argument("--member-head", action="append", default=[],
-                        help="member=full reviewed commit for recurrence; repeatable")
+                        help="member=full reviewed commit for recurrence or repair-evidence; repeatable")
     result.add_argument(
         "--helper-failure",
         action="append",
@@ -1073,16 +1392,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         if arguments.wave < 1 or arguments.cycle < 1:
             raise ReviewFindingsError("--wave and --cycle must be positive integers")
+        heads = {}
+        for value in arguments.member_head:
+            name, separator, sha = value.partition("=")
+            if not separator or not name or name in heads:
+                raise ReviewFindingsError("--member-head must be unique member=sha")
+            heads[name] = sha
         if arguments.command == "repair-evidence":
             return emit(repair_evidence(arguments.repo, arguments.project_dir,
-                                        arguments.wave, arguments.cycle, arguments.task))
+                                        arguments.wave, arguments.cycle, arguments.task,
+                                        arguments.review_base, heads))
         if arguments.command == "recurrence":
-            heads = {}
-            for value in arguments.member_head:
-                name, separator, sha = value.partition("=")
-                if not separator or not name or name in heads:
-                    raise ReviewFindingsError("--member-head must be unique member=sha")
-                heads[name] = sha
             return emit(recurrence(arguments.repo, arguments.project_dir, arguments.wave,
                                    arguments.cycle, arguments.review_base, heads))
         return emit(
