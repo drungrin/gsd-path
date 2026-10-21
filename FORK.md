@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.15**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.16**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,60 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.16 — 2026-10-21
+
+Upstream package base remains `1.6.2`. The fork revision continues from 15 to 16.
+
+Implementation:
+[`0aa10c65 — validate GitHub squash landings`](https://github.com/drungrin/gsd-path/commit/0aa10c65c80bf05c340bca1bacea4b02188ff64e).
+
+### GitHub squash integration parity
+
+- GitHub pull-request integration accepts a human-completed one-parent landing
+  only after proving the exact reviewed source merged cleanly into the
+  landing's parent, an identical result tree, and default-branch first-parent
+  ancestry. The existing PR identity and human merge-event checks still reject
+  moved sources, duplicate PRs, bot completion, auto-merge, and merge queues.
+  A fast-forward that already contains the original source is not reclassified
+  as squash. Existing coordinator rebase proof keeps its precedence; members
+  reject provable multi-commit replay shapes even when the squash tree matches.
+  Unavailable replay evidence fails closed before either tag is published,
+  preventing transient Git errors from changing a retry's proof classification.
+- The actual landing's parent supplies GitHub's historical target, not a
+  current base-ref OID or default-branch tip. Azure retains its explicit
+  completion strategy and source/target/landing provenance.
+- Both providers reuse the source-first annotated tag publication and existing
+  close journal. The milestone tag names the landing; its canonical retained
+  source tag preserves the reviewed graph after branch removal or GC.
+  Historical ship recovery and next-milestone branch binding accept the same
+  GitHub source-retention proof instead of requiring an Azure PR URL.
+- Ship contracts, operating rules, workflow, glossary, and multi-repo ADR
+  document the supported proof and its limits. Integration modes and repository
+  merge settings are unchanged. PR completion remains manual.
+
+Validation: the canonical full Python suite passed (3,179 tests, 39 skipped).
+The 37 focused member/squash tests also passed. Node passed 118 of 119 tests,
+with one skipped; lock-usage checks and `git diff --check` pass. All 601 skill
+resources are synchronized without warnings. Independent review reproduced and
+then verified fixes for multi-commit member rebases passing squash proof and
+transient replay-proof failures publishing incompatible tags. Tests cover both
+replay rejection and healthy retry, target advancement before and after landing,
+source-first tag publication, source-branch removal, bare-remote and local GC,
+archived review access, fresh clones, and next-milestone recovery. All fixtures
+use synthetic local repositories and mocked provider evidence; no consumer
+repository or live PR was used. An earlier full run hit its 30-minute limit;
+a diagnostic stdin runner failed its multiprocessing spawn test. Neither counts
+as a pass; the subsequent canonical run completed successfully.
+
+Limits: GitHub's payload does not attest a merge strategy equivalent to Azure's
+`mergeStrategy`; content and provenance cannot strictly distinguish squash from
+an observationally equivalent single-commit rebase. Git 2.38+ is required for
+exact merge-tree proof. Conflicts and unreviewed resolutions remain blocked.
+GitHub.com is the supported GitHub PR host; provider-backed `external-landing`
+remains Azure-only. No auto-merge, queue, or policy bypass is introduced.
+Consumers receive this behavior only through an explicit runtime and skill
+upgrade. No upstream submission has been made.
 
 ## 1.6.2.15 — 2026-10-21
 
