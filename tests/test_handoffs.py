@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import re
 import subprocess
 import sys
@@ -8,7 +9,7 @@ import unittest
 from pathlib import Path
 from typing import Optional, Tuple
 
-from scripts import check_handoffs, pipeline_state
+from scripts import check_handoffs, members, pipeline_state
 
 
 RESEARCH_HEAD = "a" * 40
@@ -814,6 +815,32 @@ Intent: `.project/intent/INTENT.md`
 
             with self.assertRaisesRegex(check_handoffs.HandoffError, "no assigned research question"):
                 check_handoffs.validate_research(root)
+
+    def test_research_reserves_codebase_dimension_names_for_inspection(self) -> None:
+        for dimension in ("codebase", "codebase-web", "codebase-"):
+            with self.subTest(dimension=dimension), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_state(root, "research", "active")
+                self.write_intent(root, "- [RESEARCH] Which domain applies?\n")
+                self.write_research_handoff(root)
+                handoff = root / ".project/research/RESEARCH.md"
+                handoff.write_bytes(handoff.read_text(encoding="utf-8").replace(
+                    "## Question assignments",
+                    f"- `{dimension}` — skipped → none — inspection owns it\n\n## Question assignments",
+                ).encode("utf-8"))
+                with self.assertRaisesRegex(check_handoffs.HandoffError, f"reserved for inspection evidence: {dimension}$"):
+                    check_handoffs.validate_research(root)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_state(root, "research", "active")
+            self.write_intent(root, "- [RESEARCH] Which domain applies?\n")
+            self.write_research_handoff(root)
+            handoff = root / ".project/research/RESEARCH.md"
+            handoff.write_bytes(handoff.read_text(encoding="utf-8").replace(
+                "## Question assignments",
+                "- `codebases` — skipped → none — not an inspection name\n\n## Question assignments",
+            ).encode("utf-8"))
+            self.assertEqual(check_handoffs.validate_research(root)["skipped"], ["codebases", "pitfalls", "similar", "stack"])
 
     def write_review_sources(self, root: Path, project_dir: str = ".project") -> None:
         self.write(
@@ -4242,6 +4269,186 @@ class SpecReachProbeTests(unittest.TestCase):
         for text in ("It held for E1.", "held (E1)", "E1: held"):
             with self.subTest(text=text):
                 self.assertTrue(check_handoffs._cites(text, "E1"))
+
+
+class MemberEvidenceTests(unittest.TestCase):
+    SCRIPT = Path(__file__).resolve().parents[1] / "scripts/check_handoffs.py"
+    MAP = "## Map\n\n- **Stack**: Static site.\n"
+
+    def git(self, repo: Path, *arguments: str) -> str:
+        return git_output(repo, "-c", "user.name=t", "-c", "user.email=t@t", *arguments)
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
+        self.coordinator = self.root / "acme"
+        (self.coordinator / ".project").mkdir(parents=True)
+        self.git(self.coordinator, "init", "-q", "-b", "main")
+        (self.coordinator / ".project/STATE.md").write_bytes(
+            "---\npipeline: gsd-path/v2\nproject: acme\nmilestone: demo\nphase: define\n"
+            "status: active\nbranch: feature/milestone-001\narchive: null\n---\n".encode("utf-8"))
+        self.git(self.coordinator, "add", "-A")
+        self.git(self.coordinator, "commit", "-q", "-m", "init")
+        self.web = self.make_member("web", "Web storefront.\n")
+        self.pin = self.git(self.web, "rev-parse", "refs/remotes/origin/main")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def make_member(self, name: str, readme: str) -> Path:
+        member = self.root / name
+        member.mkdir()
+        self.git(member, "init", "-q", "-b", "main")
+        (member / "README.md").write_bytes(readme.encode("utf-8"))
+        self.git(member, "add", "-A")
+        self.git(member, "commit", "-q", "-m", "init")
+        remote = self.root / f"{name}.git"
+        self.git(self.root, "init", "-q", "--bare", "-b", "main", str(remote))
+        self.git(member, "remote", "add", "origin", f"https://github.com/acme/{name}.git")
+        self.git(member, "config", f"url.{remote.as_uri()}.insteadOf", f"https://github.com/acme/{name}.git")
+        self.git(member, "push", "-q", "origin", "main")
+        self.git(member, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        members.add_member(self.coordinator, name, member, "default")
+        return member
+
+    def evidence(self, kind: str = "codebase", body: Optional[str] = None, extra: str = "",
+                 **fields: Optional[str]) -> Path:
+        values = {"Repo root": str(self.web), "Member": "web", "Default branch": "main",
+                  "Member HEAD": self.pin, **{key.replace("_", " "): value for key, value in fields.items()}}
+        header = "".join(f"{key}: {value}\n" for key, value in values.items() if value is not None)
+        filename = "evidence-codebase-web.md" if kind == "codebase" else "DOCS-AUDIT-web.md"
+        path = self.coordinator / ".project/research" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = f"# Evidence\n\n{header}{extra}\n{self.MAP if body is None else body}"
+        path.write_bytes(text.encode("utf-8"))
+        return path
+
+    def check(self, path: Path, kind: str = "codebase", pin: Optional[str] = "") -> dict:
+        return check_handoffs.validate_member_evidence(
+            path, "web", self.pin if pin == "" else pin, str(self.web), "main", kind)
+
+    def run_cli(self, *arguments: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-B", str(self.SCRIPT), "member-evidence", "--repo", str(self.coordinator), *arguments],
+            capture_output=True, encoding="utf-8", errors="replace")
+
+    def advance_origin(self) -> str:
+        (self.web / "app.js").write_bytes("console.log(1)\n".encode("utf-8"))
+        self.git(self.web, "add", "-A")
+        self.git(self.web, "commit", "-q", "-m", "app")
+        self.git(self.web, "update-ref", "refs/remotes/origin/main", "HEAD")
+        return self.git(self.web, "rev-parse", "HEAD")
+
+    def test_member_evidence_header_names_member_checkout_branch_and_pin(self) -> None:
+        self.assertEqual(self.check(self.evidence()), {
+            "Repo root": str(self.web), "Member": "web", "Default branch": "main", "Member HEAD": self.pin})
+        self.assertEqual(self.check(self.evidence(Member_HEAD="c" * 40), pin="c" * 40)["Member HEAD"], "c" * 40)
+        with self.assertRaisesRegex(check_handoffs.HandoffError, "is not the member pin None"):
+            self.check(self.evidence(), pin=None)
+        self.check(self.evidence("docs", body="## Summary\n"), "docs")
+        self.check(self.evidence(extra="<!-- Member HEAD: " + "d" * 40 + " -->\n"))
+        self.check(self.evidence(Member_HEAD=f"`{self.pin}`"))
+        cases = (
+            ("Repo root must be", {"Repo_root": str(self.root / "other")}),
+            ("Member must be web, found sdk", {"Member": "sdk"}),
+            ("Default branch must be main, found master", {"Default_branch": "master"}),
+            ("full 40-character commit SHA, not abc", {"Member_HEAD": "abc"}),
+            ("is not the member pin", {"Member_HEAD": "c" * 40}),
+            ("Member HEAD: exactly once", {"Member_HEAD": None, "body": self.MAP + f"\nMember HEAD: {self.pin}\n"}),
+            ("Member: exactly once", {"extra": "Member: web\n"}),
+            ("missing ## Map section", {"body": "## Findings\nNone.\n"}),
+            ("## Map is empty", {"body": "## Map\n<!-- fill -->\n"}),
+            ("placeholder <languages>", {"body": "## Map\n\n- **Stack**: <languages>\n"}),
+        )
+        for reason, arguments in cases:
+            with self.subTest(reason=reason):
+                path = self.evidence(**arguments)
+                with self.assertRaisesRegex(check_handoffs.HandoffError, re.escape(reason)):
+                    self.check(path)
+        with self.assertRaisesRegex(check_handoffs.HandoffError, "codebase or docs"):
+            self.check(self.evidence(), "audit")
+        with self.assertRaisesRegex(check_handoffs.HandoffError, "missing real hand-off file"):
+            self.check(self.coordinator / ".project/research/absent.md")
+
+    def test_coverage_requires_both_artifacts_for_each_brownfield_member(self) -> None:
+        self.make_member("sdk", "# sdk\n")
+        with self.assertRaisesRegex(check_handoffs.HandoffError, "missing real hand-off file: .*evidence-codebase-web.md"):
+            check_handoffs.validate_inspection_coverage(self.coordinator)
+        self.evidence()
+        with self.assertRaisesRegex(check_handoffs.HandoffError, "missing real hand-off file: .*DOCS-AUDIT-web.md"):
+            check_handoffs.validate_inspection_coverage(self.coordinator)
+        self.evidence("docs", body="## Summary\n", Member="sdk")
+        with self.assertRaisesRegex(check_handoffs.HandoffError, "Member must be web, found sdk"):
+            check_handoffs.validate_inspection_coverage(self.coordinator)
+        self.evidence("docs", body="## Summary\n")
+        self.assertEqual(check_handoffs.validate_inspection_coverage(self.coordinator), {
+            "members": [{"name": "web", "verdict": "brownfield", "pin": self.pin, "state": "covered"},
+                        {"name": "sdk", "verdict": "greenfield",
+                         "pin": self.git(self.root / "sdk", "rev-parse", "HEAD"), "state": "greenfield"}],
+            "stale": []})
+        (self.coordinator / ".project/MEMBERS.md").unlink()
+        self.assertEqual(check_handoffs.validate_inspection_coverage(self.coordinator), {"members": [], "stale": []})
+
+    def test_coverage_accepts_evidence_behind_the_pin_on_origin_as_stale(self) -> None:
+        self.evidence()
+        self.evidence("docs", body="## Summary\n")
+        moved = self.advance_origin()
+        result = check_handoffs.validate_inspection_coverage(self.coordinator)
+        self.assertEqual(result["stale"], ["web"])
+        self.assertEqual(result["members"][0]["state"], "stale")
+        self.assertEqual(result["members"][0]["pin"], moved)
+        self.git(self.web, "switch", "-q", "-c", "side", self.pin)
+        (self.web / "side.js").write_bytes("console.log(2)\n".encode("utf-8"))
+        self.git(self.web, "add", "-A")
+        self.git(self.web, "commit", "-q", "-m", "side")
+        for head in (self.git(self.web, "rev-parse", "HEAD"), "b" * 40):
+            with self.subTest(head=head):
+                self.evidence(Member_HEAD=head)
+                with self.assertRaisesRegex(check_handoffs.HandoffError, "is not on refs/remotes/origin/main of member web"):
+                    check_handoffs.validate_inspection_coverage(self.coordinator)
+
+    def test_coverage_blocks_an_unverifiable_member(self) -> None:
+        self.evidence()
+        self.evidence("docs", body="## Summary\n")
+        self.git(self.web, "update-ref", "-d", "refs/remotes/origin/main")
+        with self.assertRaisesRegex(
+                check_handoffs.HandoffError,
+                "member web is unverifiable: member requires refs/remotes/origin/main; run git fetch origin"):
+            check_handoffs.validate_inspection_coverage(self.coordinator)
+        result = self.run_cli()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("handoff validation failed: member web is unverifiable", result.stderr)
+
+    def test_member_evidence_cli_checks_coverage_or_one_artifact(self) -> None:
+        missing = self.run_cli()
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("missing real hand-off file", missing.stderr)
+        self.evidence()
+        self.evidence("docs", body="## Summary\n")
+        covered = self.run_cli()
+        self.assertEqual(covered.returncode, 0, covered.stderr)
+        self.assertEqual(json.loads(covered.stdout)["stale"], [])
+        single = self.run_cli("--member", "web", "--kind", "codebase")
+        self.assertEqual(single.returncode, 0, single.stderr)
+        self.assertEqual(json.loads(single.stdout)["header"]["Member HEAD"], self.pin)
+        sidecar = self.root / "sidecar/.project/research/DOCS-AUDIT-web.md"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_bytes(self.evidence("docs", body="## Summary\n").read_bytes())
+        moved = self.advance_origin()
+        recorded = self.run_cli("--member", "web", "--kind", "docs", "--path", str(sidecar), "--pin", self.pin)
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        self.assertEqual(json.loads(recorded.stdout)["path"], str(sidecar))
+        refusals = (
+            (("--member", "web", "--kind", "docs"), f"is not the member pin {moved}"),
+            (("--kind", "codebase"), "require --member"),
+            (("--member", "web"), "--member requires --kind"),
+            (("--member", "api", "--kind", "docs"), "member api is not in MEMBERS.md"),
+        )
+        for arguments, reason in refusals:
+            with self.subTest(arguments=arguments):
+                result = self.run_cli(*arguments)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(reason, result.stderr)
 
 
 if __name__ == "__main__":

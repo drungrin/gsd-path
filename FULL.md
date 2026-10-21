@@ -223,6 +223,14 @@ state, collects doc-vs-code rulings, and asks for one confirmation.
 Each doc-vs-code conflict gets your ruling: `fix-doc`, `fix-code`, or
 `accept-drift`. Inspect writes nothing outside `.project/`.
 
+In a [multi-repo](README.md#multi-repo-milestones) project, inspect also maps
+and audits each brownfield member at a pinned commit, never your team's
+working checkout, into `research/evidence-codebase-<member>.md` and
+`research/DOCS-AUDIT-<member>.md`. Members you add after initialization are
+inspected when the router reaches define with no INTENT.md yet; later
+additions wait for the next milestone. Rulings stay in each member's audit,
+and the planner follows each member map's conventions.
+
 ### Quick lane
 
 If scope fits ≤2 deliverable tasks in one wave with no open questions, define
@@ -255,8 +263,8 @@ advancement until its named owner appends a disposition receipt.
 Up to five parallel researchers — the four standard dimensions (domain,
 stack, pitfalls, similar projects) plus an optional risk-driven custom
 dimension.
-Brownfield adds `evidence-codebase.md` from inspect as input. Dimensions with
-nothing to answer are skipped and recorded in STATE.
+Brownfield adds `evidence-codebase.md` and each member's map from inspect as
+input. Dimensions with nothing to answer are skipped and recorded in STATE.
 
 ### Decide
 

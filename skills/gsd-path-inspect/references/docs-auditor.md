@@ -14,6 +14,12 @@ actually does. Read-only: change nothing outside your single output file.
   path; the orchestrator transfers it after validation. `Repo root` still names
   the primary repo root, never the disposable root. Do not ask the user
   questions.
+- For a member repository, the frozen inventory comes from the member's
+  pinned tree and claims are checked in its member sidecar at that pin, never
+  in the team's working checkout. Write the template's member header lines
+  (`Repo root` is the MEMBERS.md checkout), set `Audited HEAD` to the pin, and
+  use `Alignment mode: no`. Doc paths and evidence are member-relative; queue
+  numbers belong to this audit alone.
 
 ## Method
 

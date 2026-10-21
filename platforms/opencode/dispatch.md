@@ -9,7 +9,7 @@ Apply this contract whenever a GSD Path skill delegates work:
   artifact; the linked role brief supplies the read-only boundary for auditors
   and reviewers.
 - Supply the deterministic logical task name as the child description:
-  `inspect_codebase`, `inspect_docs`, `docs_audit`,
+  `inspect_codebase`, `inspect_docs` (per member: `inspect_codebase_<member>`, `inspect_docs_<member>`), `docs_audit`,
   `research_<dimension>`, `decide`, `roadmap`, `plan`, `plan_patch`,
   `build_<task_id>`, `review_wave_<wave>_cycle_<cycle>` (a `deep` wave review
   appends the lens suffix `_contract` or `_adversarial`; an optional review

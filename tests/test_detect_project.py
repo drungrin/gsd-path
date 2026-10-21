@@ -2359,6 +2359,170 @@ detect_project.initialize(Path(sys.argv[1]), Path(sys.argv[2]))
                     self.assertEqual(caught.exception.errno, errno.EBADF)
             self.assertFalse((repo / ".project" / "STATE.md").exists())
 
+
+class ClassifyRevisionTests(unittest.TestCase):
+    def git(self, repo: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=repo, check=True, capture_output=True, encoding="utf-8", errors="replace",
+        ).stdout.strip()
+
+    def commit(self, repo: Path, files: dict) -> str:
+        if not (repo / ".git").exists():
+            self.git(repo, "init", "-q", "-b", "main")
+        for relative, contents in files.items():
+            path = repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(contents.encode("utf-8"))
+        self.git(repo, "add", "-A")
+        self.git(repo, "commit", "-q", "--allow-empty", "-m", "snapshot")
+        return self.git(repo, "rev-parse", "HEAD")
+
+    def test_revision_matches_classify_for_committed_trees(self) -> None:
+        trees = {
+            "empty": {".gitignore": "node_modules\n"},
+            "license and title readme": {"LICENSE": "MIT\n", "README.md": "# Demo\n"},
+            "setext title": {"README.md": "Demo\n====\n"},
+            "unclosed comment": {"README.md": "# Demo\n<!-- scaffold note\n"},
+            "manifest": {"Dockerfile": "FROM python:3.12\n"},
+            "source": {"src/app.py": "print(1)\n", "README.md": "# Demo\n"},
+            "docs": {"README.md": "# Demo\n\nAn existing project.\n", "docs/ARCHITECTURE.md": "Layers.\n"},
+            "extensionless readme": {"README": "Demo\n====\n\nAn existing project.\n"},
+            "license body": {"LICENSE.md": "# License\n\nMIT terms.\n"},
+            "ignored manifest": {"node_modules/pkg/package.json": "{}\n"},
+            "mixed": {"README.md": "Body.\n", "package.json": "{}\n", "lib/a.ts": "export {}\n"},
+            "product under bundle-like name": {"tools/gsd-path-helper/main.py": "print(1)\n"},
+            "managed": {
+                "AGENTS.md": "# Agents\n\nInstructions.\n",
+                "WORKFLOW.md": "# Workflow\n\nSteps.\n",
+                ".claude/CLAUDE.md": "# Claude\n\nInstalled bridge.\n",
+                ".cursor/agents/gsd-path.md": "# Agent\n\nInstalled agent.\n",
+                ".gsd-path/guard_hook.py": "print('managed')\n",
+                ".gsd-path/runtime/status.py": "print('managed')\n",
+                ".codex/skills/gsd-path-define/SKILL.md": "# Skill\n\nRules.\n",
+                ".codex/skills/gsd-path-define/helper.py": "print('managed')\n",
+                ".claude/skills/gsd-path-extra/helper.py": "print('managed')\n",
+                ".claude/skills/path/SKILL.md": "# Skill\n\nRules.\n",
+                ".claude/skills/path/helper.py": "print('managed')\n",
+                ".agent-tools/gsd-path-define/SKILL.md": "# Skill\n\nRules.\n",
+                ".agent-tools/gsd-path-define/helper.py": "print('managed')\n",
+                "agents/gsd-path.md": "# Agent\n\nInstalled agent.\n",
+            },
+        }
+        for label, files in trees.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary)
+                sha = self.commit(repo, files)
+                expected = detect_project.classify(repo)
+                actual = detect_project.classify_revision(repo, sha)
+                self.assertEqual(actual["verdict"], expected["verdict"])
+                self.assertEqual(actual["signals"], expected["signals"])
+                self.assertEqual(actual["revision"], sha)
+
+    def test_revision_ignores_the_working_tree_and_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            title = self.commit(repo, {"README.md": "# Demo\n"})
+            (repo / "README.md").write_bytes("# Demo\n\nNow with a body.\n".encode("utf-8"))
+            (repo / "staged.py").write_bytes("print(1)\n".encode("utf-8"))
+            self.git(repo, "add", "staged.py")
+            (repo / "untracked.go").write_bytes("package main\n".encode("utf-8"))
+            self.assertEqual(detect_project.classify(repo)["verdict"], "brownfield")
+            with mock.patch.object(detect_project, "read_regular_evidence", side_effect=AssertionError), \
+                    mock.patch.object(detect_project, "iter_worktree_files", side_effect=AssertionError), \
+                    mock.patch.object(detect_project, "git_tracked_files", side_effect=AssertionError):
+                payload = detect_project.classify_revision(repo, title)
+            self.assertEqual(payload, {"verdict": "greenfield", "revision": title, "signals": []})
+            self.git(repo, "commit", "-q", "-m", "source")
+            source = self.git(repo, "rev-parse", "HEAD")
+            (repo / "staged.py").unlink()
+            self.git(repo, "rm", "-q", "--cached", "staged.py")
+            self.assertEqual(
+                detect_project.classify_revision(repo, source)["signals"],
+                [{"kind": "source", "path": "staged.py"}],
+            )
+            self.assertEqual(detect_project.classify_revision(repo, title)["verdict"], "greenfield")
+
+    def test_revision_applies_markdown_body_rules_to_blobs(self) -> None:
+        cases = (
+            ("# Demo\n", "greenfield"),
+            ("Demo\n====\n", "greenfield"),
+            ("# Demo\n   <!-- scaffold -->\n", "greenfield"),
+            ("# Demo\n#existing-project\n", "brownfield"),
+            ("# Demo <!-- note --> text\n", "brownfield"),
+            ("# Demo\n\nAn existing project.\n", "brownfield"),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            revisions = [(self.commit(repo, {"README.md": text}), verdict) for text, verdict in cases]
+            for sha, verdict in revisions:
+                with self.subTest(sha=sha):
+                    self.assertEqual(detect_project.classify_revision(repo, sha)["verdict"], verdict)
+
+    def test_revision_excludes_project_links_and_managed_bundles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            files = {
+                ".project/STATE.md": "---\npipeline: gsd-path/v2\n---\n",
+                ".project/research/notes.py": "print(1)\n",
+                "tools/gsd-path-helper/SKILL.md": "# Skill\n\nRules.\n",
+                "tools/gsd-path-helper/helper.py": "print(1)\n",
+                ".kiro/skills/path/helper.py": "print(1)\n",
+            }
+            sha = self.commit(repo, files)
+            self.assertEqual(detect_project.classify_revision(repo, sha)["verdict"], "greenfield")
+            sha = self.commit(repo, {"tools/gsd-path-helper/main.rs": "fn main() {}\n"})
+            self.assertEqual(detect_project.classify_revision(repo, sha)["verdict"], "greenfield")
+            sha = self.commit(repo, {"vendor/lib.py": "print(1)\n", "tools/other/main.rs": "fn main() {}\n"})
+            self.assertEqual(
+                detect_project.classify_revision(repo, sha)["signals"],
+                [{"kind": "source", "path": "tools/other/main.rs"}],
+            )
+
+    @requires_symlink
+    def test_revision_skips_committed_markdown_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / "README.md").symlink_to("notes.txt")
+            sha = self.commit(repo, {"notes.txt": "Body text.\n"})
+            self.assertEqual(self.git(repo, "ls-tree", sha, "README.md").split()[0], "120000")
+            self.assertEqual(detect_project.classify_revision(repo, sha)["signals"], [])
+            self.assertEqual(detect_project.classify(repo)["signals"], [])
+
+    def test_first_signal_follows_classify_sort_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            sha = self.commit(repo, {"README.md": "Body.\n", "src/a.py": "print(1)\n", "package.json": "{}\n"})
+            self.assertEqual(
+                detect_project.classify_revision(repo, sha, first_signal=True)["signals"],
+                [{"kind": "docs", "path": "README.md"}],
+            )
+            self.assertEqual(
+                [item["kind"] for item in detect_project.classify_revision(repo, sha)["signals"]],
+                ["docs", "manifest", "source"],
+            )
+            self.git(repo, "rm", "-q", "package.json", "src/a.py")
+            self.git(repo, "commit", "-q", "-m", "docs only")
+            docs_only = self.git(repo, "rev-parse", "HEAD")
+            self.assertEqual(
+                detect_project.classify_revision(repo, docs_only, first_signal=True),
+                {"verdict": "brownfield", "revision": docs_only,
+                 "signals": [{"kind": "docs", "path": "README.md"}]},
+            )
+
+    def test_revision_must_name_a_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            sha = self.commit(repo, {"README.md": "# Demo\n"})
+            tree = self.git(repo, "rev-parse", "HEAD^{tree}")
+            for revision in ("", "-p", "missing-branch", tree, "0" * 40):
+                with self.subTest(revision=revision), self.assertRaisesRegex(
+                    detect_project.DetectError, "revision"
+                ):
+                    detect_project.classify_revision(repo, revision)
+            self.assertEqual(detect_project.classify_revision(repo, "HEAD")["revision"], sha)
+
+
 class PromoteLookaheadTests(unittest.TestCase):
     AUDIT = """# Docs Audit
 

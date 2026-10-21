@@ -233,6 +233,86 @@ def section_body(text: str, heading: str) -> Optional[str]:
     return match.group("body") if match else None
 
 
+# Docs audits: the coordinator's DOCS-AUDIT.md and one DOCS-AUDIT-<member>.md per
+# member. Enumeration is by filename, never by the current MEMBERS.md rows, so the
+# queue of a removed member keeps its rulings.
+DOCS_AUDIT_FILENAME = "DOCS-AUDIT.md"
+DOCS_AUDIT_MEMBER_RE = re.compile(r"DOCS-AUDIT-([a-z0-9][a-z0-9-]*)\.md")
+_DOCS_AUDIT_CANDIDATE_RE = re.compile(r"docs-audit(?:-.*)?\.md", re.IGNORECASE | re.DOTALL)
+_TABLE_SEPARATOR_RE = re.compile(r":?-+:?")
+
+
+def docs_audit_names(names: Iterable[str]) -> List[str]:
+    """Audit filenames among directory entry names: DOCS-AUDIT.md first, then members by name.
+
+    A name that looks like an audit but is not canonical (`DOCS-AUDIT-Web.md`,
+    `docs-audit.md`) raises ValueError instead of silently dropping a queue.
+    """
+    members: List[Tuple[str, str]] = []
+    base: List[str] = []
+    for name in names:
+        member = DOCS_AUDIT_MEMBER_RE.fullmatch(name)
+        if name == DOCS_AUDIT_FILENAME:
+            base.append(name)
+        elif member:
+            members.append((member.group(1), name))
+        elif _DOCS_AUDIT_CANDIDATE_RE.fullmatch(name):
+            raise ValueError(f"malformed docs audit filename: {name}")
+    return base + [name for _, name in sorted(members)]
+
+
+def docs_audit_files(research_root: Path) -> List[Path]:
+    """Canonical audit files in a research directory, in docs_audit_names order.
+
+    A missing directory has none. A symlinked or non-directory root, and an
+    audit that is a symlink or not a regular file, raise ValueError. Read-only.
+    """
+    if not research_root.exists() and not research_root.is_symlink():
+        return []
+    if research_root.is_symlink() or not research_root.is_dir():
+        raise ValueError(f"docs audit directory must be a real directory: {research_root}")
+    audits = [
+        research_root / name
+        for name in docs_audit_names(entry.name for entry in research_root.iterdir())
+    ]
+    for audit in audits:
+        if audit.is_symlink() or not audit.is_file():
+            raise ValueError(f"docs audit must be a regular file: {audit}")
+    return audits
+
+
+def docs_audit_ruling_rows(text: str) -> List[List[str]]:
+    """The four cells of each `## User rulings` data row, in order.
+
+    Cells split on unescaped pipes and unescape `\\|`; the separator row and a
+    leading header row (one whose Queue # cell is not a number) are skipped.
+    Queue numbers belong to this audit alone. A missing section has no rows; a
+    repeated section or a data row without four cells raises ValueError.
+    """
+    if len(re.findall(r"(?m)^## User rulings[ \t]*$", text)) > 1:
+        raise ValueError("docs audit repeats section: ## User rulings")
+    body = section_body(text, "User rulings")
+    rows: List[List[str]] = []
+    first = True
+    for line in (body or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [
+            cell.replace("\\|", "|").strip()
+            for cell in re.split(r"(?<!\\)\|", stripped.strip("|"))
+        ]
+        if all(_TABLE_SEPARATOR_RE.fullmatch(cell) for cell in cells):
+            continue
+        header, first = first and not cells[0].isdigit(), False
+        if header:
+            continue
+        if len(cells) != 4:
+            raise ValueError(f"User rulings row must have 4 cells: {stripped}")
+        rows.append(cells)
+    return rows
+
+
 def overlapping_paths(left: Sequence[str], right: Sequence[str]) -> List[str]:
     """Return the sorted paths that two task `files` lists both cover.
 

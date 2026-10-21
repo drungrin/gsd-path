@@ -131,7 +131,7 @@ STATUS_BRANCH = re.compile(r"^feature/milestone-(\d{3,})$")
 STATUS_ARCHIVE = re.compile(r"^\.project/archive/(\d{3,})-([a-z0-9][a-z0-9-]*)/?$")
 STATUS_TRANSITIONS = {
     "inspect": frozenset({"inspect", "define"}),
-    "define": frozenset({"define", "research", "plan"}),
+    "define": frozenset({"define", "research", "plan", "inspect"}),
     "research": frozenset({"research", "decide"}),
     "decide": frozenset({"decide", "roadmap", "plan"}),
     "roadmap": frozenset({"roadmap", "define"}),

@@ -125,6 +125,13 @@ LOOKAHEAD_FIXED_ARTIFACTS = {
     "review/PLAN-PANEL.skipped.json": "plan",
 }
 LOOKAHEAD_EVIDENCE_RE = re.compile(r"^research/evidence-[a-z0-9][a-z0-9-]*\.md$")
+# Member inspection artifacts are inspect-owned; their name prefixes never fall
+# through to the generic research evidence rule.
+LOOKAHEAD_MEMBER_CODE_RE = re.compile(r"^research/evidence-codebase-([a-z0-9][a-z0-9-]*)\.md$")
+LOOKAHEAD_MEMBER_AUDIT_RE = re.compile(r"^research/DOCS-AUDIT-([a-z0-9][a-z0-9-]*)\.md$")
+LOOKAHEAD_MEMBER_PREFIXES = ("research/evidence-codebase-", "research/DOCS-AUDIT-")
+MEMBER_INSPECTION_EDGE = ("define", "active", "inspect", "active")
+MEMBER_INSPECTION_EVENT = "member inspection started"
 PROMOTION_RESIDUAL = ".gsd-path-promote-next-residual"
 CHECKPOINT_SCHEMA = "gsd-path/state-checkpoint/v1"
 CHECKPOINT_JOURNAL_NAME = "gsd-path-state-checkpoint.json"
@@ -166,6 +173,7 @@ CROSS_PHASE_TRANSITIONS = {
     ("shipped", "done", "define", "active"),
     ("shipped", "done", "inspect", "active"),
     ("roadmap", "active", "inspect", "active"),
+    MEMBER_INSPECTION_EDGE,
 }
 
 
@@ -1180,6 +1188,92 @@ def _pending_discussion_block(repo: Path, phase: Optional[str]) -> Optional[str]
     return f"pending discussion requires its owner disposition: {owners}; see {repo / '.project/discuss/ANSWERS.md'}"
 
 
+def _members_runtime():
+    if __package__:
+        from . import members
+    else:
+        try:
+            import members
+        except ModuleNotFoundError as error:  # pragma: no cover - package imports used by tests
+            if error.name != "members":
+                raise
+            from scripts import members
+    return members
+
+
+def _handoffs_runtime():
+    if __package__:
+        from . import check_handoffs
+    else:
+        try:
+            import check_handoffs
+        except ImportError:  # pragma: no cover - package imports used by tests
+            from scripts import check_handoffs
+    return check_handoffs
+
+
+def _present(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _member_inspection_entry(
+    repo: Path, state: PipelineState, project_dir: str
+) -> dict[str, object]:
+    """Whether active define/active must re-enter inspect for member evidence.
+
+    `action` is None when re-entry does not apply, `inspect` with the brownfield
+    members that lack evidence, or `block` when membership cannot be verified.
+    Read-only: no fetch and no marker, lock, or ref write."""
+
+    def skip(reason: str) -> dict[str, object]:
+        return {"action": None, "reason": reason}
+
+    if PurePosixPath(project_dir) != PurePosixPath(".project"):
+        return skip("member inspection re-entry is legal only on the active track")
+    if (state.phase, state.status) != ("define", "active"):
+        return skip("member inspection re-entry starts only from define/active")
+    project = repo / ".project"
+    if not _present(project / "MEMBERS.md"):
+        return skip("no MEMBERS.md registers member repositories")
+    if state.branch is None or state.archive is not None:
+        return skip("member inspection requires a bound milestone branch")
+    current = _current_branch(repo)
+    if current != state.branch:
+        return skip(f"current branch {current or '<detached>'} != STATE.branch {state.branch}")
+    if _present(project / "intent" / "INTENT.md"):
+        return skip("INTENT.md exists; member inspection re-entry ends at intent")
+    if _present(project / "CHARTER.md") and not _present(project / "ROADMAP.md"):
+        return skip("CHARTER.md exists without ROADMAP.md; program definition comes first")
+    recovery = _build_recovery().context(repo)
+    if recovery and recovery.get("active"):
+        return skip("build recovery is active")
+    members = _members_runtime()
+    try:
+        scope = members.inspection_scope(repo, ".project")
+    except (members.MembersError, OSError) as error:
+        return {"action": "block", "reason": f"member inspection scope cannot be verified: {error}"}
+    unverifiable = [entry for entry in scope["members"] if entry["verdict"] == "unverifiable"]
+    if unverifiable:
+        return {
+            "action": "block",
+            "reason": "; ".join(
+                f"member {entry['name']} is unverifiable: {entry['reason']}" for entry in unverifiable
+            ),
+        }
+    missing = [
+        entry["name"]
+        for entry in scope["members"]
+        if entry["verdict"] == "brownfield" and entry["state"] == "missing"
+    ]
+    if not missing:
+        return skip("no brownfield member lacks inspection evidence")
+    return {
+        "action": "inspect",
+        "members": missing,
+        "reason": "brownfield members lack inspection evidence: " + ", ".join(missing),
+    }
+
+
 def route_state(repo: Path, project_dir: str = ".project") -> dict[str, object]:
     """Route ordinary phase work only when its pending discussion owner can enter."""
     result = _route_state(repo, project_dir)
@@ -1376,6 +1470,19 @@ def _route_state(repo: Path, project_dir: str = ".project") -> dict[str, object]
             reason=f"state is {phase}/{status}",
         )
     if phase == "define" and status != "done":
+        entry = _member_inspection_entry(resolved, state, project_dir)
+        if entry["action"] == "block":
+            return _route_result(state, "block", reason=str(entry["reason"]))
+        if entry["action"] == "inspect":
+            result = _route_result(
+                state,
+                "run-phase",
+                phase="inspect",
+                mode="members",
+                reason=str(entry["reason"]),
+            )
+            result["route"]["members"] = entry["members"]
+            return result
         return _route_result(
             state,
             "run-phase",
@@ -1661,6 +1768,11 @@ def _validate_transition(
         and PurePosixPath(project_dir) != PurePosixPath(".project")
     ):
         raise PipelineStateError("roadmap re-slice is legal only on the active track")
+    if (
+        (*before_position, *after_position) == MEMBER_INSPECTION_EDGE
+        and PurePosixPath(project_dir) != PurePosixPath(".project")
+    ):
+        raise PipelineStateError("member inspection re-entry is legal only on the active track")
 
     branch_changed = before.branch != after.branch
     initial_binding = before.branch is None and after.branch is not None
@@ -1798,6 +1910,7 @@ def _validate_transition(
             "roadmap re-slice started"
         },
         ("define", "done", "plan", "active"): {"planning started"},
+        MEMBER_INSPECTION_EDGE: {MEMBER_INSPECTION_EVENT},
         ("decide", "done", "plan", "active"): {"planning started"},
         ("plan", "active", "define", "active"): {"plan intent corrections requested"},
         ("plan", "blocked", "define", "active"): {"plan intent corrections requested"},
@@ -1856,17 +1969,31 @@ def transition_state(
             )
             if reason:
                 raise PipelineStateError(reason)
+        if (state.phase, state.status, after.phase, after.status) == MEMBER_INSPECTION_EDGE:
+            entry = _member_inspection_entry(resolved, state, project_dir)
+            if entry["action"] != "inspect":
+                raise PipelineStateError(f"member inspection cannot start: {entry['reason']}")
+        member_coverage = None
+        # Coverage gates only the edge that completes inspect. Leaving inspect/done
+        # for define must not: members registered later, or a lookahead pin whose
+        # bound tip has since landed, would otherwise make define unreachable;
+        # define/active re-enters inspect for missing evidence on the active track.
+        if (
+            (state.phase, after.phase, after.status) == ("inspect", "inspect", "done")
+            and state.status in {"active", "blocked"}
+            and _present(resolved / ".project" / "MEMBERS.md")
+        ):
+            check_handoffs = _handoffs_runtime()
+            try:
+                # Stale evidence on the selected pin's history is advisory only.
+                member_coverage = check_handoffs.validate_inspection_coverage(resolved, project_dir)
+            except check_handoffs.HandoffError as error:
+                raise PipelineStateError(f"inspect handoff failed: {error}") from error
         leaving_define = (state.phase, after.phase, after.status) == ("define", "define", "done")
         if leaving_define or (state.phase in {"research", "decide"} and (
             after.phase != state.phase or after.status == "done"
         )):
-            if __package__:
-                from . import check_handoffs
-            else:
-                try:
-                    import check_handoffs
-                except ImportError:  # pragma: no cover - package imports used by tests
-                    from scripts import check_handoffs
+            check_handoffs = _handoffs_runtime()
             validator = {
                 # Approved intent carries its spec-reach probe tables complete.
                 "define": check_handoffs.validate_intent_probes,
@@ -1897,13 +2024,16 @@ def transition_state(
                 _build_recovery().MARKER + json.dumps(recovery, sort_keys=True),
             )
         _atomic_write(path, rendered)
-    return {
+    result = {
         "schema": STATE_SCHEMA,
         "status": "transitioned",
         "path": str(path),
         "previous": before,
         "state": after.json(),
     }
+    if member_coverage is not None:
+        result["member_coverage"] = member_coverage
+    return result
 
 
 def _pipeline_git():
@@ -2436,6 +2566,15 @@ def _validate_next_layout(next_root: Path, state: PipelineState) -> None:
             continue
         artifact = relative.as_posix()
         required_phase = LOOKAHEAD_FIXED_ARTIFACTS.get(artifact)
+        if required_phase is None and artifact.startswith(LOOKAHEAD_MEMBER_PREFIXES):
+            if not (
+                LOOKAHEAD_MEMBER_CODE_RE.fullmatch(artifact)
+                or LOOKAHEAD_MEMBER_AUDIT_RE.fullmatch(artifact)
+            ):
+                raise PipelineStateError(
+                    f"lookahead has malformed member inspection artifact: {path}"
+                )
+            required_phase = "inspect"
         if required_phase is None and LOOKAHEAD_EVIDENCE_RE.fullmatch(artifact):
             required_phase = "research"
         if (

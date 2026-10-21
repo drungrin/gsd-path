@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import shutil
 import sys
@@ -11,6 +12,7 @@ from unittest import mock
 
 from scripts import pipeline_git, pipeline_state, state_checkpoint, state_promote
 from tests.test_task_briefs import PLAN_WAVE, TASK_TEMPLATE
+from tests._platform import posix_only, requires_symlink
 
 PIPELINE_STATE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "pipeline_state.py"
 
@@ -892,6 +894,165 @@ class PipelineStateTests(unittest.TestCase):
             result = pipeline_state.validate_state(repo, ".project/next")
 
             self.assertEqual(result["state"]["phase"], "inspect")
+
+    def next_layout(self, repo: Path, phase: str, *artifacts: str) -> Path:
+        next_root = repo / ".project" / "next"
+        next_root.mkdir(parents=True, exist_ok=True)
+        (next_root / "STATE.md").write_bytes(
+            state_text(phase=phase, status="active").encode("utf-8"),
+        )
+        for artifact in artifacts:
+            path = next_root / artifact
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes("# Fixture\n".encode("utf-8"))
+        return next_root
+
+    def test_next_layout_member_files_are_inspect_owned(self) -> None:
+        artifacts = (
+            "research/evidence-codebase.md",
+            "research/DOCS-AUDIT.md",
+            "research/evidence-codebase-web.md",
+            "research/DOCS-AUDIT-web.md",
+            "research/evidence-codebase-api-v2.md",
+            "research/DOCS-AUDIT-9api.md",
+        )
+        for phase in pipeline_state.LOOKAHEAD_PHASES:
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self.next_layout(repo, phase, *artifacts)
+
+                result = pipeline_state.validate_state(repo, ".project/next")
+
+                self.assertEqual(result["state"]["phase"], phase)
+
+    def test_next_layout_member_code_precedes_generic_evidence_regex(self) -> None:
+        for artifact, owner in (
+            ("research/evidence-codebase-web.md", "inspect"),
+            ("research/evidence-stack.md", "research"),
+            ("research/evidence-codebases.md", "research"),
+        ):
+            for phase in ("inspect", "define", "research"):
+                with self.subTest(artifact=artifact, phase=phase), tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp)
+                    self.next_layout(repo, phase, artifact)
+                    owned = pipeline_state.LOOKAHEAD_PHASES.index(owner) <= (
+                        pipeline_state.LOOKAHEAD_PHASES.index(phase)
+                    )
+                    if owned:
+                        pipeline_state.validate_state(repo, ".project/next")
+                        continue
+                    with self.assertRaisesRegex(
+                        pipeline_state.PipelineStateError,
+                        f"lookahead has artifact not owned by {phase}: .*{artifact}$",
+                    ):
+                        pipeline_state.validate_state(repo, ".project/next")
+
+    def test_next_layout_rejects_malformed_member_names(self) -> None:
+        for artifact in (
+            "research/evidence-codebase-.md",
+            "research/evidence-codebase--web.md",
+            "research/evidence-codebase-Web.md",
+            "research/evidence-codebase-web_api.md",
+            "research/evidence-codebase-web.md.bak",
+            "research/evidence-codebase-web.lock",
+            "research/DOCS-AUDIT-.md",
+            "research/DOCS-AUDIT-Web.md",
+            "research/DOCS-AUDIT-web.txt",
+            "research/DOCS-AUDIT-web.inventory.md",
+        ):
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self.next_layout(repo, "plan", artifact)
+
+                with self.assertRaisesRegex(
+                    pipeline_state.PipelineStateError,
+                    f"lookahead has malformed member inspection artifact: .*{artifact}$",
+                ):
+                    pipeline_state.validate_state(repo, ".project/next")
+
+    def test_next_layout_rejects_nested_member_dirs_locks_inventory_and_members(self) -> None:
+        cases = (
+            ("research/web/evidence-codebase.md", "unowned directory"),
+            ("research/evidence-codebase-web/map.md", "unowned directory"),
+            ("research/members/DOCS-AUDIT-web.md", "unowned directory"),
+            ("build/members.json", "unowned directory"),
+            ("MEMBERS.md", "artifact not owned by plan"),
+            ("research/members.json", "artifact not owned by plan"),
+            ("research/inventory-web.txt", "artifact not owned by plan"),
+            ("research/.evidence-codebase-web.md.gsd-path-tmp", "artifact not owned by plan"),
+            ("research/.DOCS-AUDIT-web.md.gsd-path-tmp", "artifact not owned by plan"),
+            ("research/.gsd-path-inspect.lock", "artifact not owned by plan"),
+        )
+        for artifact, message in cases:
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self.next_layout(repo, "plan", artifact)
+
+                with self.assertRaisesRegex(pipeline_state.PipelineStateError, message):
+                    pipeline_state.validate_state(repo, ".project/next")
+
+    def test_next_layout_rejects_future_phase_artifacts_beside_member_files(self) -> None:
+        members_pair = ("research/evidence-codebase-web.md", "research/DOCS-AUDIT-web.md")
+        for phase, artifact in (
+            ("inspect", "intent/INTENT.md"),
+            ("inspect", "research/evidence-stack.md"),
+            ("define", "research/RESEARCH.md"),
+            ("research", "research/SYNTHESIS.md"),
+            ("decide", "plan/PLAN.md"),
+            ("decide", "tasks/T001-change.md"),
+            ("decide", "review/PLAN-PANEL.md"),
+        ):
+            with self.subTest(phase=phase, artifact=artifact), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self.next_layout(repo, phase, *members_pair, artifact)
+
+                with self.assertRaisesRegex(
+                    pipeline_state.PipelineStateError,
+                    f"lookahead has artifact not owned by {phase}: .*{artifact}$",
+                ):
+                    pipeline_state.validate_state(repo, ".project/next")
+
+    @requires_symlink
+    def test_next_layout_rejects_symlinked_member_artifacts(self) -> None:
+        for artifact in ("research/evidence-codebase-web.md", "research/DOCS-AUDIT-web.md"):
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                next_root = self.next_layout(repo, "inspect")
+                target = repo / "outside.md"
+                target.write_bytes("# Outside\n".encode("utf-8"))
+                (next_root / "research").mkdir()
+                (next_root / artifact).symlink_to(target)
+
+                with self.assertRaisesRegex(
+                    pipeline_state.PipelineStateError,
+                    "lookahead artifacts must not be symlinks",
+                ):
+                    pipeline_state.validate_state(repo, ".project/next")
+
+    @posix_only
+    def test_next_layout_rejects_special_member_artifacts(self) -> None:
+        for artifact in ("research/evidence-codebase-web.md", "research/DOCS-AUDIT-web.md"):
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                next_root = self.next_layout(repo, "inspect")
+                (next_root / "research").mkdir()
+                os.mkfifo(next_root / artifact)
+
+                with self.assertRaisesRegex(
+                    pipeline_state.PipelineStateError,
+                    "lookahead has unsafe artifact",
+                ):
+                    pipeline_state.validate_state(repo, ".project/next")
+
+    def test_next_layout_allows_detached_pending_audit_without_members(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.next_layout(repo, "define", "research/DOCS-AUDIT-removed.md")
+            self.assertFalse((repo / ".project" / "MEMBERS.md").exists())
+
+            result = pipeline_state.validate_state(repo, ".project/next")
+
+            self.assertEqual(result["state"]["phase"], "define")
 
     def test_route_keeps_approved_lookahead_unbound(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

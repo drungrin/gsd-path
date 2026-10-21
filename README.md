@@ -457,6 +457,16 @@ the field means `main`. See [default branch](WORKFLOW.md#default-branch).
   repository uses `main`). For optional
   guard hooks, install them in the member with
   `npx @opengsd/gsd-path@latest --member-of <coordinator> --project <member>`.
+- Before intent, inspect maps and audits each brownfield member into
+  `research/evidence-codebase-<member>.md` and
+  `research/DOCS-AUDIT-<member>.md`, read from a pinned member commit
+  (`Member HEAD`, normally its `origin/<default>`), never your team's working
+  checkout. Members added after initialization are routed there from
+  `define/active` while no INTENT.md exists; members added after INTENT.md
+  wait for the next milestone. A greenfield coordinator skips its own pair,
+  and a member Path cannot verify blocks with its reason. Define takes each
+  member's rulings into that member's audit; the planner uses each map's
+  conventions for that repo's tasks.
 - The planner gives each member task `repo: <member>`; one task changes one
   repo. Project Verify runs from the coordinator and reaches a member as
   `../<member>`.
@@ -467,8 +477,12 @@ the field means `main`. See [default branch](WORKFLOW.md#default-branch).
   each member in its own `direct` or `pull-request` mode and tags it
   `milestone/<project>-<archive>`, then the ship commit records each member.
   A pull-request member waits for your merge or proven squash, not general
-  rebase. The next milestone retires the member branches.
-- `members.py detect --checkout <path>` reports whether a repo is a member.
+  rebase. The next milestone retires the member branches. Pending member
+  doc rulings carry forward like the coordinator's; a removed member's queue
+  is kept and labelled until that member returns.
+- `members.py detect --checkout <path>` reports whether a repo is a member;
+  `members.py inspection --repo <coordinator>` reports each member's pin and
+  evidence state without fetching or writing.
 
 Azure Repos members accept SSH and HTTPS URLs, including URL-encoded project
 names, for example:
@@ -574,6 +588,7 @@ cleanup does not promise physical removal of older provider-side PR iterations.
 .project/
   STATE.md                    phase, branch, archive transaction
   REPOSITORY.md               persistent new-GitHub checkout/worktree binding
+  MEMBERS.md                  member repositories (multi-repo); never archives
   CHARTER.md                  program scope and vetoes; never archives
   ROADMAP.md                  milestone slicing; never archives
   SYNTHESIS.md                program decisions (top level); never archives
@@ -582,6 +597,8 @@ cleanup does not promise physical removal of older provider-side PR iterations.
   research/
     evidence-codebase.md      brownfield ground truth (inspect)
     DOCS-AUDIT.md             doc verdicts + remediation queue
+    evidence-codebase-<member>.md, DOCS-AUDIT-<member>.md
+                              the same pair per brownfield member
     RESEARCH.md               dispatch manifest (dimensions researched/skipped)
     evidence-domain.md        domain evidence
     evidence-stack.md         stack evidence

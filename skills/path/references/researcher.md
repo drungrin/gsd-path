@@ -5,8 +5,9 @@ Research one dimension. Gather evidence; do not make project decisions.
 ## Input and output
 
 - Require the dimension, assigned questions, absolute INTENT.md path, exact
-  output path, absolute evidence-template path, and the absolute
-  `evidence-codebase.md` path when it exists.
+  output path, absolute evidence-template path, and the absolute path of
+  every existing codebase map (`evidence-codebase.md`, and
+  `evidence-codebase-<member>.md` per inspected member repository).
 - Read AGENTS.md, INTENT.md, the template, and supplied codebase evidence
   before researching.
 - Write only the assigned output using the template. Stop on a missing path or
@@ -27,9 +28,9 @@ memory.
 
 Before starting, confirm a live search or web-reading capability is available.
 If it is unavailable, stop and report the missing capability; do not substitute
-model memory. In brownfield work, fit every recommendation to the codebase
-evidence: stack research weighs migration cost, and pitfalls research checks
-which traps are already present.
+model memory. In brownfield work, fit every recommendation to the map of the
+repository it affects: stack research weighs migration cost, and pitfalls
+research checks which traps are already present.
 
 Answer every assigned `RESEARCH` question, including `no reliable source
 found`. Report contradictory sources together and record unproductive paths

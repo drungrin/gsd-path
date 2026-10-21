@@ -409,12 +409,15 @@ def remove_interrupted_discussion_copies(active_root: Path, archive: Path) -> No
 
 
 def remove_interrupted_carry_copy(active_root: Path, archive: Path) -> None:
-    archived_audit = archive / "research" / "DOCS-AUDIT.md"
-    if archive_milestone.pending_ruling_count(archived_audit) == 0:
+    """Remove the known temporary of each archived pending audit, never another path."""
+    pending = archive_milestone.pending_audits(archive / "research")
+    research = active_root / "research"
+    if not pending or research.is_symlink() or not research.is_dir():
         return
-    temporary_path = active_root / "research" / CARRY_TEMP_NAME
-    if temporary_path.exists() or temporary_path.is_symlink():
-        temporary_path.unlink()
+    for audit, _ in pending:
+        temporary_path = research / archive_milestone.carry_temp_name(audit.name)
+        if temporary_path.exists() or temporary_path.is_symlink():
+            temporary_path.unlink()
 
 
 def require_transaction_context(
@@ -1157,6 +1160,12 @@ def archive_file_inventory(archive: Path) -> Sequence[str]:
     return sorted(contents)
 
 
+def manifest_carry_text(archive: Path) -> str:
+    """MANIFEST `Carried forward:` value: pending rows summed over every archived audit."""
+    carried_forward = archive_milestone.pending_audit_count(archive / "research")
+    return "none" if carried_forward == 0 else f"{carried_forward} DOCS-AUDIT ruling(s)"
+
+
 def render_manifest(repo: Path) -> dict:
     project = repo.resolve()
     active_root = archive_milestone.require_project_layout(project)
@@ -1186,12 +1195,7 @@ def render_manifest(repo: Path) -> dict:
     validate_gap_reviews(archive, reviewed_head)
     tasks, attested = archive_milestone.landed_task_evidence(project, archive / "tasks", reviewed_head)
     cycles = review_cycle_counts(archive)
-    carried_forward = archive_milestone.pending_ruling_count(archive / "research" / "DOCS-AUDIT.md")
-    carry_text = (
-        "none"
-        if carried_forward == 0
-        else f"{carried_forward} DOCS-AUDIT ruling(s)"
-    )
+    carry_text = manifest_carry_text(archive)
     criteria_rows = "\n".join(
         f"| {manifest_cell(criterion)} | {verdict} | {manifest_cell(evidence)} |"
         for criterion, verdict, evidence in criteria
@@ -1280,11 +1284,7 @@ def validate_manifest(project: Path, archive: Path, state: PipelineState) -> tup
     ):
         raise ArchiveError("manifest wave, task, or review-cycle counts do not match the archive")
 
-    carried_forward = archive_milestone.pending_ruling_count(archive / "research" / "DOCS-AUDIT.md")
-    expected_carry = (
-        "none" if carried_forward == 0 else f"{carried_forward} DOCS-AUDIT ruling(s)"
-    )
-    if fields["Carried forward:"] != expected_carry:
+    if fields["Carried forward:"] != manifest_carry_text(archive):
         raise ArchiveError("manifest carried-forward count does not match DOCS-AUDIT.md")
 
     criteria_start = lines.index("## Success criteria at ship") + 1
@@ -1370,7 +1370,6 @@ if __package__:  # imported as scripts.discussion_validate
     from . import archive_milestone
     from .archive_milestone import (
         ANSWER_HEADING_PATTERN,
-        CARRY_TEMP_NAME,
         DIALOGUE_HEADING_PATTERN,
         DISCUSSION_FILES,
         DISCUSSION_PHASES,
@@ -1394,7 +1393,6 @@ else:  # standalone script or sibling import
     import archive_milestone
     from archive_milestone import (
         ANSWER_HEADING_PATTERN,
-        CARRY_TEMP_NAME,
         DIALOGUE_HEADING_PATTERN,
         DISCUSSION_FILES,
         DISCUSSION_PHASES,

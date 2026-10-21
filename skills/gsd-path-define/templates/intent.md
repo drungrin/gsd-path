@@ -102,11 +102,14 @@ paragraph the user signed off on — do not edit without a new sign-off.>
 
 ## Current state (brownfield only)
 
-<!-- Filled from evidence-codebase.md during brownfield define. Omit the
-     section entirely for greenfield projects. -->
+<!-- Filled from the codebase maps during brownfield define. Omit the
+     section entirely for greenfield projects. With members, write What
+     exists and Ground truth once per inspected repo, prefixed `<member>:`
+     (`web: ...`); member files are evidence-codebase-<member>.md and
+     DOCS-AUDIT-<member>.md. -->
 - **What exists**: <stack, architecture, maturity in 2–3 sentences>
 - **Must not break**: <existing behavior the user ruled protected — these are vetoes>
-- **Doc-vs-code rulings**: <each DOCS-AUDIT conflict → user's ruling: fix-doc | fix-code | accept-drift>
+- **Doc-vs-code rulings**: <each conflict as `<audit file> #<Queue #>` → user's ruling: fix-doc | fix-code | accept-drift>
 - **Ground truth**: `<track>/research/evidence-codebase.md`, `<track>/research/DOCS-AUDIT.md`
 
 ## Risks

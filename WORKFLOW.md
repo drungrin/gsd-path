@@ -64,7 +64,7 @@ cancellation is a blocked result, not a skipped result.
 
 | Stage | Independent children | Scheduling | Parent hand-off |
 | --- | --- | --- | --- |
-| inspect | codebase mapper, docs auditor | two concurrent briefs | validate and transfer both artifacts |
+| inspect | codebase mapper, docs auditor; one pair per brownfield member | concurrent briefs | validate and transfer every artifact |
 | define | none | coordinator-led user gate | write approved INTENT.md (program mode: CHARTER.md) |
 | research | assigned dimensions | concurrent up to capacity, then batches | validate each evidence file as it returns; RESEARCH.md gate after all settle |
 | decide | one decider | serial | validate SYNTHESIS.md |
@@ -149,7 +149,8 @@ transaction.
 **Input:** an existing codebase with no `.project/STATE.md`, or owned v2 state
 at `inspect/active|blocked`. **Output:**
 `.project/research/evidence-codebase.md` and
-`.project/research/DOCS-AUDIT.md`.
+`.project/research/DOCS-AUDIT.md`, plus one pair per brownfield member
+(Members below).
 
 When STATE.md is absent, the router runs the bundled
 `scripts/detect_project.py initialize --repo <absolute-root> --template
@@ -190,10 +191,40 @@ The orchestrator presents ground truth in one screen — what the project is,
 what demonstrably works, where docs and code disagree — then enters the
 define in brownfield mode. Inspect changes nothing outside `.project/`.
 
-**Gate:** both artifacts match their templates; every claim has a verdict and
-every claimless doc appears once in the descriptive list, together covering
-the frozen inventory exactly; ground truth was presented before any question
-was asked.
+**Members.** With `.project/MEMBERS.md`, each brownfield member gets its own
+pair, `research/evidence-codebase-<member>.md` and
+`research/DOCS-AUDIT-<member>.md`, headed `Repo root` (its MEMBERS.md
+Checkout), `Member`, `Default branch`, and `Member HEAD` (the 40-hex pin);
+the audit also records `Audited HEAD` equal to that pin and `Alignment mode:
+no`. Inventory, claims, and commands come from the pinned tree in a member
+sidecar, never the team's working checkout. The active track pins the local
+`origin/<recorded default>`, fetched by inspect before preparation; a
+lookahead track pins a member the active build locks at its bound branch
+tip, and any other member at origin. Status and route never fetch. A
+greenfield coordinator skips its own pair; a brownfield one keeps it.
+Because `members.py add` needs a STATE, members usually join after
+initialization: `bind-initial` accepts the untracked MEMBERS.md, and at
+`define/active` with no INTENT.md and either no CHARTER.md or a ROADMAP.md,
+`route` returns `run-phase` `inspect` with `mode: members` for brownfield
+members lacking evidence (event `member inspection started`). A member's
+mapper and auditor share one command checkout, so they run in turn:
+`workflow_run.py prepare-inspect` dispatches the maps (and any coordinator
+pair), `advance-inspect` gates each map and starts that member's auditor at
+the same pin, and `finish-inspect` gates, collects, and retires everything.
+Distinct members run in parallel. Inspect
+completes only when every brownfield member has a valid pair; an unverifiable
+member (missing checkout, marker, origin ref, or a malformed lookahead lock)
+blocks. A moved pin makes evidence stale, reported as advisory at define,
+plan, and build start and never re-inspected automatically; evidence whose
+`Member HEAD` is not on the pin ref's history counts as missing and is
+re-inspected. A member added
+after INTENT.md exists is not inspected in that milestone. Without
+MEMBERS.md, inspect is unchanged.
+
+**Gate:** both artifacts, and every member pair, match their templates;
+every claim has a verdict and every claimless doc appears once in the
+descriptive list, together covering the frozen inventory exactly; ground
+truth was presented before any question was asked.
 
 ## Phase 1 — Define (`gsd-path-define`)
 
@@ -209,10 +240,12 @@ correction, never asked. Milestone + brownfield still does not re-interview
 charter or roadmap scope; it presents ground truth, fills Current state, and
 collects doc-vs-code rulings before confirmation. Every doc-vs-code conflict from the audit gets a
 user ruling (`fix-doc`, `fix-code`, or `accept-drift`) recorded verbatim in
-both INTENT.md and DOCS-AUDIT.md's durable User rulings table. Actionable rows
-start at `planned: no`; accepted
-`fix-code` items become scope. The codebase map fills INTENT.md's
-`## Current state` so downstream phases inherit ground truth.
+both INTENT.md and the durable User rulings table of the audit that raised
+it; a ruling's identity is (audit file, Queue #), so member queues never
+merge. Actionable rows start at `planned: no`; accepted
+`fix-code` items become scope. The codebase maps fill INTENT.md's
+`## Current state`, one entry per inspected repo, so downstream phases
+inherit ground truth.
 
 Cover the problem, users, observable success, scope in, scope out, constraints,
 risks, and surfaces — what a person opens, sees, or types into to get the
@@ -264,8 +297,10 @@ file per dispatched dimension, drawn from the four standard dimensions:
 - `research/evidence-pitfalls.md`
 - `research/evidence-similar.md`
 
-Brownfield: `research/evidence-codebase.md` from inspect counts as a
-fifth standard input downstream — researchers read it so recommendations
+Brownfield: `research/evidence-codebase.md` from inspect, and each member's
+`research/evidence-codebase-<member>.md`, counts as a fifth standard input
+downstream (`codebase` and `codebase-*` are reserved, never research
+dimensions) — researchers read the maps so recommendations
 fit the code that exists (the stack researcher weighs migration cost, the
 pitfalls researcher checks which traps are already sprung).
 
@@ -331,7 +366,8 @@ exists).
 ## Phase 4 — Plan (`gsd-path-plan`)
 
 **Input:** both `.project/intent/INTENT.md` and
-`.project/research/SYNTHESIS.md`, plus relevant existing code. **Output:**
+`.project/research/SYNTHESIS.md`, plus every codebase map (its conventions
+bind that repo's tasks) and relevant existing code. **Output:**
 `.project/plan/PLAN.md` and one full task file per task in `.project/tasks/`.
 
 Order work by risk and dependency:
@@ -510,14 +546,19 @@ or non-ignored `.DS_Store` receives normal checks and is listed if archived.
 Other ignored archive files still block shipment, and committed archives remain
 untouched.
 
-One exception: a DOCS-AUDIT.md with pending `planned: no` rulings is copied
-atomically back into a recreated `research/` so the alignment queue survives;
-the archived original keeps full history. Active and archived research may
-coexist only for that byte-identical carry-forward. When a lookahead track
-brings its own `research/`, `promote-next` removes the carry-forward in the
-promotion commit, but only if the lookahead DOCS-AUDIT.md keeps every
-carry-forward ruling (a pending row may gain a `T###`); otherwise promotion
-stops.
+One exception: every audit — `DOCS-AUDIT.md` and each
+`DOCS-AUDIT-<member>.md` — with pending `planned: no` rulings is copied whole
+and atomically back into a recreated `research/` so its alignment queue
+survives, at ship and at milestone abandon; the archived originals keep full
+history. The manifest's `N DOCS-AUDIT ruling(s)` counts rows summed over
+those audits. Active and archived research may coexist only for that
+byte-identical carry-forward set. A removed member's queue still carries,
+labelled `removed member <name>`; it is never retargeted or dropped, and
+restoring that member identity makes it plannable again. When a lookahead
+track brings its own `research/`, `promote-next` replaces the carry-forward
+in the promotion commit, but only if the lookahead keeps each carried audit
+under the same name with every one of its rulings in order (a pending row may
+gain a `T###`); otherwise promotion stops before any change.
 
 Archives become read-only when committed. No phase may modify a committed
 archive; the next milestone's inspection may read it. A retry with a persisted
@@ -810,20 +851,23 @@ check history) → verdict with recorded evidence → remediation queue. With
 must have a proven landing commit and a passing Verify, SYNTHESIS decisions must
 match the code's actual shape, STATE must agree with task
 frontmatter. Useful mid-project as a drift check before a milestone review.
-The auditor never edits anything.
+The auditor never edits anything. Standalone runs audit the coordinator only;
+member audits come only from inspect, at the member's pin.
 
 **Audit-to-plan path.** Standalone runs end with a ruling walk: the user
 rules `fix-code`, `fix-doc`, or `accept-drift` on each queue item, recorded
 verbatim in DOCS-AUDIT.md (`accept-drift` suppresses the item in future
 audits). Actionable rulings are queued, not executed: each sits in
-DOCS-AUDIT.md marked `planned: no` until the user is ready. The audit
-offers alignment once at close; after that, the `gsd-path` router mentions the queue in
-its status line and `gsd-path-plan` offers — per item, before any planning —
+its audit marked `planned: no` until the user is ready. The audit
+offers alignment once at close; after that, the `gsd-path` router mentions
+every audit's queue in its status line and `gsd-path-plan` offers — per item,
+named by source audit, before any planning —
 to absorb queued rulings: folded into a normal plan as ordinary tasks, or
 appended via **patch mode** as one gated wave on the approved PLAN.md (one
 full task per finding, evidence inlined, `fix-doc` tasks verified by
-re-running the audit's claim check). Absorbed rulings get their task id in
-the queue row; declined ones stay queued and are offered again. The queue
+re-running the audit's claim check; a member finding becomes a
+`repo: <member>` task). Absorbed rulings get their task id in the originating
+audit's row; declined ones stay queued and are offered again. The queue
 never blocks the pipeline and never enters a plan wholesale unseen. Builds
 from patch waves run the normal review-gate loop. A shipped milestone never
 reopens because its plan is archived; start and inspect a new milestone, then
@@ -846,6 +890,8 @@ with their exact ordered source-file and row list.
   intent/INTENT.md           approved intent and hard constraints
   research/evidence-codebase.md   brownfield ground truth (inspect)
   research/DOCS-AUDIT.md     doc-vs-code verdicts and remediation queue
+  research/evidence-codebase-<member>.md, research/DOCS-AUDIT-<member>.md
+                             the same pair per brownfield member, at its pin
   research/RESEARCH.md       research dispatch/question/output manifest
   research/evidence-*.md     evidence for dispatched dimensions; RESEARCH.md records skips
   research/SYNTHESIS.md      decision artifact; authoritative after decide gate

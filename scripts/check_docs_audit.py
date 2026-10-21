@@ -34,17 +34,31 @@ audit declares `Alignment mode: yes` — everything else under `.project/`.
 `Repo root` names the primary repository. When the audit is gated inside a
 disposable sidecar, pass that sidecar as `--repo` and the primary as
 `--primary`; the header then stays valid after the sidecar is retired.
+
+Member mode (`--member NAME --pin SHA`, optional `--project-dir .project` or
+`.project/next`) gates `<project-dir>/research/DOCS-AUDIT-<name>.md` in the
+coordinator artifact tree `--repo`; `--primary` (default `--repo`) still names
+the coordinator whose MEMBERS.md registers the member. The member header
+(Repo root = MEMBERS Checkout, Member, Default branch, Member HEAD = pin) and
+`Audited HEAD` must name the frozen pin, and `Alignment mode` must be no. The
+inventory is the Markdown of the pinned commit tree, read from the member's
+object database (never its working tree, index, HEAD, or untracked files); an
+explicit `--inventory` must equal it. A `--prior-audit` must belong to the same
+member, and `--changed` must equal the diff from its Member HEAD to the pin.
 """
 
 import argparse
 import json
+import os
+import posixpath
 import re
+import stat
 import subprocess
 import sys
 sys.dont_write_bytecode = True
 from datetime import date
-from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from pathlib import Path, PurePosixPath
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
 
 DEFAULT_AUDIT = ".project/research/DOCS-AUDIT.md"
 TYPES = ("command", "feature", "structure", "status", "config", "integration")
@@ -58,6 +72,9 @@ HEAD_PATTERN = re.compile(r"[0-9a-f]{40}|none")
 CARRIED = "unchanged: "  # Evidence prefix of a row carried forward from the prior audit
 SECTION_PATTERN = re.compile(r"^## (.+?)\s*$", re.M)
 PLACEHOLDER_PATTERN = re.compile(r"^<[^>]*>$")  # a cell left as the template placeholder
+PIN_PATTERN = re.compile(r"[0-9a-f]{40}")
+MEMBER_PROJECT_DIRS = (".project", ".project/next")
+REGULAR_BLOB_MODES = (b"100644", b"100755")
 
 
 class AuditError(RuntimeError):
@@ -146,18 +163,112 @@ def derive_inventory(repo: Path, audit_relative: str, alignment: bool) -> List[s
         raise AuditError("cannot derive inventory: git ls-files failed; pass --inventory")
     paths = set()
     for raw in listed.stdout.decode("utf-8").split("\0"):
-        if not raw or raw == audit_relative:
-            continue
-        parts = raw.split("/")
-        if parts[0] in (".git", "node_modules") or "node_modules" in parts:
-            continue
-        if _installed_skill(parts):
-            continue
-        if raw.startswith(".project/archive/"):
-            continue
-        if raw.startswith(".project/") and not alignment:
+        if not raw or _excluded(raw, audit_relative, alignment):
             continue
         paths.add(raw)
+    return sorted(paths)
+
+
+def _excluded(raw: str, audit_relative: str, alignment: bool) -> bool:
+    """The inventory exclusions shared by checkout and pinned-revision discovery."""
+    if raw == audit_relative:
+        return True
+    parts = raw.split("/")
+    if parts[0] in (".git", "node_modules") or "node_modules" in parts:
+        return True
+    if _installed_skill(parts):
+        return True
+    if raw.startswith(".project/archive/"):
+        return True
+    return raw.startswith(".project/") and not alignment
+
+
+def _member_helpers():
+    """Slice-1 member identity, evidence, and Git object helpers; member mode only."""
+    try:
+        if __package__:
+            from . import check_handoffs, detect_project, members
+        else:
+            import check_handoffs
+            import detect_project
+            import members
+    except ImportError as error:
+        raise AuditError(
+            f"member mode requires the bundled members, check_handoffs, and detect_project helpers: {error}"
+        ) from error
+    return check_handoffs, detect_project, members
+
+
+def derive_revision_inventory(
+    checkout: Path,
+    pin: str,
+    audit_relative: str,
+    alignment: bool = False,
+    member: Optional[str] = None,
+) -> List[str]:
+    """Markdown in the commit tree at `pin`, read only from the checkout's object database.
+
+    Never consults the working tree, index, HEAD, or untracked files. A
+    Markdown symlink whose target, resolved from the link's directory, is an
+    inventoried regular Markdown blob of the same tree (`CLAUDE.md ->
+    AGENTS.md`) is an alias: the target is audited and the link is left out.
+    Any other inventoried Markdown entry that is not a regular blob blocks;
+    an empty inventory is valid."""
+    who = f"member {member}" if member else "revision"
+    if not PIN_PATTERN.fullmatch(pin):
+        raise AuditError(f"cannot derive {who} inventory: pin must be a full 40-character commit SHA, not {pin!r}")
+    _, detect_project, _ = _member_helpers()
+    try:
+        listing = detect_project.revision_git(
+            Path(checkout), "ls-tree", "-r", "-z", "--full-tree", f"{pin}^{{commit}}"
+        )
+    except detect_project.DetectError as error:
+        raise AuditError(f"cannot derive {who} inventory at {pin}: git ls-tree failed") from error
+    entries: Dict[str, tuple] = {}
+    for record in listing.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, encoded = record.split(b"\t", 1)
+            mode, kind, sha = metadata.split(b" ")
+        except ValueError as error:
+            raise AuditError(f"cannot derive {who} inventory at {pin}: git ls-tree returned malformed data") from error
+        if not encoded.endswith(b".md"):
+            continue
+        try:
+            raw = encoded.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise AuditError(f"cannot derive {who} inventory at {pin}: non-UTF-8 Markdown path {encoded!r}") from error
+        if any(part in ("", ".", "..") for part in raw.split("/")):
+            raise AuditError(f"cannot derive {who} inventory at {pin}: unsafe tree path {raw!r}")
+        if _excluded(raw, audit_relative, alignment):
+            continue
+        entries[raw] = (mode, kind, sha)
+
+    def regular(path: str) -> bool:
+        found = entries.get(path)
+        return found is not None and found[1] == b"blob" and found[0] in REGULAR_BLOB_MODES
+
+    def alias_target(path: str, sha: bytes) -> Optional[str]:
+        """The in-tree regular Markdown blob a symlink names, or None."""
+        try:
+            target = detect_project.revision_git(Path(checkout), "cat-file", "blob", sha.decode("ascii"))
+            text = target.decode("utf-8")
+        except (detect_project.DetectError, UnicodeDecodeError):
+            return None
+        if not text or text.startswith("/") or "\0" in text or "\\" in text:
+            return None
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), text))
+        if resolved in (".", "..") or resolved.startswith("../") or not resolved.endswith(".md"):
+            return None
+        return resolved if regular(resolved) else None
+
+    paths = []
+    for raw, (mode, kind, sha) in entries.items():
+        if regular(raw):
+            paths.append(raw)
+        elif not (kind == b"blob" and mode == b"120000" and alias_target(raw, sha)):
+            raise AuditError(f"{who} pinned Markdown is not a regular blob: {raw}")
     return sorted(paths)
 
 
@@ -314,6 +425,30 @@ def _check_queue_number_history(
             )
 
 
+def _audit_header(text: str) -> Dict[str, str]:
+    header_rows = HEADER_PATTERN.findall(text)
+    header = {}
+    for key in ("Repo root", "Audited", "Audited HEAD", "Alignment mode"):
+        values = [value for found_key, value in header_rows if found_key == key]
+        if len(values) != 1:
+            raise AuditError(f"header must contain exactly one {key} line")
+        header[key] = values[0]
+    return header
+
+
+def _header_alignment(header: Dict[str, str]) -> bool:
+    try:
+        date.fromisoformat(header["Audited"])
+    except ValueError as error:
+        raise AuditError("Audited must be an ISO date") from error
+    if not HEAD_PATTERN.fullmatch(header["Audited HEAD"]):
+        raise AuditError("Audited HEAD must be a 40-hex commit or none")
+    alignment_value = header["Alignment mode"].split("—")[0].strip().lower()
+    if alignment_value not in ("yes", "no"):
+        raise AuditError(f"Alignment mode must be yes or no, found: {header['Alignment mode']}")
+    return alignment_value == "yes"
+
+
 def validate(
     repo: Path,
     audit_relative: str,
@@ -327,27 +462,29 @@ def validate(
         raise AuditError(f"missing real audit file: {audit_relative}")
     text = audit.read_text(encoding="utf-8")
 
-    header_rows = HEADER_PATTERN.findall(text)
-    header = {}
-    for key in ("Repo root", "Audited", "Audited HEAD", "Alignment mode"):
-        values = [value for found_key, value in header_rows if found_key == key]
-        if len(values) != 1:
-            raise AuditError(f"header must contain exactly one {key} line")
-        header[key] = values[0]
+    header = _audit_header(text)
     declared_root = Path(header["Repo root"])
     if not declared_root.is_absolute() or declared_root.resolve() != (primary or repo).resolve():
         raise AuditError("Repo root does not match --primary (default --repo)")
-    try:
-        date.fromisoformat(header["Audited"])
-    except ValueError as error:
-        raise AuditError("Audited must be an ISO date") from error
-    if not HEAD_PATTERN.fullmatch(header["Audited HEAD"]):
-        raise AuditError("Audited HEAD must be a 40-hex commit or none")
-    alignment_value = header["Alignment mode"].split("—")[0].strip().lower()
-    if alignment_value not in ("yes", "no"):
-        raise AuditError(f"Alignment mode must be yes or no, found: {header['Alignment mode']}")
-    alignment = alignment_value == "yes"
+    alignment = _header_alignment(header)
+    return _validate_body(
+        text,
+        alignment,
+        lambda: sorted(inventory) if inventory is not None else derive_inventory(repo, audit_relative, alignment),
+        audit_relative,
+        prior_text,
+        changed,
+    )
 
+
+def _validate_body(
+    text: str,
+    alignment: bool,
+    expected_inventory: Callable[[], List[str]],
+    audit_relative: str,
+    prior_text: Optional[str],
+    changed: Optional[Sequence[str]],
+) -> Dict[str, object]:
     sections = _sections(text)
     for required in ("Summary", "Descriptive docs", "User rulings", "Remediation queue"):
         if required not in sections:
@@ -384,7 +521,7 @@ def validate(
     if overlap:
         raise AuditError(f"docs listed both as claim sections and descriptive: {', '.join(overlap)}")
 
-    expected = sorted(inventory) if inventory is not None else derive_inventory(repo, audit_relative, alignment)
+    expected = expected_inventory()
     covered = sorted(set(docs) | set(descriptive))
     if covered != expected:
         unaudited = sorted(set(expected) - set(covered))
@@ -465,15 +602,203 @@ def validate(
     }
 
 
+class MemberContext(NamedTuple):
+    """A registered member's identity and the frozen pin its audit names."""
+
+    name: str
+    checkout: str  # the literal MEMBERS.md Checkout
+    default_branch: str
+    pin: str
+    project_dir: str
+
+
+def member_audit_path(member: str, project_dir: str = ".project") -> str:
+    """The canonical track-scoped audit path of `member`, relative to the coordinator."""
+    _, _, members = _member_helpers()
+    if not members.NAME_RE.fullmatch(member):
+        raise AuditError(f"invalid member name: {member!r}")
+    if project_dir not in MEMBER_PROJECT_DIRS:
+        raise AuditError(f"--project-dir must be one of {', '.join(MEMBER_PROJECT_DIRS)}, not {project_dir!r}")
+    return f"{project_dir}/{members.inspection_paths(member)[1]}"
+
+
+def _member_audit_context(
+    repo: Path, primary: Optional[Path], project_dir: str, member: str, pin: str
+) -> MemberContext:
+    """Resolve `member` from the coordinator registry and prove `pin` is a commit it holds.
+
+    Uses slice 1's inspection scope for checkout, marker, and origin identity.
+    The pin need not equal a tracking ref that moved after it was frozen."""
+    member_audit_path(member, project_dir)
+    if not PIN_PATTERN.fullmatch(pin):
+        raise AuditError(f"--pin must be a full 40-character commit SHA, not {pin!r}")
+    _, detect_project, members = _member_helpers()
+    try:
+        scope = members.inspection_scope(Path(primary or repo), project_dir)
+    except members.MembersError as error:
+        raise AuditError(str(error)) from error
+    entry = next((item for item in scope["members"] if item["name"] == member), None)
+    if entry is None:
+        raise AuditError(f"member {member} is not in MEMBERS.md")
+    if entry["verdict"] == "unverifiable":
+        raise AuditError(f"member {member} is unverifiable: {entry['reason']}")
+    checkout = str(entry["checkout"])
+    try:
+        resolved = detect_project.revision_git(
+            Path(checkout), "rev-parse", "--verify", "--quiet", f"{pin}^{{commit}}"
+        ).decode("ascii").strip()
+    except (detect_project.DetectError, UnicodeDecodeError):
+        resolved = None
+    if resolved != pin:
+        raise AuditError(f"member {member} pin {pin} is not a commit in {checkout}")
+    return MemberContext(member, checkout, str(entry["default_branch"]), pin, project_dir)
+
+
+def _real_audit_file(repo: Path, audit_relative: str) -> Path:
+    """The audit under `repo`, refusing a symlinked or non-directory ancestor."""
+    current = repo
+    parts = PurePosixPath(audit_relative).parts
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            status = os.lstat(current)
+        except FileNotFoundError:
+            raise AuditError(f"missing real audit file: {audit_relative}") from None
+        except OSError as error:
+            raise AuditError(f"cannot inspect {'/'.join(parts[:index + 1])}: {error}") from error
+        last = index == len(parts) - 1
+        if last and not stat.S_ISREG(status.st_mode):
+            raise AuditError(f"missing real audit file: {audit_relative}")
+        if not last and not stat.S_ISDIR(status.st_mode):
+            raise AuditError(f"audit ancestor must be a real directory: {'/'.join(parts[:index + 1])}")
+    return current
+
+
+def _prior_member_head(prior_text: str, context: MemberContext) -> str:
+    check_handoffs, _, _ = _member_helpers()
+    found = check_handoffs.member_evidence_header(prior_text)
+    values = {field: entries[0] for field, entries in found.items() if len(entries) == 1}
+    expected = {"Repo root": context.checkout, "Member": context.name, "Default branch": context.default_branch}
+    if len(values) != len(found) or any(values[field] != value for field, value in expected.items()):
+        raise AuditError("prior audit belongs to a different member identity")
+    if not PIN_PATTERN.fullmatch(values["Member HEAD"]):
+        raise AuditError(
+            f"prior audit Member HEAD must be the full 40-character commit SHA, not {values['Member HEAD'] or 'empty'}"
+        )
+    return values["Member HEAD"]
+
+
+def _require_member_changed(context: MemberContext, prior_head: str, changed: Sequence[str]) -> None:
+    """`changed` must equal the commit diff from the prior Member HEAD to the pin, never a team diff."""
+    _, detect_project, _ = _member_helpers()
+    checkout = Path(context.checkout)
+    try:
+        detect_project.revision_git(checkout, "merge-base", "--is-ancestor", prior_head, context.pin)
+    except detect_project.DetectError as error:
+        raise AuditError(
+            f"member {context.name} --changed requires prior Member HEAD {prior_head} to be a resolvable "
+            f"ancestor of the pin {context.pin}; omit --changed and re-audit every doc"
+        ) from error
+    try:
+        listing = detect_project.revision_git(
+            checkout, "diff", "--no-ext-diff", "--name-only", "--no-renames", "-z", prior_head, context.pin
+        )
+        expected = sorted(path.decode("utf-8") for path in listing.split(b"\0") if path)
+    except (detect_project.DetectError, UnicodeDecodeError) as error:
+        raise AuditError(f"cannot diff member {context.name} from {prior_head} to {context.pin}: {error}") from error
+    supplied = sorted(changed)
+    if supplied != expected:
+        detail = []
+        missing = sorted(set(expected) - set(supplied))
+        extra = sorted(set(supplied) - set(expected))
+        if missing:
+            detail.append(f"missing: {', '.join(missing)}")
+        if extra:
+            detail.append(f"extra: {', '.join(extra)}")
+        if len(set(supplied)) != len(supplied):
+            detail.append("repeated paths")
+        raise AuditError(
+            f"member {context.name} --changed does not equal the pinned prior-to-current diff; " + "; ".join(detail)
+        )
+
+
+def validate_member(
+    repo: Path,
+    member: str,
+    pin: str,
+    inventory: Optional[Sequence[str]],
+    prior_text: Optional[str] = None,
+    changed: Optional[Sequence[str]] = None,
+    primary: Optional[Path] = None,
+    project_dir: str = ".project",
+    audit_relative: Optional[str] = None,
+) -> Dict[str, object]:
+    """Gate a member docs audit read from the coordinator artifact tree `repo` at a frozen pin."""
+    canonical = member_audit_path(member, project_dir)
+    if audit_relative is not None and audit_relative != canonical:
+        raise AuditError(f"member {member} audit must be {canonical}")
+    context = _member_audit_context(repo, primary, project_dir, member, pin)
+    audit = _real_audit_file(repo, canonical)
+    try:
+        text = audit.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise AuditError(f"cannot read {canonical}: {error}") from error
+
+    header = _audit_header(text)
+    check_handoffs, _, _ = _member_helpers()
+    try:
+        check_handoffs.validate_member_evidence(
+            audit, context.name, context.pin, context.checkout, context.default_branch, "docs"
+        )
+    except check_handoffs.HandoffError as error:
+        raise AuditError(str(error)) from error
+    if _header_alignment(header):
+        raise AuditError(f"member {member} audit does not support alignment mode")
+    if header["Audited HEAD"] != context.pin:
+        raise AuditError(f"{PurePosixPath(canonical).name} Audited HEAD must equal Member HEAD {context.pin}")
+
+    pinned = derive_revision_inventory(Path(context.checkout), context.pin, canonical, False, member)
+    if inventory is not None and sorted(inventory) != pinned:
+        detail = []
+        missing = sorted(set(pinned) - set(inventory))
+        extra = sorted(set(inventory) - set(pinned))
+        if missing:
+            detail.append(f"missing from --inventory: {', '.join(missing)}")
+        if extra:
+            detail.append(f"not in the pinned tree: {', '.join(extra)}")
+        if len(set(inventory)) != len(inventory):
+            detail.append("repeated paths")
+        raise AuditError(f"member {member} pinned inventory differs from --inventory; " + "; ".join(detail))
+
+    if prior_text is not None:
+        prior_head = _prior_member_head(prior_text, context)
+        if changed is not None:
+            _require_member_changed(context, prior_head, changed)
+    result = _validate_body(text, False, lambda: pinned, canonical, prior_text, changed)
+    result["member"] = {
+        "name": context.name,
+        "checkout": context.checkout,
+        "default_branch": context.default_branch,
+        "pin": context.pin,
+        "project_dir": context.project_dir,
+    }
+    return result
+
+
 def parser() -> argparse.ArgumentParser:
     argument_parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     argument_parser.add_argument("--repo", type=Path, required=True)
-    argument_parser.add_argument("--audit", default=DEFAULT_AUDIT, help="relative audit path (default: %(default)s)")
+    argument_parser.add_argument(
+        "--audit",
+        help=f"relative audit path (default: {DEFAULT_AUDIT}; member mode: "
+        "<project-dir>/research/DOCS-AUDIT-<member>.md)",
+    )
     argument_parser.add_argument("--inventory", help="file with one inventoried POSIX path per line, or - for stdin")
     argument_parser.add_argument(
         "--primary",
         type=Path,
-        help="primary repository the Repo root header must name (default: --repo)",
+        help="primary repository the Repo root header must name; in member mode, the coordinator "
+        "whose MEMBERS.md registers --member (default: --repo)",
     )
     argument_parser.add_argument(
         "--prior-audit",
@@ -494,6 +819,12 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="include active .project Markdown when emitting an alignment inventory",
     )
+    argument_parser.add_argument("--member", help="MEMBERS.md member whose docs audit to gate (requires --pin)")
+    argument_parser.add_argument("--pin", help="frozen 40-hex member commit the audit names (requires --member)")
+    argument_parser.add_argument(
+        "--project-dir",
+        help="member audit track: .project or .project/next (default: .project; requires --member)",
+    )
     return argument_parser
 
 
@@ -503,11 +834,58 @@ def _path_lines(name: str) -> List[str]:
         return [line.strip() for line in source if line.strip()]
 
 
+def _member_main(arguments: argparse.Namespace) -> int:
+    def failed(message: str) -> int:
+        print(f"docs audit validation failed: {message}", file=sys.stderr)
+        return 1
+
+    if arguments.member is None:
+        return failed("--pin requires --member" if arguments.pin is not None else "--project-dir requires --member")
+    if arguments.pin is None:
+        return failed("--member requires --pin")
+    project_dir = arguments.project_dir if arguments.project_dir is not None else ".project"
+    repo = arguments.repo.resolve()
+    try:
+        canonical = member_audit_path(arguments.member, project_dir)
+        if arguments.alignment:
+            raise AuditError(f"member {arguments.member} audit does not support alignment mode")
+        if arguments.audit is not None and arguments.audit != canonical:
+            raise AuditError(f"member {arguments.member} audit must be {canonical}")
+        if arguments.emit_inventory:
+            if arguments.inventory is not None or arguments.prior_audit is not None or arguments.changed is not None:
+                raise AuditError("--emit-inventory cannot use validation inputs")
+            context = _member_audit_context(repo, arguments.primary, project_dir, arguments.member, arguments.pin)
+            inventory = derive_revision_inventory(
+                Path(context.checkout), context.pin, canonical, False, context.name
+            )
+            sys.stdout.write("".join(f"{path}\n" for path in inventory))  # an empty tree emits nothing
+            return 0
+        inventory = _path_lines(arguments.inventory) if arguments.inventory is not None else None
+        prior_text = None
+        if arguments.prior_audit is not None:
+            if arguments.prior_audit.is_symlink() or not arguments.prior_audit.is_file():
+                raise AuditError("--prior-audit must be a real file")
+            prior_text = arguments.prior_audit.read_text(encoding="utf-8")
+        changed = _path_lines(arguments.changed) if arguments.changed is not None else None
+        result = validate_member(
+            repo, arguments.member, arguments.pin, inventory, prior_text, changed,
+            arguments.primary, project_dir, canonical,
+        )
+    except (AuditError, OSError, UnicodeDecodeError) as error:
+        return failed(str(error))
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     if arguments.changed is not None and arguments.prior_audit is None:
         print("docs audit validation failed: --changed requires --prior-audit", file=sys.stderr)
         return 1
+    if arguments.member is not None or arguments.pin is not None or arguments.project_dir is not None:
+        return _member_main(arguments)
+    if arguments.audit is None:
+        arguments.audit = DEFAULT_AUDIT
     if arguments.emit_inventory:
         if arguments.inventory is not None or arguments.prior_audit is not None or arguments.changed is not None:
             print(

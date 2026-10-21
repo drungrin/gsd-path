@@ -598,7 +598,8 @@ def _cleanup_reserved_worktree(
 
 
 def create_named_worktree(
-    primary: Path, branch: str, destination: Path, base: str, bound: Optional[str] = None
+    primary: Path, branch: str, destination: Path, base: str, bound: Optional[str] = None,
+    reflog: Optional[str] = None,
 ) -> None:
     # A member names its bound branch; the member team's checkout is never on it.
     bound = bound or require_bound(primary)
@@ -610,7 +611,9 @@ def create_named_worktree(
         raise IsolationError(f"worktree path already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     ref = f"refs/heads/{branch}"
-    reserved = run_git(primary, "update-ref", ref, base, NULL_SHA)
+    # `reflog` records the creating owner atomically with the reservation.
+    reserve = () if reflog is None else ("--create-reflog", "-m", reflog)
+    reserved = run_git(primary, "update-ref", *reserve, ref, base, NULL_SHA)
     if reserved.returncode != 0:
         raise IsolationError(f"branch already exists: {branch}")
     try:
@@ -1488,6 +1491,8 @@ def isolate_member_verify(coordinator: Path, sidecar: Path) -> Dict[str, Dict[st
     lock = coordinator / members.LOCK_PATH
     entries = json.loads(lock.read_text(encoding="utf-8"))["members"] if lock.is_file() else []
     check_member_verify_collision(entries, sidecar.name)
+    for item in entries:
+        _require_no_member_inspection(coordinator, str(item["name"]), sidecar.parent / str(item["name"]))
     created: Dict[str, Dict[str, str]] = {}
     try:
         for item in entries:
@@ -1502,6 +1507,29 @@ def isolate_member_verify(coordinator: Path, sidecar: Path) -> Dict[str, Dict[st
         retire_member_verify(created)
         raise
     return created
+
+
+def _require_no_member_inspection(coordinator: Path, member: str, destination: Path) -> None:
+    """Refuse project Verify while a member inspection still holds the member's ../<member> sibling.
+
+    Both layouts share that folder. The inspect branch's creation reflog names
+    its assignment, so the message gives the exact retirement; nothing is removed."""
+    coordinator = require_directory(coordinator, "coordinator")
+    checkout, project, _ = _member_context(coordinator, member)
+    branch = member_inspect_branch_name(project, member)
+    owner = _member_inspect_owner(checkout, branch)
+    if owner is None or owner["owner"] is None:
+        return
+    registered = _registered_worktrees(checkout)
+    held = next((path for path, ref in registered.items() if ref == f"refs/heads/{branch}"), destination)
+    command = " ".join(shlex.quote(part) for part in (
+        "python3", "-B", str(Path(__file__).resolve()), "retire-member-inspect",
+        "--repo", str(coordinator), "--member", member, "--name", str(owner["owner"]),
+    ))
+    raise IsolationError(
+        f"member {member} is still held by inspection {owner['owner']} on {branch} at {held}; "
+        f"finish that inspection, or retire it with: {command}"
+    )
 
 
 def _member_verify_sidecar(record: Dict[str, str]) -> Tuple[Path, Path, str]:
@@ -1533,6 +1561,266 @@ def check_member_verify(created: Dict[str, Dict[str, str]]) -> None:
             raise IsolationError(f"member Verify sidecar branch changed: {destination}")
         if current_sha(destination) != record["tip"]:
             raise IsolationError(f"member Verify sidecar HEAD changed: {destination}")
+
+
+# Member inspection pairs one coordinator artifact sidecar per assignment
+# (isolate_verify) with a read-only member checkout at its sibling ../<member>,
+# pinned at the frozen member commit. The fixed member branch admits one owner
+# at a time; its reflog creation entry names that owner, so retirement and
+# recovery need no other receipt.
+MEMBER_INSPECT_REFLOG = "member inspect "
+# Folders that project Verify already claims beside its sidecar.
+MEMBER_INSPECT_RESERVED = frozenset({"project-verify"})
+
+
+def member_inspect_branch_name(project: str, member: str) -> str:
+    """The member's fixed inspect branch, distinct from project Verify's chore/verify-<project>-<member>."""
+    return VERIFY_BRANCH_PREFIX + _common.branch_slug(
+        f"{project}-inspect-{validate_name(member, 'member name')}"
+    )
+
+
+def check_member_inspect_layout(members: Sequence[str], names: Sequence[str]) -> None:
+    """Refuse artifact sidecar names and member folders that would share one verify folder."""
+    folders: Dict[str, str] = {}
+    for name in names:
+        folder = _common.branch_slug(validate_name(name, "inspect sidecar name"))
+        if folder in folders or folder in MEMBER_INSPECT_RESERVED:
+            raise IsolationError(f"inspect sidecar {name} collides with sidecar folder {folder}")
+        folders[folder] = name
+    seen: Set[str] = set()
+    for member in members:
+        validate_name(member, "member name")
+        if member in seen:
+            raise IsolationError(f"member {member} is named twice")
+        if member in folders or member in MEMBER_INSPECT_RESERVED:
+            raise IsolationError(f"member {member} collides with coordinator sidecar folder {member}")
+        seen.add(member)
+
+
+def _member_inspect_checkout(coordinator: Path, member: str) -> Tuple[Path, str]:
+    """The registered member checkout and project; the team's own tree may be dirty."""
+    checkout, project = member_checkout(coordinator, member)
+    if worktree_root(checkout) != checkout:
+        raise IsolationError(f"member checkout must be its Git root: {checkout}")
+    return checkout, project
+
+
+def _member_inspect_pin(checkout: Path, member: str, pin: str, *, exists: bool = True) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40}", pin):
+        raise IsolationError(f"member {member} inspection pin must be a full 40-character SHA: {pin}")
+    if exists:
+        resolved = run_git(checkout, "rev-parse", "--verify", "--quiet", f"{pin}^{{commit}}")
+        if resolved.returncode != 0 or resolved.stdout.strip() != pin:
+            raise IsolationError(f"member {member} inspection pin is not a commit in {checkout}: {pin}")
+    return pin
+
+
+def _member_inspect_owner(checkout: Path, branch: str) -> Optional[Dict[str, object]]:
+    """The fixed branch's tip, creating owner, and creation commit; None when it is absent."""
+    ref = f"refs/heads/{branch}"
+    tip = _optional_ref(checkout, ref)
+    if tip is None:
+        return None
+    shown = run_git(checkout, "reflog", "show", "--format=%H%x09%gs", ref)
+    entries = [line.split("\t", 1) for line in shown.stdout.splitlines()] if shown.returncode == 0 else []
+    created = entries[-1] if entries else []
+    owned = len(created) == 2 and created[1].startswith(MEMBER_INSPECT_REFLOG)
+    return {
+        "created": created[0] if owned else None,
+        "moved": len(entries) != 1 or created[0] != tip,
+        "owner": created[1][len(MEMBER_INSPECT_REFLOG):] if owned else None,
+        "tip": tip,
+    }
+
+
+def _require_member_inspect_owner(
+    owner: Dict[str, object], member: str, branch: str, name: str, pin: Optional[str]
+) -> str:
+    if owner["owner"] is None:
+        raise IsolationError(f"member {member} branch {branch} has no inspect creation record; preserving it")
+    if owner["owner"] != name:
+        raise IsolationError(f"member {member} inspect sidecar is held by {owner['owner']}, not {name}")
+    if owner["moved"]:
+        raise IsolationError(f"member {member} inspect branch {branch} moved after its creation; preserving it")
+    if pin is not None and owner["created"] != pin:
+        raise IsolationError(
+            f"member {member} inspect sidecar is pinned at {owner['created']}, not {pin}; preserving it"
+        )
+    return str(owner["created"])
+
+
+def _require_inspect_sidecar(repo: Path, path: Path, branch: str, head: str, label: str) -> None:
+    """`path` is `repo`'s own linked worktree, attached to `branch` at `head`."""
+    if path.is_symlink() or not path.is_dir():
+        raise IsolationError(f"{label} is missing or not a real directory: {path}")
+    registered = _registered_worktrees(repo)
+    if (path.resolve() not in registered or worktree_root(path) != path.resolve()
+            or common_git_dir(path) != common_git_dir(repo)):
+        raise IsolationError(f"{label} ownership changed: {path}")
+    if registered[path.resolve()] != f"refs/heads/{branch}" or require_attached(path) != branch:
+        raise IsolationError(f"{label} branch changed: {path}")
+    if current_sha(path) != head:
+        raise IsolationError(f"{label} HEAD changed: {path}")
+
+
+def _member_inspect_record(
+    artifact: Dict[str, object], name: str, member: str, pin: str,
+    checkout: Path, destination: Path, branch: str,
+) -> Dict[str, object]:
+    # Top-level fields are isolate_verify's artifact sidecar; member_sidecar keeps
+    # the member Verify record shape for the read-only command checkout.
+    return {
+        **artifact, "member": member, "name": name, "pin": pin,
+        "member_sidecar": {"branch": branch, "checkout": str(checkout), "tip": pin,
+                           "worktree": str(destination)},
+    }
+
+
+def isolate_member_inspect(coordinator: Path, member: str, base: str, pin: str, name: str) -> Dict[str, object]:
+    """Create one inspection assignment: its artifact sidecar and the pinned member sibling.
+
+    No member lock, bound branch, fetch, or push. A second assignment of the
+    same member waits until the first one's sibling is retired."""
+    coordinator = require_directory(coordinator, "coordinator")
+    check_member_inspect_layout([member], [name])
+    checkout, project = _member_inspect_checkout(coordinator, member)
+    pin = _member_inspect_pin(checkout, member, pin)
+    branch = member_inspect_branch_name(project, member)
+    default = member_default_branch(coordinator, member)
+    owner = _member_inspect_owner(checkout, branch)
+    if owner is not None and owner["owner"] is None:
+        raise IsolationError(f"member {member} branch {branch} has no inspect creation record; preserving it")
+    if owner is not None:
+        raise IsolationError(f"member {member} inspect sidecar is already held by {owner['owner']}; retire it first")
+    artifact = isolate_verify(coordinator, base, name)
+    destination = Path(str(artifact["worktree"])).parent.resolve() / member
+    try:
+        holder = _registered_worktrees(checkout).get(destination)
+        if holder is not None or os.path.lexists(destination):
+            held = f" by {holder}" if holder else ""
+            raise IsolationError(f"member {member} inspect path is already in use{held}: {destination}")
+        create_named_worktree(checkout, branch, destination, pin, bound=default,
+                              reflog=MEMBER_INSPECT_REFLOG + name)
+    except BaseException as error:
+        try:
+            retire_unused_verify(coordinator, Path(str(artifact["worktree"])),
+                                 str(artifact["base"]), str(artifact["branch"]))
+        except IsolationError as cleanup:
+            raise IsolationError(f"{error}; inspect artifact sidecar kept: {cleanup}") from error
+        raise
+    return _member_inspect_record(artifact, name, member, pin, checkout, destination, branch)
+
+
+def check_member_inspect(coordinator: Path, member: str, base: str, pin: str, name: str) -> Dict[str, object]:
+    """Prove one assignment still holds its exact base, pin, branches, owner, and no unknown changes."""
+    coordinator = require_directory(coordinator, "coordinator")
+    if worktree_root(coordinator) != coordinator:
+        raise IsolationError(f"primary is not its Git root: {coordinator}")
+    check_member_inspect_layout([member], [name])
+    checkout, project = _member_inspect_checkout(coordinator, member)
+    pin = _member_inspect_pin(checkout, member, pin)
+    resolved_base = require_commit(coordinator, require_full_sha(base))
+    bound = require_bound(coordinator)
+    if current_sha(coordinator) != resolved_base:
+        raise IsolationError("member inspection requires coordinator HEAD to equal the recorded base")
+    artifact_branch = verify_branch_name(name)
+    artifact = sidecar_root(coordinator, "verify", name)
+    _require_inspect_sidecar(coordinator, artifact, artifact_branch, resolved_base,
+                             f"inspect artifact sidecar {name}")
+    branch = member_inspect_branch_name(project, member)
+    owner = _member_inspect_owner(checkout, branch)
+    if owner is None:
+        raise IsolationError(f"member {member} inspect sidecar is missing: {branch}")
+    _require_member_inspect_owner(owner, member, branch, name, pin)
+    destination = artifact.parent.resolve() / member
+    label = f"member {member} inspect sidecar"
+    _require_inspect_sidecar(checkout, destination, branch, pin, label)
+    dirt = uncommitted_paths(destination)
+    if dirt:
+        raise IsolationError(f"{label} has unknown changes: " + ", ".join(sorted(dirt)))
+    artifact_record: Dict[str, object] = {
+        "base": resolved_base, "bound_branch": bound, "branch": artifact_branch, "detached": False,
+        "kind": "verify", "mode": "sidecar", "worktree": str(artifact),
+    }
+    return _member_inspect_record(artifact_record, name, member, pin, checkout, destination, branch)
+
+
+def _retire_member_inspect_sidecar(
+    checkout: Path, member: str, branch: str, destination: Path, name: str, pin: Optional[str]
+) -> Dict[str, object]:
+    record: Dict[str, object] = {"branch": branch, "worktree": str(destination)}
+    owner = _member_inspect_owner(checkout, branch)
+    if owner is None or owner["owner"] != name:
+        # Absent, another assignment's, or foreign: never touch it.
+        return {**record, "owner": None if owner is None else owner["owner"],
+                "reason": "already-absent" if owner is None else "not-owned"}
+    pin = _require_member_inspect_owner(owner, member, branch, name, pin)
+    ref = f"refs/heads/{branch}"
+    registered = _registered_worktrees(checkout)
+    holders = [path for path, held in registered.items() if held == ref]
+    if holders and holders != [destination]:
+        raise IsolationError(f"member {member} inspect branch is checked out outside its sidecar: {holders[0]}")
+    if registered.get(destination, ref) != ref:
+        raise IsolationError(f"member {member} inspect sidecar branch changed; preserving it: {destination}")
+    label = f"member {member} inspect sidecar"
+    if holders:
+        if os.path.lexists(destination):
+            _require_inspect_sidecar(checkout, destination, branch, pin, label)
+            dirt = uncommitted_paths(destination)
+            if dirt:
+                raise IsolationError(f"{label} has unknown changes; preserving it: " + ", ".join(sorted(dirt)))
+        _remove_worktree(checkout, destination, False)
+    elif destination.is_dir() and not destination.is_symlink():
+        with contextlib.suppress(OSError):
+            destination.rmdir()  # only the empty folder an interrupted reservation leaves
+    deleted = run_git(checkout, "update-ref", "-d", ref, pin)
+    if deleted.returncode != 0:
+        raise IsolationError((deleted.stderr or deleted.stdout).strip() or f"could not delete {branch}")
+    release_workspace_quietly(checkout)
+    return {**record, "owner": name, "pin": pin, "reason": "removed"}
+
+
+def _retire_member_inspect_artifact(coordinator: Path, path: Path, name: str, base: Optional[str]) -> Dict[str, object]:
+    branch = verify_branch_name(name)
+    if base is not None:
+        return retire_unused_verify(coordinator, path, base, branch)
+    if _optional_ref(coordinator, f"refs/heads/{branch}") is None:
+        if os.path.lexists(path):
+            raise IsolationError(f"inspect artifact path is not an owned sidecar: {path}")
+        return {"bound_branch": require_attached(coordinator), "branch": branch, "retired": True,
+                "reason": "already-absent", "worktree": str(path)}
+    # Without a receipt the branch's creation reflog proves the base.
+    return retire_stale_verify(coordinator, path, branch)
+
+
+def retire_member_inspect(
+    coordinator: Path, member: str, name: str, base: Optional[str] = None,
+    pin: Optional[str] = None, keep_artifact: bool = False,
+) -> Dict[str, object]:
+    """Retire one assignment's member sibling, then its artifact sidecar unless kept for collection.
+
+    Base and pin default to the branches' creation records, so a lost receipt
+    still retires deterministically. Another owner's sidecar is left alone;
+    moved refs and unknown changes are kept and refused, never forced."""
+    coordinator = require_directory(coordinator, "coordinator")
+    if worktree_root(coordinator) != coordinator:
+        raise IsolationError(f"primary is not its Git root: {coordinator}")
+    check_member_inspect_layout([member], [name])
+    checkout, project = _member_inspect_checkout(coordinator, member)
+    if pin is not None:
+        pin = _member_inspect_pin(checkout, member, pin, exists=False)
+    artifact = sidecar_root(coordinator, "verify", name)
+    sidecar = _retire_member_inspect_sidecar(
+        checkout, member, member_inspect_branch_name(project, member),
+        artifact.parent.resolve() / member, name, pin,
+    )
+    if keep_artifact:
+        retired: Dict[str, object] = {"branch": verify_branch_name(name), "reason": "kept",
+                                      "retired": False, "worktree": str(artifact)}
+    else:
+        retired = _retire_member_inspect_artifact(coordinator, artifact, name, base)
+    return {"artifact": retired, "member": member, "member_sidecar": sidecar, "name": name}
 
 
 def clean_verify(primary: Path, worktree: Path, base: str, branch: str) -> Dict[str, object]:
@@ -6463,6 +6751,22 @@ def parser() -> argparse.ArgumentParser:
     isolate_verify_parser.add_argument("--name", required=True)
     isolate_verify_parser.add_argument("--historical-task")
 
+    for command, summary in (
+        ("isolate-member-inspect", "create an inspection artifact sidecar and its pinned member sibling"),
+        ("check-member-inspect", "prove an inspection assignment's sidecars, base, pin, and owner"),
+        ("retire-member-inspect", "retire an inspection assignment's member sibling and artifact sidecar"),
+    ):
+        inspect_parser = subparsers.add_parser(command, help=summary)
+        inspect_parser.add_argument("--repo", type=Path, required=True, help="coordinator root")
+        inspect_parser.add_argument("--member", required=True)
+        inspect_parser.add_argument("--name", required=True, help="artifact sidecar name of this assignment")
+        retiring = command == "retire-member-inspect"
+        inspect_parser.add_argument("--base", required=not retiring, help="coordinator HEAD, full SHA")
+        inspect_parser.add_argument("--pin", required=not retiring, help="frozen member commit, full SHA")
+        if retiring:
+            inspect_parser.add_argument("--keep-artifact", action="store_true",
+                                        help="retire only the member sibling; keep the artifact for collection")
+
     land_parser = subparsers.add_parser("land", help="commit a task onto the bound branch")
     land_parser.add_argument("--repo", type=Path, required=True)
     land_parser.add_argument("--source", type=Path, required=True)
@@ -6597,6 +6901,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
         elif arguments.command == "isolate-verify":
             result = isolate_verify(arguments.repo, arguments.base, arguments.name, arguments.historical_task)
+        elif arguments.command == "isolate-member-inspect":
+            result = isolate_member_inspect(arguments.repo, arguments.member, arguments.base,
+                                            arguments.pin, arguments.name)
+        elif arguments.command == "check-member-inspect":
+            result = check_member_inspect(arguments.repo, arguments.member, arguments.base,
+                                          arguments.pin, arguments.name)
+        elif arguments.command == "retire-member-inspect":
+            result = retire_member_inspect(arguments.repo, arguments.member, arguments.name, arguments.base,
+                                           arguments.pin, arguments.keep_artifact)
         elif arguments.command == "land":
             result = land(
                 arguments.repo,

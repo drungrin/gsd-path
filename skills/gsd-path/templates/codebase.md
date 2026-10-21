@@ -5,6 +5,11 @@
      (conventions are binding), and reviewers. -->
 
 Repo root: <absolute primary repo root, never a sidecar>
+<!-- A member map (evidence-codebase-<member>.md) uses its MEMBERS.md
+     Checkout as Repo root and adds, uncommented, exactly once each:
+     Member: <member name>
+     Default branch: <MEMBERS.md Default branch>
+     Member HEAD: <40-hex pin from the brief> -->
 Scanned: <date>
 Checks run: <exact commands run and their results, e.g. `npm test` → 37/40 pass>
 

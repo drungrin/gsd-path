@@ -13,6 +13,11 @@ change nothing outside your single output file.
   path; the orchestrator transfers it after validation. `Repo root` still names
   the primary repo root, never the disposable root. Do not ask the user
   questions.
+- For a member repository, the brief names the member, its MEMBERS.md
+  checkout and default branch, its pin, and a member sidecar at that pin. Map
+  only the pinned tree there — never the team's working checkout — and write
+  the template's member header lines: `Repo root` is the MEMBERS.md checkout
+  and `Member HEAD` the pin.
 
 ## What to establish
 

@@ -65,3 +65,21 @@ tag retains the original source before the milestone tag is published. GitHub
 provides no equivalent to Azure's merge-strategy field; the proof establishes
 content and provenance, not a distinction from an observationally equivalent
 single-commit rebase. Auto-merge, merge queues, and policy bypass remain blocked.
+
+**Update 2026-10-21 (member inspection):** inspect also maps and audits each
+brownfield member, so a dedicated program coordinator no longer reaches
+define blind to member code. Each member gets
+`research/evidence-codebase-<member>.md` and `research/DOCS-AUDIT-<member>.md`
+in the coordinator, read from a pinned commit in member sidecars beside the
+coordinator's, never from the team's working checkout: the member's local
+`origin/<recorded default>`, or in lookahead a member locked by the active
+build at its bound tip. Status and route never fetch. Because `members add`
+needs STATE, re-entry is automatic: `define/active` with no INTENT.md routes
+back to inspect for brownfield members lacking evidence; members added after
+INTENT.md wait for the next milestone. A greenfield coordinator skips its own
+pair. An unverifiable member blocks; moved pins are advisory staleness, and
+evidence off the pin ref's history is missing and re-inspected. Rulings
+stay in their source audit, keyed by (audit, Queue #); every pending audit
+carries forward at ship and abandon, and a removed member's queue is kept,
+never retargeted. Standalone docs audit stays coordinator-only. Inspection
+adds no STATE field and creates no member lock, bound branch, or push.

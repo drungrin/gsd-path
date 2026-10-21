@@ -478,6 +478,12 @@ def validate_research_artifacts(
     dimensions = [row[0] for row in dispatch_rows]
     if len(dimensions) != len(set(dimensions)):
         raise HandoffError("RESEARCH.md repeats a dimension")
+    reserved = [name for name in dimensions if name == "codebase" or name.startswith("codebase-")]
+    if reserved:
+        raise HandoffError(
+            "RESEARCH.md dimensions codebase and codebase-* are reserved for inspection evidence: "
+            + ", ".join(reserved)
+        )
     missing = sorted(set(STANDARD_DIMENSIONS) - set(dimensions))
     if missing:
         raise HandoffError("RESEARCH.md omits dimensions: " + ", ".join(missing))
@@ -666,6 +672,153 @@ def _member_tips(root: Path) -> Dict[str, str]:
 
 def _strip_comments(text: str) -> str:
     return COMMENT_PATTERN.sub("", text)
+
+
+MEMBER_EVIDENCE_KINDS = ("codebase", "docs")
+MEMBER_EVIDENCE_FIELDS = ("Repo root", "Member", "Default branch", "Member HEAD")
+
+
+def member_evidence_header(text: str) -> Dict[str, List[str]]:
+    """Each member evidence field's values above the first `## ` section."""
+    header = _strip_comments(text).split("\n## ", 1)[0]
+    return {
+        field: [
+            value.strip().strip("`").strip()
+            for value in re.findall(rf"(?m)^{re.escape(field)}:[ \t]*(.*)$", header)
+        ]
+        for field in MEMBER_EVIDENCE_FIELDS
+    }
+
+
+def member_evidence_head(path: Path) -> Optional[str]:
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        heads = member_evidence_header(_common.read_user_text(path))["Member HEAD"]
+    except (OSError, UnicodeDecodeError):
+        return None
+    return heads[0] if len(heads) == 1 else None
+
+
+def validate_member_evidence(
+    path: Path,
+    member: str,
+    pin: str,
+    checkout: str,
+    default_branch: str,
+    kind: str,
+) -> Dict[str, str]:
+    """Gate a member evidence header at an exact pin; docs bodies stay with check_docs_audit.py."""
+    if kind not in MEMBER_EVIDENCE_KINDS:
+        raise HandoffError(f"member evidence kind must be codebase or docs, not {kind}")
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise HandoffError(f"missing real hand-off file: {path}")
+    try:
+        text = _common.read_user_text(path)
+    except (OSError, UnicodeDecodeError) as error:
+        raise HandoffError(f"cannot read {path}: {error}") from error
+    found = member_evidence_header(text)
+    values: Dict[str, str] = {}
+    for field in MEMBER_EVIDENCE_FIELDS:
+        if len(found[field]) != 1:
+            raise HandoffError(f"{path} header must name {field}: exactly once")
+        values[field] = found[field][0]
+    expected = {"Repo root": str(checkout), "Member": member, "Default branch": default_branch}
+    for field, value in expected.items():
+        if values[field] != value:
+            raise HandoffError(f"{path} {field} must be {value}, found {values[field] or 'empty'}")
+    head = values["Member HEAD"]
+    if not SHA_PATTERN.fullmatch(head):
+        raise HandoffError(f"{path} Member HEAD must be the full 40-character commit SHA, not {head or 'empty'}")
+    if head != pin:
+        raise HandoffError(f"{path} Member HEAD {head} is not the member pin {pin}")
+    if kind == "codebase":
+        _non_placeholder(_strip_comments(_section(text, "Map")), f"{path} ## Map")
+    return values
+
+
+def _members_module():
+    if __package__:
+        from . import members
+    else:
+        try:
+            import members
+        except ImportError:  # pragma: no cover - package import used by tests
+            from scripts import members
+    return members
+
+
+def validate_inspection_coverage(
+    repo: Path, project_dir: str = DEFAULT_PROJECT_DIR
+) -> Dict[str, object]:
+    """Every brownfield member has both inspection artifacts at its pin or an earlier commit of its pin ref.
+
+    An unverifiable member blocks; evidence behind a moved pin on that ref's history
+    is stale, which is advisory; evidence off that history blocks as missing."""
+    members = _members_module()
+    try:
+        scope = members.inspection_scope(Path(repo), project_dir)
+    except members.MembersError as error:
+        raise HandoffError(str(error)) from error
+    stale: List[str] = []
+    for entry in scope["members"]:
+        name = entry["name"]
+        if entry["verdict"] == "unverifiable":
+            raise HandoffError(f"member {name} is unverifiable: {entry['reason']}")
+        if entry["verdict"] != "brownfield":
+            continue
+        for kind, key in (("codebase", "code_evidence"), ("docs", "docs_audit")):
+            path = Path(repo) / project_dir / entry[key]
+            head = validate_member_evidence(
+                path, name, member_evidence_head(path), entry["checkout"], entry["default_branch"], kind
+            )["Member HEAD"]
+            if head == entry["pin"]:
+                continue
+            # The same test as inspection_scope, which reports this evidence missing
+            # so that prepare and the define route reassign it.
+            if not members.evidence_on_pin(Path(entry["checkout"]), head, entry["pin"]):
+                raise HandoffError(f"{path} Member HEAD {head} is not on {entry['pin_ref']} of member {name}")
+            if name not in stale:
+                stale.append(name)
+        if entry["state"] not in {"covered", "stale"}:
+            raise HandoffError(f"member {name} inspection evidence is not covered: {entry['reason']}")
+    return {
+        "members": [
+            {"name": entry["name"], "verdict": entry["verdict"], "pin": entry["pin"], "state": entry["state"]}
+            for entry in scope["members"]
+        ],
+        "stale": stale,
+    }
+
+
+def _member_evidence_command(
+    repo: Path, project_dir: str, member: Optional[str], kind: Optional[str],
+    path: Optional[str], pin: Optional[str],
+) -> Dict[str, object]:
+    if member is None:
+        if kind or path or pin:
+            raise HandoffError("--kind, --path, and --pin require --member")
+        return validate_inspection_coverage(repo, project_dir)
+    if kind is None:
+        raise HandoffError("--member requires --kind codebase or docs")
+    members = _members_module()
+    try:
+        scope = members.inspection_scope(repo, project_dir)
+    except members.MembersError as error:
+        raise HandoffError(str(error)) from error
+    entry = next((item for item in scope["members"] if item["name"] == member), None)
+    if entry is None:
+        raise HandoffError(f"member {member} is not in MEMBERS.md")
+    if entry["verdict"] == "unverifiable":
+        raise HandoffError(f"member {member} is unverifiable: {entry['reason']}")
+    target = Path(path) if path else Path(project_dir) / entry["code_evidence" if kind == "codebase" else "docs_audit"]
+    if not target.is_absolute():
+        target = repo / target
+    header = validate_member_evidence(
+        target, member, pin or entry["pin"], entry["checkout"], entry["default_branch"], kind
+    )
+    return {"member": member, "kind": kind, "path": str(target), "header": header}
 
 
 def _numbered_entries(section: str, *, continuations: bool = False) -> List[Tuple[int, str]]:
@@ -2490,7 +2643,8 @@ def parser() -> argparse.ArgumentParser:
     argument_parser = argparse.ArgumentParser(description=__doc__)
     argument_parser.add_argument(
         "phase",
-        choices=("intent", "research", "decide", "roadmap", "patch", "plan", "wave", "final"),
+        choices=("intent", "research", "decide", "roadmap", "patch", "plan", "wave", "final",
+                 "member-evidence"),
     )
     argument_parser.add_argument("--repo", type=Path, required=True)
     argument_parser.add_argument(
@@ -2507,6 +2661,20 @@ def parser() -> argparse.ArgumentParser:
         default="",
         help="repo-relative wave review path (required for phase wave)",
     )
+    argument_parser.add_argument(
+        "--member",
+        help="member-evidence: check one member's artifact; omit to check every member's coverage",
+    )
+    argument_parser.add_argument(
+        "--kind", choices=MEMBER_EVIDENCE_KINDS, help="member-evidence: codebase or docs"
+    )
+    argument_parser.add_argument(
+        "--path",
+        help="member-evidence: artifact path, absolute or repo-relative (default: its project path)",
+    )
+    argument_parser.add_argument(
+        "--pin", help="member-evidence: expected Member HEAD (default: local origin default)"
+    )
     return argument_parser
 
 
@@ -2516,6 +2684,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         repo = arguments.repo.resolve()
         if arguments.phase == "wave":
             result = validate_wave(repo, arguments.project_dir, arguments.review)
+        elif arguments.phase == "member-evidence":
+            result = _member_evidence_command(
+                repo, arguments.project_dir, arguments.member, arguments.kind,
+                arguments.path, arguments.pin,
+            )
         else:
             validators = {
                 "intent": validate_intent,

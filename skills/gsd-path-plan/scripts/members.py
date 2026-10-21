@@ -20,7 +20,7 @@ import sys
 
 # Runtime helpers must not modify their immutable installation.
 sys.dont_write_bytecode = True
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional, Sequence
 
 if __package__:
@@ -697,6 +697,160 @@ def validate_members(repo: Path) -> list[dict[str, str]]:
     return members
 
 
+def inspection_paths(name: str) -> tuple[str, str]:
+    """A member's code evidence and docs audit, relative to the project directory."""
+    return f"research/evidence-codebase-{name}.md", f"research/DOCS-AUDIT-{name}.md"
+
+
+def _inspection_lock(root: Path) -> dict[str, dict[str, str]]:
+    """The active build lock read strictly; a malformed lock never means "not locked"."""
+    path = root / LOCK_PATH
+    if not path.exists() and not path.is_symlink():
+        return {}
+    if any(part.is_symlink() for part in (path.parent, path)) or not path.is_file():
+        raise MembersError(f"member lock must be a regular file: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise MembersError(f"member lock is unreadable: {error}") from error
+    rows = data.get("members") if isinstance(data, dict) and data.get("schema") == LOCK_SCHEMA else None
+    if not isinstance(rows, list):
+        raise MembersError("member lock has the wrong schema")
+    locked: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if (not isinstance(row, dict) or not all(isinstance(row.get(key), str) for key in ("name", "branch", "base"))
+                or not NAME_RE.fullmatch(row["name"]) or row["name"] in locked
+                or re.fullmatch(r"[0-9a-f]{40}", row["base"]) is None or not row["branch"]):
+            raise MembersError("member lock rows must name a unique member, branch, and full base SHA")
+        locked[row["name"]] = row
+    return locked
+
+
+def inspection_pin(root: Path, member: dict[str, str], project_dir: str = ".project") -> tuple[str, str]:
+    """(pin, ref) for one member's inspection; reads only local refs and never fetches.
+
+    The active track inspects the member's local origin default. A lookahead
+    track inspects a member locked by the active build at its bound tip, since
+    the next milestone builds on work that may not have reached origin yet."""
+    name, checkout, default = member["name"], Path(member["checkout"]), default_branch(member)
+    if PurePosixPath(project_dir) == PurePosixPath(".project/next"):
+        try:
+            locked = _inspection_lock(root).get(name)
+        except MembersError as error:
+            raise MembersError(f"member {name} inspection lock is invalid: {error}") from error
+        if locked is not None:
+            ref = f"refs/heads/{locked['branch']}"
+            resolved = _common.run_git(checkout, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
+            if resolved.returncode or not resolved.stdout.strip():
+                raise MembersError(f"member {name} inspection pin is unavailable: {ref}")
+            return resolved.stdout.strip(), ref
+    return require_origin_branch(checkout, default), f"refs/remotes/origin/{default}"
+
+
+def evidence_on_pin(checkout: Path, head: str, pin: str) -> bool:
+    """Whether evidence written at `head` lies on the history of the selected `pin`.
+
+    Equal commits count; an unresolvable head does not. Scope and coverage share
+    this test so that evidence they call stale is always admissible."""
+    if head == pin:
+        return True
+    return _common.run_git(Path(checkout), "merge-base", "--is-ancestor", head, pin).returncode == 0
+
+
+def _inspection_helpers():
+    if __package__:
+        from . import check_handoffs, detect_project
+    else:
+        import check_handoffs
+        import detect_project
+    return check_handoffs, detect_project
+
+
+def _inspect_member(root: Path, project: str, project_dir: str, member: dict[str, str]) -> dict[str, object]:
+    check_handoffs, detect_project = _inspection_helpers()
+    name, checkout, default = member["name"], Path(member["checkout"]), default_branch(member)
+    code, docs = inspection_paths(name)
+    entry: dict[str, object] = {
+        "name": name, "checkout": member["checkout"], "default_branch": default, "pin": None, "pin_ref": None,
+        "verdict": "unverifiable", "signal": None, "reason": None, "code_evidence": code, "docs_audit": docs,
+        "evidence_head": check_handoffs.member_evidence_head(root / project_dir / code), "state": "unverifiable",
+    }
+    try:
+        if checkout.is_symlink() or not checkout.is_dir():
+            raise MembersError(f"member checkout is missing: {checkout}")
+        if Path(_git(checkout, "rev-parse", "--show-toplevel")).resolve() != checkout.resolve():
+            raise MembersError(f"member checkout must be its Git root: {checkout}")
+        role = member_role(checkout)
+        if role is None:
+            raise MembersError(f"member marker for {name} is missing; run members.py repair --repo {root}")
+        if role != {"coordinator": root, "project": project, "name": name}:
+            raise MembersError(f"member marker for {name} names another coordinator: {role['coordinator']}")
+        remote = _git(checkout, "config", "--get", "remote.origin.url")
+        if remote != member["remote"]:
+            raise MembersError(f"member origin changed: {member['remote']} -> {remote}")
+        entry["pin"], entry["pin_ref"] = inspection_pin(root, member, project_dir)
+        classified = detect_project.classify_revision(checkout, entry["pin"], first_signal=True)
+    except (MembersError, detect_project.DetectError, OSError) as error:
+        entry["reason"] = str(error)
+        return entry
+    entry["verdict"] = classified["verdict"]
+    entry["signal"] = (classified["signals"] or [None])[0]
+    if classified["verdict"] == "greenfield":
+        entry["state"] = "greenfield"
+        return entry
+    problems, heads = [], []
+    for kind, relative in (("codebase", code), ("docs", docs)):
+        path = root / project_dir / relative
+        if not path.exists() and not path.is_symlink():
+            problems.append(f"missing {project_dir}/{relative}")
+            continue
+        try:
+            heads.append(check_handoffs.validate_member_evidence(
+                path, name, check_handoffs.member_evidence_head(path), member["checkout"], default, kind)["Member HEAD"])
+        except check_handoffs.HandoffError as error:
+            problems.append(str(error))
+    off_pin = sorted({head for head in heads if not evidence_on_pin(checkout, head, str(entry["pin"]))})
+    # Evidence off the selected pin's history (a squash-landed bound tip, a
+    # rewritten ref, an unknown commit) cannot be stale: it is missing, so the
+    # route and prepare reassign it instead of coverage blocking forever.
+    problems += [f"evidence Member HEAD {head} is not on {entry['pin_ref']}" for head in off_pin]
+    if problems:
+        entry["state"], entry["reason"] = "missing", "; ".join(problems)
+    elif any(head != entry["pin"] for head in heads):
+        entry["state"] = "stale"
+        entry["reason"] = f"evidence Member HEAD {', '.join(sorted(set(heads)))} differs from pin {entry['pin']}"
+    else:
+        entry["state"] = "covered"
+    return entry
+
+
+def inspection_scope(coordinator: Path, project_dir: str = ".project") -> dict[str, object]:
+    """Read-only inspection scope of every member at its local origin default (never fetched).
+
+    Unlike `validate`, a dirty team checkout does not block it, and it writes
+    nothing: no marker, no lock, no ref. Without MEMBERS.md nothing is computed."""
+    relative = PurePosixPath(project_dir)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        raise MembersError(f"project directory must stay inside the coordinator: {project_dir}")
+    scope: dict[str, object] = {"project_dir": str(relative), "coordinator": None, "members": []}
+    path = Path(coordinator) / ".project" / MEMBERS_FILE
+    if not path.exists() and not path.is_symlink():
+        return scope
+    root, state = _coordinator(coordinator)
+    listed = read_members(root)
+    _, detect_project = _inspection_helpers()
+    try:
+        classified = detect_project.classify_revision(root, "HEAD", first_signal=True)
+    except detect_project.DetectError as error:
+        raise MembersError(f"coordinator: {error}") from error
+    scope["coordinator"] = {
+        "checkout": str(root), "head": classified["revision"], "verdict": classified["verdict"],
+        "signal": (classified["signals"] or [None])[0],
+    }
+    scope["members"] = [_inspect_member(root, state.project, str(relative), member) for member in listed]
+    return scope
+
+
 def repair_members(repo: Path) -> list[dict[str, str]]:
     """Rewrite missing or stale markers; never take over another coordinator's member."""
     root, state = _coordinator(repo)
@@ -733,6 +887,10 @@ def parser() -> argparse.ArgumentParser:
     detect.add_argument("--checkout", required=True, type=Path, help="repository to inspect")
     repair = commands.add_parser("repair", help="rewrite missing or stale member markers")
     repair.add_argument("--repo", required=True, type=Path, help="coordinator Git root")
+    inspection = commands.add_parser(
+        "inspection", help="read-only member inspection scope at local origin defaults (no fetch, no writes)")
+    inspection.add_argument("--repo", required=True, type=Path, help="coordinator Git root")
+    inspection.add_argument("--project-dir", default=".project", help="track holding research/ (default: .project)")
     return result
 
 
@@ -741,6 +899,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         if arguments.command == "detect":
             print(json.dumps(detect_member(arguments.checkout), sort_keys=True))
+            return 0
+        if arguments.command == "inspection":
+            print(json.dumps(inspection_scope(arguments.repo, arguments.project_dir), sort_keys=True))
             return 0
         if arguments.command == "add" and arguments.create:
             if arguments.visibility is None:

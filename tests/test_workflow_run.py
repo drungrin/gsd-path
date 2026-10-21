@@ -259,6 +259,40 @@ class WorkflowRunTests(unittest.TestCase):
                 self.assertIn(reason, receipt["reason"] + receipt["steps"][-1].get("stderr", ""))
                 self.assertEqual(before, (root / ".project/STATE.md").read_bytes())
 
+    def test_preauthorize_checks_every_member_audit_independently(self):
+        def audit(root, name, ruling=""):
+            path = root / ".project/research" / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(
+                ("## Remediation queue\n\n| # | Doc | Claim | Verdict | Class | Action |\n|---|---|---|---|---|---|\n"
+                 "| 1 | README.md | runs | stale | NEEDS-USER | ask |\n\n## User rulings\n\n"
+                 "| Queue # | Ruling | User's words | Planned |\n|---|---|---|---|\n" + ruling).encode("utf-8"))
+
+        ruled = '| 1 | fix-doc | "update the readme" | no |\n'
+        cases = {
+            # Another audit's #1 never rules this audit's #1; a removed member's queue still counts.
+            "DOCS-AUDIT-web.md has NEEDS-USER rows": [("DOCS-AUDIT.md", ruled), ("DOCS-AUDIT-web.md", "")],
+            "DOCS-AUDIT-gone.md has NEEDS-USER rows": [("DOCS-AUDIT-gone.md", "")],
+            "malformed docs audit filename": [("DOCS-AUDIT-Web.md", ruled)],
+        }
+        for reason, audits in cases.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.quick_fixture(root)
+                for name, ruling in audits:
+                    audit(root, name, ruling)
+                before = (root / ".project/STATE.md").read_bytes()
+                code, receipt = self.preauthorize(root)
+                self.assertEqual(code, 1, receipt)
+                self.assertIn(reason, receipt["reason"])
+                self.assertEqual(before, (root / ".project/STATE.md").read_bytes())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.quick_fixture(root)
+            audit(root, "DOCS-AUDIT.md", ruled)
+            audit(root, "DOCS-AUDIT-web.md", ruled)
+            self.assertEqual(self.preauthorize(root)[0], 0)
+
     def test_preauthorize_enforces_quick_plan_limits_and_scope(self):
         def audit_ruling(root, ruling=""):
             audit = root / ".project/research/DOCS-AUDIT.md"

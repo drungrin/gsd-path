@@ -3,7 +3,10 @@
 <!-- Written at ship time by $gsd-path-ship final. The archive's table of
      contents: a future audit must be able to reconstruct the milestone
      from this file. Append-only once written. The validator requires
-     "Final verdict:" to be exactly the string shown below. -->
+     "Final verdict:" to be exactly the string shown below. In Carried
+     forward, N counts pending ruling rows summed over every carried audit
+     (DOCS-AUDIT.md and each DOCS-AUDIT-<member>.md, including a removed
+     member's), not files. -->
 
 Milestone: <name>
 Shipped: <date>

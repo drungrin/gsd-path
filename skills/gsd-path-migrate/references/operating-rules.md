@@ -88,17 +88,28 @@ bundles this file; spawned agents follow their role brief instead.
   normal review, approval, member-close, and archive gates still apply.
 - The codebase mapper and docs auditor observe and verify; they are strictly
   read-only, report observations rather than judgments, and never resolve a
-  doc-vs-code conflict — that ruling belongs to the user.
+  doc-vs-code conflict — that ruling belongs to the user. A member's pair
+  (`research/evidence-codebase-<member>.md`, `research/DOCS-AUDIT-<member>.md`)
+  describes the member's pinned tree (`Member HEAD`), never the team's working
+  checkout: its local `origin/<recorded default>`, except that a lookahead
+  track pins a member the active build locks at its bound branch tip. The
+  inspect contract fetches member origins before pinning; status and route
+  never fetch. When a pin has moved past its evidence, define, plan, and build
+  start report it as advisory from `members.py inspection --repo
+  <absolute-root> [--project-dir .project/next]` (`state: stale`); nothing
+  re-inspects.
 - Build, test, lint, and help commands are not presumed read-safe. Read-only
   roles run project commands only in orchestrator-created disposable worktrees
   at a recorded revision; otherwise they use static evidence or mark the check
   unverifiable. They never create worktrees or run commands in the source tree.
 - Researchers gather evidence; they do not decide. A dimension is researched
   only when it has open questions; the research phase records dispatched and
-  skipped dimensions. Brownfield adds `evidence-codebase.md` as settled input.
+  skipped dimensions. Brownfield adds every codebase map (`evidence-codebase.md`
+  and each `evidence-codebase-<member>.md`) as settled input.
 - The decider works from existing evidence; it does not re-research. An
   unresolved or uncited required decision fails the synthesis gate.
-- The planner reads both INTENT.md and SYNTHESIS.md and specs
+- The planner reads both INTENT.md and SYNTHESIS.md, plus the codebase maps
+  whose conventions bind each repo's tasks, and specs
   deliverable-sized outcomes and constraints; every INTENT success criterion
   maps to a task AC and Verify in PLAN.md Intent coverage. Coders own
   implementation decisions inside those bounds.
@@ -143,9 +154,10 @@ bundles this file; spawned agents follow their role brief instead.
   collision before creating or adopting the branch. The sole cleanliness
   exception is untracked `.project/STATE.md`: validated v2 state in active
   inspect or define, with null milestone, branch, and archive, in a real
-  directory containing only that regular file with no hard links. The helper
-  checks its identity and bytes across binding. Do not commit initialization
-  before binding. The router persists its
+  directory containing only that regular file with no hard links, plus an
+  optional untracked regular `.project/MEMBERS.md` from `members.py add`. The
+  helper checks their identity and bytes across binding. Do not commit
+  initialization before binding. The router persists its
   typed result in the new state. Build has no branch-creation authority.
 - After `validate-integrated` passes and before any next-milestone file
   changes, the router calls the bundled `scripts/pipeline_git.py bind-next`

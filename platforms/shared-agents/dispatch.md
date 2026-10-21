@@ -61,7 +61,7 @@ use exactly one matching branch:
 For every branch:
 
 - Supply the deterministic logical task name: `inspect_codebase`,
-  `inspect_docs`, `docs_audit`, `research_<dimension>`, `decide`, `roadmap`,
+  `inspect_docs` (per member: `inspect_codebase_<member>`, `inspect_docs_<member>`), `docs_audit`, `research_<dimension>`, `decide`, `roadmap`,
   `plan`,
   `plan_patch`, `build_<task_id>`, `review_wave_<wave>_cycle_<cycle>`
   (a `deep` wave review appends the lens suffix `_contract` or

@@ -55,9 +55,9 @@ flow. Evaluate every state and artifact precondition against the track:
 `.project/next/intent/INTENT.md`, and the manifest and evidence files live
 under `.project/next/research/`. Program-level inputs (CHARTER.md,
 ROADMAP.md, top-level SYNTHESIS.md) are read from their active `.project/`
-paths. Brownfield input is the track's
-`.project/next/research/evidence-codebase.md` after lookahead inspect;
-do not substitute the building milestone's map. Archived evidence from
+paths. Brownfield input is the track's codebase maps under
+`.project/next/research/` after lookahead inspect;
+do not substitute the building milestone's maps. Archived evidence from
 earlier milestones uses the same archived-manifest rule as the roadmap
 phase. Validate the handoff with
 `python3 <absolute check_handoffs.py> research --repo <absolute repo root>
@@ -72,9 +72,10 @@ local [runtime dispatch contract](references/dispatch.md). Resolve the local
 (`templates/research-handoff.md`), and `scripts/check_handoffs.py` to absolute
 paths. Include the role, `AGENTS.md`, `WORKFLOW.md`, INTENT.md, manifest,
 dimension, assigned questions, deterministic logical task name
-`research_<dimension>`, and exact output path in every brief. When
-`evidence-codebase.md` exists, include its absolute path in every brief as
-settled brownfield input.
+`research_<dimension>`, and exact output path in every brief. Include the
+absolute path of every codebase map in the track's `research/` —
+`evidence-codebase.md` and each member's `evidence-codebase-<member>.md` — in
+every brief as settled brownfield input.
 
 ## Process
 
@@ -125,6 +126,8 @@ settled brownfield input.
    Derive its filename deterministically as `evidence-<dimension-slug>.md`:
    lowercase the label, replace non-alphanumeric runs with one hyphen, and
    trim hyphens. Append `-2` only if it collides with an existing dimension.
+   `codebase` and `codebase-*` are reserved for inspection maps; the research
+   gate rejects them as dimensions.
 4. Validate each dispatched evidence file as its researcher returns. Require
    at least one `## Finding` — a documented `no reliable source found` null
    result recorded as a finding satisfies this gate, with the searches that

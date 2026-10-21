@@ -733,22 +733,15 @@ def markdown_has_body(text: str) -> bool:
     return True
 
 
-def file_kind(
-    relative: str,
-    root: Path,
-    *,
-    tracked: bool,
-    index_oid: Optional[str] = None,
-) -> Optional[str]:
+def path_kind(relative: str) -> Optional[str]:
+    """The signal kind a path name implies; `markdown` still needs a body check."""
     if (
         is_ignored(relative)
         or relative == ".project"
         or relative.startswith(".project/")
     ):
         return None
-    relative_path = PurePosixPath(relative)
-    path = root.joinpath(*relative_path.parts)
-    name = relative_path.name
+    name = PurePosixPath(relative).name
     stem = PurePosixPath(name).stem.casefold()
     suffix = PurePosixPath(name).suffix
     if name in MANIFEST_NAMES or suffix in MANIFEST_SUFFIXES:
@@ -758,22 +751,36 @@ def file_kind(
     if (
         suffix.casefold() in MARKDOWN_SUFFIXES or name.casefold() == "readme"
     ) and stem not in GREENFIELD_DOC_STEMS:
-        text = read_regular_evidence(
-            path,
-            root,
-            missing_ok=tracked,
-            evidence_name="Markdown",
-        )
-        if text is None and tracked:
-            if index_oid is None:
-                raise DetectError(f"missing staged Markdown blob identity: {relative}")
-            text = read_git_index_blob(root, relative, index_oid)
-        if text is None:
-            return None
-        if not markdown_has_body(text):
-            return None
-        return "docs"
+        return "markdown"
     return None
+
+
+def file_kind(
+    relative: str,
+    root: Path,
+    *,
+    tracked: bool,
+    index_oid: Optional[str] = None,
+) -> Optional[str]:
+    kind = path_kind(relative)
+    if kind != "markdown":
+        return kind
+    path = root.joinpath(*PurePosixPath(relative).parts)
+    text = read_regular_evidence(
+        path,
+        root,
+        missing_ok=tracked,
+        evidence_name="Markdown",
+    )
+    if text is None and tracked:
+        if index_oid is None:
+            raise DetectError(f"missing staged Markdown blob identity: {relative}")
+        text = read_git_index_blob(root, relative, index_oid)
+    if text is None:
+        return None
+    if not markdown_has_body(text):
+        return None
+    return "docs"
 
 
 def read_git_index_blob(root: Path, relative: str, oid: str) -> str:
@@ -1179,6 +1186,44 @@ def pipeline_marker(state: Path, root: Path) -> Optional[str]:
     return fields.get("pipeline") if fields is not None else None
 
 
+def worktree_signals(root: Path) -> list[dict[str, str]]:
+    """Brownfield signals of a resolved checkout: its files, then tracked paths it lacks."""
+    signals = []
+    seen = set()
+    for relative in iter_worktree_files(root):
+        kind = file_kind(relative, root, tracked=False)
+        if kind is None:
+            continue
+        item = (kind, relative)
+        if item in seen:
+            continue
+        seen.add(item)
+        signals.append({"kind": kind, "path": relative})
+    tracked_entries = git_tracked_files(root)
+    staged_bundles = staged_skill_bundle_prefixes(tracked_entries)
+    for entry in tracked_entries:
+        relative = entry.path
+        if is_managed_pipeline_artifact(
+            relative, root
+        ) or is_staged_skill_bundle_artifact(relative, staged_bundles):
+            continue
+        kind = file_kind(
+            relative,
+            root,
+            tracked=True,
+            index_oid=entry.oid,
+        )
+        if kind is None:
+            continue
+        item = ("git", relative)
+        if item in seen or (kind, relative) in seen:
+            continue
+        seen.add(item)
+        signals.append({"kind": "git", "path": relative})
+    signals.sort(key=lambda item: (item["kind"], item["path"]))
+    return signals
+
+
 def classify(repo: Path) -> dict:
     root = repo.resolve()
     root_status = lstat_evidence(root, missing_ok=True)
@@ -1236,39 +1281,7 @@ def classify(repo: Path) -> dict:
             "orphan_paths": list(orphan_paths),
             "route": "recover-orphan",
         }
-    signals = []
-    seen = set()
-    for relative in iter_worktree_files(root):
-        kind = file_kind(relative, root, tracked=False)
-        if kind is None:
-            continue
-        item = (kind, relative)
-        if item in seen:
-            continue
-        seen.add(item)
-        signals.append({"kind": kind, "path": relative})
-    tracked_entries = git_tracked_files(root)
-    staged_bundles = staged_skill_bundle_prefixes(tracked_entries)
-    for entry in tracked_entries:
-        relative = entry.path
-        if is_managed_pipeline_artifact(
-            relative, root
-        ) or is_staged_skill_bundle_artifact(relative, staged_bundles):
-            continue
-        kind = file_kind(
-            relative,
-            root,
-            tracked=True,
-            index_oid=entry.oid,
-        )
-        if kind is None:
-            continue
-        item = ("git", relative)
-        if item in seen or (kind, relative) in seen:
-            continue
-        seen.add(item)
-        signals.append({"kind": "git", "path": relative})
-    signals.sort(key=lambda item: (item["kind"], item["path"]))
+    signals = worktree_signals(root)
     if signals:
         return {
             "verdict": "brownfield",
@@ -1283,6 +1296,143 @@ def classify(repo: Path) -> dict:
         "signals": [],
         "orphan_paths": [],
         "route": "define",
+    }
+
+
+def revision_git(root: Path, *arguments: str, stdin: Optional[bytes] = None) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            input=stdin,
+            capture_output=True,
+            check=False,
+            env=git_environment(),
+        )
+    except OSError as error:
+        raise DetectError(f"git {arguments[0]} failed: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        suffix = f": {detail}" if detail else ""
+        raise DetectError(f"git {arguments[0]} failed{suffix}")
+    return result.stdout
+
+
+def revision_tree_files(
+    root: Path, revision: str
+) -> tuple[str, tuple[GitIndexEntry, ...]]:
+    """The commit `revision` names and its regular, non-ignored files."""
+    if not revision or revision.startswith("-"):
+        raise DetectError(f"invalid revision: {revision!r}")
+    try:
+        commit = revision_git(
+            root, "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"
+        ).decode("ascii").strip()
+    except (DetectError, UnicodeDecodeError) as error:
+        raise DetectError(f"revision is not a commit: {revision}") from error
+    entries = []
+    for raw in revision_git(root, "ls-tree", "-r", "-z", "--full-tree", commit).split(b"\0"):
+        if not raw:
+            continue
+        try:
+            metadata, encoded_path = raw.split(b"\t", 1)
+            encoded_mode, object_type, encoded_oid = metadata.split(b" ")
+        except ValueError as error:
+            raise DetectError("git ls-tree returned malformed data") from error
+        if (
+            re.fullmatch(rb"[0-7]{6}", encoded_mode) is None
+            or re.fullmatch(rb"[0-9a-f]+", encoded_oid) is None
+        ):
+            raise DetectError("git ls-tree returned malformed data")
+        try:
+            relative = validated_git_path(encoded_path.decode("utf-8"))
+        except UnicodeDecodeError as error:
+            raise DetectError("git ls-tree returned non-UTF-8 paths") from error
+        mode = int(encoded_mode, 8)
+        if object_type != b"blob" or not stat.S_ISREG(mode) or is_ignored(relative):
+            continue
+        entries.append(GitIndexEntry(relative, mode, encoded_oid.decode("ascii"), 0))
+    return commit, tuple(entries)
+
+
+def revision_skill_bundle_prefixes(
+    entries: Sequence[GitIndexEntry],
+) -> frozenset[str]:
+    """Staged bundles plus installer `path` bundles, which a checkout walk skips too."""
+    prefixes = set(staged_skill_bundle_prefixes(entries))
+    for entry in entries:
+        parts = PurePosixPath(entry.path).parts
+        for end in range(1, len(parts)):
+            if parts[end - 1].casefold() == "path" and is_verified_installer_bundle(
+                parts[:end]
+            ):
+                prefixes.add("/".join(parts[:end]))
+    return frozenset(prefixes)
+
+
+def read_revision_blobs(root: Path, oids: Sequence[str]) -> dict[str, bytes]:
+    unique = list(dict.fromkeys(oids))
+    if not unique:
+        return {}
+    data = revision_git(
+        root, "cat-file", "--batch", stdin="".join(f"{oid}\n" for oid in unique).encode("ascii")
+    )
+    blobs = {}
+    offset = 0
+    for oid in unique:
+        end = data.find(b"\n", offset)
+        header = data[offset:end].split(b" ") if end >= 0 else []
+        if (
+            len(header) != 3
+            or header[0] != oid.encode("ascii")
+            or header[1] != b"blob"
+            or not header[2].isdigit()
+        ):
+            raise DetectError(f"cannot read Markdown evidence blob: {oid}")
+        start = end + 1
+        size = int(header[2])
+        if data[start + size : start + size + 1] != b"\n":
+            raise DetectError(f"cannot read Markdown evidence blob: {oid}")
+        blobs[oid] = data[start : start + size]
+        offset = start + size + 1
+    return blobs
+
+
+def classify_revision(checkout: Path, sha: str, first_signal: bool = False) -> dict:
+    """Apply classify's brownfield rules to the committed tree at `sha`.
+
+    Only Git objects are read, never the working tree, index, or `.project/`.
+    With `first_signal`, return just the first signal in classify's sort order.
+    """
+    root = Path(checkout).resolve()
+    commit, entries = revision_tree_files(root, sha)
+    bundles = revision_skill_bundle_prefixes(entries)
+    candidates = [
+        (path_kind(entry.path), entry)
+        for entry in entries
+        if not is_fixed_managed_pipeline_artifact(entry.path)
+        and not is_staged_skill_bundle_artifact(entry.path, bundles)
+    ]
+    signals = [
+        {"kind": kind, "path": entry.path}
+        for kind, entry in candidates
+        if kind in {"manifest", "source"}
+    ]
+    markdown = [entry for kind, entry in candidates if kind == "markdown"]
+    blobs = read_revision_blobs(root, [entry.oid for entry in markdown])
+    for entry in markdown:
+        try:
+            text = blobs[entry.oid].decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise DetectError(f"cannot read Markdown evidence: {entry.path}") from error
+        if markdown_has_body(text):
+            signals.append({"kind": "docs", "path": entry.path})
+    signals.sort(key=lambda item: (item["kind"], item["path"]))
+    if first_signal:
+        signals = signals[:1]
+    return {
+        "verdict": "brownfield" if signals else "greenfield",
+        "revision": commit,
+        "signals": signals,
     }
 
 

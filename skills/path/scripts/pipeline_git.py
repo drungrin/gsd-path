@@ -599,11 +599,14 @@ def _require_state_remote_default(repo: Path, remote_default: str) -> str:
 
 
 def _initial_binding_snapshot(repo: Path) -> Optional[tuple]:
-    """Admit only clean work or the validated, untracked initializer state."""
+    """Admit only clean work or the validated, untracked initializer state.
+
+    A coordinator may already hold MEMBERS.md from `members add`; it must stay
+    one regular, unlinked file with the same identity and bytes."""
     dirty = _run_git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
     if not dirty:
         return None
-    if dirty != "?? .project/STATE.md\0":
+    if dirty not in ("?? .project/STATE.md\0", "?? .project/MEMBERS.md\0?? .project/STATE.md\0"):
         raise PipelineGitError("primary worktree is not clean")
     if __package__:
         from . import pipeline_state
@@ -615,21 +618,29 @@ def _initial_binding_snapshot(repo: Path) -> Optional[tuple]:
 
     project = repo / ".project"
     path = project / "STATE.md"
+    members = project / "MEMBERS.md"
     try:
         directory = project.lstat()
         state_file = path.lstat()
+        entries = set(project.iterdir())
         if (not stat.S_ISDIR(directory.st_mode)
                 or not stat.S_ISREG(state_file.st_mode)
                 or state_file.st_nlink != 1
-                or set(project.iterdir()) != {path}):
+                or entries - {members} != {path}):
             raise PipelineGitError("initial state must be the sole regular, unlinked .project file")
+        members_snapshot = None
+        if members in entries:
+            members_file = members.lstat()
+            if not stat.S_ISREG(members_file.st_mode) or members_file.st_nlink != 1:
+                raise PipelineGitError("initial MEMBERS.md must be a regular, unlinked file")
+            members_snapshot = (members_file.st_dev, members_file.st_ino, members.read_bytes())
         state = pipeline_state.validate_state(repo)["state"]
         if (state["phase"] not in {"inspect", "define"}
                 or state["status"] != "active"
                 or any(state[key] is not None for key in ("branch", "milestone", "archive"))):
             raise PipelineGitError("untracked state is not an unbound initial state")
         return (directory.st_dev, directory.st_ino, state_file.st_dev,
-                state_file.st_ino, path.read_bytes())
+                state_file.st_ino, path.read_bytes(), members_snapshot)
     except (OSError, pipeline_state.PipelineStateError) as error:
         raise PipelineGitError(f"invalid initial state: {error}") from error
 

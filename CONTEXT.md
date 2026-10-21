@@ -113,6 +113,20 @@ records its default branch one time, when it joins; a row without the
 `Default branch` field means `main`.
 _Avoid_: submodule, child repo, secondary repo
 
+**Member inspection**:
+Inspect's code map and docs audit of one brownfield Member
+(`evidence-codebase-<member>.md`, `DOCS-AUDIT-<member>.md`), read from its
+Member pin and never from the team's working checkout. Evidence whose pin
+has since moved is stale: reported, not re-inspected.
+_Avoid_: member scan (of a working checkout), re-inspection
+
+**Member pin**:
+The exact commit a Member inspection reads, recorded as `Member HEAD`: the
+Member's local `origin/<default>`, or in a lookahead track the bound branch
+tip of a Member the active build locks. Selecting it never fetches; inspect
+fetches Member origins before it selects.
+_Avoid_: member HEAD (of the team checkout), latest
+
 **Surface**:
 Something a person opens, sees, or types into to get a milestone's outcome:
 a screen, a command, an endpoint. `Surfaces:` on the roadmap entry and

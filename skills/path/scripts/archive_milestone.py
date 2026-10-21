@@ -637,7 +637,8 @@ def pending_ruling_count(audit: Path) -> int:
     in_rulings = False
     count = 0
     for line in audit.read_text(encoding="utf-8").splitlines():
-        if line == "## User rulings":
+        # Same heading rule as the docs gate and the shared ruling parser.
+        if re.fullmatch(r"## User rulings[ \t]*", line):
             in_rulings = True
             continue
         if in_rulings and line.startswith("## "):
@@ -650,18 +651,59 @@ def pending_ruling_count(audit: Path) -> int:
     return count
 
 
+def pending_audits(research_root: Path) -> list:
+    """(audit path, pending ruling count) for each audit with a `Planned: no` row.
+
+    Audits are DOCS-AUDIT.md first, then DOCS-AUDIT-<member>.md by member name,
+    whether or not MEMBERS.md still lists the member.
+    """
+    try:
+        audits = _common.docs_audit_files(research_root)
+    except ValueError as error:
+        raise ArchiveError(str(error)) from error
+    counted = ((audit, pending_ruling_count(audit)) for audit in audits)
+    return [(audit, count) for audit, count in counted if count]
+
+
+def pending_audit_count(research_root: Path) -> int:
+    """Pending ruling rows summed over every audit; MANIFEST and results report this."""
+    return sum(count for _, count in pending_audits(research_root))
+
+
+def carry_temp_name(filename: str) -> str:
+    """The temporary of one carry-forward copy; DOCS-AUDIT.md keeps CARRY_TEMP_NAME."""
+    return f".{filename}.gsd-path-tmp"
+
+
+def carry_label(filename: str) -> str:
+    """How errors name a carried audit; the coordinator audit keeps its old wording."""
+    return "DOCS-AUDIT" if filename == _common.DOCS_AUDIT_FILENAME else filename
+
+
 def is_existing_carry_forward(source: Path, archived: Path) -> bool:
-    entries = [path for path in source.iterdir() if not _common.is_ignored_junk(path)] if source.is_dir() else []
-    archived_audit = archived / "DOCS-AUDIT.md"
-    if not archived_audit.is_file() or pending_ruling_count(archived_audit) == 0:
+    """True when active research holds only exact copies of archived pending audits.
+
+    During recovery any subset, including none, is accepted; the exact complete
+    set is required later by require_clean_active_root.
+    """
+    pending = {audit.name: audit for audit, _ in pending_audits(archived)}
+    if not pending or source.is_symlink():
         return False
-    if not entries:
-        return True
-    return (
-        len(entries) == 1
-        and entries[0].name == "DOCS-AUDIT.md"
-        and filecmp.cmp(entries[0], archived_audit, shallow=False)
+    entries = [path for path in source.iterdir() if not _common.is_ignored_junk(path)] if source.is_dir() else []
+    return all(
+        entry.name in pending
+        and not entry.is_symlink()
+        and entry.is_file()
+        and filecmp.cmp(entry, pending[entry.name], shallow=False)
+        for entry in entries
     )
+
+
+def require_safe_carry_inputs(active_root: Path, archive: Path) -> None:
+    """Reject an unsafe or malformed audit path before research moves."""
+    for research in (active_root / "research", archive / "research"):
+        if research.is_dir() and not research.is_symlink():
+            pending_audits(research)
 
 
 def move_directory(source: Path, destination: Path) -> None:
@@ -1050,6 +1092,31 @@ def atomic_copy(source: Path, destination: Path, temporary_name: str = CARRY_TEM
             temporary_path.unlink()
 
 
+def copy_pending_audits(active_root: Path, archive: Path) -> int:
+    """Copy every archived pending audit back to active research; return the row total.
+
+    Each file is copied whole and atomically under its own temporary name. An
+    existing exact copy is kept, so an interrupted run resumes; any other
+    existing path is a collision.
+    """
+    pending = pending_audits(archive / "research")
+    if not pending:
+        return 0
+    active_research = active_root / "research"
+    if active_research.is_symlink():
+        raise ArchiveError(f"archive transaction paths must not be symlinks: {active_research}")
+    for archived_audit, _ in pending:
+        active_audit = active_research / archived_audit.name
+        active_audit.parent.mkdir(parents=True, exist_ok=True)
+        if active_audit.is_symlink() or (active_audit.exists() and not (
+            active_audit.is_file() and filecmp.cmp(active_audit, archived_audit, shallow=False)
+        )):
+            raise ArchiveError(f"carry-forward collision: {active_audit} differs from archived audit")
+        if not active_audit.exists():
+            atomic_copy(archived_audit, active_audit, carry_temp_name(archived_audit.name))
+    return sum(count for _, count in pending)
+
+
 def prepare(repo: Path, slug: str) -> dict:
     project = repo.resolve()
     active_root = require_project_layout(project)
@@ -1098,6 +1165,7 @@ def prepare_locked(project: Path, active_root: Path, slug: str) -> dict:
             )
         target = resolved_archive_target(project, slug, parsed_state)
         require_archive_milestone(target.name, parsed_state)
+        require_safe_carry_inputs(active_root, target)
         require_complete_transaction_inputs(active_root, target)
         require_canonical_transaction_inputs(active_root, target)
 
@@ -1108,6 +1176,7 @@ def prepare_locked(project: Path, active_root: Path, slug: str) -> dict:
     if manifest_temporary.exists() or manifest_temporary.is_symlink():
         manifest_temporary.unlink()
 
+    require_safe_carry_inputs(active_root, archive)
     remove_interrupted_carry_copy(active_root, archive)
     remove_interrupted_discussion_copies(active_root, archive)
     finish_discussion_reconciliation(active_root, archive)
@@ -1118,15 +1187,7 @@ def prepare_locked(project: Path, active_root: Path, slug: str) -> dict:
     for name in TRANSACTION_DIRECTORIES:
         move_directory(active_root / name, archive / name)
 
-    archived_audit = archive / "research" / "DOCS-AUDIT.md"
-    carried_forward = pending_ruling_count(archived_audit)
-    if carried_forward:
-        active_audit = active_root / "research" / "DOCS-AUDIT.md"
-        active_audit.parent.mkdir(parents=True, exist_ok=True)
-        if active_audit.exists() and not filecmp.cmp(active_audit, archived_audit, shallow=False):
-            raise ArchiveError(f"carry-forward collision: {active_audit} differs from archived audit")
-        if not active_audit.exists():
-            atomic_copy(archived_audit, active_audit)
+    carried_forward = copy_pending_audits(active_root, archive)
 
     return {
         "archive": archive.relative_to(project).as_posix(),
@@ -1460,9 +1521,7 @@ def completed_abandon(
         raise ArchiveError(f"completed abandon checkpoint is invalid: {error}") from error
     return {
         "archive": configured,
-        "carried_forward": pending_ruling_count(
-            archive / "research" / "DOCS-AUDIT.md"
-        ),
+        "carried_forward": pending_audit_count(archive / "research"),
         "commit": checkpoint["commit"],
         "status": checkpoint["status"],
     }
@@ -1630,7 +1689,7 @@ def abandon_locked(
             active_root / "LESSONS.md", archive.name, journal["ruling"]
         )
         require_clean_active_root(active_root, archive)
-        return journal, pending_ruling_count(archive / "research" / "DOCS-AUDIT.md")
+        return journal, pending_audit_count(archive / "research")
 
     if (
         parsed_state.status != journal["build_status"]
@@ -1663,6 +1722,7 @@ def abandon_locked(
     if manifest_temporary.exists() or manifest_temporary.is_symlink():
         manifest_temporary.unlink()
 
+    require_safe_carry_inputs(active_root, archive)
     remove_interrupted_carry_copy(active_root, archive)
     remove_interrupted_discussion_copies(active_root, archive)
     finish_discussion_reconciliation(active_root, archive)
@@ -1673,15 +1733,7 @@ def abandon_locked(
     for name in TRANSACTION_DIRECTORIES:
         move_directory(active_root / name, archive / name)
 
-    archived_audit = archive / "research" / "DOCS-AUDIT.md"
-    carried_forward = pending_ruling_count(archived_audit)
-    if carried_forward:
-        active_audit = active_root / "research" / "DOCS-AUDIT.md"
-        active_audit.parent.mkdir(parents=True, exist_ok=True)
-        if active_audit.exists() and not filecmp.cmp(active_audit, archived_audit, shallow=False):
-            raise ArchiveError(f"carry-forward collision: {active_audit} differs from archived audit")
-        if not active_audit.exists():
-            atomic_copy(archived_audit, active_audit)
+    carried_forward = copy_pending_audits(active_root, archive)
 
     write_abandon_manifest(
         archive,
@@ -1799,8 +1851,7 @@ def require_canonical_archive(archive: Path) -> None:
 
 
 def require_clean_active_root(active_root: Path, archive: Path) -> None:
-    archived_audit = archive / "research" / "DOCS-AUDIT.md"
-    carried_forward = pending_ruling_count(archived_audit)
+    pending = {audit.name: audit for audit, _ in pending_audits(archive / "research")}
     # Persistent project metadata ships but never archives with a milestone.
     allowed = {"STATE.md", "REPOSITORY.md", "MEMBERS.md", "archive", "LESSONS.md", "next", "publications"}
     publications = active_root / "publications"
@@ -1832,20 +1883,22 @@ def require_clean_active_root(active_root: Path, archive: Path) -> None:
         allowed |= {"CHARTER.md", "ROADMAP.md", "SYNTHESIS.md"}
     active_research = active_root / "research"
 
-    if carried_forward:
+    if pending:
         allowed.add("research")
-        active_audit = active_research / "DOCS-AUDIT.md"
         entries = sorted(
             path.name for path in active_research.iterdir() if not _common.is_ignored_junk(path)
-        ) if active_research.is_dir() else []
-        if (
-            active_research.is_symlink()
-            or entries != ["DOCS-AUDIT.md"]
-            or active_audit.is_symlink()
-            or not active_audit.is_file()
-            or not filecmp.cmp(active_audit, archived_audit, shallow=False)
-        ):
-            raise ArchiveError("pending DOCS-AUDIT rulings lack an exact active carry-forward copy")
+        ) if active_research.is_dir() and not active_research.is_symlink() else []
+        inexact = [
+            name for name, archived_audit in pending.items()
+            if (active_research / name).is_symlink()
+            or not (active_research / name).is_file()
+            or not filecmp.cmp(active_research / name, archived_audit, shallow=False)
+        ]
+        if inexact or entries != sorted(pending):
+            name = (inexact or list(pending))[0]
+            raise ArchiveError(
+                f"pending {carry_label(name)} rulings lack an exact active carry-forward copy"
+            )
     elif active_research.exists() or active_research.is_symlink():
         raise ArchiveError("active research exists without a pending carry-forward queue")
 
@@ -1860,39 +1913,38 @@ def require_clean_active_root(active_root: Path, archive: Path) -> None:
 
 
 def require_stageable_carry_forward(project: Path, archive: Path) -> None:
-    if pending_ruling_count(archive / "research" / "DOCS-AUDIT.md") == 0:
-        return
-    carry_path = ".project/research/DOCS-AUDIT.md"
-    tracked = run_git(project, "ls-files", "--error-unmatch", "--", carry_path)
-    if tracked.returncode == 0:
-        return
-    if tracked.returncode != 1:
-        require_git_success(tracked, "inspect active carry-forward tracking status")
-    ignored = run_git(project, "check-ignore", "-q", "--no-index", "--", carry_path)
-    if ignored.returncode == 0:
-        raise ArchiveError("ignored active carry-forward is not tracked and would be omitted")
-    if ignored.returncode != 1:
-        require_git_success(ignored, "inspect active carry-forward ignore status")
+    for audit, _ in pending_audits(archive / "research"):
+        carry_path = f".project/research/{audit.name}"
+        tracked = run_git(project, "ls-files", "--error-unmatch", "--", carry_path)
+        if tracked.returncode == 0:
+            continue
+        if tracked.returncode != 1:
+            require_git_success(tracked, "inspect active carry-forward tracking status")
+        ignored = run_git(project, "check-ignore", "-q", "--no-index", "--", carry_path)
+        if ignored.returncode == 0:
+            suffix = "" if audit.name == _common.DOCS_AUDIT_FILENAME else f": {carry_path}"
+            raise ArchiveError(f"ignored active carry-forward is not tracked and would be omitted{suffix}")
+        if ignored.returncode != 1:
+            require_git_success(ignored, "inspect active carry-forward ignore status")
 
 
 def require_committed_carry_forward(project: Path, configured: str, archive: Path, ref: str) -> None:
-    if pending_ruling_count(archive / "research" / "DOCS-AUDIT.md") == 0:
-        return
-    active_blob = require_git_success(
-        run_git(project, "rev-parse", "--verify", f"{ref}:.project/research/DOCS-AUDIT.md"),
-        "verify committed carry-forward",
-    )
-    archived_blob = require_git_success(
-        run_git(
-            project,
-            "rev-parse",
-            "--verify",
-            f"{ref}:{configured}/research/DOCS-AUDIT.md",
-        ),
-        "verify archived carry-forward",
-    )
-    if active_blob != archived_blob:
-        raise ArchiveError("committed carry-forward differs from the archived DOCS-AUDIT.md")
+    for audit, _ in pending_audits(archive / "research"):
+        active_blob = require_git_success(
+            run_git(project, "rev-parse", "--verify", f"{ref}:.project/research/{audit.name}"),
+            "verify committed carry-forward",
+        )
+        archived_blob = require_git_success(
+            run_git(
+                project,
+                "rev-parse",
+                "--verify",
+                f"{ref}:{configured}/research/{audit.name}",
+            ),
+            "verify archived carry-forward",
+        )
+        if active_blob != archived_blob:
+            raise ArchiveError(f"committed carry-forward differs from the archived {audit.name}")
 
 
 def prepared_transaction(
@@ -1969,7 +2021,7 @@ def preflight(repo: Path) -> dict:
         )
     return {
         "archive": configured,
-        "carried_forward": pending_ruling_count(archive / "research" / "DOCS-AUDIT.md"),
+        "carried_forward": pending_audit_count(archive / "research"),
     }
 
 

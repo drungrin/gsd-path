@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Optional
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -656,6 +657,259 @@ class MemberTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("already a member of other", result.stderr)
         self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), foreign)
+
+    def inspection_member(self, name: str, default: str = "main", readme: Optional[str] = None) -> Path:
+        checkout = self.make_member(name, default=default)
+        if readme is not None:
+            (checkout / "README.md").write_bytes(readme.encode("utf-8"))
+            commit_all(checkout, "readme")
+        remote = self.root / f"{name}.git"
+        git(self.root, "init", "-q", "--bare", "-b", default, str(remote))
+        git(checkout, "config", f"url.{remote.as_uri()}.insteadOf", f"https://github.com/acme/{name}.git")
+        git(checkout, "push", "-q", "origin", f"HEAD:refs/heads/{default}")
+        result = self.add(name, checkout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return checkout
+
+    def write_inspection(self, name: str, checkout: Path, pin: str, project_dir: str = ".project",
+                         member: Optional[str] = None, default: str = "main") -> None:
+        research = self.coordinator / project_dir / "research"
+        research.mkdir(parents=True, exist_ok=True)
+        header = (f"Repo root: {checkout}\nMember: {member or name}\n"
+                  f"Default branch: {default}\nMember HEAD: {pin}\n")
+        (research / f"evidence-codebase-{name}.md").write_bytes(
+            (f"# Evidence — codebase\n\n{header}Scanned: 2026-10-21\n\n"
+             "## Map\n\n- **Stack**: Static site.\n").encode("utf-8"))
+        (research / f"DOCS-AUDIT-{name}.md").write_bytes(
+            f"# Docs Audit\n\n{header}Audited HEAD: {pin}\n\n## Summary\n".encode("utf-8"))
+
+    def advance(self, member: Path, relative: str, text: str) -> str:
+        (member / relative).write_bytes(text.encode("utf-8"))
+        commit_all(member, f"change {relative}")
+        git(member, "update-ref", "refs/remotes/origin/main", "HEAD")
+        return git(member, "rev-parse", "HEAD")
+
+    def inspected(self, name: str, project_dir: str = ".project") -> dict:
+        scope = members.inspection_scope(self.coordinator, project_dir)
+        return next(entry for entry in scope["members"] if entry["name"] == name)
+
+    def test_inspection_without_members_file_computes_nothing(self) -> None:
+        empty = {"project_dir": ".project", "coordinator": None, "members": []}
+        with mock.patch.object(members, "_inspection_helpers", side_effect=AssertionError), \
+                mock.patch.object(members, "_coordinator", side_effect=AssertionError):
+            self.assertEqual(members.inspection_scope(self.coordinator), empty)
+        result = self.run_members("inspection")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), empty)
+        self.assertFalse((self.coordinator / ".project" / "MEMBERS.md").exists())
+
+    def test_inspection_reports_missing_covered_and_stale_brownfield_evidence(self) -> None:
+        web = self.inspection_member("web")
+        pin = git(web, "rev-parse", "refs/remotes/origin/main")
+        scope = members.inspection_scope(self.coordinator)
+        self.assertEqual(scope["coordinator"], {"checkout": str(self.coordinator), "verdict": "greenfield",
+                                                "head": git(self.coordinator, "rev-parse", "HEAD"), "signal": None})
+        self.assertEqual(scope["members"], [{
+            "name": "web", "checkout": str(web), "default_branch": "main", "pin": pin,
+            "pin_ref": "refs/remotes/origin/main", "verdict": "brownfield", "signal": {"kind": "docs", "path": "README.md"},
+            "reason": "missing .project/research/evidence-codebase-web.md; "
+                      "missing .project/research/DOCS-AUDIT-web.md",
+            "code_evidence": "research/evidence-codebase-web.md", "docs_audit": "research/DOCS-AUDIT-web.md",
+            "evidence_head": None, "state": "missing"}])
+
+        self.write_inspection("web", web, pin)
+        covered = self.inspected("web")
+        self.assertEqual((covered["state"], covered["evidence_head"], covered["reason"]), ("covered", pin, None))
+        (self.coordinator / ".project/research/DOCS-AUDIT-web.md").unlink()
+        self.assertEqual(self.inspected("web")["state"], "missing")
+
+        self.write_inspection("web", web, pin, member="sdk")
+        invalid = self.inspected("web")
+        self.assertEqual(invalid["state"], "missing")
+        self.assertIn("Member must be web, found sdk", invalid["reason"])
+
+        self.write_inspection("web", web, pin)
+        moved = self.advance(web, "app.js", "console.log(1)\n")
+        stale = self.inspected("web")
+        self.assertEqual((stale["state"], stale["pin"], stale["evidence_head"]), ("stale", moved, pin))
+        self.assertIn(f"differs from pin {moved}", stale["reason"])
+        self.assertEqual(self.inspected("web", ".project/next")["state"], "missing")
+        self.write_inspection("web", web, moved, ".project/next")
+        self.assertEqual(self.inspected("web", ".project/next")["state"], "covered")
+
+    def test_inspection_evidence_off_the_pin_history_is_missing_not_stale(self) -> None:
+        web = self.inspection_member("web")
+        pin = git(web, "rev-parse", "refs/remotes/origin/main")
+        git(web, "checkout", "-q", "-b", "feature/acme-milestone-001")
+        (web / "bound.js").write_bytes(b"bound()\n")
+        commit_all(web, "bound")
+        landed = git(web, "rev-parse", "HEAD")
+        git(web, "checkout", "-q", "main")
+        git(web, "merge", "-q", "--squash", "feature/acme-milestone-001")
+        commit_all(web, "squash")
+        git(web, "update-ref", "refs/remotes/origin/main", "HEAD")
+        squashed = git(web, "rev-parse", "HEAD")
+        for head in (landed, "c" * 40):
+            with self.subTest(head=head):
+                self.write_inspection("web", web, head)
+                entry = self.inspected("web")
+                self.assertEqual((entry["state"], entry["pin"], entry["evidence_head"]), ("missing", squashed, head))
+                self.assertEqual(entry["reason"], f"evidence Member HEAD {head} is not on refs/remotes/origin/main")
+                with self.assertRaisesRegex(check_handoffs.HandoffError, "is not on refs/remotes/origin/main"):
+                    check_handoffs.validate_inspection_coverage(self.coordinator)
+        # Evidence at an ancestor of the selected pin stays advisory and coverage accepts it.
+        self.write_inspection("web", web, pin)
+        self.assertEqual(self.inspected("web")["state"], "stale")
+        self.assertEqual(check_handoffs.validate_inspection_coverage(self.coordinator)["stale"], ["web"])
+
+    def lock_member(self, name: str, base: str, branch: str = "feature/acme-milestone-001",
+                    rows: Optional[list] = None) -> None:
+        lock = self.coordinator / ".project" / "build" / "members.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        rows = [{"name": name, "branch": branch, "base": base}] if rows is None else rows
+        lock.write_bytes(json.dumps({"schema": "gsd-path/member-lock/v1", "members": rows}).encode("utf-8"))
+
+    def test_lookahead_inspection_pins_a_locked_member_at_its_bound_tip(self) -> None:
+        web = self.inspection_member("web")
+        origin = git(web, "rev-parse", "refs/remotes/origin/main")
+        git(web, "checkout", "-q", "-b", "feature/acme-milestone-001")
+        tip = self.advance(web, "bound.js", "bound()\n")
+        git(web, "update-ref", "refs/remotes/origin/main", origin)
+        git(web, "checkout", "-q", "main")
+        self.lock_member("web", origin)
+        lookahead = self.inspected("web", ".project/next")
+        self.assertEqual((lookahead["pin"], lookahead["pin_ref"]), (tip, "refs/heads/feature/acme-milestone-001"))
+        active = self.inspected("web")
+        self.assertEqual((active["pin"], active["pin_ref"]), (origin, "refs/remotes/origin/main"))
+
+        self.write_inspection("web", web, tip, ".project/next")
+        self.assertEqual(self.inspected("web", ".project/next")["state"], "covered")
+        self.assertEqual(check_handoffs.validate_inspection_coverage(self.coordinator, ".project/next")["stale"], [])
+        git(web, "checkout", "-q", "feature/acme-milestone-001")
+        moved = self.advance(web, "more.js", "more()\n")
+        git(web, "update-ref", "refs/remotes/origin/main", origin)
+        git(web, "checkout", "-q", "main")
+        self.assertEqual(self.inspected("web", ".project/next")["pin"], moved)
+        coverage = check_handoffs.validate_inspection_coverage(self.coordinator, ".project/next")
+        self.assertEqual(coverage["stale"], ["web"])
+
+    def test_lookahead_inspection_of_an_unlocked_member_uses_its_origin_default(self) -> None:
+        web, api = self.inspection_member("web"), self.inspection_member("api")
+        self.lock_member("api", git(api, "rev-parse", "refs/remotes/origin/main"))
+        git(api, "branch", "feature/acme-milestone-001")
+        entry = self.inspected("web", ".project/next")
+        self.assertEqual((entry["pin"], entry["pin_ref"]),
+                         (git(web, "rev-parse", "refs/remotes/origin/main"), "refs/remotes/origin/main"))
+
+    def test_lookahead_inspection_blocks_on_an_invalid_lock_or_missing_bound_ref(self) -> None:
+        web = self.inspection_member("web")
+        base = git(web, "rev-parse", "refs/remotes/origin/main")
+        self.lock_member("web", base)
+        missing = self.inspected("web", ".project/next")
+        self.assertEqual((missing["verdict"], missing["pin"]), ("unverifiable", None))
+        self.assertIn("inspection pin is unavailable: refs/heads/feature/acme-milestone-001", missing["reason"])
+        for rows in ([{"name": "web", "branch": "b", "base": "short"}],
+                     [{"name": "web", "branch": "b", "base": base}, {"name": "web", "branch": "c", "base": base}]):
+            with self.subTest(rows=rows):
+                self.lock_member("web", base, rows=rows)
+                entry = self.inspected("web", ".project/next")
+                self.assertEqual(entry["verdict"], "unverifiable")
+                self.assertIn("member web inspection lock is invalid", entry["reason"])
+        lock = self.coordinator / ".project" / "build" / "members.json"
+        lock.write_bytes(b"{")
+        self.assertIn("inspection lock is invalid", self.inspected("web", ".project/next")["reason"])
+        self.assertEqual(self.inspected("web")["pin_ref"], "refs/remotes/origin/main")
+
+    def test_inspection_reads_the_pinned_tree_not_a_dirty_team_checkout(self) -> None:
+        sdk = self.inspection_member("sdk", readme="# sdk\n")
+        (sdk / "main.go").write_bytes("package main\n".encode("utf-8"))
+        (self.coordinator / "src").mkdir()
+        (self.coordinator / "src" / "app.py").write_bytes("print(1)\n".encode("utf-8"))
+        commit_all(self.coordinator, "product code")
+        self.assertIn("uncommitted changes", self.run_members("validate").stderr)
+
+        scope = members.inspection_scope(self.coordinator)
+        self.assertEqual((scope["coordinator"]["verdict"], scope["coordinator"]["signal"]),
+                         ("brownfield", {"kind": "source", "path": "src/app.py"}))
+        entry = scope["members"][0]
+        self.assertEqual((entry["verdict"], entry["state"], entry["signal"], entry["reason"]),
+                         ("greenfield", "greenfield", None, None))
+        self.advance(sdk, "lib.rs", "fn main() {}\n")
+        self.assertEqual(self.inspected("sdk")["state"], "missing")
+
+    def test_inspection_reports_each_unverifiable_member_with_its_reason(self) -> None:
+        broken = {name: self.inspection_member(name) for name in ("ref", "gone", "unmarked", "garbled", "foreign", "moved")}
+        git(broken["ref"], "update-ref", "-d", "refs/remotes/origin/main")
+        self.marker_path(broken["unmarked"]).unlink()
+        self.marker_path(broken["garbled"]).write_bytes("{invalid}".encode("utf-8"))
+        foreign = self.marker_path(broken["foreign"])
+        foreign.write_bytes(json.dumps({**json.loads(foreign.read_text(encoding="utf-8")),
+                                        "coordinator": str(self.root / "other")}).encode("utf-8"))
+        git(broken["moved"], "remote", "set-url", "origin", "https://github.com/acme/elsewhere.git")
+        broken["gone"].rename(self.root / "gone-away")
+        reasons = {
+            "ref": "member requires refs/remotes/origin/main; run git fetch origin",
+            "gone": f"member checkout is missing: {broken['gone']}",
+            "unmarked": "member marker for unmarked is missing; run members.py repair",
+            "garbled": "member marker is unreadable",
+            "foreign": "member marker for foreign is stale",
+            "moved": "member origin changed",
+        }
+        scope = members.inspection_scope(self.coordinator)
+        self.assertEqual([entry["name"] for entry in scope["members"]], list(broken))
+        for entry in scope["members"]:
+            with self.subTest(entry["name"]):
+                self.assertEqual((entry["verdict"], entry["state"], entry["pin"]),
+                                 ("unverifiable", "unverifiable", None))
+                self.assertIn(reasons[entry["name"]], entry["reason"])
+
+    def test_inspection_writes_nothing(self) -> None:
+        web, sdk = self.inspection_member("web"), self.inspection_member("sdk")
+        self.write_inspection("web", web, git(web, "rev-parse", "HEAD"))
+        self.marker_path(sdk).unlink()
+        (web / "scratch.txt").write_bytes("team work in progress\n".encode("utf-8"))
+
+        def fingerprint() -> dict:
+            files = {}
+            for top in (self.coordinator, web, sdk):
+                for path in sorted(top.rglob("*")):
+                    files[str(path)] = path.read_bytes() if path.is_file() else None
+            return files
+
+        statuses = [git(repo, "status", "--porcelain", "--untracked-files=all") for repo in (self.coordinator, web, sdk)]
+        marker = self.marker_path(web).read_bytes()
+        before = fingerprint()
+        scope = members.inspection_scope(self.coordinator)
+        result = self.run_members("inspection")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), scope)
+        self.assertEqual(fingerprint(), before)
+        self.assertEqual(marker, self.marker_path(web).read_bytes())
+        self.assertFalse(self.marker_path(sdk).exists())
+        self.assertEqual(statuses, [git(repo, "status", "--porcelain", "--untracked-files=all")
+                                    for repo in (self.coordinator, web, sdk)])
+        self.assertEqual([entry["state"] for entry in scope["members"]], ["covered", "unverifiable"])
+
+    def test_inspection_uses_the_recorded_default_not_origin_head(self) -> None:
+        web = self.inspection_member("web", default="release/trunk")
+        recorded = git(web, "rev-parse", "refs/remotes/origin/release/trunk")
+        self.set_origin_head(web, "main")
+        (web / "app.py").write_bytes("print(1)\n".encode("utf-8"))
+        commit_all(web, "app")
+        git(web, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.write_inspection("web", web, recorded, default="release/trunk")
+        entry = self.inspected("web")
+        self.assertEqual((entry["default_branch"], entry["pin"], entry["state"]),
+                         ("release/trunk", recorded, "covered"))
+        self.assertEqual(entry["signal"], {"kind": "docs", "path": "README.md"})
+
+    def test_inspection_refuses_a_project_dir_outside_the_coordinator(self) -> None:
+        self.inspection_member("web")
+        for project_dir in ("../elsewhere", str(self.root)):
+            with self.subTest(project_dir=project_dir):
+                result = self.run_members("inspection", "--project-dir", project_dir)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("project directory must stay inside the coordinator", result.stderr)
 
 
 class MembersArtifactTests(unittest.TestCase):

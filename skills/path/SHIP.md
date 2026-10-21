@@ -241,8 +241,11 @@ The persisted `STATE.archive` field is the transaction identity.
    the same command; it reuses STATE.archive and never recomputes N.
 2. The helper requires exactly one of each active or archived top-level
    artifact, permits active and archived `research/` together only for the
-   byte-identical pending DOCS-AUDIT carry-forward, and recreates its parent
-   before an atomic copy. Any other collision or missing artifact blocks.
+   byte-identical pending DOCS-AUDIT carry-forward set — every audit
+   (`DOCS-AUDIT.md`, each `DOCS-AUDIT-<member>.md`, including a removed
+   member's) with a `planned: no` ruling, copied whole under its own name —
+   and recreates its parent before each atomic copy. Any other collision or
+   missing artifact blocks.
    For a non-off PLAN review-panel policy it also requires exactly one plan
    resolution artifact: `review/PLAN-PANEL.md` for `ready`, or the exact
    helper JSON in `review/PLAN-PANEL.skipped.json` for `skipped`. Each full or
@@ -259,7 +262,8 @@ The persisted `STATE.archive` field is the transaction identity.
    ROADMAP.md, and a top-level program SYNTHESIS.md ship in the commit but
    never archive.
    Then run `python3 <absolute archive_milestone.py> render-manifest --repo <root>`. The helper derives final verdicts, wave/task/cycle counts,
-   carry-forward count, and the exact archive inventory, then atomically
+   carry-forward count (pending ruling rows summed over every carried audit),
+   and the exact archive inventory, then atomically
    replaces MANIFEST.md through its deterministic same-directory temporary.
    Never render or edit the manifest directly. `prepare` removes that exact
    temporary after a crash. If the target exists in HEAD, `prepare` and

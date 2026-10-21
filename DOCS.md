@@ -177,6 +177,7 @@ These are the usual checkpoints. For the opt-in quick-lane grant, see
 ```text
 No state, greenfield verdict    → router → define (first milestone)
 No state, brownfield verdict    → router → inspect → define
+Members added before intent     → router → inspect (members) → define
 No state, orphan verdict        → router → block for recovery
 Huge multi-milestone program    → router → define (program mode: charter →
                                   research → decide → roadmap → milestone loop)
@@ -369,7 +370,10 @@ directly in `.project/` does not block setup, even if it appears while
 STATE.md is being created. Other `.project/` content without STATE.md is
 orphaned and blocks for recovery. An owned state, including the new-GitHub
 bootstrap state, routes by STATE.md after classification without running the
-initializer. After a milestone ships, the next one inspects again.
+initializer. After a milestone ships, the next one inspects again. In a
+[multi-repo](README.md#multi-repo-milestones) project, each member is
+classified at its pinned commit: brownfield members are inspected before
+intent even when the coordinator is greenfield.
 
 ---
 

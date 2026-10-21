@@ -10,7 +10,11 @@ and [operating rules](references/operating-rules.md).
 
 Answer one question with evidence: **does the project do what its documents
 say it does?** Runs standalone at the safe checkpoints below, and as half of
-`$gsd-path-inspect`. Output: `.project/research/DOCS-AUDIT.md`.
+`$gsd-path-inspect`. Output: `.project/research/DOCS-AUDIT.md`. Standalone
+runs audit the coordinator only. Inspect alone owns member audits
+(`research/DOCS-AUDIT-<member>.md`) under its frozen pin, gate, and collection
+contract; never start this lifecycle in a member checkout. Their rulings and
+queues follow the same rules, keyed by (audit file, Queue #).
 
 Routing instructions below are caller handoffs under the AGENTS.md handoff
 rule; never invoke an explicit-only sibling skill yourself.

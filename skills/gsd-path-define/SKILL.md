@@ -16,9 +16,10 @@ Primary modes: **standard** (single milestone, below), **program** (a
 multi-milestone program — interview into `.project/CHARTER.md`), and
 **milestone** (derive one milestone's INTENT.md from the approved roadmap; no
 re-interview). Modifiers: **brownfield** when the track's
-`research/evidence-codebase.md` exists, and **supplied-spec** when the user
-hands in a PRD, issue, or design doc. Apply every matching modifier on top of
-the primary mode.
+`research/evidence-codebase.md` or any member's
+`research/evidence-codebase-<member>.md` exists, and **supplied-spec** when
+the user hands in a PRD, issue, or design doc. Apply every matching modifier
+on top of the primary mode.
 
 Routing instructions below are caller handoffs under the AGENTS.md handoff
 rule; never invoke an explicit-only sibling skill yourself.
@@ -72,6 +73,14 @@ transition`: pass the exact expected phase/status/branch/archive values, event
 `--project-dir .project/next` for lookahead). This helper is the only ordinary
 STATE mutation; direct template writing is limited to the missing-state
 greenfield initialization above.
+
+On the active `.project` track with `.project/MEMBERS.md`, rerun
+`python3 <absolute pipeline_state.py> route --repo <absolute root>` right
+after that entry transition and when resuming `define/active`, before any
+question.
+Continue only on `run-phase` `define`; `block` stops with its reason, and any
+other result (such as `inspect` with `mode: members`) returns to the router.
+Without MEMBERS.md nothing changes.
 
 The router's verified new-GitHub-repository transaction is the sole greenfield
 exception: STATE.md already exists at `define/active`, `branch` is the approved
@@ -145,8 +154,8 @@ State ownership. There is no re-interview of charter or roadmap scope:
    require that entry to be `active`; in lookahead mode, require it to be
    `pending`. A missing, duplicate, or wrong-status match blocks: record the
    failure in the applicable STATE.md and return to the router. When
-   brownfield, also read the track's
-   `research/evidence-codebase.md` and `research/DOCS-AUDIT.md` first.
+   brownfield, also read the track's inspection evidence (Brownfield mode)
+   first.
 2. Draft INTENT.md from the resolved entry: Summary from its Goal, Scope
    in/out and Success criteria from the entry, Constraints inherited from the charter,
    Risks and Open questions from the entry (tagged `RESEARCH`/`NEEDS-USER`),
@@ -196,7 +205,7 @@ differences:
   does that at promotion.
 
 All other milestone-mode rules apply unchanged. Brownfield evidence for
-this track is `.project/next/research/evidence-codebase.md`.
+this track is the inspection evidence under `.project/next/research/`.
 
 ## Supplied-spec mode
 
@@ -210,9 +219,14 @@ truth first, then the spec, then delta questions only.
 
 ## Brownfield mode
 
-When the track's `research/evidence-codebase.md` exists (inspect already
-ran), read it and the matching `research/DOCS-AUDIT.md` before the first
-question. The rules change for every primary mode:
+When brownfield (inspect already ran), read every inspected pair in the
+track's `research/` before the first question: `evidence-codebase.md` with
+`DOCS-AUDIT.md`, and each member's `evidence-codebase-<member>.md` with
+`DOCS-AUDIT-<member>.md`. Also read any audit carrying pending rulings for a
+member that is now greenfield or removed (label only a member that MEMBERS.md
+no longer lists `removed member <name>`).
+Report stale member evidence as advisory (operating rules); never re-inspect.
+The rules change for every primary mode:
 
 - Established facts are not questions. Never ask what the stack is or what
   the code does — the map answers that. State it and let the user correct.
@@ -225,18 +239,21 @@ question. The rules change for every primary mode:
 - Work through the mapper's `## Open questions for define` and the
   audit's `NEEDS-USER` remediation rows — each doc-vs-code conflict gets a
   ruling (`fix-doc`, `fix-code`, or `accept-drift`) recorded verbatim in
-  INTENT.md and appended to DOCS-AUDIT.md's `## User rulings` table.
+  INTENT.md and appended to the `## User rulings` table of the audit that
+  raised it. A ruling's identity is (audit file, Queue #): `DOCS-AUDIT-web.md`
+  #1 and `DOCS-AUDIT.md` #1 are different items, so name the source audit with
+  every ruling and never merge or renumber queues.
   `fix-doc` and `fix-code` rows receive `planned: no`; `accept-drift` receives
   `planned: n/a (accept-drift)`. Never leave the durable alignment queue only
   in INTENT.md. Program mode records those rulings on CHARTER.md Constraints
-  or Corrections and still writes the DOCS-AUDIT.md table.
+  or Corrections and still writes each source audit's table.
 - Existing behavior the user wants preserved is recorded under Scope out as
   a veto ("do not break X"); accepted `fix-code` items become scope.
-- Fill INTENT.md's `## Current state` from the codebase map so downstream
-  phases inherit ground truth without re-scanning. Set Ground truth to the
-  track's `research/evidence-codebase.md` and `research/DOCS-AUDIT.md`
-  (`.project/next/research/` in Lookahead mode). Omit that section for
-  greenfield. Do not add it to CHARTER.md.
+- Fill INTENT.md's `## Current state` from the codebase maps so downstream
+  phases inherit ground truth without re-scanning, one entry per inspected
+  member beside the coordinator's. Set Ground truth to every inspected pair
+  in the track's `research/` (`.project/next/research/` in Lookahead mode).
+  Omit that section for greenfield. Do not add it to CHARTER.md.
 
 ## Process
 

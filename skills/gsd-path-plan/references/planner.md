@@ -10,10 +10,12 @@ the how.
   `.project/tasks/T###-slug.md` — these paths are canonical; nothing in the
   pipeline reads `.project/PLAN.md`.
 - Read AGENTS.md, both inputs, both templates, and relevant existing code.
-  Read `.project/LESSONS.md` when supplied; do not repeat a recorded planning
-  defect. When CHARTER.md and ROADMAP.md are supplied (milestone mode), plan
-  only the active milestone entry — the charter and remaining roadmap entries
-  are context, never scope.
+  Read every supplied codebase map (`evidence-codebase.md`, and
+  `evidence-codebase-<member>.md` per member); a map's conventions bind every
+  task in its repository. Read `.project/LESSONS.md` when supplied; do not
+  repeat a recorded planning defect. When CHARTER.md and ROADMAP.md are
+  supplied (milestone mode), plan only the active milestone entry — the
+  charter and remaining roadmap entries are context, never scope.
 - Write only the exact outputs using the supplied templates. Stop on a missing
   path or template.
 
@@ -115,7 +117,10 @@ plan order above, which still keeps plan-invalidating risk in wave 1.
   per repo joined by an Interface contract. PLAN.md's project Verify runs
   from the coordinator root and reaches a member as `../<member>`. Do not
   plan a task for a member this milestone already closed at ship; plan it in
-  the next milestone.
+  the next milestone. A selected docs-audit finding names its source audit;
+  one from `DOCS-AUDIT-<member>.md` becomes a `repo: <member>` task whose
+  Context carries that source path, row, evidence, and ruling, and whose
+  `fix-doc` Verify re-runs the claim check in the member.
 - Preserve every template field and its required initial value.
 
 Put the full-project build-and-test command in PLAN.md. Copy `Review panel:`

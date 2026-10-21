@@ -24,7 +24,8 @@ granted gate, the define or plan contract runs `python3 <absolute
 workflow_run.py> preauthorize --repo <absolute root> --kind <kind>` before
 asking: `complete` passes the gate through its normal approval command;
 `blocked` asks the owner as usual. A grant never answers an interview
-question, ruling, or `NEEDS-USER` item.
+question, ruling, or `NEEDS-USER` item; `preauthorize` checks each track
+`DOCS-AUDIT*.md` independently, by its own Queue numbers.
 
 # GSD Path Router
 
@@ -191,7 +192,8 @@ grant final review, archive, or merge approval.
    `initialize` classifies and, for brownfield or greenfield, writes STATE.md
    through an anchored no-follow create — never create STATE.md yourself after
    classify. Leave that initial state untracked for `bind-initial`; its validated
-   initial-state exception requires the index and every other path to stay clean.
+   initial-state exception requires the index and every other path to stay
+   clean, except an untracked `.project/MEMBERS.md` from `members.py add`.
    Do not insert a commit between initialization and binding:
    - `owned` — STATE.md exists; continue at step 1.
    - `orphan` (`route: recover-orphan`) — block without mutation. List the
@@ -284,6 +286,18 @@ or a member marker by hand.
 - `python3 <members.py> validate --repo <absolute-root>` checks every member;
   `repair` rewrites stale markers; `detect --checkout <path>` reports whether a
   repository is a member and of which coordinator.
+- Brownfield members are inspected before intent. At `define/active` with no
+  `.project/intent/INTENT.md` and either no CHARTER.md or an existing
+  ROADMAP.md, `route` returns `run-phase` `inspect` with `mode: members` and
+  the brownfield `members` lacking evidence; run the bundled inspect contract
+  in that mode.
+  It writes `research/evidence-codebase-<member>.md` and
+  `research/DOCS-AUDIT-<member>.md` from the member's pinned tree (`Member
+  HEAD`), never the team's working checkout. A greenfield coordinator skips its
+  own pair; a brownfield one keeps it. An unverifiable member (missing
+  checkout, marker, or origin ref) blocks. A member added after INTENT.md
+  exists is not inspected in that milestone. `members.py inspection --repo
+  <absolute-root>` reports each member's pin and evidence state read-only.
 
 Build locks the members that tasks name and works in Path-owned member
 branches `feature/<project>-milestone-001`. Ship runs `close-members` after preflight
@@ -376,7 +390,9 @@ python3 <absolute-bundled-pipeline-state.py> route \
 ```
 
 Follow its `route.action`, `phase`, and `mode` fields exactly. `run-phase`
-selects the matching bundled phase contract, `validate-integrated` enters the
+selects the matching bundled phase contract (`inspect` with `mode: members`
+inspects the returned `route.members`; see Member repositories),
+`validate-integrated` enters the
 shipped validator, `wait` leaves an approved lookahead track ready for
 promotion, `resume-next-handoff` resumes the verified `bind-next` transaction,
 `resume-checkpoint` runs the approval recovery command above,
@@ -413,9 +429,12 @@ python3 <absolute-bundled-pipeline-state.py> transition \
 Report normal progress through the executable phase handoff in AGENTS.md.
 Use `handoff.router_next` while this router owns continuation.
 Resolve the routed track root first: `.project/` for the active track or `.project/next/`
-for lookahead. If that track root's `research/DOCS-AUDIT.md` has `planned: no`
-rulings, add one alignment-queue line and offer once to route them through the
-bundled [plan contract](PLAN.md); declining does not block.
+for lookahead. Enumerate every audit in that track root's `research/`:
+`DOCS-AUDIT.md` and each `DOCS-AUDIT-<member>.md`, including a queue kept for a
+member MEMBERS.md no longer lists, labelled `removed member <name>`. When any
+has `planned: no` rulings, add one alignment-queue line naming each audit and
+its pending count, and offer once to route them through the bundled
+[plan contract](PLAN.md); declining does not block.
 
 Once per conversation, before the status report, run the bundled update check
 `python3 <skill-dir>/scripts/check_update.py`. It is cached, offline-safe, and

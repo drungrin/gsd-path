@@ -7,6 +7,12 @@ Repo root: <absolute primary repo root, never a sidecar>
 Audited: <date>
 Audited HEAD: <40-hex commit the claims were checked at, or none>
 Alignment mode: <yes | no — yes when .project/ artifacts were also audited>
+<!-- A member audit (DOCS-AUDIT-<member>.md) uses its MEMBERS.md Checkout as
+     Repo root, Audited HEAD equal to its pin, and Alignment mode: no, and
+     adds, uncommented, exactly once each:
+     Member: <member name>
+     Default branch: <MEMBERS.md Default branch>
+     Member HEAD: <40-hex pin from the brief> -->
 
 ## Summary
 

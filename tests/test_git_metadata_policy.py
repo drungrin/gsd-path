@@ -25,6 +25,13 @@ class GitMetadataPolicyTests(unittest.TestCase):
         self.assertTrue(pipeline_git.is_bound_branch(values[0]))
         self.assertEqual(pipeline_git.milestone_number(values[0]), 1)
 
+    def test_member_inspect_branch_follows_the_metadata_rule(self):
+        branch = isolation.member_inspect_branch_name('Acme App', 'web')
+        self.assertEqual(branch, 'chore/verify-acme-app-inspect-web')
+        self.assertRegex(branch, PURPOSE_BRANCH)
+        self.assertNotRegex(branch, r'(?i)gsd|claude|codex|copilot|cursor|opencode')
+        self.assertNotEqual(branch, isolation.verify_branch_name('acme-app-web'))
+
     def test_member_rebase_branch_and_commit_follow_the_metadata_rule(self):
         branch = isolation.member_rebase_branch_name('feature/acme-milestone-001', 'web')
         self.assertEqual(branch, 'chore/rebase-acme-milestone-001-web')

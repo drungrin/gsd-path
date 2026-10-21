@@ -50,15 +50,17 @@ requires the program `.project/SYNTHESIS.md` at the `.project/` top level plus
 Require that entry to be `active` normally and `pending` in Lookahead mode.
 Require a non-empty `## Decisions` or `## Settled` section and no unresolved
 `NEEDS-USER` items before dispatching the planner. Route to the producing phase when a
-precondition fails.
+precondition fails. Report stale member evidence as advisory (operating
+rules); it never blocks or reopens inspect.
 
 ## Alignment queue check
 
-Before planning, read `research/DOCS-AUDIT.md` from the supplied track root:
-`.project/research/DOCS-AUDIT.md` normally or
-`.project/next/research/DOCS-AUDIT.md` in Lookahead mode. An absent
-track-local audit means an empty alignment queue. If queued rulings marked
-`planned: no` exist, offer once to include them:
+Before planning, read every audit in the supplied track root's `research/`
+(`.project/` normally, `.project/next/` in Lookahead mode): `DOCS-AUDIT.md`
+and each `DOCS-AUDIT-<member>.md`. No audit means an empty alignment queue.
+If queued rulings marked `planned: no` exist, offer them once as one list in
+which each item is a (source audit, member or coordinator, Queue #)
+selection showing its doc, claim, ruling, and evidence:
 
 - **Normal planning** — accepted items fold into the plan as ordinary
   tasks in dependency order (evidence inlined, `fix-doc` verifies re-run
@@ -66,6 +68,10 @@ track-local audit means an empty alignment queue. If queued rulings marked
 - **Patch mode** — accepted items join the patch wave alongside the
   invoking findings.
 
+A member item becomes a `repo: <member>` task with member-relative files and
+Verify; the task id is written as Planned only in the originating audit's
+row. A queue labelled `removed member <name>` is shown but not plannable until
+that member identity is restored; never retarget it to another repo.
 Declined items stay `planned: no` and will be offered again next time. The
 user picks per item or "all"/"none" — a stale backlog must never sneak into
 a plan wholesale without the user seeing the list. Offer through an
@@ -94,14 +100,17 @@ as stated in Lookahead mode.
    local [runtime dispatch contract](references/dispatch.md) with deterministic
    logical task name `plan`. Give it absolute role, `AGENTS.md`, `WORKFLOW.md`,
    input, template, and output paths, including `.project/LESSONS.md` when it
-   exists. Whenever INTENT.md records `Lane: milestone` — any entry point —
+   exists and every codebase map in `<track>/research/`
+   (`evidence-codebase.md` and each `evidence-codebase-<member>.md`), whose
+   conventions bind the tasks for that repo. Whenever INTENT.md records
+   `Lane: milestone` — any entry point —
    also include `.project/CHARTER.md`, `.project/ROADMAP.md`, the top-level
    program `.project/SYNTHESIS.md`, and the resolved
    milestone entry slug. In
    final-review patch mode also include
    `.project/review/PATCH-FINDINGS.md` and every source artifact it names; in
-   docs-audit patch mode include the selected `DOCS-AUDIT.md` rows and user
-   rulings.
+   docs-audit patch mode include the selected (source audit, member, row)
+   list with each row's user ruling.
    The outputs are exactly `<track>/plan/PLAN.md` and one task
    file per task at `<track>/tasks/T###-slug.md` — no other location is
    canonical, and `.project/PLAN.md` is never written.
@@ -308,15 +317,15 @@ record the skipped research and decide phases in the synthesis). Quick mode disp
 the artifacts directly:
 
 1. Write `.project/research/SYNTHESIS.md` containing only `## Settled` lines
-   citing INTENT.md constraints (and, brownfield, `evidence-codebase.md`)
+   citing INTENT.md constraints (and, brownfield, each codebase map)
    plus a minimal `## For the planner` naming the walking skeleton. No
    invented decisions or runner-ups.
 2. Write `.project/plan/PLAN.md` with exactly one wave — `Review depth:
    full` or `deep` — and at most two deliverable-sized task files
    (project policy),
-   honoring every task-contract rule above and `.project/LESSONS.md` when it
-   exists. Write `review_panel: off` and `finding_skeptics: off` regardless
-   of INTENT.md.
+   honoring every task-contract rule above, the codebase maps' conventions,
+   and `.project/LESSONS.md` when it exists. Write `review_panel: off` and
+   `finding_skeptics: off` regardless of INTENT.md.
 3. Gate exactly as step 3 above and use the same outcome, Review link, and
    single approval question as normal mode.
    A quick plan that cannot satisfy the gates — more than two tasks, an open
@@ -390,8 +399,9 @@ findings source files and rows.
 **Preconditions.** An existing approved `.project/plan/PLAN.md`. For a
 final-review patch, require a valid `.project/review/PATCH-FINDINGS.md` and the
 source artifacts named there. For a docs-audit patch, require the selected
-`DOCS-AUDIT.md` rows and their recorded user rulings instead. Each selected
-item must carry evidence. No `.project/plan/PLAN.md` → decline and route to
+rows of one or more audits, as ordered (source audit, member, row) selections,
+and their recorded user rulings instead. Each selected item must carry
+evidence. No `.project/plan/PLAN.md` → decline and route to
 the normal pipeline (this includes an archived ship, whose plan moved into
 `.project/archive/`); unruled audit findings → send them back for rulings
 first.
@@ -404,10 +414,11 @@ first.
    milestone cannot reopen because its plan is
    archived; start a new milestone instead.
 2. In final-review patch mode, run `python3 <absolute check_handoffs.py> patch
-   --repo <absolute repo root>`. In docs-audit patch mode, use the selected
-   `DOCS-AUDIT.md` rows and rulings as the source hand-off. Dispatch the planner
-   per the standard contract with deterministic logical task name `plan_patch`,
-   adding: the applicable hand-off path, its exact ordered findings, source
+   --repo <absolute repo root>`. In docs-audit patch mode, the ordered
+   selections and rulings are the source hand-off, never a synthesized
+   DOCS-AUDIT.md; a member finding's task has `repo: <member>`. Dispatch the
+   planner per the standard contract with deterministic logical task name
+   `plan_patch`, adding: the applicable hand-off path, its exact ordered findings, source
    paths and selected rows, the existing PLAN.md and task files, and the instruction to
    append wave W+1 (highest existing wave + 1) without modifying completed
    waves or existing tasks. One task per accepted finding, carrying the

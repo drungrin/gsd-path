@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts import detect_project, integration, pipeline_git, pipeline_state
+from scripts import detect_project, integration, members, pipeline_git, pipeline_state
 from tests import test_archive_milestone as archive_tests
 from tests._platform import requires_symlink
 
@@ -238,6 +238,95 @@ class PipelineGitTests(unittest.TestCase):
                 with self.assertRaisesRegex(pipeline_git.PipelineGitError, "changed during"):
                     pipeline_git.bind_initial_milestone_branch(repo, "feature/milestone-001", "origin/main", base)
             self.assertEqual(run_git(repo, "branch", "--show-current").stdout.strip(), "feature/milestone-001")
+
+    def join_member(self, tmp: str, repo: Path) -> bytes:
+        """`members add` after initialize, as a coordinator does before its first binding."""
+        member = Path(tmp) / "web"
+        run_git(Path(tmp), "init", "-b", "main", str(member))
+        (member / "README.md").write_bytes("Web storefront.\n".encode("utf-8"))
+        run_git(member, "add", "README.md")
+        run_git(member, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init")
+        remote = Path(tmp) / "web.git"
+        run_git(Path(tmp), "init", "--bare", "-b", "main", str(remote))
+        run_git(member, "remote", "add", "origin", "https://github.com/acme/web.git")
+        run_git(member, "config", f"url.{remote.as_uri()}.insteadOf", "https://github.com/acme/web.git")
+        run_git(member, "push", "origin", "main")
+        members.add_member(repo, "web", member, "default")
+        return (repo / ".project/MEMBERS.md").read_bytes()
+
+    def test_bind_initial_accepts_members_file_from_members_add(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, repo, base = make_remote_repo(tmp)
+            detect_project.initialize(repo, ROOT / "skills/gsd-path/templates/state.md")
+            listed = self.join_member(tmp, repo)
+            state = (repo / ".project/STATE.md").read_bytes()
+            result = self.bind_initial(repo, "origin/main", base)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["status"], "bound")
+            self.assertEqual(run_git(repo, "branch", "--show-current").stdout.strip(), "feature/milestone-001")
+            self.assertEqual((repo / ".project/MEMBERS.md").read_bytes(), listed)
+            self.assertEqual((repo / ".project/STATE.md").read_bytes(), state)
+            retry = self.bind_initial(repo, "origin/main", base)
+            self.assertEqual(json.loads(retry.stdout)["status"], "already-bound")
+
+    @requires_symlink
+    def test_bind_initial_with_members_file_still_refuses_other_entries(self) -> None:
+        cases = {
+            "extra": "primary worktree is not clean",
+            "ignored-extra": "initial state must be the sole regular, unlinked .project file",
+            "hardlink": "initial MEMBERS.md must be a regular, unlinked file",
+            "symlink": "initial MEMBERS.md must be a regular, unlinked file",
+            "staged": "primary worktree is not clean",
+            "members-only": "primary worktree is not clean",
+        }
+        for change, reason in cases.items():
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                _, repo, base = make_remote_repo(tmp)
+                detect_project.initialize(repo, ROOT / "skills/gsd-path/templates/state.md")
+                self.join_member(tmp, repo)
+                listed = repo / ".project/MEMBERS.md"
+                if change == "extra":
+                    (repo / ".project/NOTES.md").write_bytes("extra".encode("utf-8"))
+                elif change == "ignored-extra":
+                    (repo / ".git/info/exclude").write_bytes(".project/ignored\n".encode("utf-8"))
+                    (repo / ".project/ignored").write_bytes("extra".encode("utf-8"))
+                elif change == "staged":
+                    run_git(repo, "add", ".project/MEMBERS.md")
+                elif change == "members-only":
+                    (repo / ".project/STATE.md").unlink()
+                else:
+                    target = Path(tmp) / "members-copy"
+                    listed.rename(target)
+                    if change == "symlink":
+                        listed.symlink_to(target)
+                    else:
+                        os.link(target, listed)
+                with self.assertRaisesRegex(pipeline_git.PipelineGitError, reason):
+                    pipeline_git.bind_initial_milestone_branch(repo, "feature/milestone-001", "origin/main", base)
+                self.assertEqual(run_git(repo, "branch", "--show-current").stdout.strip(), "main")
+
+    def test_binding_reports_members_file_change_during_switch(self) -> None:
+        for change in ("rewrite", "replace"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                _, repo, base = make_remote_repo(tmp)
+                detect_project.initialize(repo, ROOT / "skills/gsd-path/templates/state.md")
+                listed = self.join_member(tmp, repo)
+                path = repo / ".project/MEMBERS.md"
+                original = pipeline_git._run_git
+
+                def change_members(target, *args, **kwargs):
+                    result = original(target, *args, **kwargs)
+                    if args[0] == "switch":
+                        if change == "rewrite":
+                            path.write_bytes(listed + "\n## api\n".encode("utf-8"))
+                        else:
+                            path.rename(Path(tmp) / "original-members")
+                            path.write_bytes(listed)
+                    return result
+
+                with mock.patch.object(pipeline_git, "_run_git", side_effect=change_members):
+                    with self.assertRaisesRegex(pipeline_git.PipelineGitError, "changed during"):
+                        pipeline_git.bind_initial_milestone_branch(repo, "feature/milestone-001", "origin/main", base)
 
     def test_bound_branch_name_uses_m00n(self) -> None:
         self.assertEqual(pipeline_git.bound_branch_name(1), "feature/milestone-001")
