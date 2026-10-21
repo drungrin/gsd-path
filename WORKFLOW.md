@@ -677,11 +677,11 @@ and requires the remote default to be the recorded
   the matching CLI; SSH authentication for Git alone is insufficient.
   Path publishes the exact ship commit and creates or reuses the one
   eligible PR to `main` without tool attribution or credit footers. It returns
-  `awaiting-merge` until the user completes the PR. GitHub accepts a merge
-  commit or a proven rebase merge; Azure accepts **Merge (no fast-forward)**
-  or **Squash commit**, according to branch policy,
-  and refuses auto-complete and policy bypass. Path never enables auto-merge
-  or merges the PR. After
+  `awaiting-merge` until the user completes the PR. GitHub and Azure accept
+  a two-parent merge or proven squash, according to branch policy. The existing
+  proven GitHub rebase path remains coordinator-only; Azure rebase is refused.
+  Path never enables auto-merge or auto-complete, uses a merge queue, bypasses
+  policy, or merges the PR. After
   validation, Path creates the annotated milestone tag. The [ship contract](skills/gsd-path-ship/SKILL.md)
   owns the candidate, provenance, topology, publication, and recovery rules.
 - `external-landing` on Azure preserves manual PR creation and uses `az` to
@@ -699,10 +699,18 @@ and requires the remote default to be the recorded
   the next ship invocation, Path validates the two-parent merge on `main` and
   creates the annotated milestone tag.
 
-Azure squash proofs bind the closing user and exact source, target, and landing
-SHAs. The landing must have the recorded target as its sole parent and exactly
-the tree of a clean source/target merge, computed with Git 2.38+ in a disposable
-object store. Conflicts or extra changes block. Before publishing the landing
+GitHub and Azure squash proofs bind the exact human-completed PR, reviewed
+source, and landing on the default branch's first-parent history. Azure must
+also identify the closing user, exact target, and supported completion
+`mergeStrategy`. The landing must have the proven target as its sole parent
+and exactly the tree of a clean source/target merge, computed with Git 2.38+ in
+a disposable object store. GitHub has no Azure-style `mergeStrategy`: one parent
+makes a candidate, not proof of squash.
+Content and provenance cannot strictly distinguish an observationally equivalent
+one-commit rebase; members conservatively reject proven multi-commit replay
+shapes even when the squash tree also matches. Unavailable replay evidence
+blocks publication instead of authorizing squash fallback. Conflicts or extra
+changes block. Before publishing the landing
 tag, publish the annotated `milestone-source/<archive>` tag at the original ship
 commit; member tags use `milestone-source/<project>-<archive>`. The landing tag
 includes its canonical `Source-Tag` and PR URL. Both tags must remain published

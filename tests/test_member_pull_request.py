@@ -23,6 +23,9 @@ class MemberPullRequestTests(unittest.TestCase):
         self.pulls, self.posts, self.patches = [], [], []
         self.tags_at_patch = []
         self.merge_queue = False
+        self.auto_merge = False
+        self.merge_actor = "User"
+        self.merge_event = True
         publication_fixture(self.root, ARCHIVE, 'web', self.member_tip, 'https://github.com/acme/web.git')
 
     remote_ref = member_integration.MemberIntegrationTests.remote_ref
@@ -37,11 +40,13 @@ class MemberPullRequestTests(unittest.TestCase):
             return subprocess.CompletedProcess(arguments, 0, "", "")
         if "graphql" in arguments:
             merged = [pull["merge_commit_sha"] for pull in self.pulls if pull["merged_at"]]
-            nodes = [{"__typename": "MergedEvent", "actor": {"__typename": "User", "login": "owner"},
-                      "commit": {"oid": merged[0]}}] if merged else []
+            nodes = [{"__typename": "MergedEvent", "actor": {"__typename": self.merge_actor, "login": "owner"},
+                      "commit": {"oid": merged[0]}}] if merged and self.merge_event else []
             return reply({"data": {"repository": {"pullRequest": {
+                "baseRefOid": self.remote_ref("refs/heads/" + getattr(self, "member_default", "main")),
                 "mergeQueue": {"nodes": [{"__typename": "AddedToMergeQueueEvent"}] if self.merge_queue else []},
-                "autoMerge": {"nodes": []}, "mergeAction": {"nodes": nodes}}}}})
+                "autoMerge": {"nodes": [{"__typename": "AutoMergeEnabledEvent"}] if self.auto_merge else []},
+                "mergeAction": {"nodes": nodes}}}}})
         if "PATCH" in arguments:
             self.patches.append(arguments)
             self.tags_at_patch.append(self.remote_ref(f"refs/tags/{TAG}"))
@@ -51,13 +56,16 @@ class MemberPullRequestTests(unittest.TestCase):
         base = next((argument.removeprefix("base=") for argument in arguments if argument.startswith("base=")), None)
         if "POST" in arguments:
             self.posts.append(arguments)
-            self.pulls.append({"number": 7, "state": "open", "html_url": URL, "merged_at": None,
+            repository = getattr(self, "repository_name", "acme/web")
+            self.pulls.append({"number": 7, "state": "open",
+                               "html_url": f"https://github.com/{repository}/pull/7", "merged_at": None,
                                "title": next(a.removeprefix('title=') for a in arguments if a.startswith('title=')),
-                               "merge_commit_sha": None, "base": {"ref": base},
+                               "merge_commit_sha": None,
+                               "base": {"ref": base, "sha": self.remote_ref("refs/heads/" + base)},
                                "body": next(argument.removeprefix("body=") for argument in arguments
                                             if argument.startswith("body=")),
-                               "head": {"ref": "feature/demo-milestone-001", "sha": self.member_tip,
-                                        "repo": {"full_name": "acme/web"}}})
+                               "head": {"ref": getattr(self, "bound", "feature/demo-milestone-001"),
+                                        "sha": self.member_tip, "repo": {"full_name": repository}}})
             return reply(self.pulls[-1])
         # GitHub lists only the pull requests that target the requested base.
         return reply([[pull for pull in self.pulls if pull["base"]["ref"] == base]])
@@ -73,8 +81,8 @@ class MemberPullRequestTests(unittest.TestCase):
         git(self.root.parent, "clone", "-q", str(self.remote), str(clone))
         git(clone, "config", "user.name", "t")
         git(clone, "config", "user.email", "t@t")
-        git(clone, "merge", "-q", *extra, "-m", "Merge pull request #7 from acme/feature/demo-milestone-001",
-            "origin/feature/demo-milestone-001")
+        bound = getattr(self, "bound", "feature/demo-milestone-001")
+        git(clone, "merge", "-q", *extra, "-m", "Merge pull request #7", "origin/" + bound)
         if "--squash" in extra:
             git(clone, "commit", "-q", "-m", "Squashed pull request #7")
         git(clone, "push", "-q", "origin", "HEAD:refs/heads/" + getattr(self, "member_default", "main"))
@@ -156,12 +164,149 @@ class MemberPullRequestTests(unittest.TestCase):
             with self.assertRaisesRegex(ArchiveError, "merge queue"):
                 integration.validate_member_integrated(self.root, "web", ARCHIVE, self.member_tip)
 
-    def test_squash_merge_is_refused(self) -> None:
+    def test_squash_merge_publishes_source_before_landing_and_is_idempotent(self) -> None:
+        self.integrate()
+        merge = self.github_merge("--squash")
+        source = "milestone-source/demo-001-demo"
+        pushed = []
+        publish = integration._push_member_ref
+
+        def record_push(checkout, project, local, ref, sha, lease):
+            if ref.startswith("refs/tags/"):
+                pushed.append(ref)
+            return publish(checkout, project, local, ref, sha, lease)
+
+        with mock.patch.object(integration, "_push_member_ref", side_effect=record_push):
+            result = self.integrate()
+        self.assertEqual(pushed, [f"refs/tags/{source}", f"refs/tags/{TAG}"])
+        self.assertEqual(result["merge"], merge)
+        for name, target in ((source, self.member_tip), (TAG, merge)):
+            ref = f"refs/tags/{name}"
+            self.assertEqual(git(self.remote, "cat-file", "-t", ref), "tag")
+            self.assertEqual(self.remote_ref(ref + "^{}"), target)
+            self.assertTrue(members.authorized(self.member, "demo", "push", ref, self.remote_ref(ref)))
+        message = git(self.remote, "for-each-ref", "--format=%(contents)", f"refs/tags/{TAG}")
+        self.assertIn(f"Source-Tag: {source}", message)
+        self.assertIn(f"Reviewed-HEAD: {self.member_tip}", message)
+        self.assertIn(f"Pull-Request: {URL}", message)
+        before = git(self.remote, "show-ref", "--tags")
+        self.assertEqual(self.integrate(), result)
+        with mock.patch.object(integration, "github_repository", return_value="acme/web"), \
+                mock.patch.object(integration, "run_command", side_effect=self.gh):
+            for refresh in (True, False):
+                self.assertEqual(integration.validate_member_integrated(
+                    self.root, "web", ARCHIVE, self.member_tip, refresh=refresh), result)
+        self.assertEqual(git(self.remote, "show-ref", "--tags"), before)
+        self.assertEqual(len(self.posts), 1)
+
+    def multi_commit_pull(self, *, squash: bool) -> str:
+        bound = "feature/demo-milestone-001"
+        git(self.member, "checkout", "-q", bound)
+        (self.member / "second.py").write_text("reviewed = True\n", encoding="utf-8")
+        git(self.member, "add", "second.py")
+        git(self.member, "commit", "-q", "-m", "second member landing")
+        self.member_tip = git(self.member, "rev-parse", "HEAD")
+        git(self.member, "checkout", "-q", "main")
+        publication_fixture(self.root, ARCHIVE, "web", self.member_tip, "https://github.com/acme/web.git")
+        originals = git(self.member, "rev-list", "--reverse", f"{self.main}..{self.member_tip}").split()
+        self.assertEqual(len(originals), 2)
+        self.integrate()
+        target = self.root.parent / "target"
+        git(self.root.parent, "clone", "-q", str(self.remote), str(target))
+        (target / "team.txt").write_text("concurrent work\n", encoding="utf-8")
+        git(target, "add", "team.txt")
+        git(target, "commit", "-q", "-m", "concurrent target work")
+        git(target, "push", "-q", "origin", "main")
+        if squash:
+            return self.github_merge("--squash")
+        git(target, "cherry-pick", *originals)
+        git(target, "push", "-q", "origin", "main")
+        landing = git(target, "rev-parse", "HEAD")
+        self.pulls[0].update(state="closed", merged_at="2026-09-28T00:00:00Z", merge_commit_sha=landing)
+        return landing
+
+    def test_multi_commit_squash_is_still_accepted(self) -> None:
+        landing = self.multi_commit_pull(squash=True)
+        self.assertEqual(self.integrate()["merge"], landing)
+        self.assertEqual(self.remote_ref("refs/tags/milestone-source/demo-001-demo^{}"), self.member_tip)
+
+    def test_proven_multi_commit_rebase_cannot_publish_tags(self) -> None:
+        landing = self.multi_commit_pull(squash=False)
+        git(self.member, "fetch", "-q", "origin")
+        self.assertIsNone(integration._common.rebase_landing_problem(self.member, self.member_tip, landing))
+        self.assertIsNone(integration._common.squash_landing_problem(self.member, self.member_tip, landing))
+        with self.assertRaisesRegex(ArchiveError, "cannot use a multi-commit rebase"):
+            self.integrate()
+        for name in (TAG, "milestone-source/demo-001-demo"):
+            ref = f"refs/tags/{name}"
+            self.assertEqual(self.remote_ref(ref), "")
+            self.assertEqual(git(self.member, "rev-parse", "--verify", "--quiet", ref, check=False), "")
+
+    def test_squash_merge_with_altered_tree_publishes_neither_tag(self) -> None:
         self.integrate()
         self.github_merge("--squash")
-        with self.assertRaisesRegex(ArchiveError, "two-parent"):
+        clone = self.root.parent / "github"
+        (clone / "foreign.txt").write_text("unreviewed\n", encoding="utf-8")
+        git(clone, "add", "foreign.txt")
+        git(clone, "commit", "-q", "--amend", "--no-edit")
+        forged = git(clone, "rev-parse", "HEAD")
+        git(clone, "push", "-q", "--force", "origin", "HEAD:refs/heads/main")
+        self.pulls[0]["merge_commit_sha"] = forged
+        with self.assertRaisesRegex(ArchiveError, "tree differs"):
+            self.integrate()
+        for name in (TAG, "milestone-source/demo-001-demo"):
+            ref = f"refs/tags/{name}"
+            self.assertEqual(self.remote_ref(ref), "")
+            self.assertEqual(git(self.member, "rev-parse", "--verify", "--quiet", ref, check=False), "")
+
+    def test_squash_merge_with_wrong_source_is_still_rejected(self) -> None:
+        self.integrate()
+        self.github_merge("--squash")
+        self.pulls[0]["head"]["sha"] = self.main
+        with self.assertRaisesRegex(ArchiveError, "head is not the ship commit"):
             self.integrate()
         self.assertEqual(self.remote_ref(f"refs/tags/{TAG}"), "")
+        self.assertEqual(self.remote_ref("refs/tags/milestone-source/demo-001-demo"), "")
+
+    def test_squash_uses_landing_parent_when_target_advances(self) -> None:
+        self.integrate()
+        target = self.root.parent / "target"
+        git(self.root.parent, "clone", "-q", str(self.remote), str(target))
+        git(target, "config", "user.name", "t")
+        git(target, "config", "user.email", "t@t")
+        (target / "team.txt").write_text("concurrent target work\n", encoding="utf-8")
+        git(target, "add", "team.txt")
+        git(target, "commit", "-q", "-m", "concurrent target work")
+        git(target, "push", "-q", "origin", "main")
+        landing_parent = git(target, "rev-parse", "HEAD")
+        merge = self.github_merge("--squash")
+        self.assertEqual(git(self.remote, "rev-parse", merge + "^"), landing_parent)
+        clone = self.root.parent / "github"
+        (clone / "later.txt").write_text("later target work\n", encoding="utf-8")
+        git(clone, "add", "later.txt")
+        git(clone, "commit", "-q", "-m", "later target work")
+        git(clone, "push", "-q", "origin", "main")
+        advanced = git(clone, "rev-parse", "HEAD")
+        self.pulls[0]["base"]["sha"] = advanced
+        result = self.integrate()
+        self.assertEqual(result["merge"], merge)
+        self.assertEqual(self.remote_ref("refs/heads/main"), advanced)
+        self.assertEqual(self.integrate(), result)
+
+    def test_squash_still_requires_a_manual_human_merge_action(self) -> None:
+        self.integrate()
+        self.github_merge("--squash")
+        for attribute, invalid, reason in (("merge_queue", True, "merge queue"),
+                                           ("auto_merge", True, "auto-merge"),
+                                           ("merge_actor", "Bot", "human GitHub user"),
+                                           ("merge_event", False, "GitHub merge action")):
+            previous = getattr(self, attribute)
+            setattr(self, attribute, invalid)
+            with self.subTest(reason=reason), self.assertRaisesRegex(ArchiveError, reason):
+                self.integrate()
+            setattr(self, attribute, previous)
+            self.assertEqual(self.remote_ref(f"refs/tags/{TAG}"), "")
+            self.assertEqual(self.remote_ref("refs/tags/milestone-source/demo-001-demo"), "")
 
     def test_closed_pull_request_blocks(self) -> None:
         self.integrate()

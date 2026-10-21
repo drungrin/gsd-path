@@ -452,28 +452,39 @@ The persisted `STATE.archive` field is the transaction identity.
      PR is open, the helper returns `status: awaiting-merge`. Present
      **Outcome**, link
      the returned PR as **Review**, and state in **Next** that the user must
-     merge it with GitHub's merge-commit or rebase method, or Azure's
-     **Merge (no fast-forward)** or **Squash commit** method, as permitted by
-     its branch policy. Azure auto-complete, policy bypass, and rebase are
-     refused. Stop this ship
-     invocation; Path never enables auto-merge or merges the PR. A later
+     complete it with GitHub's merge-commit or squash method, or Azure's
+     **Merge (no fast-forward)** or **Squash commit**, as permitted by branch
+     policy. The existing proven GitHub rebase path below applies only to
+     coordinator PRs, not general member rebase. Azure rebase is refused.
+     Stop this ship invocation; Path never enables auto-merge or auto-complete,
+     uses a merge queue, bypasses policy, or completes the PR. A later
      `work-items-pending` result retains the integration proof and blocks
      completion until the approved work-item synchronization succeeds; retry
      integration without rerunning reviews or tests. On rerun after
      the user merges it, the helper requires the PR head to remain
      the ship commit and its landing to be on `origin/main` first-parent
      history as either a two-parent merge with that ship commit as second
-     parent, or a rebase merge: the last of a first-parent run of single-parent
+     parent or a proven squash below. GitHub coordinator PRs also accept the
+     existing rebase proof: the last of a first-parent run of single-parent
      commits whose `git patch-id --stable` values match, in order, the
      non-merge commits from the landing to the ship commit (with equal trees
      when `main` did not move). It then writes and pushes the annotated
      milestone tag containing the PR URL, ship SHA, and landing SHA. A
      milestone that was rebase-merged before this support existed recovers by
-     rerunning ship. A closed unmerged PR, GitHub squash, merge queue, moved
-     head, duplicate PR, or unsupported origin blocks. Azure completion must
-     identify the closing user and the exact source, target, and landing
-     commits. A squash must have the recorded target as its only parent and
-     exactly the tree produced by merging the reviewed source into that target.
+     rerunning ship. A closed unmerged PR, merge queue, moved head, duplicate
+     PR, or unsupported origin blocks. GitHub and Azure squash proofs bind
+     the exact human-completed PR, reviewed source, and landing. Azure must
+     also identify the closing user, exact target, and supported completion
+     `mergeStrategy`. A squash must have the proven target as its only parent
+     and exactly the tree produced by merging the reviewed source into that
+     target. Unlike Azure, GitHub
+     exposes no completion `mergeStrategy`: a one-parent landing is only a
+     candidate, not proof of squash. Content and provenance decide acceptance;
+     an observationally equivalent one-commit rebase cannot be strictly
+     distinguished and does not grant general member rebase support. Members
+     reject proven multi-commit replay shapes even when the squash tree matches.
+     Unavailable replay evidence blocks before publishing either tag; it is not
+     a mismatch that authorizes fallback to another integration proof.
      Verification requires Git 2.38+ and uses a disposable object store without
      modifying repository objects, index, or worktree. Concurrent clean changes
      are retained; conflicts or unreviewed resolutions block. Before publishing

@@ -56,3 +56,12 @@ integration uses Git; pull-request integration uses Azure CLI with the
 It waits for a user-completed no-fast-forward merge, rejects auto-complete and
 policy bypass, and retains the reviewed-HEAD, ancestry, and tag checks.
 New repository creation remains specific to GitHub.
+
+**Update 2026-10-21 (squash integration):** GitHub and Azure members may also
+close through a human-completed squash PR. The runtime proves the exact reviewed
+source merged into the landing's parent, the landing's first-parent ancestry,
+and provider provenance. An annotated `milestone-source/<coord>-<archive-name>`
+tag retains the original source before the milestone tag is published. GitHub
+provides no equivalent to Azure's merge-strategy field; the proof establishes
+content and provenance, not a distinction from an observationally equivalent
+single-commit rebase. Auto-merge, merge queues, and policy bypass remain blocked.

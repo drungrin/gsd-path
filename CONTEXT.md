@@ -23,13 +23,14 @@ Ship creates it at close and pushes it to origin. It names that close.
 _Avoid_: release, GitHub Release, lightweight tag
 
 **Integration**:
-The landing that puts the ship commit onto the remote default `main`: a
-two-parent merge, or in `pull-request` mode also a proven GitHub rebase merge.
-In `direct` mode, Path creates it with subject
+The landing that delivers the reviewed milestone onto the remote default `main`.
+In `direct` mode, Path creates a two-parent merge with subject
 `integrate: M00N — merge feature/milestone-001 into main`. In `pull-request` mode,
-GitHub or Azure creates it after a user completes the PR; Azure requires a no-fast-forward merge. In `external-landing`
-mode, the user's forge creates it after the user merges their own merge request
-with the merge message that Path returns.
+GitHub.com or Azure creates a merge or proven squash after the user completes
+the PR; GitHub coordinator PRs also accept a proven rebase. Squash proof binds
+the exact PR, source, first-parent landing, reproducible merge tree, and retained
+annotated source and landing tags. Azure-backed `external-landing` uses the same
+PR proof; other forges require the merge commit and exact message Path returns.
 _Avoid_: ship, land (unless you mean this)
 
 **Integration mode**:
@@ -41,9 +42,9 @@ whether that choice follows the default or is an explicit milestone override.
 _Avoid_: merge strategy (GitHub uses that term for merge, squash, or rebase)
 
 **Default ancestry**:
-The milestone's product commits, the ship commit, and the integrate merge
-are ancestors of the remote default branch. Required before the router
-reports shipped.
+Proof that the milestone reached the remote default: original-commit ancestry
+through a two-parent merge, or validated PR rebase/squash provenance to its
+first-parent landing. Required before the router reports shipped.
 _Avoid_: landed (unless you mean this)
 
 **Landing pointer**:

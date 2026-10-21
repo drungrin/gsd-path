@@ -466,8 +466,8 @@ the field means `main`. See [default branch](WORKFLOW.md#default-branch).
 - Ship closes members in order before the coordinator: `close-members` merges
   each member in its own `direct` or `pull-request` mode and tags it
   `milestone/<project>-<archive>`, then the ship commit records each member.
-  A pull-request member waits for you to merge it. The next milestone retires
-  the member branches.
+  A pull-request member waits for your merge or proven squash, not general
+  rebase. The next milestone retires the member branches.
 - `members.py detect --checkout <path>` reports whether a repo is a member.
 
 Azure Repos members accept SSH and HTTPS URLs, including URL-encoded project
@@ -489,19 +489,25 @@ az devops login --organization https://dev.azure.com/example-org
 The adapter also supports `AZURE_DEVOPS_EXT_PAT` for automation. Git SSH keys
 authorize Git operations; they do not authenticate `az`. Path passes the
 organization, project, and repository explicitly, so no global Azure defaults
-are required. It opens or reuses the PR and waits for you to complete it with
-**Merge (no fast-forward)** or **Squash commit**, according to branch policy.
-Auto-complete, policy bypass, and rebase are refused. A squash requires Git
-2.38+ and must reproduce the exact tree obtained by merging the reviewed source
-into the recorded target commit. Path retains the original history under an
-annotated `milestone-source/<project>-<archive>` tag before publishing the
-landing tag or retiring the branch. It validates PR provenance and both
+are required. Azure PRs wait for you to complete **Merge (no fast-forward)**
+or **Squash commit**, according to branch policy; auto-complete, policy bypass,
+and rebase are refused. Path never auto-merges, uses a merge queue, bypasses
+policy, or completes a PR for you.
+
+Both GitHub.com and Azure pull-request integration accept a human squash proven
+by the exact PR, reviewed source, landing on default-branch first-parent history,
+and a clean reproducible merge tree (Git 2.38+). Path retains the original history
+under an annotated `milestone-source/<project>-<archive>` tag before publishing
+the annotated landing tag or retiring the branch. It validates provenance and both
 published tags before closing the member. Coordinators use
-`milestone-source/<archive>` and also support user-created Azure PRs in
-`external-landing` mode, without an exact merge-message requirement. Other
-forges retain the Git-only external-landing contract. `direct` integration uses Git and needs no
-Azure CLI. New repository creation (`members.py add --create`) remains specific
-to GitHub; create an Azure repository separately before adding its checkout.
+`milestone-source/<archive>`. GitHub exposes no Azure-style `mergeStrategy`:
+a one-parent landing is only a candidate, and content/provenance proof cannot
+strictly distinguish an equivalent one-commit rebase. Only Azure also supports
+provider-backed `external-landing` with user-created PRs and no exact
+merge-message requirement; other forges retain the Git-only contract.
+`direct` integration uses Git and needs no Azure CLI. New repository creation
+(`members.py add --create`) remains specific to GitHub; create an Azure
+repository separately before adding its checkout.
 
 Out of scope: submodules, one task across two repos, other remote providers,
 Azure DevOps Server, and
@@ -591,12 +597,12 @@ cleanup does not promise physical removal of older provider-side PR iterations.
   archive/<NNN>-<slug>/       shipped milestones (read-only after ship)
 ```
 
-Shipping moves milestone artifacts into `archive/` with a MANIFEST. It then
-either merges the milestone's `feature/milestone-00n` branch into `main` directly or
-opens/reuses a GitHub PR and waits for its user-controlled merge. Path reports
-shipped only after the landing (a two-parent merge, or a proven GitHub rebase
-merge of the PR) and the milestone tag validate. Before
-any next-milestone files change, the router binds
+Shipping moves milestone artifacts into `archive/` with a MANIFEST, then follows
+the locked [integration mode](WORKFLOW.md#integration). Pull-request integration
+opens/reuses a GitHub.com or Azure PR and waits for the user to complete it.
+Path reports shipped only after the landing (a two-parent merge, proven squash,
+or existing proven GitHub coordinator rebase) and annotated proof tags validate.
+Before any next-milestone files change, the router binds
 a new `feature/milestone-00n` at the updated `origin/main`. `STATE.md`, `REPOSITORY.md`,
 `LESSONS.md`, `next/`, and the program artifacts (`CHARTER.md`, `ROADMAP.md`,
 top-level `SYNTHESIS.md`) remain active project metadata.

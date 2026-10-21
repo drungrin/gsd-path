@@ -153,16 +153,16 @@ bundles this file; spawned agents follow their role brief instead.
   `origin/main` SHA. The helper moves the clean primary worktree to the new
   unused `feature/milestone-00n` branch at that SHA without moving the previous
   branch or entering the default checkout, then retires the integrated
-  previous branch — deleted locally and on origin; the ship commit stays
-  reachable from the integration merge and its annotated tag. The router
+  previous branch — deleted locally and on origin; the validated integration
+  proof and annotated tags preserve the milestone evidence. The router
   persists the new branch in STATE; a wrong-SHA or colliding branch blocks.
   After validated PR integration, `bind-next --allow-missing-previous` may
   retire only the local previous branch when GitHub already auto-deleted its
   remote branch.
   `bind-initial`, this handoff, and the approved new-repository bootstrap are
   the only bound-branch creation authorities, and the handoff's retirement
-  push is the router's only bound-branch deletion authority. Azure squash
-  integration retains the original ship graph in a separately published,
+  push is the router's only bound-branch deletion authority. GitHub and Azure
+  squash integration retains the original ship graph in a separately published,
   annotated `milestone-source/<archive>` tag before branch retirement; member
   source tags use `milestone-source/<project>-<archive>`. When a lookahead
   track exists, the router then calls `scripts/pipeline_state.py promote-next`;
@@ -177,11 +177,17 @@ bundles this file; spawned agents follow their role brief instead.
   or have a validated PR rebase/squash proof. Without that evidence, integration is incomplete and control routes
   to ship, not build. Direct mode requires the matching canonical `integrate:`
   commit; PR mode requires tag metadata and either a two-parent merge whose
-  second parent is the ship commit or a proven rebase merge of the ship
-  commits. Azure additionally accepts a user-completed squash with exact
-  source/target/landing provenance, an identical reproducible merge tree, and
-  a published original-source tag. Azure-backed `external-landing` uses this
-  same proof while retaining its mode and manual PR creation. A null branch returns
+  second parent is the ship commit or a proven squash on first-parent history.
+  GitHub coordinator PRs retain their existing proven rebase path, not general
+  member rebase support. GitHub and Azure squash require exact human-completed
+  PR/source/landing provenance, a clean reproducible target merge tree, and
+  unchanged published annotated source and landing tags. GitHub has no Azure
+  `mergeStrategy`: one parent is only a candidate, and an equivalent one-commit
+  rebase cannot be strictly distinguished by content/provenance proof. Members
+  reject proven multi-commit replay shapes; unavailable replay evidence blocks
+  publication rather than authorizing squash fallback.
+  Only Azure-backed `external-landing` uses this provider proof while retaining
+  its mode and manual PR creation. A null branch returns
   to the router; build never creates, selects, switches, or rebinds it.
 - The ship phase makes exactly one commit on the bound branch — the
   `.project/`-only ship commit recording
@@ -190,9 +196,10 @@ bundles this file; spawned agents follow their role brief instead.
   onto `main` with subject
   `integrate: M00N — merge feature/milestone-00n into main`. Pull-request mode creates
   or reuses one GitHub.com or Azure DevOps Services PR and waits for the user
-  to merge it. GitHub uses `gh`; Azure uses `az` with the `azure-devops`
-  extension and accepts a no-fast-forward merge or a proven squash, according
-  to branch policy, without auto-complete or policy bypass. It never auto-merges. Both modes create one annotated
+  to complete it. GitHub uses `gh`; Azure uses `az` with the `azure-devops`
+  extension. Merge or proven squash follows branch policy; Azure rebase is
+  refused. Path never auto-merges, enables auto-complete, queues a merge,
+  bypasses policy, or completes the PR. Both modes create one annotated
   `milestone/<NNN>-<slug>` tag after merge validation.
   The roadmap and
   plan phases each make exactly one approval checkpoint commit

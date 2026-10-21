@@ -3,7 +3,7 @@
 """Prepare, render, validate, integrate, and abandon GSD Path milestone archives.
 
 Also validates milestone integration: the read-only validate-integrated
-command checks the shipped transaction, the selected mode's two-parent merge
+command checks the shipped transaction, the selected mode's proven landing
 on the remote default branch, and the milestone tag. Pull-request validation
 requires network access to verify live origin publication.
 """
@@ -2008,7 +2008,9 @@ def find_ship_commit(project: Path, archive_name: str, *, historical: bool = Fal
                 raise ArchiveError(str(error)) from error
             if (fields.get("Source-Tag") != _common.source_tag_name(tag_name)
                     or fields.get("Ship") != source.stdout.strip()
-                    or not azure_repos.valid_pull_request_url(fields.get("Pull-Request", ""))):
+                    or not (azure_repos.valid_pull_request_url(fields.get("Pull-Request", ""))
+                            or (fields.get("Mode") == "pull-request" and re.fullmatch(
+                                r"https://github\.com/[^/]+/[^/]+/pull/[1-9][0-9]*", fields.get("Pull-Request", ""))))):
                 raise ArchiveError("historical squash source does not match its milestone proof")
             problem = _common.source_tag_problem(project, tag_name, fields["Ship"], fields.get("Landing", ""), fields["Pull-Request"])
             if problem:

@@ -438,32 +438,44 @@ def _patch_ids(repo: Path, commits: Sequence[str]) -> list[Optional[str]]:
     return [by_commit.get(commit) for commit in commits]
 
 
-def rebase_landing_problem(repo: Path, ship: str, landing: str) -> Optional[str]:
+def rebase_landing_problem(repo: Path, ship: str, landing: str, *, strict: bool = False) -> Optional[str]:
     """Why landing is not a forge rebase merge of ship, or None when it is (#418).
 
     A rebase merge replays ship's own commits onto the default branch. Proof:
     the first-parent run that ends at landing has one non-merge commit per
     non-merge commit of landing..ship, with equal patch ids in the same order;
     when that run starts at ship's fork point, landing's tree equals ship's.
+    Strict classification raises on unavailable evidence instead of treating it
+    as a mismatch that could authorize a different integration method.
     """
+    def unavailable(problem: str) -> str:
+        if strict:
+            raise ValueError(problem)
+        return problem
+
     listed = run_git(repo, "rev-list", "--reverse", "--topo-order", "--no-merges", f"{landing}..{ship}")
     if listed.returncode != 0:
-        return "could not list the ship commits"
+        return unavailable("could not list the ship commits")
     originals = listed.stdout.split()
     if not originals:
         return "landing already contains the ship commit"
     walked = run_git(repo, "rev-list", "--first-parent", "--parents", "-n", str(len(originals)), landing)
+    if walked.returncode != 0:
+        return unavailable("could not inspect rebased commit history")
     rows = [line.split() for line in walked.stdout.splitlines()][::-1]
-    if walked.returncode != 0 or len(rows) != len(originals) or any(len(row) != 2 for row in rows):
+    if len(rows) != len(originals) or any(len(row) != 2 for row in rows):
         return "landing is not a linear run of rebased commits"
     try:
         if _patch_ids(repo, originals) != _patch_ids(repo, [row[0] for row in rows]):
             return "rebased commits do not replay the ship commits in order"
     except ValueError as error:
-        return str(error)
-    fork = run_git(repo, "merge-base", ship, landing).stdout.strip()
-    trees = run_git(repo, "rev-parse", f"{ship}^{{tree}}", f"{landing}^{{tree}}").stdout.split()
-    if rows[0][1] == fork and (len(trees) != 2 or trees[0] != trees[1]):
+        return unavailable(str(error))
+    fork = run_git(repo, "merge-base", ship, landing)
+    trees = run_git(repo, "rev-parse", f"{ship}^{{tree}}", f"{landing}^{{tree}}")
+    tree_ids = trees.stdout.split()
+    if fork.returncode != 0 or trees.returncode != 0 or len(tree_ids) != 2:
+        return unavailable("could not resolve rebased commit trees and fork point")
+    if rows[0][1] == fork.stdout.strip() and tree_ids[0] != tree_ids[1]:
         return "rebased tree differs from the ship tree"
     return None
 

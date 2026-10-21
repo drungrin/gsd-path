@@ -5466,6 +5466,12 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             )
 
     def test_pull_request_integration_rejects_non_merge_landing(self) -> None:
+        self.reject_non_merge_landing(descendant=False)
+
+    def test_pull_request_integration_rejects_source_already_in_landing(self) -> None:
+        self.reject_non_merge_landing(descendant=True)
+
+    def reject_non_merge_landing(self, *, descendant: bool) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             repo = root / "primary"
@@ -5474,8 +5480,13 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.make_publishable_bound_repo(repo, remote)
             self.enable_pull_request_integration(repo)
             _archive_name, ship_sha = self.ship_canonical_bound(repo)
-            self.git(repo, "push", "-q", "origin", f"{ship_sha}:refs/heads/main")
-            pull = self.merged_pull_request(ship_sha, ship_sha)
+            landing = ship_sha
+            if descendant:
+                tree = self.git(repo, "rev-parse", f"{ship_sha}^{{tree}}").stdout.strip()
+                landing = self.git(repo, "commit-tree", tree, "-p", ship_sha,
+                                   "-m", "fast-forward descendant").stdout.strip()
+            self.git(repo, "push", "-q", "origin", f"{landing}:refs/heads/main")
+            pull = self.merged_pull_request(ship_sha, landing)
             pull["body"] = ""
             requests = []
             normal_api = self.github_api([pull])
@@ -5563,7 +5574,7 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 if forge:
                     with self.assertRaisesRegex(
                         archive_milestone.ArchiveError,
-                        "rebase merge of the ship commits: rebased commits do not replay",
+                        "squash landing tree differs from the source merged into its target",
                     ):
                         integration.integrate(repo, "demo")
                     self.assertEqual(self.git(repo, "tag", "--list").stdout, "")

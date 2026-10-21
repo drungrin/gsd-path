@@ -496,9 +496,9 @@ def _require_tag_integration_proof(
     )
     squashed = "Source-Tag" in fields
     if squashed:
-        if (not azure_repos.valid_pull_request_url(fields.get("Pull-Request", ""))
+        if ("Pull-Request" not in fields
                 or fields["Source-Tag"] != _common.source_tag_name(f"milestone/{match.group(1)}")):
-            raise PipelineGitError("squash proof requires an Azure PR and canonical source tag")
+            raise PipelineGitError("squash proof requires a supported PR and canonical source tag")
         problem = (_common.source_tag_problem(repo, f"milestone/{match.group(1)}", ship, landing, fields["Pull-Request"])
                    or _common.squash_landing_problem(repo, ship, landing))
         if problem:

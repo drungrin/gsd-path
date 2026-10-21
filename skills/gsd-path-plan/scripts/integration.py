@@ -1040,6 +1040,31 @@ def require_provider_landing(
         require_pull_request_identity(repository, proof, pull["head"]["ref"], source, pull["base"]["ref"])
         if proof["azure"].get("completionOptions", {}).get("mergeStrategy") == "squash":
             target = proof["azure"]["lastMergeTargetCommit"]["commitId"]
+    else:
+        parents = archive_milestone.require_git_success(
+            run_git(project, "rev-list", "--parents", "-n", "1", pull["merge_commit_sha"]),
+            "inspect GitHub landing parents",
+        ).split()
+        if len(parents) == 2:
+            try:
+                rebased = _common.rebase_landing_problem(project, source, pull["merge_commit_sha"], strict=True) is None
+            except ValueError as error:
+                raise ArchiveError(f"GitHub rebase proof is unavailable: {error}") from error
+            if rebased and not allow_rebase:
+                originals = archive_milestone.require_git_success(
+                    run_git(project, "rev-list", "--no-merges", f'{pull["merge_commit_sha"]}..{source}'),
+                    "inspect GitHub source commit count",
+                ).split()
+                if len(originals) > 1:
+                    raise ArchiveError("member pull-request integration cannot use a multi-commit rebase")
+            if not (allow_rebase and rebased):
+                ancestry = run_git(project, "merge-base", "--is-ancestor", source, pull["merge_commit_sha"])
+                if ancestry.returncode == 1:
+                    # GitHub does not attest the strategy. Prove the exact merge tree
+                    # against the landing's parent, not the current base branch tip.
+                    target = parents[1]
+                elif ancestry.returncode != 0:
+                    archive_milestone.require_git_success(ancestry, "inspect GitHub landing source ancestry")
     require_pull_request_merge(project, pull["merge_commit_sha"], source, remote_default,
                                allow_rebase=allow_rebase and target is None,
                                squash_target=target)
