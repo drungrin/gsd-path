@@ -402,8 +402,18 @@ sidecars and Integration checkouts inherit this configuration through Git.
 Skill/plugin updates and `--hooks-refresh` retain the selected runtime. Use
 `gsd-path --runtime-upgrade --project /absolute/project` to explicitly select
 the supplied package's runtime and its compatible status launcher. Review those
-configuration changes before committing them. Existing versions remain available
-for other projects and branches.
+configuration changes before committing them. A commit of only `.gsd-path/`
+and host hook settings is bookkeeping in every phase. While a milestone is
+unfinished, a project that also tracks its installed skills or contracts can
+commit them only until the milestone's first plan approval, and only when every
+staged path is installation output: GSD Path skills under a host's project
+skill root, `AGENTS.md`, `WORKFLOW.md`, `.claude/CLAUDE.md`,
+`.cursor/agents/gsd-path.md`, `.gsd-path/` and host hook settings. After that
+approval, upgrade such a project at the next milestone boundary. A local update
+leaves the previous skills in `disabled-gsd-skills` beside the skill root; move
+that backup out of the worktree before the next approval, which refuses any
+change outside `.project/`. Existing versions remain available for other
+projects and branches.
 
 To record where a patched runtime came from, add `--runtime-provenance-source`,
 `--runtime-provenance-patch`, or `--runtime-provenance-note` to

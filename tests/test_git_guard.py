@@ -808,6 +808,94 @@ class GitGuardEndToEndTests(unittest.TestCase):
         result = self.run_guard("router: install guard hooks")
         self.assertEqual(0, result.returncode, result.stderr)
 
+    def stage_installation(self):
+        for relative in (
+            ".claude/skills/gsd-path/SKILL.md", ".claude/skills/path/SKILL.md",
+            ".agents/skills/gsd-path-research/SKILL.md", "AGENTS.md", "WORKFLOW.md",
+            ".claude/CLAUDE.md", ".cursor/agents/gsd-path.md", ".gsd-path/runtime.json",
+        ):
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"# {relative} 1.6.2.19\n".encode("utf-8"))
+        self.git("add", "-A")
+
+    def test_installation_commits_pass_before_build_only(self):
+        self.enter_build(phase="inspect", status="active")
+        for phase, status in (("define", "done"), ("plan", "active")):
+            with self.subTest(phase=phase):
+                self.write_state(phase, status)
+                self.stage_installation()
+                result = self.run_guard("chore: upgrade GSD Path runtime to 1.6.2.19")
+                self.assertEqual(0, result.returncode, result.stderr)
+                pre_commit = subprocess.run(
+                    [sys.executable, str(SCRIPT), "pre-commit"],
+                    cwd=self.repo, capture_output=True, encoding="utf-8", errors="replace",
+                )
+                self.assertEqual(0, pre_commit.returncode, pre_commit.stderr)
+                self.git("reset", "-q", "--hard", "HEAD")
+                self.git("clean", "-q", "-fd")
+        for phase, status in (("build", "active"), ("ship", "blocked")):
+            with self.subTest(phase=phase):
+                self.write_state(phase, status)
+                self.stage_installation()
+                result = self.run_guard("chore: upgrade GSD Path runtime to 1.6.2.19")
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.git("reset", "-q", "--hard", "HEAD")
+                self.git("clean", "-q", "-fd")
+
+    def test_installation_commits_close_at_the_first_plan_approval(self):
+        self.enter_build(phase="plan", status="done")
+        self.git(
+            "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q",
+            "--allow-empty", "-m", "plan: build plan approved",
+            "-m", "Why: approved plan checkpoint\nMilestone: next",
+        )
+        # A build recovery or ship patch reopens plan after the approval.
+        for phase, status in (("plan", "active"), ("define", "active")):
+            with self.subTest(phase=phase):
+                self.write_state(phase, status)
+                self.stage_installation()
+                result = self.run_guard("chore: upgrade GSD Path runtime to 1.6.2.19")
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.assertIn(f"STATE is {phase}", result.stderr)
+                self.git("reset", "-q", "--hard", "HEAD")
+                self.git("clean", "-q", "-fd")
+        # Runtime and wiring alone stay bookkeeping in every phase.
+        (self.repo / ".gsd-path").mkdir(exist_ok=True)
+        (self.repo / ".gsd-path" / "runtime.json").write_bytes(b"{}\n")
+        self.git("add", "-A")
+        result = self.run_guard("chore: pin GSD Path runtime")
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_installation_commits_never_carry_other_files(self):
+        self.enter_build(phase="plan")
+        for relative in (
+            "app.py", ".claude/skills/my-team-skill/SKILL.md",
+            ".claude/disabled-gsd-skills/gsd-path/SKILL.md", ".claude/agents/reviewer.md",
+            "skills/gsd-path/SKILL.md",
+        ):
+            with self.subTest(path=relative):
+                self.stage_installation()
+                path = self.repo / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"# not installation output\n")
+                self.git("add", "-A")
+                result = self.run_guard("chore: upgrade GSD Path runtime to 1.6.2.19")
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.assertIn("STATE is plan", result.stderr)
+                self.git("reset", "-q", "--hard", "HEAD")
+                self.git("clean", "-q", "-fd")
+
+    def test_installation_paths_match_the_skill_resource_map(self):
+        resources = json.loads(
+            (Path(__file__).resolve().parents[1] / "scripts" / "skill-resources.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            sorted({host["local_root"] for host in resources["hosts"].values()}),
+            sorted(git_guard.INSTALL_SKILL_ROOTS),
+        )
+        self.assertEqual(sorted(resources["skills"]), sorted(git_guard.INSTALL_SKILL_NAMES))
+
     def test_product_commits_outside_build_are_refused_on_unshipped_lineage(self):
         self.enter_build(phase="define")
         for phase, status in (("plan", "active"), ("ship", "blocked")):

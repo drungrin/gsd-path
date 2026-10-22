@@ -21,7 +21,7 @@ sys.dont_write_bytecode = True  # a hook must not leave __pycache__ in the workt
 try:
     from isolation import BOOKKEEPING_PREFIXES, NULL_SHA, _landing_state, task_frontmatter, undeclared_paths
     from pipeline_git import is_ship_subject, ship_body_matches, ship_commit_body, task_commit_body
-    from pipeline_state import _completion_status
+    from pipeline_state import _completion_status, _milestone_plan_approved
     from _common import valid_default_branch
     import _common
     import members
@@ -61,6 +61,21 @@ PRODUCT_HINT = (
     f"while this worktree carries unfinished milestone state, {LANDING_HINT}; "
     "findings during ship reopen through the patch plan"
 )
+# What the installer writes into a project: GSD Path skills under each host's
+# project skill root and the managed contracts. Tests keep these in step with
+# scripts/skill-resources.json.
+INSTALL_SKILL_ROOTS = (
+    ".agents/skills", ".claude/skills", ".cursor/skills", ".github/skills", ".grok/skills",
+    ".kimi-code/skills", ".kiro/skills", ".opencode/skills", ".qwen/skills",
+)
+INSTALL_SKILL_NAMES = frozenset({
+    "gsd-path", "gsd-path-build", "gsd-path-decide", "gsd-path-define", "gsd-path-discuss",
+    "gsd-path-docs-audit", "gsd-path-forensics", "gsd-path-inspect", "gsd-path-loop",
+    "gsd-path-migrate", "gsd-path-plan", "gsd-path-research", "gsd-path-roadmap",
+    "gsd-path-ship", "gsd-path-undo", "path",
+})
+INSTALL_CONTRACTS = frozenset({"AGENTS.md", "WORKFLOW.md", ".claude/CLAUDE.md", ".cursor/agents/gsd-path.md"})
+INSTALL_COMMIT_PHASES = frozenset({"inspect", "define", "research", "decide", "roadmap", "plan"})
 MEMBER_PUSH_HINT = (
     "a member publishes its coordinator's Path refs, or work from them, only with "
     "a coordinator authorization for that exact ref and object"
@@ -468,6 +483,31 @@ def repo_root():
     )
 
 
+def installation_path(path):
+    """True for a path the GSD Path installer writes into a project."""
+    if path.startswith(BOOKKEEPING_PREFIXES) or path in INSTALL_CONTRACTS:
+        return True
+    for root in INSTALL_SKILL_ROOTS:
+        if path.startswith(root + "/"):
+            return path[len(root) + 1:].split("/", 1)[0] in INSTALL_SKILL_NAMES
+    return False
+
+
+def installation_commit_open(state):
+    """Whether the milestone can still take an installer commit.
+
+    Build needs an approved plan, so a milestone without a plan approval
+    checkpoint has recorded no task base yet. A patch or recovery return to
+    plan keeps it closed: its landed history must stay task-proven.
+    """
+    if state.get("phase") not in INSTALL_COMMIT_PHASES:
+        return False
+    milestone = state.get("milestone")
+    if milestone in (None, "", "null"):
+        return True
+    return bool(SLUG.fullmatch(milestone)) and not _milestone_plan_approved(repo_root(), milestone)
+
+
 def product_commit_violations(entries, subject, body):
     """Hold product changes until build landing or verified integration."""
     if is_ship_commit(subject):
@@ -494,6 +534,8 @@ def product_commit_violations(entries, subject, body):
     if bound is None:
         return []
     if phase != "build":
+        if all(installation_path(path) for path in staged) and installation_commit_open(state):
+            return []  # an installer upgrade, committed on its own
         return [f"product files are staged while STATE is {phase}; {PRODUCT_HINT}"]
     if TASK_SUBJECT.fullmatch(subject) is None:
         return [f"{subject!r} is not a landing commit; {LANDING_HINT}"]

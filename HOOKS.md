@@ -332,7 +332,11 @@ such as `rm -rf scratch` passes the archive check; other guard rules still apply
 - `ship:` commits (case-insensitive) staging paths outside `.project/`
 - while committed `STATE.md` names unfinished milestone work, including
   `shipped/done` without verified integration: commits staging paths outside `.project/` (or the
-  guard's own `.gsd-path/` and native hook settings) unless the phase is
+  guard's own `.gsd-path/` and native hook settings), except a commit holding
+  only installation output — GSD Path skill directories under a host's project
+  skill root, `AGENTS.md`, `WORKFLOW.md`, `.claude/CLAUDE.md` and
+  `.cursor/agents/gsd-path.md` — while STATE is inspect through plan and the
+  milestone has no plan approval checkpoint yet, unless the phase is
   `build` and they are landing commits as `isolation.py land` writes them —
   subject `<task id>: <task title>` matching the task file at `Base:`, a full
   base SHA HEAD descends from, the staged task file, only that task's declared
