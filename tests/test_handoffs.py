@@ -119,7 +119,9 @@ archive: null
         dimension: str,
         project_dir: str = ".project",
         questions=("Which domain applies?",),
+        research_dir=None,
     ) -> None:
+        research_dir = research_dir or f"{project_dir}/research"
         assigned = "; ".join(questions) if questions else "none"
         answers = (
             "\n".join(
@@ -131,7 +133,7 @@ archive: null
         )
         self.write(
             root,
-            f"{project_dir}/research/evidence-{dimension}.md",
+            f"{research_dir}/evidence-{dimension}.md",
             f"""# Evidence — {dimension}
 
 Dimension: {dimension}
@@ -151,19 +153,21 @@ Questions assigned: {assigned}
         )
 
     def write_research_handoff(
-        self, root: Path, project_dir: str = ".project"
+        self, root: Path, project_dir: str = ".project", research_dir=None, intent=None
     ) -> None:
+        research_dir = research_dir or f"{project_dir}/research"
+        intent = intent or f"{project_dir}/intent/INTENT.md"
         self.write(
             root,
-            f"{project_dir}/research/RESEARCH.md",
+            f"{research_dir}/RESEARCH.md",
             f"""# Research Handoff
 
 Phase: research
 Status: complete
-Intent: `{project_dir}/intent/INTENT.md`
+Intent: `{intent}`
 
 ## Dispatch
-- `domain` — dispatched → `{project_dir}/research/evidence-domain.md` — assigned question
+- `domain` — dispatched → `{research_dir}/evidence-domain.md` — assigned question
 - `stack` — skipped → none — intent settles the stack
 - `pitfalls` — skipped → none — no risk was assigned
 - `similar` — skipped → none — no comparison is needed
@@ -172,7 +176,7 @@ Intent: `{project_dir}/intent/INTENT.md`
 - `[RESEARCH] Which domain applies?` → `domain`
 """,
         )
-        self.write_evidence(root, "domain", project_dir)
+        self.write_evidence(root, "domain", project_dir, research_dir=research_dir)
 
     def write_dimension_assignment_case(
         self,
@@ -276,19 +280,81 @@ Intent: `.project/intent/INTENT.md`
                 ".project/CHARTER.md",
                 "# Charter — demo\n\n## Open questions\n- [RESEARCH] Which domain applies?\n",
             )
-            self.write_research_handoff(root)
-            handoff = root / ".project" / "research" / "RESEARCH.md"
-            handoff.write_bytes(
-                handoff.read_text(encoding="utf-8").replace(
-                    "Intent: `.project/intent/INTENT.md`",
-                    "Intent: `.project/CHARTER.md`",
-                ).encode("utf-8"),
+            self.write_research_handoff(
+                root, research_dir=".project/program", intent=".project/CHARTER.md"
             )
 
             result = check_handoffs.validate_research(root)
 
             self.assertEqual(result["phase"], "research")
             self.assertEqual(result["dispatched"], ["domain"])
+
+    def test_research_handoff_program_flow_never_reads_milestone_research(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_state(root, "research", "active")
+            self.write(
+                root,
+                ".project/CHARTER.md",
+                "# Charter — demo\n\n## Open questions\n- [RESEARCH] Which domain applies?\n",
+            )
+            self.write_research_handoff(root, intent=".project/CHARTER.md")
+
+            with self.assertRaisesRegex(check_handoffs.HandoffError, "migrate-program-research"):
+                check_handoffs.validate_research(root)
+            (root / ".project/research/RESEARCH.md").unlink()
+            with self.assertRaisesRegex(check_handoffs.HandoffError, r"\.project/program/RESEARCH\.md"):
+                check_handoffs.validate_research(root)
+
+            self.write_research_handoff(
+                root, research_dir=".project/program", intent=".project/CHARTER.md"
+            )
+            handoff = root / ".project/program/RESEARCH.md"
+            handoff.write_bytes(
+                handoff.read_text(encoding="utf-8").replace(
+                    "`.project/program/evidence-domain.md`",
+                    "`.project/research/evidence-domain.md`",
+                ).encode("utf-8"),
+            )
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError,
+                "domain output must be .project/program/evidence-domain.md",
+            ):
+                check_handoffs.validate_research(root)
+
+    def test_program_research_gate_refuses_while_a_legacy_manifest_remains(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_state(root, "research", "active")
+            self.write(
+                root,
+                ".project/CHARTER.md",
+                "# Charter — demo\n\n## Open questions\n- [RESEARCH] Which domain applies?\n",
+            )
+            self.write_research_handoff(
+                root, research_dir=".project/program", intent=".project/CHARTER.md"
+            )
+            self.write_research_handoff(root, intent=".project/CHARTER.md")
+
+            with self.assertRaisesRegex(check_handoffs.HandoffError, "migrate-program-research"):
+                check_handoffs.validate_research(root)
+
+    def test_lookahead_research_requires_its_own_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_state(root, "research", "active", ".project/next")
+            self.write(
+                root,
+                ".project/CHARTER.md",
+                "# Charter — demo\n\n## Open questions\n- [RESEARCH] Which domain applies?\n",
+            )
+            self.write_research_handoff(root, ".project/next", intent=".project/CHARTER.md")
+
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError,
+                r"\.project/next research requires \.project/next/intent/INTENT\.md",
+            ):
+                check_handoffs.validate_research(root, ".project/next")
 
     def test_research_handoff_intent_wins_when_both_exist(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -311,7 +377,7 @@ Intent: `.project/intent/INTENT.md`
                 ".project/CHARTER.md",
                 "# Charter — demo\n\n## Open questions\n- [RESEARCH] Which domain applies?\n",
             )
-            self.write_research_handoff(root)
+            self.write_research_handoff(root, research_dir=".project/program")
 
             with self.assertRaises(check_handoffs.HandoffError) as failure:
                 check_handoffs.validate_research(root)

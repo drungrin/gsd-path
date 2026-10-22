@@ -82,7 +82,7 @@ whole repository when a focused path set answers the question.
 
 ## Focused research
 
-Use existing `.project/research/` evidence first. If the question depends on a
+Use existing `.project/research/` and `.project/program/` evidence first. If the question depends on a
 current external fact, an unfamiliar library behavior, or an unresolved intent
 risk, perform focused research during the discussion when the required search
 or source-reading capability is available. Record the query/scope, checked

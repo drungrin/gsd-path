@@ -45,6 +45,15 @@ charter scope, not one milestone. Add program dimensions such as
 `capability-map` (what exists vs. what must be built) as custom dimensions
 alongside the standard set, so the roadmap phase inherits a complete scope
 map. The manifest's `Intent:` line names `.project/CHARTER.md` in this flow.
+Program research is durable, like CHARTER.md and the program SYNTHESIS.md
+that cites it: write its manifest and evidence under `.project/program/`
+(`.project/program/RESEARCH.md`, `.project/program/evidence-<dimension>.md`)
+instead of the milestone's `research/` directory, which milestone research
+rewrites and ship archives. Codebase maps stay in `.project/research/`. While
+`.project/research/RESEARCH.md` still names `.project/CHARTER.md`, an earlier
+runtime's program research sits there: write nothing, return to `$gsd-path`,
+whose route blocks until the owner approves `pipeline_state.py
+migrate-program-research`. The research gate refuses that layout too.
 
 ## Lookahead mode
 
@@ -81,8 +90,8 @@ every brief as settled brownfield input.
 
 1. Read INTENT.md — or CHARTER.md in program flow. Extract constraints,
    vetoes, risks, and `RESEARCH`
-   questions. Create `.project/research/RESEARCH.md` from the local handoff
-   template before dispatch. Record every standard dimension exactly once as
+   questions. Create `.project/research/RESEARCH.md` (`.project/program/RESEARCH.md`
+   in program scope) from the local handoff template before dispatch. Record every standard dimension exactly once as
    `dispatched` or `skipped` with a reason, and assign every research question
    to at least one dispatched dimension. No question may remain unassigned.
    Copy each question to exactly one `Question assignments` row. Assign one or
@@ -102,7 +111,7 @@ every brief as settled brownfield input.
    dispatch. Skip a dimension
    with nothing to answer — never spawn a researcher to fill a file — and
    record every skipped dimension with its reason in `RESEARCH.md`. The
-   standard dimensions:
+   standard dimensions, whose output files sit beside the manifest:
 
    | Dimension | Output file | Focus |
    | --- | --- | --- |

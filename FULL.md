@@ -246,7 +246,7 @@ After intent approval, the router walks phases and stops at gates.
 
 | Phase | Output | Your role |
 | --- | --- | --- |
-| **Research** | `research/evidence-*.md` | Usually nothing |
+| **Research** | `research/evidence-*.md` (program: `program/evidence-*.md`) | Usually nothing |
 | **Decide** | `research/SYNTHESIS.md` | Resolve `NEEDS-USER` at checkpoint |
 | **Roadmap** (program) | `ROADMAP.md` | **Approve milestone slicing** |
 | **Plan** | `plan/PLAN.md`, `tasks/T###-slug.md`, optional `review/PLAN-PANEL.md` | **Approve wave summary** |
@@ -326,7 +326,7 @@ approve **Archive and ship**, the archive transaction begins:
 
 - Milestone artifacts move to `.project/archive/<NNN>-<slug>/`; `STATE.md`,
   `REPOSITORY.md`, `LESSONS.md`, and program artifacts (`CHARTER.md`,
-  `ROADMAP.md`, top-level `SYNTHESIS.md`) remain active project metadata
+  `ROADMAP.md`, top-level `SYNTHESIS.md`, `program/`) remain active project metadata
 - `MANIFEST.md` records contents and ship metadata
 - One **ship commit** (subject `ship: M00N — <slug>`) touches only `.project/`
 - Ship then either merges `feature/milestone-00n` onto `main` directly or opens a
@@ -391,6 +391,7 @@ Durable project artifacts live in `.project/`:
   CHARTER.md               program scope (program flow; persists)
   ROADMAP.md               milestone slicing (program flow; persists)
   SYNTHESIS.md             program decisions (program flow; persists)
+  program/                 program research manifest and evidence (program flow; persists)
   next/                    lookahead track artifacts (program flow; during build)
   intent/INTENT.md
   research/RESEARCH.md     dispatch manifest

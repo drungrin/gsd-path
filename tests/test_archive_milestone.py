@@ -2014,6 +2014,37 @@ wave: 1   # inline comment
             self.assertNotEqual(extra_only.returncode, 0)
             self.assertIn("unexpected active", extra_only.stderr)
 
+    def test_ship_keeps_program_research_active_only_in_program_flow(self) -> None:
+        for program_flow in (True, False):
+            with self.subTest(program_flow=program_flow), tempfile.TemporaryDirectory() as temporary_directory:
+                repo = Path(temporary_directory)
+                self.make_repo(repo)
+                project = repo / ".project"
+                (project / "program").mkdir()
+                (project / "program" / "RESEARCH.md").write_bytes(b"# Research Handoff\n")
+                (project / "program" / "evidence-domain.md").write_bytes(b"# Evidence\n")
+                if program_flow:
+                    (project / "CHARTER.md").write_bytes(b"# Charter\n")
+                prepare = self.run_command(
+                    sys.executable, str(ARCHIVE_SCRIPT), "prepare", "--repo", str(repo), "--slug", "demo",
+                    cwd=PROJECT_ROOT,
+                )
+                self.assertEqual(prepare.returncode, 0, prepare.stderr)
+                archive = repo / json.loads(prepare.stdout)["archive"]
+                self.write_manifest(archive)
+
+                preflight = self.run_command(
+                    sys.executable, str(ARCHIVE_SCRIPT), "preflight", "--repo", str(repo), cwd=PROJECT_ROOT,
+                )
+
+                self.assertFalse((archive / "program").exists())
+                self.assertTrue((project / "program" / "evidence-domain.md").is_file())
+                if program_flow:
+                    self.assertEqual(preflight.returncode, 0, preflight.stderr)
+                else:
+                    self.assertNotEqual(preflight.returncode, 0)
+                    self.assertIn("unexpected active .project paths remain: program", preflight.stderr)
+
     def test_preflight_validates_manifest_metadata_before_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
@@ -6875,6 +6906,8 @@ archive: null
         (project / "ROADMAP.md").write_bytes(
             "# Roadmap\n\n### M001 — demo\n\nStatus: active\n".encode("utf-8")
         )
+        (project / "program").mkdir()
+        (project / "program" / "RESEARCH.md").write_bytes("# Research Handoff\n".encode("utf-8"))
         (project / "intent" / "INTENT.md").write_bytes("# Intent\n".encode("utf-8"))
         (project / "research" / "SYNTHESIS.md").write_bytes("# Synthesis\n".encode("utf-8"))
         (project / "plan" / "PLAN.md").write_bytes("# Plan\n\n## Wave 1 — demo\n".encode("utf-8"))
@@ -6957,7 +6990,7 @@ Tasks reviewed: 1
             active = sorted(path.name for path in project.iterdir())
             self.assertEqual(
                 active,
-                ["CHARTER.md", "LESSONS.md", "ROADMAP.md", "STATE.md", "archive"],
+                ["CHARTER.md", "LESSONS.md", "ROADMAP.md", "STATE.md", "archive", "program"],
             )
             state = (project / "STATE.md").read_text(encoding="utf-8")
             self.assertIn("phase: roadmap", state)

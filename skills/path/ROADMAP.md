@@ -65,11 +65,12 @@ precondition fails.
    local [runtime dispatch contract](references/dispatch.md) with deterministic
    logical task name `roadmap` and a `heavy` tier hint. Give it absolute role,
    `AGENTS.md`, `WORKFLOW.md`, CHARTER.md, SYNTHESIS.md, every dispatched
-   evidence file named in `.project/research/RESEARCH.md` — after milestone
-   archival has moved the active research directory, name the read-only
-   archived manifest and evidence copies under their
-   `.project/archive/<NNN>-<slug>/research/` paths
-   instead — template, and output
+   evidence file named in the durable program manifest
+   `.project/program/RESEARCH.md` — when an earlier runtime archived program
+   research with a shipped milestone instead, `.project/program/` is absent:
+   name the read-only manifest and evidence copies from the earliest
+   `.project/archive/<NNN>-<slug>/research/` whose `RESEARCH.md` names
+   `.project/CHARTER.md`, or state in the brief that none survives — template, and output
    paths, including `.project/LESSONS.md` when it exists. On a re-slice, also
    give `.project/ROADMAP.before-reslice.md` with the instruction to preserve
    `shipped` entries byte-for-byte except Status/Archive/Integrated fields and

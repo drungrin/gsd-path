@@ -592,6 +592,7 @@ cleanup does not promise physical removal of older provider-side PR iterations.
   CHARTER.md                  program scope and vetoes; never archives
   ROADMAP.md                  milestone slicing; never archives
   SYNTHESIS.md                program decisions (top level); never archives
+  program/                    program research: RESEARCH.md + evidence-*.md; never archives
   next/                       lookahead track: next milestone's artifacts during build
   intent/INTENT.md            goal, vetoes, constraints, surfaces
   research/
@@ -622,7 +623,7 @@ or existing proven GitHub coordinator rebase) and annotated proof tags validate.
 Before any next-milestone files change, the router binds
 a new `feature/milestone-00n` at the updated `origin/main`. `STATE.md`, `REPOSITORY.md`,
 `LESSONS.md`, `next/`, and the program artifacts (`CHARTER.md`, `ROADMAP.md`,
-top-level `SYNTHESIS.md`) remain active project metadata.
+top-level `SYNTHESIS.md`, `program/`) remain active project metadata.
 
 ## Install (summary)
 

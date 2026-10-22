@@ -276,6 +276,7 @@ applies exclusions there, so task and verify copies do not displace it.
 | `CHARTER.md` | Program scope and vetoes (program flow; never archives) |
 | `ROADMAP.md` | Milestone slicing (program flow; never archives) |
 | `SYNTHESIS.md` | Program decisions at top level (program flow; never archives) |
+| `program/RESEARCH.md` | Program research manifest; its evidence sits beside it (program flow; never archives) |
 | `next/` | Lookahead track: next milestone's artifacts during build (program flow) |
 | `intent/INTENT.md` | Goal, vetoes, constraints |
 | `research/RESEARCH.md` | Which dimensions were researched / skipped |

@@ -148,6 +148,7 @@ PROJECT_PROBE_PATHS = (
     ".project/CHARTER.md",
     ".project/ROADMAP.md",
     ".project/SYNTHESIS.md",
+    ".project/program/RESEARCH.md",
     VERIFY_LEDGER_PATH,
     ".project/build/members.json",
     ".project/build/evidence.json",

@@ -260,7 +260,8 @@ The persisted `STATE.archive` field is the transaction identity.
    the ship commit but never archives — and the planner reads it. The same
    persistence applies to program artifacts when present: CHARTER.md,
    ROADMAP.md, and a top-level program SYNTHESIS.md ship in the commit but
-   never archive.
+   never archive, and program research in `.project/program/` stays active
+   untouched.
    Then run `python3 <absolute archive_milestone.py> render-manifest --repo <root>`. The helper derives final verdicts, wave/task/cycle counts,
    carry-forward count (pending ruling rows summed over every carried audit),
    and the exact archive inventory, then atomically

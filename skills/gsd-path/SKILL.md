@@ -399,7 +399,15 @@ promotion, `resume-next-handoff` resumes the verified `bind-next` transaction,
 `resume-shipment` runs the shipment recovery command above,
 `resume-promotion` reruns the returned `promote-next` transaction, and
 `resume-undo` invokes `$gsd-path-undo` with the returned kind and expected HEAD,
-`block` stops with the returned reason. `bind-initial`
+`block` stops with the returned reason. A block naming
+`migrate-program-research` means an earlier runtime left program research in
+`.project/research/`, where milestone research would overwrite it: run the
+named command with `--dry-run`, present **Outcome** listing its `moved`,
+`deduplicated` and `missing` files, the rewritten SYNTHESIS.md references, and
+every `unrewritten_references` file that still names an old path, **Review**
+linking STATE.md, and **Next** asking the user to approve the move. Only after
+approval, rerun it without `--dry-run` and route again; the next approval
+checkpoint commits it. Never move the files by hand. `bind-initial`
 means initialization is complete and phase work must wait for the initial
 router binding: resolve the exact fetched `origin/<default_branch>` SHA, call `bind-initial` as
 above with `route.branch`, then persist its returned branch with
@@ -606,7 +614,8 @@ approval checkpoint. `changed` and `unverifiable` reopen the promoted state as
 
 Committed archives are read-only. CHARTER.md, ROADMAP.md, program
 SYNTHESIS.md, and LESSONS.md stay active across milestones; they ship inside
-the ship commit but never archive.
+the ship commit but never archive. Program research in `.project/program/`
+also stays active and never archives.
 
 ## Rules
 

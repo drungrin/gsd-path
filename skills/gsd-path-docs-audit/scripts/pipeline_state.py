@@ -149,6 +149,10 @@ LEGACY_SIDECAR_REF_PREFIXES = (
     "refs/heads/gsd-path-integrate/",
 )
 BRANCH_MIGRATION_PHASES = ("inspect", "define", "research", "decide", "roadmap", "plan")
+PROGRAM_RESEARCH_MIGRATION_SCHEMA = "gsd-path/program-research-migration/v1"
+PROGRAM_RESEARCH_EVENT = "program research moved to .project/program"
+# Before plan approval, a later checkpoint still commits the move.
+PROGRAM_RESEARCH_MIGRATION_PHASES = ("inspect", "define", "research", "decide", "roadmap")
 
 CROSS_PHASE_TRANSITIONS = {
     ("inspect", "done", "define", "active"),
@@ -1442,6 +1446,11 @@ def _route_state(repo: Path, project_dir: str = ".project") -> dict[str, object]
                     ),
                 )
 
+    if not lookahead:
+        program_research = _program_research_block(resolved, project, state)
+        if program_research:
+            return _route_result(state, "block", reason=program_research)
+
     if state.archive is not None:
         if state.phase == "build":
             return _route_result(
@@ -1969,6 +1978,11 @@ def transition_state(
             )
             if reason:
                 raise PipelineStateError(reason)
+            # Binding a branch or logging an event is not phase work.
+            if not _is_lookahead(project_dir) and (after.phase, after.status) != (state.phase, state.status):
+                reason = _program_research_block(resolved, project, state)
+                if reason:
+                    raise PipelineStateError(reason)
         if (state.phase, state.status, after.phase, after.status) == MEMBER_INSPECTION_EDGE:
             entry = _member_inspection_entry(resolved, state, project_dir)
             if entry["action"] != "inspect":
@@ -2047,8 +2061,8 @@ def _pipeline_git():
     return pipeline_git
 
 
-def _branch_migration_blockers(repo: Path) -> list[str]:
-    """Name every in-flight helper record that still refers to the legacy branch."""
+def _transaction_blockers(repo: Path) -> list[str]:
+    """Name every in-flight helper journal a migration must not run beneath."""
     blockers = [
         name
         for name in (
@@ -2068,6 +2082,12 @@ def _branch_migration_blockers(repo: Path) -> list[str]:
             blockers.append("collect-artifact journal")
     except IsolationError as error:
         raise PipelineStateError(str(error)) from error
+    return blockers
+
+
+def _branch_migration_blockers(repo: Path) -> list[str]:
+    """Name every in-flight helper record that still refers to the legacy branch."""
+    blockers = _transaction_blockers(repo)
     refs = _run_git(repo, "for-each-ref", "--format=%(refname)").stdout.splitlines()
     blockers.extend(
         ref for ref in refs if ref.startswith(LEGACY_SIDECAR_REF_PREFIXES)
@@ -2175,6 +2195,259 @@ def migrate_branch(repo: Path, dry_run: bool = False) -> dict[str, object]:
         "to": target,
         "resumed": resumed,
         "state": state.json(),
+    }
+
+
+def _legacy_program_research(project: Path) -> bool:
+    """True when program research still sits where milestone research writes."""
+    return _present(project / "CHARTER.md") and _handoffs_runtime().legacy_program_research(project.parent)
+
+
+def _milestone_plan_approved(repo: Path, milestone: Optional[str]) -> bool:
+    """True when HEAD already holds a plan approval checkpoint for the milestone."""
+    if milestone is None:
+        return False
+    result = _run_git(
+        repo, "log", "-n", "1", "--format=%H", "--extended-regexp", "--all-match",
+        f"--grep=^{PLAN_APPROVAL_SUBJECT}$", f"--grep=^Milestone: {milestone}$", "HEAD",
+        check=False,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _program_research_migration_open(repo: Path, state: PipelineState) -> bool:
+    """Open until the milestone's first plan approval, which commits the move.
+
+    A patch or build-recovery return to plan keeps it closed: that milestone
+    never ran its own research, so its ship archives program research as
+    earlier runtimes did.
+    """
+    if state.archive is not None:
+        return False
+    if state.phase == "plan":
+        if state.status == "done":
+            return False
+    elif state.phase not in PROGRAM_RESEARCH_MIGRATION_PHASES:
+        return False
+    return not _milestone_plan_approved(repo, state.milestone)
+
+
+def _program_research_block(repo: Path, project: Path, state: PipelineState) -> Optional[str]:
+    """Name the migration that must run before phase work, or None."""
+    if not _legacy_program_research(project) or not _program_research_migration_open(repo, state):
+        return None
+    return (
+        "program research is still in .project/research, where milestone research "
+        "overwrites it and ship archives it; preview with pipeline_state.py "
+        f"migrate-program-research --repo {repo} --dry-run, then run it without --dry-run"
+    )
+
+
+def _program_research_paths(text: str, dimensions: Sequence[str]) -> tuple[str, int]:
+    """Point legacy evidence paths at .project/program; bare file names stay."""
+    if not dimensions:
+        return text, 0
+    names = "|".join(re.escape(dimension) for dimension in dimensions)
+    pattern = re.compile(
+        rf"(?<![\w./-])(\.project/|\./)?research/(evidence-(?:{names})\.md)(?![\w-]|\.\w)"
+    )
+    return pattern.subn(lambda match: f"{match.group(1) or ''}program/{match.group(2)}", text)
+
+
+def _discard_migration_temporary(path: Path) -> None:
+    """Drop a temporary an interrupted migration left before its rename.
+
+    The file it was replacing is still the original, and the state lock
+    excludes any other writer, so the next write starts over.
+    """
+    temporary = path.parent / f".{path.name}.gsd-path-tmp"
+    if temporary.is_symlink() or (temporary.exists() and not temporary.is_file()):
+        raise PipelineStateError(f"atomic-write temporary path must be a real file: {temporary}")
+    if temporary.exists():
+        temporary.unlink()
+
+
+def migrate_program_research(repo: Path, dry_run: bool = False) -> dict[str, object]:
+    """Move program research from .project/research to .project/program.
+
+    Earlier runtimes wrote program research beside milestone research, so the
+    first milestone's research overwrote the manifest and evidence that the
+    program SYNTHESIS.md cites, and its ship archived them. Every step is
+    idempotent and the legacy manifest is removed last, so a rerun after an
+    interruption completes the move. The next approval checkpoint commits it.
+    """
+    resolved = _repo_root(repo)
+    project = _track_root(resolved, ".project")
+    check_handoffs = _handoffs_runtime()
+    target = resolved / check_handoffs.PROGRAM_RESEARCH_DIR
+    target_manifest = target / "RESEARCH.md"
+    legacy_manifest = project / "research" / "RESEARCH.md"
+    with _state_lock(project):
+        state, text, path = load_state(resolved)
+        if not _legacy_program_research(project):
+            if _optional_real_file(target_manifest, "program RESEARCH.md") is None:
+                raise PipelineStateError(
+                    "no program research to migrate: .project/research/RESEARCH.md "
+                    "does not name .project/CHARTER.md"
+                )
+            return {
+                "schema": PROGRAM_RESEARCH_MIGRATION_SCHEMA,
+                "status": "already-migrated",
+                "path": str(target_manifest),
+                "state": state.json(),
+            }
+        if not _program_research_migration_open(resolved, state):
+            raise PipelineStateError(
+                "program research migration is only legal before the milestone's "
+                f"first plan approval; STATE.md is {state.phase}/{state.status}"
+            )
+        current = _current_branch(resolved)
+        if state.branch is None or current != state.branch:
+            raise PipelineStateError(
+                "program research migration requires the bound branch "
+                f"{state.branch}; current: {current or '<detached>'}"
+            )
+        blockers = _transaction_blockers(resolved)
+        if blockers:
+            raise PipelineStateError(
+                "program research migration found in-flight records: " + ", ".join(blockers)
+            )
+        research = project / "research"
+        if research.is_symlink() or not research.is_dir():
+            raise PipelineStateError(f"research path must be a real directory: {research}")
+        manifest = _read_real_file(legacy_manifest, "RESEARCH.md")
+        dimensions: list[str] = []
+        for line in manifest.splitlines():
+            match = check_handoffs.DISPATCH_PATTERN.fullmatch(line.strip())
+            if match is None or match.group("status") != "dispatched":
+                continue
+            dimension = match.group("dimension")
+            output = match.group("output").strip().strip("`")
+            if (
+                not SLUG_RE.fullmatch(dimension)
+                or dimension == "codebase"
+                or dimension.startswith("codebase-")
+                or dimension in dimensions
+                or output != f".project/research/evidence-{dimension}.md"
+            ):
+                raise PipelineStateError(
+                    f"program research manifest has an unexpected dispatch row: {line.strip()}"
+                )
+            dimensions.append(dimension)
+        if target.is_symlink() or (target.exists() and not target.is_dir()):
+            raise PipelineStateError(f"program research path must be a real directory: {target}")
+        owned = {"RESEARCH.md", ".RESEARCH.md.gsd-path-tmp"}
+        owned |= {f"evidence-{dimension}.md" for dimension in dimensions}
+        unexpected = sorted(
+            child.name
+            for child in target.iterdir()
+            if child.name not in owned and not _common.is_ignored_junk(child)
+        ) if target.is_dir() else []
+        if unexpected:
+            raise PipelineStateError(
+                "program research path holds unexpected files: " + ", ".join(unexpected)
+            )
+        moves: list[tuple[Path, Path]] = []
+        duplicates: list[Path] = []
+        missing: list[str] = []
+        for dimension in dimensions:
+            source = project / "research" / f"evidence-{dimension}.md"
+            destination = target / f"evidence-{dimension}.md"
+            for candidate in (source, destination):
+                if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+                    raise PipelineStateError(f"program evidence must be a real file: {candidate}")
+            if source.exists() and destination.exists():
+                if source.read_bytes() != destination.read_bytes():
+                    raise PipelineStateError(
+                        f"program evidence differs at both paths: {source} and {destination}"
+                    )
+                duplicates.append(source)
+            elif source.exists():
+                moves.append((source, destination))
+            elif not destination.exists():
+                missing.append(destination.relative_to(resolved).as_posix())
+        if missing and (state.phase, state.status) not in {("research", "active"), ("research", "blocked")}:
+            # Only running research may still produce it, at the new path.
+            raise PipelineStateError(
+                "program research manifest names missing evidence: " + ", ".join(missing)
+            )
+        rewritten, _ = _program_research_paths(manifest, dimensions)
+        existing = _optional_real_file(target_manifest, "program RESEARCH.md")
+        if existing is not None and existing != rewritten:
+            raise PipelineStateError(
+                f"program research manifest {target_manifest} differs from the legacy "
+                f"{legacy_manifest}; the owner must rule which one stands"
+            )
+        synthesis_path = project / "SYNTHESIS.md"
+        synthesis = _optional_real_file(synthesis_path, "SYNTHESIS.md")
+        synthesis_after, references = (
+            _program_research_paths(synthesis, dimensions) if synthesis is not None else (None, 0)
+        )
+        def relative(value: Path) -> str:
+            return value.relative_to(resolved).as_posix()
+
+        # Other active artifacts keep their text; the owner sees what still
+        # names an old path. Archives and the lookahead track never cite it.
+        moved_to = dict(moves)
+        unrewritten = []
+        for directory, subdirectories, files in os.walk(project):
+            if Path(directory) == project:
+                subdirectories[:] = [name for name in subdirectories if name not in {"archive", "next"}]
+            for name in sorted(files):
+                candidate = Path(directory) / name
+                if (
+                    not name.endswith(".md")
+                    or candidate in {synthesis_path, legacy_manifest, target_manifest}
+                    or candidate.is_symlink()
+                    or not candidate.is_file()
+                ):
+                    continue
+                count = _program_research_paths(
+                    candidate.read_text(encoding="utf-8", errors="replace"), dimensions
+                )[1]
+                if count:
+                    unrewritten.append(
+                        {"path": relative(moved_to.get(candidate, candidate)), "references": count}
+                    )
+        plan = {
+            "manifest": {"from": relative(legacy_manifest), "to": relative(target_manifest)},
+            "moved": [
+                {"from": relative(source), "to": relative(destination)}
+                for source, destination in moves
+            ],
+            "deduplicated": [relative(source) for source in duplicates],
+            "missing": missing,
+            "synthesis_references": references,
+            "unrewritten_references": sorted(unrewritten, key=lambda row: row["path"]),
+        }
+        if dry_run:
+            return {
+                "schema": PROGRAM_RESEARCH_MIGRATION_SCHEMA,
+                "status": "preview",
+                "path": str(target_manifest),
+                **plan,
+            }
+        target.mkdir(exist_ok=True)
+        for source, destination in moves:
+            source.rename(destination)
+        for source in duplicates:
+            source.unlink()
+        if existing is None:
+            _discard_migration_temporary(target_manifest)
+            _atomic_write(target_manifest, rewritten)
+        if references:
+            _discard_migration_temporary(synthesis_path)
+            _atomic_write(synthesis_path, synthesis_after)
+        if PROGRAM_RESEARCH_EVENT not in text:
+            text = _append_event(text, state.phase, PROGRAM_RESEARCH_EVENT)
+            _atomic_write(path, text)
+        legacy_manifest.unlink()
+    return {
+        "schema": PROGRAM_RESEARCH_MIGRATION_SCHEMA,
+        "status": "migrated",
+        "path": str(target_manifest),
+        **plan,
+        "state": _state_from_text(text).json(),
     }
 
 
@@ -2672,6 +2945,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     migrate.add_argument("--repo", required=True, type=Path)
     migrate.add_argument("--dry-run", action="store_true")
+    program = subparsers.add_parser(
+        "migrate-program-research",
+        help="move program research from .project/research to .project/program before plan approval",
+    )
+    program.add_argument("--repo", required=True, type=Path)
+    program.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -2762,6 +3041,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = record_shipment(args.repo, args.archive, args.event)
         elif args.command == "migrate-branch":
             result = migrate_branch(args.repo, args.dry_run)
+        elif args.command == "migrate-program-research":
+            result = migrate_program_research(args.repo, args.dry_run)
         elif args.command == "configure-integration":
             result = configure_integration(
                 args.repo,

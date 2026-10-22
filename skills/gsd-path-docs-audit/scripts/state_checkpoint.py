@@ -587,6 +587,9 @@ def checkpoint_approval(
         active_state, _, _ = pipeline_state.load_state(resolved)
         if active_state.branch is None or pipeline_state._current_branch(resolved) != active_state.branch:
             raise PipelineStateError("approval requires the active bound branch")
+        program_research = pipeline_state._program_research_block(resolved, project, active_state)
+        if program_research:
+            raise PipelineStateError(program_research)
         outside = [path for path in pipeline_state._worktree_changes(resolved) if not path.startswith(".project/")]
         if outside:
             raise PipelineStateError(
@@ -708,6 +711,11 @@ def defer_approval(
         raise PipelineStateError(error)
     project = pipeline_state._track_root(resolved, ".project")
     with pipeline_state._state_lock(project):
+        program_research = pipeline_state._program_research_block(
+            resolved, project, pipeline_state.load_state(resolved)[0]
+        )
+        if program_research:
+            raise PipelineStateError(program_research)
         state, state_before, state_path = pipeline_state.load_state(resolved, project_dir)
         changes, event, _, _ = _approval_details(kind, state, selected_milestone)
         if project_dir == ".project":

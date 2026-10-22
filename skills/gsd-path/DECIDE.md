@@ -36,7 +36,8 @@ preconditions against the track instead; see Lookahead mode. Require
 `.project/intent/INTENT.md`, `.project/research/RESEARCH.md`, and every
 `evidence-*.md` file named as `dispatched` there. In program flow (CHARTER.md
 exists, no milestone INTENT yet) require `.project/CHARTER.md` in INTENT.md's
-place. A standard file may be absent
+place and the durable program manifest `.project/program/RESEARCH.md` with its
+evidence beside it. A standard file may be absent
 only when the handoff manifest records that dimension as skipped; a missing or
 invalid manifest or dispatched file routes to `$gsd-path-research`. Include
 every additional `evidence-*.md` file present only when the manifest names it.
@@ -63,8 +64,8 @@ rules are unchanged; never write an active-path artifact.
 
 ## Process
 
-1. Read the local [synthesis template](templates/synthesis.md),
-   `.project/research/RESEARCH.md`, and the bundled `scripts/check_handoffs.py`;
+1. Read the local [synthesis template](templates/synthesis.md), the
+   manifest from the Preconditions, and the bundled `scripts/check_handoffs.py`;
    resolve each to an absolute path. At `decide/active`, before dispatch, run
    `python3 <absolute check_handoffs.py> research --repo <absolute root>
    [--project-dir .project/next]` so decide receives a complete, intentional
@@ -114,7 +115,9 @@ rules are unchanged; never write an active-path artifact.
 
 - Make commitments, not option lists. Name the runner-up and why it lost
   when a real alternative was weighed; never invent one.
-- Cite evidence by file and finding heading for every decision.
+- Cite evidence by file and finding heading for every decision. A bare
+  `evidence-<dimension>.md` name resolves beside the manifest: `.project/program/`
+  for the program SYNTHESIS.md, the track's `research/` otherwise.
 - Route low-confidence decisions to wave 1 for verification. Reject uncited
   decisions.
 - Resolve evidence conflicts or escalate a true values decision; never average.

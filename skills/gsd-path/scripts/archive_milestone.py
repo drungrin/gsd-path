@@ -1880,7 +1880,7 @@ def require_clean_active_root(active_root: Path, archive: Path) -> None:
             allowed.add(name)
     if (active_root / "CHARTER.md").is_file():
         # Program flow: these persist at the .project/ top level.
-        allowed |= {"CHARTER.md", "ROADMAP.md", "SYNTHESIS.md"}
+        allowed |= {"CHARTER.md", "ROADMAP.md", "SYNTHESIS.md", "program"}
     active_research = active_root / "research"
 
     if pending:

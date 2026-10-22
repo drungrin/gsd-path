@@ -7,7 +7,9 @@ Status: complete
 Intent: `.project/intent/INTENT.md`
 <!-- Program flow (no milestone INTENT exists): write the Intent line as
      `.project/CHARTER.md` instead — the validator accepts exactly one of the
-     two paths, matching the file that actually exists. -->
+     two paths, matching the file that actually exists. Program research is
+     durable: this manifest is `.project/program/RESEARCH.md` and every
+     dispatched output is `.project/program/evidence-<dimension>.md`. -->
 
 ## Dispatch
 

@@ -27,6 +27,8 @@ else:
 
 PIPELINE = "gsd-path/v2"
 DEFAULT_PROJECT_DIR = ".project"
+# Program research persists with CHARTER.md and the program SYNTHESIS.md.
+PROGRAM_RESEARCH_DIR = f"{DEFAULT_PROJECT_DIR}/program"
 STANDARD_DIMENSIONS = ("domain", "stack", "pitfalls", "similar")
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DISPATCH_PATTERN = re.compile(
@@ -443,16 +445,42 @@ def validate_research(
     return validate_research_artifacts(root, project_dir)
 
 
+def research_scope(root: Path, project_dir: str = DEFAULT_PROJECT_DIR) -> Tuple[str, str]:
+    """Return the intent source and research directory for one research track."""
+    intent_path = f"{project_dir}/intent/INTENT.md"
+    if (root / intent_path).is_file():
+        return intent_path, f"{project_dir}/research"
+    if project_dir != DEFAULT_PROJECT_DIR:
+        raise HandoffError(f"{project_dir} research requires {intent_path}")
+    # CHARTER.md is program-level: it and its research stay at the real
+    # .project/ top level, where milestone research and ship never reach them.
+    return f"{DEFAULT_PROJECT_DIR}/CHARTER.md", PROGRAM_RESEARCH_DIR
+
+
+def legacy_program_research(root: Path) -> bool:
+    """True when an earlier runtime left program research in .project/research."""
+    manifest = root / DEFAULT_PROJECT_DIR / "research" / "RESEARCH.md"
+    if manifest.is_symlink() or not manifest.is_file():
+        return False
+    try:
+        intent = _line_value(manifest.read_text(encoding="utf-8"), "Intent:")
+    except HandoffError:
+        return False
+    return intent == f"{DEFAULT_PROJECT_DIR}/CHARTER.md"
+
+
 def validate_research_artifacts(
     root: Path, project_dir: str = DEFAULT_PROJECT_DIR
 ) -> Dict[str, object]:
     """Check research contents independently of the caller's state edge."""
-    intent_path = f"{project_dir}/intent/INTENT.md"
-    if not (root / intent_path).is_file():
-        # CHARTER.md is program-level: it stays at the real .project/ top level.
-        intent_path = f"{DEFAULT_PROJECT_DIR}/CHARTER.md"
+    intent_path, research_dir = research_scope(root, project_dir)
+    if research_dir == PROGRAM_RESEARCH_DIR and legacy_program_research(root):
+        raise HandoffError(
+            "program research is still in .project/research; run pipeline_state.py "
+            "migrate-program-research before this gate"
+        )
     intent = _read(root, intent_path)
-    handoff = _read(root, f"{project_dir}/research/RESEARCH.md")
+    handoff = _read(root, f"{research_dir}/RESEARCH.md")
     if _line_value(handoff, "Phase:") != "research":
         raise HandoffError("RESEARCH.md names the wrong phase")
     if _line_value(handoff, "Status:") != "complete":
@@ -493,7 +521,7 @@ def validate_research_artifacts(
     evidence_outputs: Dict[str, str] = {}
     for dimension, status, output, _reason in dispatch_rows:
         if status == "dispatched":
-            expected = f"{project_dir}/research/evidence-{dimension}.md"
+            expected = f"{research_dir}/evidence-{dimension}.md"
             if output != expected:
                 raise HandoffError(
                     f"{dimension} output must be {expected}, found {output}"

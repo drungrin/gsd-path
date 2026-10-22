@@ -27,9 +27,10 @@ lookahead track, starting at inspect); at the milestone boundary the router
 promotes it to the active paths in one commit. An explicit user ruling can instead abandon a
 building milestone: its partial artifacts archive without review gates, its
 roadmap entry becomes immutable `abandoned`, and the roadmap re-slices the
-remaining entries. CHARTER.md, ROADMAP.md, and the program `.project/SYNTHESIS.md`
-persist across milestones and never archive. Without CHARTER.md the pipeline
-is the single-milestone flow below.
+remaining entries. CHARTER.md, ROADMAP.md, the program `.project/SYNTHESIS.md`,
+and the program research it cites (`.project/program/`) persist across
+milestones and never archive. Without CHARTER.md the pipeline is the
+single-milestone flow below.
 
 ## Agent and concurrency contract
 
@@ -297,6 +298,17 @@ file per dispatched dimension, drawn from the four standard dimensions:
 - `research/evidence-pitfalls.md`
 - `research/evidence-similar.md`
 
+Program-scope research (CHARTER.md, no milestone INTENT) writes the same
+manifest and evidence names under `.project/program/` instead, so a
+milestone's own research never overwrites what the program SYNTHESIS.md
+cites and ship never archives it. A project upgraded with program research
+still in `.project/research/` routes to a block naming `pipeline_state.py
+migrate-program-research`, which moves it and rewrites the matching
+SYNTHESIS.md paths, reporting other files that still name an old path. It is
+legal only before the milestone's first plan approval, whose checkpoint
+commits the move; afterwards that milestone ships program research into its
+archive as earlier runtimes did.
+
 Brownfield: `research/evidence-codebase.md` from inspect, and each member's
 `research/evidence-codebase-<member>.md`, counts as a fifth standard input
 downstream (`codebase` and `codebase-*` are reserved, never research
@@ -342,7 +354,8 @@ blocks advancement.
 
 Program flow only — requires `.project/CHARTER.md` and a program
 `.project/SYNTHESIS.md`. **Input:** charter, program synthesis, and the
-dispatched evidence set. **Output:** `.project/ROADMAP.md`.
+dispatched evidence set named in `.project/program/RESEARCH.md`. **Output:**
+`.project/ROADMAP.md`.
 
 The roadmapper slices the charter's full scope into the fewest
 dependency-ordered, independently shippable milestones. M001 is the thinnest
@@ -518,7 +531,7 @@ creating or moving, and reuses it on every retry. Shipping moves — never
 deletes — every supporting document into that numbered archive: `intent/`,
 `research/`, `plan/`, `tasks/`, `review/`, and optional `discuss/`.
 REPOSITORY.md, LESSONS.md, and the program artifacts (CHARTER.md,
-ROADMAP.md, top-level SYNTHESIS.md) remain active project metadata; a program
+ROADMAP.md, top-level SYNTHESIS.md, `program/`) remain active project metadata; a program
 ship also marks the milestone's roadmap entry `Status: shipped` with its
 archive pointer inside the ship commit. MANIFEST.md is
 written by same-directory temporary file plus atomic rename and lists
@@ -885,6 +898,8 @@ with their exact ordered source-file and row list.
   CHARTER.md                 program scope and vetoes (program flow); never archives
   ROADMAP.md                 milestone slicing (program flow); never archives
   SYNTHESIS.md               program decisions at top level (program flow); never archives
+  program/RESEARCH.md, program/evidence-*.md
+                             program research manifest and evidence (program flow); never archives
   next/                      lookahead track: next milestone's STATE.md and phase
                              artifacts while the active milestone builds (program flow)
   intent/INTENT.md           approved intent and hard constraints
@@ -910,8 +925,8 @@ with their exact ordered source-file and row list.
 ```
 
 At ship, everything except `STATE.md`, `REPOSITORY.md`, `LESSONS.md`, `archive/`, `next/`, and
-the program artifacts (`CHARTER.md`, `ROADMAP.md`, top-level `SYNTHESIS.md`)
-moves into the numbered archive; active paths above describe the current milestone
+the program artifacts (`CHARTER.md`, `ROADMAP.md`, top-level `SYNTHESIS.md`,
+`program/`) moves into the numbered archive; active paths above describe the current milestone
 only, including the discussion records. The ship step appends one lesson line per repeat-offender criterion and
 STATE.md log escalation to LESSONS.md before committing.
 
