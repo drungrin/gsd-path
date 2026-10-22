@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.17**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.18**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,82 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.18 — 2026-10-22
+
+Upstream package base remains `1.6.2`. The fork revision continues from 17 to 18.
+
+Implementation:
+[`0bd37908 — keep program research durable in .project/program`](https://github.com/drungrin/gsd-path/commit/0bd37908e6f4cc790df4251aa2bc712d79ffda55).
+
+### Durable program research
+
+- In program flow, program-scope research wrote its manifest and evidence to
+  `.project/research/`. When the first roadmap milestone had open questions,
+  its own research wrote the same `RESEARCH.md` and `evidence-<dimension>.md`
+  paths, overwriting the evidence the never-archived program `SYNTHESIS.md`
+  cites; that milestone's ship then archived whatever remained, and later
+  re-slices received the milestone manifest. Upstream `1.6.2` behaves the same.
+- Program-scope research now writes `.project/program/RESEARCH.md` and
+  `.project/program/evidence-<dimension>.md`, which persist beside CHARTER.md,
+  ROADMAP.md and the program SYNTHESIS.md and never archive. Milestone research
+  keeps `.project/research/`, where codebase maps and docs audits also stay.
+  A bare `evidence-<dimension>.md` citation resolves beside its manifest.
+  `check_handoffs.research_scope` selects the intent and research directory,
+  and lookahead research now requires its own INTENT.md. The roadmapper reads
+  the program manifest; when an earlier runtime archived program research, it
+  uses the earliest archived manifest that names CHARTER.md.
+- Upgraded projects: while `.project/research/RESEARCH.md` names
+  `.project/CHARTER.md` and the milestone has no plan approval checkpoint yet,
+  the router returns `block` naming `pipeline_state.py
+  migrate-program-research --repo <root> --dry-run`. Phase or status
+  transitions, roadmap and plan approvals (including deferred and patch
+  approvals) and the program research gate refuse that layout; branch binding,
+  Log-only transitions and moves to `blocked` stay legal. The migration
+  requires the bound branch, no helper journal and real directories. It moves
+  the manifest and dispatched evidence, rewrites explicit `research/`,
+  `./research/` and `.project/research/` evidence paths in the manifest and
+  program SYNTHESIS.md, lists other active files that still name an old path,
+  appends one STATE event and removes the legacy manifest last, so a rerun
+  completes an interrupted move. It refuses divergent or foreign destination
+  files, and missing evidence outside running research. The next approval
+  checkpoint commits the move.
+- `program` joins the `.project` entry allowlist, the program-flow active-root
+  allowlist for ship and abandon, and the `.gitignore` probe paths. The
+  research, decide, roadmap, ship, discuss and router skills, the
+  research-handoff template, WORKFLOW, README, FULL and DOCS describe the
+  layout and the migration.
+
+Validation: the canonical full Python suite passed (3,354 tests, 39 skipped),
+including 22 new migration tests and new research-gate, ship and abandon
+cases. Node passed 118 of 119 tests, with one skipped; lock-usage checks and
+`git diff --check` pass. All 601 skill resources are synchronized. Two
+independent reviews (a GPT panel reviewer and a Claude reviewer, the latter
+reproducing each of its findings) reported 11 issues. Ten were fixed with
+regression tests: temporaries an interrupted migration write left behind; a
+symlinked research directory; migration off the bound branch, with the route
+hiding the branch mismatch; dot-relative citations; the initial-binding edge
+being refused; deferred and patch approvals bypassing the block, and the
+window reopening on patch or build recovery; a stale legacy manifest beside a
+new one (now refused by the research gate) and OS junk blocking a rerun;
+missing evidence accepted after research; route and status raising on a
+non-file manifest; and stale references in other files going unreported. The
+undo-proof issue, and the STATE temporary part of the first, are listed under
+limits. All fixtures use synthetic repositories; no consumer repository
+or remote was used.
+
+Limits: a milestone that already passed its first plan approval keeps the
+legacy layout, and its ship archives program research as before. Where a
+first milestone's research already overwrote program research, the runtime
+cannot restore it; the originals survive only in Git history. Other files
+naming an old evidence path (ROADMAP.md, INTENT.md, evidence cross-references,
+discussion records) are reported, not rewritten. A researcher dispatched
+before the migration writes the old path, and the research gate then
+redispatches it. Like any uncommitted Log event, the migration's STATE event
+keeps `pipeline_undo` from proving the next approval checkpoint. A
+`.STATE.md.gsd-path-tmp` left by a killed write blocks the migration as it
+blocks every transition. A project gets this behavior only after an explicit
+runtime and skill upgrade. No upstream submission has been made.
 
 ## 1.6.2.17 — 2026-10-21
 
