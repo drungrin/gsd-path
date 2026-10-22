@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.18**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.19**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,53 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.19 — 2026-10-22
+
+Upstream package base remains `1.6.2`. The fork revision continues from 18 to 19.
+
+Implementation:
+[`26e965c1 — accept installer commits before the first plan approval`](https://github.com/drungrin/gsd-path/commit/26e965c1218da02a65bc0e46384498b833e3f318).
+
+### Installer commits during an unfinished milestone
+
+- A consumer that tracks its installed skills and contracts could not land a
+  runtime or skill upgrade while a milestone was unfinished. The Git guard
+  refused every staged path outside `.project/`, `.gsd-path/` and host hook
+  settings unless build was landing a task, while plan and roadmap approval
+  refuse any worktree change outside `.project/`. The upgrade could neither
+  be committed nor left uncommitted. Upstream `1.6.2` behaves the same.
+- The guard now accepts a commit whose every staged path is installation
+  output: GSD Path skill directories under each host's project skill root,
+  `AGENTS.md`, `WORKFLOW.md`, `.claude/CLAUDE.md`, `.cursor/agents/gsd-path.md`,
+  `.gsd-path/` and host hook settings. It applies only while STATE is inspect
+  through plan and the milestone has no plan approval checkpoint in HEAD's
+  history, so build, ship, and a plan reopened by a ship patch or build
+  recovery keep their protection. Mixed commits, other skills and the
+  installer's `disabled-gsd-skills` backup stay refused. A commit of only
+  `.gsd-path/` and hook settings remains bookkeeping in every phase.
+- A test keeps the skill roots and names in step with
+  `scripts/skill-resources.json`. HOOKS.md and DOCS.md describe the rule and
+  the step of moving the `disabled-gsd-skills` backup out of the worktree
+  before the next approval.
+
+Validation: the canonical full Python suite passed (3,358 tests, 39 skipped),
+including four new guard tests. Node passed 118 of 119 tests, with one
+skipped; lock-usage checks and `git diff --check` pass. All 601 skill
+resources are synchronized. An independent GPT panel review reported four
+issues: plans reopened after build would regain the exception, the Cursor
+companion agent was missing, the update backup still blocked approval, and
+the docs overstated the phase limit on runtime-only commits. The first two
+were fixed with regression tests and the last two in the docs. All fixtures
+use synthetic repositories; no consumer repository or remote was used.
+
+Limits: a project whose Git hooks live in a tracked in-repository
+`core.hooksPath` cannot commit refreshed hook files this way. The guard does
+not check that staged skill files match a released bundle; it checks only
+their paths. After a milestone's first plan approval, a project that tracks
+skills upgrades at the next milestone boundary. A project gets this behavior
+only after an explicit runtime and skill upgrade. No upstream submission has
+been made.
 
 ## 1.6.2.18 — 2026-10-22
 
