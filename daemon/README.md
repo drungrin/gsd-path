@@ -237,12 +237,15 @@ cost. The project page also shows the runtime handoff described under
   directory: Codex rollouts (`~/.codex/sessions` and Orca's per-account homes)
   and Claude Code transcripts (`~/.claude/projects`). It shows cost, turns,
   prompts, tokens in / cached / out, cache hit rate, agent time (Codex turn
-  durations; Claude transcripts carry none), cost per priced turn and time per
+  durations, tool time included; for Claude, each response from its API
+  request to its last content block, tool time excluded; a Claude transcript
+  without `api-request` records leaves its turns untimed), cost per priced turn and time per
   timed turn; a per-model table with host, turns, tokens and cost; a per-agent table
   with agent time (the `$gsd-path-*` skill and task named in the
   session, subagents marked), and a folded per-turn ledger with time, agent,
   model, in / cached / out tokens, cost and duration. A turn is one model
-  response. Turns dated on or before a milestone's ship date count toward that
+  response: a Claude response written as several content blocks, or repeated
+  by forked subagent transcripts, counts once with its final usage. Turns dated on or before a milestone's ship date count toward that
   milestone; later turns toward the current one.
 - **Cost** is tokens × the `prices` table in `daemon.json`, USD per million
   tokens per model, e.g. `{"prices": {"gpt-6-astra": {"input": 1.25,

@@ -70,6 +70,28 @@ class SessionParseTests(unittest.TestCase):
         self.assertEqual(records[0]["host"], "claude")
         self.assertIsNone(records[0]["duration_s"])
 
+    def test_claude_response_counts_once_with_final_usage_and_request_time(self) -> None:
+        lines = [
+            {"type": "user", "cwd": self.root, "timestamp": "2026-10-21T12:00:00.000Z", "uuid": "u1", "message": {"role": "user", "content": "$gsd-path-build T009"}},
+            {"type": "api-request", "id": "r1", "timestamp": "2026-10-21T12:00:01.000Z"},
+            {"type": "assistant", "cwd": self.root, "timestamp": "2026-10-21T12:00:09.000Z", "uuid": "a1", "parentUuid": "u1", "requestRef": "r1",
+             "message": {"id": "msg_1", "model": "claude-opus-5-5", "usage": {"input_tokens": 3, "cache_creation_input_tokens": 7, "cache_read_input_tokens": 500, "output_tokens": 1}}},
+            {"type": "assistant", "cwd": self.root, "timestamp": "2026-10-21T12:00:13.500Z", "uuid": "a2", "parentUuid": "a1", "requestRef": "r1",
+             "message": {"id": "msg_1", "model": "claude-opus-5-5", "usage": {"input_tokens": 3, "cache_creation_input_tokens": 7, "cache_read_input_tokens": 500, "output_tokens": 40}}},
+            {"type": "assistant", "cwd": self.root, "timestamp": "2026-10-21T12:00:20.000Z", "uuid": "a3", "parentUuid": "a2", "requestRef": "missing",
+             "message": {"id": "msg_2", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 2}}},
+        ]
+        path = self.base / "transcript.jsonl"
+        path.write_bytes(("\n".join(json.dumps(line) for line in lines) + "\n").encode("utf-8"))
+        _cwd, records = sessions.parse_session(path)
+        self.assertEqual([r["id"] for r in records], ["msg_1", "msg_2"])
+        first, second = records
+        self.assertEqual((first["tokens_in"], first["tokens_cached"], first["tokens_out"]), (10, 500, 40))
+        self.assertEqual((first["at"], first["turn"]), ("2026-10-21T12:00:13.500Z", "u1"))
+        self.assertEqual(first["agent"], "$gsd-path-build · T009")
+        self.assertEqual(first["duration_s"], 12.5)  # api-request -> last block
+        self.assertIsNone(second["duration_s"])      # no matching api-request
+
     def test_cost_uses_price_table_per_million(self) -> None:
         prices = {"gpt-6-astra": {"input": 1.0, "cached": 0.1, "output": 10.0}}
         self.assertAlmostEqual(sessions.cost_for(prices, "gpt-6-astra", 1_000_000, 1_000_000, 100_000), 2.1)
@@ -109,6 +131,17 @@ class SessionIndexTests(unittest.TestCase):
         self.index.scan([self.root])
         self.assertEqual(len(self.index.records_for(self.root)), 5)
 
+    def test_response_repeated_by_forked_subagent_transcripts_counts_once(self) -> None:
+        response = {"type": "assistant", "cwd": self.root, "timestamp": "2026-10-21T12:00:00.000Z", "isSidechain": True,
+                    "message": {"id": "msg_shared", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}}}
+        subagents = self.claude / "session" / "subagents"
+        subagents.mkdir(parents=True)
+        for name in ("agent-a.jsonl", "agent-b.jsonl"):
+            (subagents / name).write_bytes((json.dumps(response) + "\n").encode("utf-8"))
+        self.index.scan([self.root])
+        self.assertEqual([r.get("id") for r in self.index.records_for(self.root)].count("msg_shared"), 1)
+        self.assertEqual(len(self.index.records_for(self.root)), 5)
+
     def test_spend_totals_models_agents_and_milestones(self) -> None:
         self.index.scan([self.root])
         milestones = [{"number": "M001", "manifest": {"shipped": "2026-09-05"}}, {"number": "M002", "manifest": None}]
@@ -123,7 +156,7 @@ class SessionIndexTests(unittest.TestCase):
         self.assertEqual(spend["models"][1]["host"], "claude")
         self.assertIsNone(spend["models"][1]["cost"])
         self.assertAlmostEqual(spend["models"][0]["cost"], spend["cost"])
-        # Agent time sums the Codex turn durations; Claude turns carry none.
+        # Agent time sums the Codex turn durations; these Claude turns have no api-request.
         self.assertEqual((spend["duration_s"], spend["timed_turns"], spend["priced_turns"]), (60.0, 2, 2))
         agents = {a["agent"]: a for a in spend["agents"]}
         self.assertEqual(agents["$gsd-path-build · T006"]["turns"], 2)

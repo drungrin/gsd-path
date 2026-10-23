@@ -5,7 +5,10 @@ Sources:
   ``session_meta``/``turn_context`` give cwd and model, ``token_usage_record``
   gives one usage record per model response, ``task_started`` gives timing.
 - Claude Code transcripts (``~/.claude/projects/*/*.jsonl``): each assistant
-  record carries ``message.model`` and ``message.usage``.
+  record carries ``message.model`` and ``message.usage``. One response writes
+  one record per content block under the same ``message.id``, the last with
+  the final usage; its ``requestRef`` names the ``api-request`` record whose
+  timestamp gives timing.
 
 Cost is tokens × a per-model price table (USD per million tokens) from the
 daemon config. A model without a price contributes tokens only.
@@ -89,6 +92,8 @@ def parse_session(path: Path) -> Tuple[Optional[str], List[dict]]:
     host = "codex"
     turn_started: Dict[str, float] = {}
     last_at: Dict[str, float] = {}
+    request_at: Dict[str, float] = {}
+    responses: Dict[str, dict] = {}
     try:
         with path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -100,6 +105,11 @@ def parse_session(path: Path) -> Tuple[Optional[str], List[dict]]:
                     continue
                 kind = record.get("type")
                 payload = record.get("payload")
+                if kind == "api-request":
+                    sent = _epoch(record.get("timestamp"))
+                    if record.get("id") and sent is not None:
+                        request_at[record["id"]] = sent
+                    continue
                 if kind in ("user", "assistant") and isinstance(record.get("message"), dict):
                     host = "claude"
                     cwd = cwd or record.get("cwd")
@@ -113,13 +123,24 @@ def parse_session(path: Path) -> Tuple[Optional[str], List[dict]]:
                     if not isinstance(usage, dict) or not usage:
                         continue
                     tokens_in = _num(usage.get("input_tokens")) + _num(usage.get("cache_creation_input_tokens"))
-                    records.append({
-                        "at": record.get("timestamp"), "turn": record.get("parentUuid") or record.get("uuid"),
+                    at = record.get("timestamp")
+                    now, sent = _epoch(at), request_at.get(record.get("requestRef"))
+                    entry = {
+                        "at": at, "id": message.get("id"), "turn": record.get("parentUuid") or record.get("uuid"),
                         "model": message.get("model"), "host": host,
                         "tokens_in": tokens_in, "tokens_cached": _num(usage.get("cache_read_input_tokens")),
-                        "tokens_out": _num(usage.get("output_tokens")), "duration_s": None,
+                        "tokens_out": _num(usage.get("output_tokens")),
+                        "duration_s": round(now - sent, 1) if now is not None and sent is not None and now >= sent else None,
                         "subagent": bool(record.get("isSidechain")),
-                    })
+                    }
+                    # A later block of the same response replaces the earlier usage and end time.
+                    first = responses.get(entry["id"])
+                    if first is not None:
+                        first.update(entry, turn=first["turn"])
+                        continue
+                    if entry["id"]:
+                        responses[entry["id"]] = entry
+                    records.append(entry)
                     continue
                 if not isinstance(payload, dict):
                     continue
@@ -312,9 +333,16 @@ class SessionIndex:
     def records_for(self, root: str) -> List[dict]:
         root = os.path.abspath(root)
         out: List[dict] = []
+        seen: set = set()
         for key, (_stamp, records) in self._parsed.items():
             if self._owner(self._cwd.get(key), [root]) == root:
-                out.extend(records)
+                for entry in records:
+                    # Subagent transcripts forked from one context repeat the same responses.
+                    if entry.get("id"):
+                        if entry["id"] in seen:
+                            continue
+                        seen.add(entry["id"])
+                    out.append(entry)
         out.sort(key=lambda r: r.get("at") or "")
         return out
 
