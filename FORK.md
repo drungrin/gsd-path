@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.19**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.20**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,49 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.20 — 2026-10-22
+
+Upstream package base remains `1.6.2`. The fork revision continues from 19 to 20.
+
+Implementation:
+[`5f065f4a — time Claude responses and count each one once`](https://github.com/drungrin/gsd-path/commit/5f065f4a2c507a168702eb9ae844badd95e4bc8b).
+
+### Daemon usage from Claude Code transcripts
+
+- The dashboard showed no agent time for projects run with Claude Code. The
+  session parser timed only Codex turns and left every Claude turn untimed,
+  although Claude Code transcripts record timing: each response's
+  `requestRef` names an `api-request` record stamped when the request was
+  sent.
+- Usage was overstated. Claude Code writes one record per content block of a
+  response under the same `message.id`, each repeating the usage, and the
+  parser counted every block as a turn. Earlier blocks can carry provisional
+  usage; the last carries the final count. Subagent transcripts forked from
+  one context also repeat the same responses. Upstream `1.6.2` behaves the
+  same.
+- A Claude response now counts once per message id, with the usage and end
+  time of its last block, and once per project across transcript files. Its
+  duration runs from its API request to its last block, so tool time is
+  excluded; Codex durations still include it, and `daemon/README.md` states
+  the difference.
+
+Validation: the canonical full Python suite passed (3,360 tests, 39 skipped),
+including two new session tests that fail without the change; the daemon
+subset passed 389 tests with 12 skipped. Node passed 118 of 119 tests, with
+one skipped; `git diff --check` passes and all 601 skill resources are
+synchronized. On the maintainer's local session logs, one project's counted
+turns fell from 21,998 to 9,959 and its priced total to about 27% of the old
+figure, both matching an independent recount by message id; 99% of responses
+matched an `api-request` record. No independent review panel was run.
+
+Limits: responses without a matching `api-request` record (about 1% of the
+local sample) and transcripts written before Claude Code recorded those
+requests stay untimed. Claude and Codex agent time measure different spans.
+Parallel subagents add their times, so agent time can exceed wall-clock time.
+A response repeated across transcripts is attributed to whichever file the
+daemon reads first. Cache writes are still priced at the input rate. No
+upstream submission has been made.
 
 ## 1.6.2.19 — 2026-10-22
 
