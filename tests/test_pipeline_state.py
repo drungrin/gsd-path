@@ -3678,6 +3678,29 @@ class DecisionLensAdmissionTests(unittest.TestCase):
                 pipeline_state.transition_state(repo, current_fields(repo), *self.INTENT_APPROVAL)
             self.assertEqual(state.read_bytes(), before)
 
+    def test_malformed_lens_event_is_refused_before_it_enters_the_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, state = self.transition_repo(tmp, "define")
+            fields = current_fields(repo)
+            before = state.read_bytes()
+            for event in ("lenses define: fired none; blocked none; no-signal L1",
+                          "lenses define T001: fired none; blocked none; no-signal L1, L2, L3, L8, L10",
+                          "lenses blocker T001 again: fired none; blocked none; no-signal L13, L14, L16"):
+                with self.subTest(event=event), self.assertRaisesRegex(
+                    pipeline_state.PipelineStateError, "decision lenses: "
+                ):
+                    pipeline_state.transition_state(repo, fields, {"status": "active"}, event)
+                self.assertEqual(state.read_bytes(), before)
+
+            # A blocker ruling scoped to its task is recorded and never blocks another gate.
+            blocker = lens_event("blocker", "T001")
+            pipeline_state.transition_state(repo, fields, {"status": "active"}, blocker)
+            record_lens(repo, "define")
+            result = pipeline_state.transition_state(repo, current_fields(repo), *self.INTENT_APPROVAL)
+
+            self.assertEqual(result["state"]["status"], "done")
+            self.assertIn(f"— define — {blocker}\n", state.read_text(encoding="utf-8"))
+
     def test_refused_intent_approval_retries_with_the_same_lens_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, state = self.transition_repo(tmp, "define")

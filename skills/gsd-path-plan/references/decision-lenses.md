@@ -88,7 +88,7 @@ analyzer.
 | `fix-routing` | before `dispatch_driver.py fix-tasks` | `wave N cycle C` | L2 L3 L5* L6 L11 L12 | `dispatch_driver.py fix-tasks` |
 | `rebase` | member rebase adoption | `member <m> base <sha12>` | L10 L14 | `isolation.py adopt-member-rebase` |
 | `ship` | archive-and-ship question | milestone | L1 L3 | `pipeline_state.py transition` |
-| `blocker` | an owner ruling already required for a blocked task, helper failure or publication block | task or artifact | L13 L14 L16 | contract |
+| `blocker` | an owner ruling already required for a blocked task, helper failure or publication block | task id or artifact name, for example `T004` | L13 L14 L16 | contract |
 
 Helpers enforce a gate only when the milestone INTENT.md (program gates:
 CHARTER.md) contains `Decision lenses: enforced`. A milestone without the line
@@ -106,11 +106,15 @@ lenses redesign wave 2 cycle 3: fired L12=redesign, L3=fail-closed; blocked none
 ```
 
 Grammar: `lenses <gate>[ <scope>]: fired <Ln=verdict, …|none>; blocked
-<Ln, …|none>; no-signal <Ln, …|none>`. Every lens of the gate appears exactly
-once. There is no free text: reasons go into the question's recommendation,
-never into the event. The event must come after the previous decision of the
-same gate and scope and, for build gates, after the latest build recovery.
-A retry or resume of the same decision reuses the recorded event.
+<Ln, …|none>; no-signal <Ln, …|none>`. A scope is written only for the
+backticked scopes in the gate table and for `blocker`, whose scope is one
+token of letters, digits, `.`, `_` or `-`; other gates omit it. Every lens of
+the gate appears exactly once. There is no free text: reasons go into the
+question's recommendation, never into the event. The event must come after
+the previous decision of the same gate and scope and, for build gates, after
+the latest build recovery. A retry or resume of the same decision reuses the
+recorded event. `pipeline_state.py transition` refuses a malformed lens event
+before writing it.
 
 In the question, cite the lenses that changed the recommendation in its
 one-line reason, for example `(recommended) — L12: three repairs changed the

@@ -46,6 +46,12 @@ class LensEventGrammarTest(unittest.TestCase):
         event = _common.format_lens_event("rebase", scope, no_signal=["L10", "L14"])
         self.assertEqual("member gitops-apps base 0123456789ab", _common.parse_lens_event(event).scope)
 
+    def test_blocker_takes_a_task_or_artifact_scope(self):
+        for scope in ("T004", "review_wave_1_cycle_1_panel_gpt", "wave-1.cycle1.md"):
+            with self.subTest(scope=scope):
+                parsed = _common.parse_lens_event(every_quiet("blocker", scope))
+                self.assertEqual(("blocker", scope), (parsed.gate, parsed.scope))
+
     def test_non_lens_events_are_not_parsed(self):
         for event in ("plan approved", "build recovery: {}", "lens policy changed"):
             with self.subTest(event=event):
@@ -61,6 +67,8 @@ class LensEventGrammarTest(unittest.TestCase):
             "duplicate": "lenses ship: fired L1=keep; blocked L1; no-signal L3",
             "free text": "lenses ship: fired none; blocked none; no-signal L1, L3 because ship",
             "bad scope": "lenses panel wave two: fired none; blocked none; no-signal L3, L5, L6, L8, L11",
+            "task scope off blocker": "lenses panel T001: fired none; blocked none; no-signal L3, L5, L6, L8, L11",
+            "spaced blocker scope": "lenses blocker T001 retry: fired none; blocked none; no-signal L13, L14, L16",
             "clause order": "lenses ship: no-signal L1, L3; fired none; blocked none",
         }
         for name, event in cases.items():
@@ -117,6 +125,12 @@ class LensRequirementTest(unittest.TestCase):
     def test_malformed_event_for_the_gate_is_reported(self):
         events = ["lenses plan: fired none; blocked none; no-signal L2"]
         self.assertIn("must answer exactly", _common.lens_requirement(events, "plan"))
+
+    def test_task_scoped_blocker_events_do_not_refuse_another_gate(self):
+        scope = _common.lens_scope_wave(1, 1)
+        events = [every_quiet("blocker", "T001"), every_quiet("blocker", "review_wave_1_cycle_1_panel_gpt"),
+                  every_quiet("redesign", scope)]
+        self.assertIsNone(_common.lens_requirement(events, "redesign", scope))
 
     def test_latest_event_skips_malformed_and_respects_recovery(self):
         scope = _common.lens_scope_wave(1, 2)

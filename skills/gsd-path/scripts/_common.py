@@ -1187,13 +1187,15 @@ LENS_GATES = {
     "blocker": ("L13", "L14", "L16"),
 }
 LENS_PROGRAM_GATES = ("charter", "roadmap")
+LENS_SUBJECT_GATES = ("blocker",)
 LENS_EVENT_PREFIX = "lenses "
 LENS_ENFORCEMENT_PATTERN = re.compile(r"(?m)^Decision lenses:[ \t]*(?P<value>enforced|off)\b")
 LENS_MILESTONE_BOUNDARIES = ("archive preflight passed; shipment recorded", "milestone abandoned: ")
 LENS_RECOVERY_RECORD = "build recovery: "
 _LENS_EVENT_RE = re.compile(
     r"^lenses (?P<gate>[a-z-]+)"
-    r"(?: (?P<scope>wave [1-9]\d* cycle [1-9]\d*|member [a-z0-9][a-z0-9._-]* base [0-9a-f]{12}))?"
+    r"(?: (?:(?P<scope>wave [1-9]\d* cycle [1-9]\d*|member [a-z0-9][a-z0-9._-]* base [0-9a-f]{12})"
+    r"|(?P<subject>[A-Za-z0-9][A-Za-z0-9._-]*)))?"
     r": fired (?P<fired>none|L\d+=[a-z-]+(?:, L\d+=[a-z-]+)*)"
     r"; blocked (?P<blocked>none|L\d+(?:, L\d+)*)"
     r"; no-signal (?P<quiet>none|L\d+(?:, L\d+)*)$"
@@ -1260,7 +1262,9 @@ def parse_lens_event(event: str) -> Optional[LensEvent]:
     gate = match["gate"]
     if gate not in LENS_GATES:
         raise LensEventError(f"lens event names an unknown gate `{gate}`")
-    scope = match["scope"] or ""
+    if match["subject"] and gate not in LENS_SUBJECT_GATES:
+        raise LensEventError(f"lens gate `{gate}` takes no task or artifact scope")
+    scope = match["scope"] or match["subject"] or ""
     fired = [] if match["fired"] == "none" else [
         tuple(item.split("=", 1)) for item in match["fired"].split(", ")]
     blocked = [] if match["blocked"] == "none" else match["blocked"].split(", ")

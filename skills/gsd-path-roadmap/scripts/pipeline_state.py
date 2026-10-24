@@ -1664,6 +1664,11 @@ def _append_event(
     cleaned = " ".join(event.split())
     if not cleaned or "\n" in event or "\r" in event:
         raise PipelineStateError("state event must be one non-empty line")
+    # Lens checks refuse a malformed lens event, and the append-only Log cannot drop one.
+    try:
+        _common.parse_lens_event(cleaned)
+    except _common.LensEventError as error:
+        raise PipelineStateError(f"decision lenses: {error}") from error
     if "## Log" not in text:
         raise PipelineStateError("STATE.md is missing ## Log")
     suffix = "" if text.endswith("\n") else "\n"
