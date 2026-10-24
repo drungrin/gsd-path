@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.24**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.25**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,67 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.25 — 2026-10-24
+
+Upstream package base remains `1.6.2`. The fork revision continues from 24 to 25.
+
+Fixes:
+
+- [`237a7f4b — split CLI JSONL records on LF only`](https://github.com/drungrin/gsd-path/commit/237a7f4b18a21502c7634f7c37f5b9434daef9e2)
+  — applies upstream: the affected code is identical upstream, and the
+  patch applies to upstream `main` (64ced98d) as is.
+- [`9d28f7e0 — split Claude transcripts on LF only`](https://github.com/drungrin/gsd-path/commit/9d28f7e0d27409a34c6bf727404c21e6937b6214)
+  — fork only.
+- [`649cb4e3 — scope blocker events and refuse malformed ones on write`](https://github.com/drungrin/gsd-path/commit/649cb4e3108a500bcf77914fd5bcc82408647ffa)
+  — fork only.
+
+### Raw Unicode line separators in host JSONL
+
+- Claude Code and Codex write U+2028, U+2029 and U+0085 unescaped inside
+  JSON strings. `str.splitlines()` also breaks on them, so one event was cut
+  in two. `isolation.py stage-review` then refused a review transcript as
+  incomplete when its child had read a file containing one, and the report
+  could not be published. The usage collector marked that usage incomplete,
+  the token budget reader reported an unproven budget, and the Codex
+  final-message reader could return the raw JSONL instead of the child's last
+  message.
+- These four readers now end a record only at LF. JSONL that the runtime
+  writes itself was not affected, because `json.dumps` escapes these
+  characters.
+
+### Task-scoped `blocker` lens events
+
+- `decision-lenses.md` gives the `blocker` gate a task or artifact scope, but
+  the recording grammar accepted only the `wave N cycle C` and `member … base
+  …` scopes. `pipeline_state.py transition` still wrote an event such as
+  `lenses blocker T001: …`, and every later helper-enforced lens check
+  refused on it. Because helpers own the append-only Log, the event could not
+  be removed, so the redesign-ruling checkpoint stayed blocked.
+- The grammar now accepts one token of letters, digits, `.`, `_` or `-` as
+  the scope of a `blocker` event and rejects that form for every other gate.
+  `transition` refuses a malformed lens event before writing it, so a lens
+  event in the Log always parses. The reference documents both rules.
+
+Validation: the canonical Python suite passed (3,435 tests, 39 skipped),
+Node tests passed (118, one skipped), the daemon suite passed (389 tests,
+12 skipped), the lock usage check passed and resource synchronization checked
+616 resources. Each new test fails without its change. With the
+upstream-applicable commit applied to upstream `main` (64ced98d), its two
+tests pass. A read-only replay on a consumer project's data showed that the
+review transcript the previous runtime refused now parses into 145 events
+from one child that ended with a completed final response. The redesign lens
+check that refused on five task-scoped `blocker` events now passes. Under the
+new grammar, a scan of three consumer project logs found no lens event that
+would be refused.
+
+Limits: a lens check still refuses on any malformed lens event in the
+current milestone, whatever its gate. Write-time refusal stops new ones.
+Consumer projects that track installed skills keep the previous skill
+copies of `dispatch_driver.py`, `token_budget.py` and `decision-lenses.md`
+until their next milestone boundary. The runtime upgrade alone carries
+`stage-review`, the usage collector and the lens checks. No upstream
+submission has been made.
 
 ## 1.6.2.24 — 2026-10-24
 
