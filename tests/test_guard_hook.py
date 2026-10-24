@@ -172,6 +172,24 @@ class GuardHookTests(unittest.TestCase):
                     "tool_input": {"command": helper + suffix},
                 })
 
+    def test_ship_editorial_helper_may_name_the_archive(self):
+        helper = (
+            "python3 -B scripts/pr_editorial.py prepare --repo . --archive .project/archive/001-x "
+            f"--member code --reviewed-head {'a' * 40} --input editorial.json"
+        )
+        self.assert_allowed({"tool_name": "Bash", "tool_input": {"command": helper}})
+        for suffix in (" && git commit -qm ship", " | cat", " > receipt.txt"):
+            with self.subTest(suffix=suffix):
+                self.assert_denied({
+                    "tool_name": "Bash",
+                    "tool_input": {"command": helper + suffix},
+                })
+        # Only the editorial helper joins the pipeline helpers in archive context.
+        self.assert_denied({
+            "tool_name": "Bash",
+            "tool_input": {"command": "python3 -B scripts/isolation.py --help --archive .project/archive/001-x"},
+        })
+
     def test_documented_record_shipment_command_is_allowed(self):
         ship = SCRIPT.parent.parent / "skills" / "gsd-path" / "SHIP.md"
         blocks = (
@@ -219,7 +237,7 @@ class GuardHookTests(unittest.TestCase):
                 })
 
     def test_bundled_helper_rejects_identical_copy_outside_runtime(self):
-        for name in ("pipeline_state.py", "archive_milestone.py"):
+        for name in ("pipeline_state.py", "archive_milestone.py", "pr_editorial.py"):
             with self.subTest(helper=name), tempfile.TemporaryDirectory() as temporary:
                 helper = Path(temporary) / name
                 shutil.copyfile(SCRIPT.parent / name, helper)

@@ -4250,6 +4250,10 @@ def destructive_git_reason(
 
 
 PIPELINE_HELPERS = frozenset({"pipeline_state.py", "archive_milestone.py"})
+# Runtime helpers that may name an archive path. The ship editorial helper
+# reads the archived evidence and writes only .project/publications/, outside
+# the archive, so it joins the pipeline helpers here and nowhere else.
+ARCHIVE_CONTEXT_HELPERS = PIPELINE_HELPERS | {"pr_editorial.py"}
 
 
 def closed_milestone_reason(repo=None):
@@ -4596,7 +4600,9 @@ def command_denial(command, working_directories, allow_destructive=True):
             for interpreter in ("python3", "python", "py -3")
         ):
             return None
-        bundled_helper = bundled_helper_invocation(command, tokens, working_directories)
+        bundled_helper = bundled_helper_invocation(
+            command, tokens, working_directories, ARCHIVE_CONTEXT_HELPERS
+        )
         destructive = list(destructive_shell_invocations(tokens))
         if destructive and (
             not allow_destructive
