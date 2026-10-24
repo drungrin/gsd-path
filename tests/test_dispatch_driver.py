@@ -216,6 +216,15 @@ class DispatchDriverTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             dispatch_driver.require_files(parser, arguments, "role_brief")
 
+    def test_final_message_keeps_raw_unicode_line_separators_inside_one_event(self) -> None:
+        text = "a\u2028b\u2029c\x85d"
+        stdout = "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in (
+            {"type": "thread.started", "thread_id": "thread-one"},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": text}},
+            {"type": "turn.completed", "usage": {"output_tokens": 1}},
+        ))
+        self.assertEqual(dispatch_driver.final_message(stdout), text)
+
     def head(self, root: Path) -> str:
         return run_git(root, "rev-parse", "HEAD").stdout.strip()
 

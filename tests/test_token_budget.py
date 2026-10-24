@@ -120,3 +120,16 @@ class TokenBudgetTests(unittest.TestCase):
             child.write_bytes("\n".join(json.dumps(event) for event in events[:-1]).encode("utf-8"))
             with self.assertRaisesRegex(ValueError, "unavailable"):
                 token_budget.output_usage(child)
+
+    def test_raw_unicode_line_separators_inside_events_do_not_split_records(self):
+        from scripts import token_budget
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "run.jsonl"
+            events = [
+                {"type": "thread.started", "thread_id": "thread-one"},
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "a\u2028b\u2029c\x85d"}},
+                {"type": "turn.completed", "usage": {"output_tokens": 4100}},
+            ]
+            run.write_bytes("".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events).encode("utf-8"))
+            self.assertEqual(token_budget.output_usage(run), 4100)
+            self.assertEqual(token_budget.cumulative_counter(run), ("thread-one", 4100))

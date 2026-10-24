@@ -47,7 +47,10 @@ def output_usage(path: Path) -> int:
         # Claude Code `-p --output-format json`: one document with the run's usage.
         usages.append(document["usage"].get("output_tokens"))
         text = ""
-    for line in text.splitlines():
+    # CLI JSONL carries U+2028, U+2029 and U+0085 raw inside strings; only LF ends a record.
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
         event = json.loads(line)
         if "raw" in event:
             event = json.loads(event["raw"])
@@ -76,7 +79,9 @@ def output_usage(path: Path) -> int:
 def cumulative_counter(path: Path):
     """One completed CLI invocation, with the thread identity needed for resume."""
     identities, counters = set(), []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        if not line.strip():
+            continue
         event = json.loads(line)
         if "raw" in event:
             event = json.loads(event["raw"])

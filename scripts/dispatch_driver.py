@@ -451,7 +451,8 @@ def final_message(stdout: str) -> str:
     except json.JSONDecodeError:
         pass
     text = None
-    for line in stdout.splitlines():
+    # Codex JSONL carries U+2028, U+2029 and U+0085 raw inside strings; only LF ends a record.
+    for line in stdout.split("\n"):
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
