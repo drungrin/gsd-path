@@ -164,6 +164,34 @@ def _approval_details(
     raise PipelineStateError(f"unsupported approval kind: {kind}")
 
 
+ROADMAP_APPROVAL_EVENTS = (
+    "program roadmap approved",
+    "program roadmap re-slice approved",
+    "roadmap approved after abandoned milestone",
+)
+
+
+def _require_approval_lenses(
+    repo: Path, kind: str, project_dir: str, state_text: str, patch: bool = False,
+) -> None:
+    """Refuse a plan, patch or roadmap approval whose routed track lacks a fresh lens event.
+
+    Runs at admission, before the approval mutates anything; a journaled transaction
+    resumes without it, so a retry never needs a second event.
+    """
+    if kind == "plan" and patch:
+        gate, consumed, after_recovery = "patch", ("patch plan approved",), False
+    elif kind == "plan":
+        gate, consumed, after_recovery = "plan", ("plan approved",), True
+    else:
+        gate, consumed, after_recovery = "roadmap", ROADMAP_APPROVAL_EVENTS, False
+    reason = pipeline_state.lens_refusal(
+        pipeline_state._track_root(repo, project_dir), state_text, gate, consumed, after_recovery
+    )
+    if reason:
+        raise PipelineStateError(reason)
+
+
 def _reslice_roadmap(
     repo: Path, before: str, candidate: str, state: PipelineState, state_text: str, selected: str,
 ) -> str:
@@ -598,6 +626,7 @@ def checkpoint_approval(
 
         state, state_before, state_path = pipeline_state.load_state(resolved, project_dir)
         changes, event, subject, body = _approval_details(kind, state, selected_milestone)
+        _require_approval_lenses(resolved, kind, project_dir, state_before)
         _validate_plan_briefs(resolved, kind, project_dir)
         recovery_reviews = None
         if kind == "plan" and project_dir == ".project":
@@ -722,6 +751,7 @@ def defer_approval(
             recovery = pipeline_state._build_recovery().context(resolved, state_before)
             if recovery and recovery["active"]:
                 raise PipelineStateError("build recovery requires a plan checkpoint")
+        _require_approval_lenses(resolved, kind, project_dir, state_before, patch)
         _validate_plan_briefs(resolved, kind, project_dir)
         if patch:
             event = "patch plan approved"

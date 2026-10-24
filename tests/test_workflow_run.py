@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from tests import test_handoffs
-from tests.test_pipeline_state import run_git
+from tests.test_pipeline_state import record_lens, run_git
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/workflow_run.py"
 
@@ -205,6 +205,27 @@ class WorkflowRunTests(unittest.TestCase):
             code, receipt = self.preauthorize(root)
             self.assertEqual(code, 1)
             self.assertEqual(receipt["next"], "ask the owner at this gate")
+
+    def test_preauthorized_plan_approval_still_requires_its_lens_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.quick_fixture(root)
+            intent = root / ".project/intent/INTENT.md"
+            intent.write_bytes(("Decision lenses: enforced\n" + intent.read_text(encoding="utf-8")).encode("utf-8"))
+            run_git(root, "commit", "-am", "enforce decision lenses")
+            head = run_git(root, "rev-parse", "HEAD").stdout.strip()
+            # Pre-authorization asks the owner nothing; the approval still needs the recorded lenses.
+            code, receipt = self.preauthorize(root)
+            self.assertEqual((code, receipt["status"]), (0, "complete"), receipt)
+            refused = self.run_cli(root, "approve-plan", "--expected-head", head)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("decision lenses: record `lenses plan: …`", json.loads(refused.stdout)["steps"][-1]["stderr"])
+            self.assertEqual(head, run_git(root, "rev-parse", "HEAD").stdout.strip())
+            record_lens(root, "plan")
+            approved = self.run_cli(root, "approve-plan", "--expected-head", head)
+            self.assertEqual(approved.returncode, 0, approved.stderr)
+            self.assertIn("— plan — pre-authorized approval: plan\n",
+                          run_git(root, "show", "HEAD:.project/STATE.md").stdout)
 
     def test_preauthorize_intent_before_milestone_approval(self):
         with tempfile.TemporaryDirectory() as tmp:

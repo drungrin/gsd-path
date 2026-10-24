@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import subprocess
 import shutil
 import sys
@@ -10,7 +11,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from scripts import pipeline_git, pipeline_state, state_checkpoint, state_promote
+from scripts import _common, pipeline_git, pipeline_state, state_checkpoint, state_promote
 from tests.test_task_briefs import PLAN_WAVE, TASK_TEMPLATE
 from tests._platform import posix_only, requires_symlink
 
@@ -172,6 +173,36 @@ def task_text() -> str:
         verify="python3 app.py",
     )
 
+
+
+ENFORCED_INTENT = (
+    "# Intent\n\nDecision lenses: enforced\n\n## Success criteria\n\n1. First outcome.\n"
+)
+ENFORCED_CHARTER = "# Charter\n\nDecision lenses: enforced\n"
+
+
+def governing_text(text: str, value: str) -> str:
+    """INTENT/CHARTER text whose lens switch is ``value``; ``absent`` drops the line."""
+    line = "" if value == "absent" else f"Decision lenses: {value}\n"
+    return text.replace("Decision lenses: enforced\n", line)
+
+
+def lens_event(gate: str, scope: str = "") -> str:
+    """A valid lens event that answers every lens of ``gate`` with no signal."""
+    return _common.format_lens_event(gate, scope, no_signal=_common.LENS_GATES[gate])
+
+
+def current_fields(repo: Path, project_dir: str = ".project") -> dict:
+    state = pipeline_state.load_state(repo, project_dir)[0]
+    return {key: getattr(state, key) for key in ("phase", "status", "milestone", "branch", "archive")}
+
+
+def record_lens(repo: Path, gate: str, project_dir: str = ".project") -> None:
+    """Write the lens event through the no-op transition, as the orchestrator does."""
+    fields = current_fields(repo, project_dir)
+    pipeline_state.transition_state(
+        repo, fields, {"status": fields["status"]}, lens_event(gate), project_dir
+    )
 
 
 def audit_with_rulings(*rows: tuple[str, str, str, str]) -> str:
@@ -3562,6 +3593,329 @@ class PipelineStateTests(unittest.TestCase):
                     (project / "ROADMAP.md").write_bytes(roadmap_text().encode("utf-8"))
                 with self.assertRaises(pipeline_state.PipelineStateError):
                     pipeline_state.record_shipment(repo, ".project/archive/001-first", "archive preflight passed; shipment recorded")
+
+
+class DecisionLensAdmissionTests(unittest.TestCase):
+    """An enforcing track admits define, charter, ship, plan, patch and roadmap decisions only after fresh lenses."""
+
+    INTENT_APPROVAL = ({"status": "done", "milestone": "first"}, "milestone intent approved")
+    SHIP_QUESTION = ({"status": "active"}, "final gate passed; shipping approval pending")
+
+    def transition_repo(self, tmp: str, phase: str, *, milestone: str = "null",
+                        intent: "str | None" = ENFORCED_INTENT, charter: "str | None" = None) -> tuple[Path, Path]:
+        repo = Path(tmp)
+        project = repo / ".project"
+        project.mkdir()
+        state = project / "STATE.md"
+        state.write_bytes(state_text(
+            milestone=milestone, phase=phase, status="active", branch="feature/milestone-001",
+        ).encode("utf-8"))
+        if intent is not None:
+            (project / "intent").mkdir()
+            (project / "intent" / "INTENT.md").write_bytes(intent.encode("utf-8"))
+        if charter is not None:
+            (project / "CHARTER.md").write_bytes(charter.encode("utf-8"))
+        return repo, state
+
+    def approval_repo(self, tmp: str, kind: str, governing: str = "enforced") -> tuple[Path, str]:
+        repo, head = PipelineStateTests()._approval_repo(tmp, kind)
+        project = repo / ".project"
+        if kind == "plan":
+            (project / "intent").mkdir()
+            (project / "intent" / "INTENT.md").write_bytes(
+                governing_text(ENFORCED_INTENT, governing).encode("utf-8"))
+        else:
+            (project / "CHARTER.md").write_bytes(governing_text(ENFORCED_CHARTER, governing).encode("utf-8"))
+        return repo, head
+
+    def append_log(self, state: Path, *events: str, phase: str = "plan") -> None:
+        lines = "".join(f"- 2026-08-24 — {phase} — {event}\n" for event in events)
+        state.write_bytes((state.read_text(encoding="utf-8") + lines).encode("utf-8"))
+
+    def assert_refused(self, gate: str, decide, state: Path) -> None:
+        before = state.read_bytes()
+        with self.assertRaisesRegex(
+            pipeline_state.PipelineStateError, rf"decision lenses: record `lenses {gate}: …`"
+        ):
+            decide()
+        self.assertEqual(state.read_bytes(), before)
+
+    def test_define_approval_requires_a_fresh_define_lens_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, state = self.transition_repo(tmp, "define")
+            approve = lambda: pipeline_state.transition_state(repo, current_fields(repo), *self.INTENT_APPROVAL)
+            self.assert_refused("define", approve, state)
+            # Another gate's lenses never answer this one.
+            record_lens(repo, "plan")
+            self.assert_refused("define", approve, state)
+
+            record_lens(repo, "define")
+            result = approve()
+
+            self.assertEqual((result["state"]["status"], result["state"]["milestone"]), ("done", "first"))
+            self.assertTrue(state.read_text(encoding="utf-8").endswith("— define — milestone intent approved\n"))
+
+    def test_define_lens_event_before_the_previous_intent_approval_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, state = self.transition_repo(tmp, "define", milestone="first")
+            self.append_log(state, lens_event("define"), "milestone intent approved", phase="define")
+            approve = lambda: pipeline_state.transition_state(
+                repo, current_fields(repo), {"status": "done"}, "milestone intent approved")
+            self.assert_refused("define", approve, state)
+
+            record_lens(repo, "define")
+
+            self.assertEqual(approve()["state"]["status"], "done")
+
+    def test_malformed_lens_event_refuses_the_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, state = self.transition_repo(tmp, "define")
+            self.append_log(state, "lenses define: fired none; blocked none; no-signal L1", phase="define")
+            before = state.read_bytes()
+            with self.assertRaisesRegex(
+                pipeline_state.PipelineStateError, "decision lenses: lens event for gate `define` must answer"
+            ):
+                pipeline_state.transition_state(repo, current_fields(repo), *self.INTENT_APPROVAL)
+            self.assertEqual(state.read_bytes(), before)
+
+    def test_refused_intent_approval_retries_with_the_same_lens_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, state = self.transition_repo(tmp, "define")
+            intent = repo / ".project" / "intent" / "INTENT.md"
+            intent.write_bytes((ENFORCED_INTENT + "\n## Edge coverage\n\n"
+                                "| Edge | Criterion | Category | Disposition | Detail |\n"
+                                "|------|-----------|----------|-------------|--------|\n"
+                                "| E1 | SC1 | none | <disposition> | static |\n").encode("utf-8"))
+            record_lens(repo, "define")
+            with self.assertRaisesRegex(pipeline_state.PipelineStateError, "define handoff failed"):
+                pipeline_state.transition_state(repo, current_fields(repo), *self.INTENT_APPROVAL)
+            intent.write_bytes(ENFORCED_INTENT.encode("utf-8"))
+
+            result = pipeline_state.transition_state(repo, current_fields(repo), *self.INTENT_APPROVAL)
+
+            self.assertEqual(result["state"]["status"], "done")
+            self.assertEqual(state.read_text(encoding="utf-8").count(lens_event("define")), 1)
+
+    def test_pre_authorized_intent_approval_still_requires_its_lens_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, state = self.transition_repo(tmp, "define")
+            pipeline_state.pre_approve(repo, "intent", None)
+            pipeline_state.pre_approve(repo, None, "intent")
+            approve = lambda: pipeline_state.transition_state(repo, current_fields(repo), *self.INTENT_APPROVAL)
+            self.assert_refused("define", approve, state)
+
+            record_lens(repo, "define")
+
+            self.assertEqual(approve()["state"]["milestone"], "first")
+
+    def test_lookahead_intent_approval_reads_the_lookahead_track(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = self.transition_repo(tmp, "build", milestone="first", intent="# Intent\n")
+            next_track = repo / ".project" / "next"
+            (next_track / "intent").mkdir(parents=True)
+            (next_track / "intent" / "INTENT.md").write_bytes(ENFORCED_INTENT.encode("utf-8"))
+            next_state = next_track / "STATE.md"
+            next_state.write_bytes(state_text(milestone="null", phase="define", status="active").encode("utf-8"))
+            approve = lambda: pipeline_state.transition_state(
+                repo, current_fields(repo, ".project/next"), *self.INTENT_APPROVAL, ".project/next")
+            # The active track's lenses never answer a lookahead decision.
+            record_lens(repo, "define")
+            self.assert_refused("define", approve, next_state)
+
+            record_lens(repo, "define", ".project/next")
+
+            self.assertEqual(approve()["state"]["milestone"], "first")
+
+    def test_plan_origin_corrections_approval_requires_a_corrections_lens_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            run_git(repo, "init", "-b", "feature/milestone-001")
+            run_git(repo, "config", "user.name", "GSD Path Test")
+            run_git(repo, "config", "user.email", "test@example.com")
+            _, state = self.transition_repo(tmp, "plan", milestone="first")
+            (repo / ".project" / "plan").mkdir()
+            (repo / ".project" / "plan" / "PLAN.md").write_bytes(PLAN_WAVE.format(title="first").encode("utf-8"))
+            record_lens(repo, "corrections")
+            run_git(repo, "add", ".project")
+            run_git(repo, "commit", "-m", "fixture: plan intent correction base")
+            pipeline_state.transition_state(
+                repo, current_fields(repo), {"phase": "define", "status": "active"},
+                "plan intent corrections requested")
+            self.assertEqual(pipeline_state.route_state(repo)["route"]["mode"], "corrections")
+            approve = lambda: pipeline_state.transition_state(
+                repo, current_fields(repo), {"status": "done"}, "milestone intent approved")
+            # Neither an answer from before the recovery nor the define gate answers Corrections.
+            record_lens(repo, "define")
+            self.assert_refused("corrections", approve, state)
+
+            record_lens(repo, "corrections")
+
+            self.assertEqual(approve()["state"]["status"], "done")
+
+    def test_charter_approval_requires_a_fresh_charter_lens_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, state = self.transition_repo(tmp, "define", intent=None, charter=ENFORCED_CHARTER)
+            approve = lambda: pipeline_state.transition_state(
+                repo, current_fields(repo), {"status": "done"}, "program charter approved")
+            record_lens(repo, "define")
+            self.assert_refused("charter", approve, state)
+
+            record_lens(repo, "charter")
+            result = approve()
+
+            self.assertEqual((result["state"]["status"], result["state"]["milestone"]), ("done", None))
+
+    def test_ship_approval_question_requires_a_fresh_ship_lens_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, state = self.transition_repo(tmp, "ship", milestone="first")
+            ask = lambda: pipeline_state.transition_state(repo, current_fields(repo), *self.SHIP_QUESTION)
+            self.assert_refused("ship", ask, state)
+            record_lens(repo, "ship")
+            self.assertEqual(ask()["state"]["phase"], "ship")
+
+            # A re-run of the final gate asks again; the earlier answer was consumed.
+            self.assert_refused("ship", ask, state)
+            record_lens(repo, "ship")
+            ask()
+
+            self.assertEqual(state.read_text(encoding="utf-8").count(self.SHIP_QUESTION[1]), 2)
+
+    def test_plan_approval_requires_a_fresh_plan_lens_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, head = self.approval_repo(tmp, "plan")
+            state = repo / ".project" / "STATE.md"
+            journal = pipeline_state._git_path(repo, pipeline_state.CHECKPOINT_JOURNAL_NAME)
+            approve = lambda: state_checkpoint.checkpoint_approval(repo, "plan", head)
+            record_lens(repo, "define")
+            self.assert_refused("plan", approve, state)
+            self.assertEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), head)
+            self.assertFalse(journal.exists())
+
+            record_lens(repo, "plan")
+            result = approve()
+
+            self.assertEqual(result["status"], "approved")
+            committed = run_git(repo, "show", "HEAD:.project/STATE.md").stdout
+            self.assertRegex(committed, rf"— plan — {re.escape(lens_event('plan'))}\n- \S+ — plan — plan approved\n\Z")
+
+    def test_plan_lens_event_before_the_previous_plan_approval_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, head = self.approval_repo(tmp, "plan")
+            state = repo / ".project" / "STATE.md"
+            self.append_log(state, lens_event("plan"), "plan approved", "patch plan reopened")
+            approve = lambda: state_checkpoint.checkpoint_approval(repo, "plan", head)
+            self.assert_refused("plan", approve, state)
+
+            record_lens(repo, "plan")
+
+            self.assertEqual(approve()["status"], "approved")
+
+    def test_interrupted_enforced_approval_resumes_without_a_second_lens_event(self) -> None:
+        for resume in ("approve", "resume-checkpoint"):
+            with self.subTest(resume=resume), tempfile.TemporaryDirectory() as tmp:
+                repo, head = self.approval_repo(tmp, "plan")
+                state = repo / ".project" / "STATE.md"
+                record_lens(repo, "plan")
+                with mock.patch.object(
+                    state_checkpoint, "isolation_checkpoint",
+                    side_effect=pipeline_state.IsolationError("simulated interruption"),
+                ):
+                    with self.assertRaisesRegex(pipeline_state.PipelineStateError, "simulated interruption"):
+                        state_checkpoint.checkpoint_approval(repo, "plan", head)
+                # The journaled STATE already consumed the event; only the replay can finish it.
+                self.assertTrue(state.read_text(encoding="utf-8").endswith("— plan — plan approved\n"))
+
+                if resume == "approve":
+                    result = state_checkpoint.checkpoint_approval(repo, "plan", head)
+                else:
+                    result = state_checkpoint.resume_checkpoint(repo)
+
+                self.assertEqual(result["status"], "approved")
+                self.assertEqual(state.read_text(encoding="utf-8").count(lens_event("plan")), 1)
+
+    def test_patch_approval_requires_a_patch_lens_event_through_the_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, head = self.approval_repo(tmp, "plan")
+            state = repo / ".project" / "STATE.md"
+            command = [sys.executable, str(PIPELINE_STATE_SCRIPT.resolve()), "approve",
+                       "--repo", str(repo), "--kind", "plan", "--patch"]
+            record_lens(repo, "plan")
+            before = state.read_bytes()
+            refused = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace", check=False)
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn("decision lenses: record `lenses patch: …`", refused.stderr)
+            self.assertEqual(state.read_bytes(), before)
+
+            record_lens(repo, "patch")
+            accepted = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace", check=False)
+
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertTrue(state.read_text(encoding="utf-8").endswith("— plan — patch plan approved\n"))
+            self.assertEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), head)
+
+    def test_deferred_plan_approval_requires_a_plan_lens_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = self.approval_repo(tmp, "plan")
+            state = repo / ".project" / "STATE.md"
+            (repo / ".project" / "REPOSITORY.md").write_bytes(
+                "Kind: new-github\nRemote: https://github.com/o/r\n".encode("utf-8"))
+            self.assert_refused("plan", lambda: state_checkpoint.defer_approval(repo, "plan"), state)
+
+            record_lens(repo, "plan")
+
+            self.assertTrue(state_checkpoint.defer_approval(repo, "plan")["deferred"])
+
+    def test_roadmap_approval_requires_a_fresh_roadmap_lens_event_from_the_charter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, head = self.approval_repo(tmp, "roadmap")
+            state = repo / ".project" / "STATE.md"
+            roadmap = repo / ".project" / "ROADMAP.md"
+            roadmap_before = roadmap.read_bytes()
+            approve = lambda: state_checkpoint.checkpoint_approval(repo, "roadmap", head, selected_milestone="first")
+            self.assert_refused("roadmap", approve, state)
+            self.assertEqual(roadmap.read_bytes(), roadmap_before)
+
+            record_lens(repo, "roadmap")
+            result = approve()
+
+            self.assertEqual((result["state"]["milestone"], result["state"]["status"]), ("first", "done"))
+            self.assertIn(lens_event("roadmap"), run_git(repo, "show", "HEAD:.project/STATE.md").stdout)
+
+    def test_roadmap_lens_event_before_any_previous_roadmap_approval_is_stale(self) -> None:
+        for consumed in state_checkpoint.ROADMAP_APPROVAL_EVENTS:
+            with self.subTest(consumed=consumed), tempfile.TemporaryDirectory() as tmp:
+                repo, head = self.approval_repo(tmp, "roadmap")
+                state = repo / ".project" / "STATE.md"
+                self.append_log(state, lens_event("roadmap"), consumed, phase="roadmap")
+                self.assert_refused("roadmap", lambda: state_checkpoint.checkpoint_approval(
+                    repo, "roadmap", head, selected_milestone="first"), state)
+
+    def test_tracks_that_do_not_enforce_lenses_decide_as_before(self) -> None:
+        for governing in ("off", "absent"):
+            with self.subTest(governing=governing):
+                intent = governing_text(ENFORCED_INTENT, governing)
+                charter = governing_text(ENFORCED_CHARTER, governing)
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo, _ = self.transition_repo(tmp, "define", intent=intent)
+                    pipeline_state.transition_state(repo, current_fields(repo), *self.INTENT_APPROVAL)
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo, _ = self.transition_repo(tmp, "define", intent=None, charter=charter)
+                    pipeline_state.transition_state(
+                        repo, current_fields(repo), {"status": "done"}, "program charter approved")
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo, _ = self.transition_repo(tmp, "ship", milestone="first", intent=intent)
+                    pipeline_state.transition_state(repo, current_fields(repo), *self.SHIP_QUESTION)
+                    pipeline_state.transition_state(repo, current_fields(repo), *self.SHIP_QUESTION)
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo, head = self.approval_repo(tmp, "plan", governing)
+                    self.assertEqual(state_checkpoint.checkpoint_approval(repo, "plan", head)["status"], "approved")
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo, _ = self.approval_repo(tmp, "plan", governing)
+                    self.assertTrue(state_checkpoint.defer_approval(repo, "plan", patch=True)["deferred"])
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo, head = self.approval_repo(tmp, "roadmap", governing)
+                    result = state_checkpoint.checkpoint_approval(repo, "roadmap", head, selected_milestone="first")
+                    self.assertEqual(result["status"], "approved")
 
 
 if __name__ == "__main__":

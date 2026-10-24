@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.test_pipeline_state import state_text
+from tests.test_pipeline_state import lens_event, state_text
 from tests.test_task_briefs import PLAN_WAVE, TASK_TEMPLATE, git
 
 
@@ -128,6 +128,31 @@ class BuildReentryTests(unittest.TestCase):
         self.cli("approve", "--kind", "plan", "--expected-head", self.base)
         self.move("build", "active", "build started")
         self.assertIn("User: change the demo output.", intent.read_text(encoding="utf-8"))
+
+    def test_enforced_corrections_and_repair_plan_need_lenses_after_the_recovery_marker(self):
+        intent = self.project / "intent/INTENT.md"
+        intent.write_bytes(("Decision lenses: enforced\n\n" + intent.read_text(encoding="utf-8")).encode("utf-8"))
+        # Lenses answered before this recovery began are stale for its decisions.
+        state = self.project / "STATE.md"
+        state.write_bytes((state.read_text(encoding="utf-8") + "".join(
+            f"- 2026-08-24 — build — {lens_event(gate)}\n" for gate in ("corrections", "plan")
+        )).encode("utf-8"))
+        self.base = self.commit()
+        self.reopen("define")
+        self.cli("prepare-build-recovery")
+        # Corrections close the recovery: the define gate does not answer them.
+        self.move("define", "active", lens_event("define"))
+        failure = self.move("define", "done", "milestone intent approved", success=False)
+        self.assertIn("decision lenses: record `lenses corrections: …`", failure)
+        self.move("define", "active", lens_event("corrections"))
+        self.move("define", "done", "milestone intent approved")
+        self.move("plan", "active", "planning started")
+        failure = self.cli("approve", "--kind", "plan", "--expected-head", self.base, success=False)
+        self.assertIn("decision lenses: record `lenses plan: …`", failure)
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), self.base)
+        self.move("plan", "active", lens_event("plan"))
+        self.cli("approve", "--kind", "plan", "--expected-head", self.base)
+        self.assertEqual(self.move("build", "active", "build started")["state"]["phase"], "build")
 
     def test_recovery_keeps_integration_locked(self):
         self.reopen("define")

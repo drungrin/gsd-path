@@ -1934,6 +1934,49 @@ def _validate_transition(
         raise PipelineStateError(f"state transition requires event: {expected}")
 
 
+DEFINE_APPROVAL_EVENT = "milestone intent approved"
+CHARTER_APPROVAL_EVENT = "program charter approved"
+SHIP_APPROVAL_PENDING_EVENT = "final gate passed; shipping approval pending"
+
+
+def lens_refusal(
+    track: Path,
+    text: str,
+    gate: str,
+    consumed: Sequence[str],
+    after_recovery: bool = False,
+) -> Optional[str]:
+    """Why the decision at ``gate`` lacks a fresh lens event in ``text``, or None.
+
+    ``track`` is the routed `.project` or `.project/next`; a track whose INTENT.md
+    (CHARTER.md for program gates) does not enforce lenses is never refused.
+    """
+    if not _common.lens_enforced_for(track, gate):
+        return None
+    return _common.lens_requirement(
+        _log_events(text), gate, consumed=consumed, after_recovery=after_recovery
+    )
+
+
+def _transition_lens_refusal(
+    track: Path,
+    text: str,
+    event: str,
+    recovery: Optional[Mapping[str, object]],
+) -> Optional[str]:
+    """The lens refusal for a decision ``transition_state`` records, at its admission only."""
+    if event == DEFINE_APPROVAL_EVENT:
+        # Approving define Corrections closes a build recovery: its lenses answer in that epoch.
+        if recovery and recovery["active"]:
+            return lens_refusal(track, text, "corrections", (DEFINE_APPROVAL_EVENT,), True)
+        return lens_refusal(track, text, "define", (DEFINE_APPROVAL_EVENT,))
+    if event == CHARTER_APPROVAL_EVENT:
+        return lens_refusal(track, text, "charter", (CHARTER_APPROVAL_EVENT,))
+    if event == SHIP_APPROVAL_PENDING_EVENT:
+        return lens_refusal(track, text, "ship", (SHIP_APPROVAL_PENDING_EVENT,))
+    return None
+
+
 def transition_state(
     repo: Path,
     expected: Mapping[str, Optional[str]],
@@ -2018,6 +2061,11 @@ def transition_state(
                 validator(resolved, project_dir)
             except check_handoffs.HandoffError as error:
                 raise PipelineStateError(f"{state.phase} handoff failed: {error}") from error
+        lens_reason = _transition_lens_refusal(
+            project, text, " ".join(event.split()), recovery_context
+        )
+        if lens_reason:
+            raise PipelineStateError(lens_reason)
         if (project_dir == ".project" and (state.phase, state.status) == ("plan", "done")
                 and (after.phase, after.status) == ("build", "active")):
             _lock_build_members(resolved)

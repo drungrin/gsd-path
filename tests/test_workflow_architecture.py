@@ -10,7 +10,9 @@ from pathlib import Path
 from unittest import mock
 
 from scripts import pipeline_state, state_checkpoint
-from tests.test_pipeline_state import roadmap_text, run_git, state_text
+from tests.test_pipeline_state import (
+    ENFORCED_CHARTER, lens_event, record_lens, roadmap_text, run_git, state_text,
+)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "daemon"))
 from gsd_daemon import probe
 from gsd_daemon.model import ProjectStatus
@@ -152,6 +154,30 @@ raise SystemExit(pipeline_state.main(["status", "--repo", sys.argv[1]]))
                 self.assertIn("Status: active", (repo / ".project/ROADMAP.md").read_text(encoding="utf-8"))
                 self.assertEqual(run_git(repo, "rev-list", "--count", head + "..HEAD").stdout.strip(), "1")
                 self.assertEqual(run_git(repo, "status", "--porcelain").stdout, "")
+
+    def test_enforced_reslice_requires_a_roadmap_lens_event_after_the_previous_approval(self):
+        for phase in ("define", "roadmap"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
+                repo, _ = self.repo(tmp, phase, "null" if phase == "roadmap" else "second")
+                project = repo / ".project"
+                (project / "CHARTER.md").write_bytes(ENFORCED_CHARTER.encode("utf-8"))
+                state = project / "STATE.md"
+                state.write_bytes((state.read_text(encoding="utf-8")
+                                   + f"- 2026-08-24 — roadmap — {lens_event('roadmap')}\n"
+                                   + "- 2026-08-24 — roadmap — program roadmap approved\n").encode("utf-8"))
+                run_git(repo, "add", ".project")
+                run_git(repo, "commit", "-m", "fixture: enforced charter")
+                head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+                baseline = project / "ROADMAP.before-reslice.md"
+                baseline.write_bytes((project / "ROADMAP.md").read_bytes())
+                with self.assertRaisesRegex(pipeline_state.PipelineStateError, "record `lenses roadmap: …`"):
+                    self.approve(repo, head)
+                self.assertTrue(baseline.exists())
+                self.assertEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), head)
+                record_lens(repo, "roadmap")
+                result = self.approve(repo, head)
+                self.assertEqual((result["status"], result["state"]["milestone"]), ("approved", "second"))
+                self.assertFalse(baseline.exists())
 
     def test_reslice_resumes_after_checkpoint_failure_and_after_commit(self):
         for point in ("isolation_checkpoint", "_unlink_checkpoint_journal"):
