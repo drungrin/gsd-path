@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.23**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.24**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,45 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.24 — 2026-10-24
+
+Upstream package base remains `1.6.2`. The fork revision continues from 23 to 24.
+
+Fix:
+[`0dab5ee0 — let the next milestone's binding govern after bind-next`](https://github.com/drungrin/gsd-path/commit/0dab5ee019516d2cab1a1e5d08e43ada767331b7).
+
+### Installation commits in the next milestone's inspect
+
+- After `bind-next`, the router writes the next milestone's STATE without a
+  commit. With `STATE.md` unstaged, the guard took the committed
+  `shipped/done` STATE and ran the previous milestone's integration
+  validator. That validator reads the working STATE, so the slugs differed.
+  On a multi-repo project the member task landing proof also cannot run once
+  `bind-next` retires the member branch, as the router documents. Every
+  commit was refused as unverified integration, including the installation
+  upgrade that 1.6.2.19 accepts before the first plan approval.
+- When the committed STATE is shipped and the working STATE binds an
+  unshipped bound branch that is the current branch and differs from the
+  shipped one, that binding now governs the commit. Installation output passes
+  before the first plan approval, and product files are still refused while
+  STATE is inspect. A binding for any other branch leaves the shipped STATE
+  and its integration check in place. HOOKS.md and DOCS.md describe the rule.
+
+Validation: the canonical Python suite passed (3,428 tests, 39 skipped), Node
+tests passed (118, one skipped) and resource synchronization checked 616
+resources. The new guard test fails without the change. A replay on a copy
+of the multi-repo coordinator that met the gap, with the shipped HEAD, the
+uncommitted next-milestone binding and the staged installation, was refused by
+the 1.6.2.23 guard with the reported error and accepted by this one. The same
+replay with a staged product file is still refused.
+
+Limits: the historical integration validator still cannot prove a shipped
+multi-repo milestone after `bind-next` retires its member branches. The router
+already treats that as expected, and the guard no longer depends on it in this
+window. A project that met the gap under 1.6.2.23 can commit the pending binding
+on its own first; the installation commit then passes. No upstream submission
+has been made.
 
 ## 1.6.2.23 — 2026-10-24
 
