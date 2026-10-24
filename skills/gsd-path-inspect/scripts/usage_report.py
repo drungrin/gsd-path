@@ -92,13 +92,7 @@ def finish(value):
                 cost_usd=None if value['unpriced_messages'] else str(value['priced_usd']))
 
 
-def report(repo, prices=None, aliases=None):
-    _, ledger = usage_collect.location(repo)
-    rows = usage_collect.ledger_rows(ledger)
-    receipts = [row for row in rows if row.get('kind') == 'collection']
-    messages = [row for row in rows if row.get('kind') == 'message']
-    if not receipts:
-        raise ValueError('usage has no collection receipt; collect before reporting')
+def pricing(prices=None, aliases=None):
     if prices is None:
         if __package__:
             from . import usage_prices
@@ -112,6 +106,25 @@ def report(repo, prices=None, aliases=None):
     mapping = json.loads(usage_collect.safe(alias_file).read_text(encoding='utf-8')) if alias_file.exists() else {}
     if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
         raise ValueError('usage model aliases must map model ids to canonical model ids')
+    return raw_prices, catalog, mapping
+
+
+def unpriced(repo, prices=None, aliases=None):
+    """Name recorded raw model ids without a catalog price, for local use only."""
+    _, catalog, mapping = pricing(prices, aliases)
+    _, ledger = usage_collect.location(repo)
+    return sorted({row['model'] for row in usage_collect.ledger_rows(ledger) if row.get('kind') == 'message'
+                   and mapping.get(row['model'], row['model']) not in catalog['models']})
+
+
+def report(repo, prices=None, aliases=None):
+    _, ledger = usage_collect.location(repo)
+    rows = usage_collect.ledger_rows(ledger)
+    receipts = [row for row in rows if row.get('kind') == 'collection']
+    messages = [row for row in rows if row.get('kind') == 'message']
+    if not receipts:
+        raise ValueError('usage has no collection receipt; collect before reporting')
+    raw_prices, catalog, mapping = pricing(prices, aliases)
     total, models, tasks, phases = bucket('Total'), {}, {}, {}
     for row in messages:
         model_id = mapping.get(row['model'], row['model'])

@@ -157,7 +157,7 @@ def prepare(repo, archive, member, reviewed_head, authored, call=None):
     repo = repo.resolve()
     value = dict(authored, schema=SCHEMA, archive=archive, member=member,
                  reviewed_head=reviewed_head, language=language(repo), sources=sources(repo, archive))
-    usage_status = None
+    usage_status, unpriced = None, []
     if not value.get('usage') and (repo / '.project/STATE.md').exists():
         if __package__:
             from . import usage_collect, usage_report
@@ -168,6 +168,7 @@ def prepare(repo, archive, member, reviewed_head, authored, call=None):
             if config.exists():
                 usage_status = usage_collect.observe(repo)
                 value['usage'] = usage_report.report(repo)
+                unpriced = usage_report.unpriced(repo)
         except (OSError, ValueError) as error:
             usage_status = {'status': 'incomplete', 'reason': str(error)}
     validate_document(value)
@@ -200,6 +201,9 @@ def prepare(repo, archive, member, reviewed_head, authored, call=None):
     result = {'status': 'prepared', 'path': str(path), 'title': value['title']}
     if usage_status is not None:
         result['usage_collection'] = usage_status
+    if unpriced:
+        # Raw ids may be personal routing aliases: report them locally only.
+        result['usage_unpriced_models'] = unpriced
     return result
 
 

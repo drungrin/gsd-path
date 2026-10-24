@@ -236,10 +236,20 @@ class UsageTests(unittest.TestCase):
         fixture=publication_fixture(self.repo,ARCHIVE,'coordinator',HEAD,'https://github.com/example/product.git')
         pr_editorial.publication_path(self.repo,ARCHIVE).unlink()
         subprocess.run(['git','-C',str(self.repo),'remote','add','origin','https://github.com/example/product.git'],check=True)
-        pr_editorial.prepare(self.repo,ARCHIVE,'coordinator',HEAD,{'title':fixture['title'],'sections':fixture['sections']})
+        result=pr_editorial.prepare(self.repo,ARCHIVE,'coordinator',HEAD,{'title':fixture['title'],'sections':fixture['sections']})
         value=pr_editorial.load(self.repo,ARCHIVE,'coordinator',HEAD)
         self.assertEqual(value['usage']['total']['messages'],1)
         self.assertNotIn(str(self.root),json.dumps(value['usage']))
+        self.assertEqual(result['usage_unpriced_models'],['claude-example'])
+        self.assertNotIn('claude-example',json.dumps(value))
+
+    def test_unpriced_raw_ids_are_named_after_alias_mapping(self):
+        rows=[self.event(),self.event('msg-2'),self.event('msg-3')]
+        rows[1]['message']['model']='personal-routing-variant'
+        rows[2]['message']['model']='new-model'
+        self.aliases.write_text('{"personal-routing-variant":"claude-example"}')
+        self.collect(rows)
+        self.assertEqual(usage_report.unpriced(self.repo,self.price_file,self.aliases),['new-model'])
 
     def test_accounting_failure_cannot_reverse_a_successful_task_landing(self):
         from scripts import dispatch_driver

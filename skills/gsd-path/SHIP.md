@@ -318,6 +318,10 @@ The persisted `STATE.archive` field is the transaction identity.
    in published reports. An incomplete collection or missing model/TTL price
    remains explicit; do not present unknown costs as zero. The report covers
    Claude Code transcripts, not unobserved CLI children or other hosts.
+   When `prepare` returns `usage_unpriced_models`, name those raw ids to the
+   user in the next handoff, never in published copy. After the user adds an
+   alias or refreshes prices, rerun `prepare` while the publication is
+   uncommitted.
 
    The PR keeps its editorial sections and gets a short usage/cost summary.
    The complete model table is a single informational comment. Retries recover
