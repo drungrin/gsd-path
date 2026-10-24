@@ -8,6 +8,7 @@ from unittest import mock
 
 from scripts import state_checkpoint
 from scripts import archive_milestone, isolation, pipeline_state, pipeline_undo
+from tests.test_pipeline_state import ENFORCED_CHARTER, ENFORCED_INTENT, lens_event, record_lens, roadmap_text
 from tests.test_task_briefs import PLAN_WAVE, TASK_TEMPLATE
 from tests._platform import requires_symlink
 
@@ -1017,6 +1018,118 @@ Waves checked: 1
             payload = json.loads(result.stdout)
             self.assertEqual(payload["schema"], pipeline_undo.UNDO_SCHEMA)
             self.assertEqual(payload["status"], "preview")
+
+
+class ApprovalLensUndoTests(unittest.TestCase):
+    """The approval proof accepts the one lens event the checkpoint carries, and nothing else."""
+
+    def plan_repo(self, tmp: str, project_dir: str) -> tuple[Path, str]:
+        repo = init_repo(Path(tmp))
+        project = repo / ".project"
+        track = repo / project_dir
+        (track / "intent").mkdir(parents=True)
+        if project_dir == ".project":
+            (project / "STATE.md").write_bytes(state_text().encode("utf-8"))
+        else:
+            # The active track's lenses never answer the lookahead approval.
+            active = state_text(phase="build") + f"- 2026-08-28 — build — {lens_event('plan')}\n"
+            (project / "STATE.md").write_bytes(active.encode("utf-8"))
+            (project / "ROADMAP.md").write_bytes(roadmap_text().encode("utf-8"))
+            (track / "STATE.md").write_bytes(state_text(milestone="second", branch="null").encode("utf-8"))
+        (track / "intent" / "INTENT.md").write_bytes(ENFORCED_INTENT.encode("utf-8"))
+        run_git(repo, "add", ".project")
+        run_git(repo, "commit", "-m", "fixture: approval base")
+        (track / "plan").mkdir()
+        (track / "plan" / "PLAN.md").write_bytes(PLAN_WAVE.format(title="first").encode("utf-8"))
+        (track / "tasks").mkdir()
+        (track / "tasks" / "T001-change-app.md").write_bytes(TASK_TEMPLATE.format(
+            task_id="T001", files_block="  - app.py", context="Create the demo app.",
+            approach="Implement the demo behavior.", contract="- None", verify="python3 app.py",
+        ).encode("utf-8"))
+        return repo, run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    def assert_undone(self, repo: Path, parent: str, kind: str, project_dir: str = ".project") -> None:
+        approved = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+        target = pipeline_undo.preview(repo)["target"]
+        self.assertEqual((target["kind"], target["blocked"]), ("checkpoint", []), target)
+        self.assertEqual(target["head"], approved)
+
+        self.assertEqual(pipeline_undo.apply_undo(repo, "checkpoint", approved)["status"], "applied")
+
+        self.assertEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), parent)
+        state = pipeline_state.load_state(repo, project_dir)[0]
+        self.assertEqual((state.phase, state.status), (kind, "active"))
+
+    def test_lens_event_and_plan_approval_undo_on_active_and_lookahead_tracks(self) -> None:
+        for project_dir in (".project", ".project/next"):
+            with self.subTest(project_dir=project_dir), tempfile.TemporaryDirectory() as tmp:
+                repo, parent = self.plan_repo(tmp, project_dir)
+                with self.assertRaisesRegex(pipeline_state.PipelineStateError, "record `lenses plan: …`"):
+                    state_checkpoint.checkpoint_approval(repo, "plan", parent, project_dir)
+                record_lens(repo, "plan", project_dir)
+                state_checkpoint.checkpoint_approval(repo, "plan", parent, project_dir)
+
+                self.assert_undone(repo, parent, "plan", project_dir)
+
+    def test_lens_event_and_roadmap_approval_undo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = init_repo(Path(tmp))
+            project = repo / ".project"
+            project.mkdir()
+            (project / "STATE.md").write_bytes(state_text(milestone="null", phase="roadmap").encode("utf-8"))
+            (project / "ROADMAP.md").write_bytes(
+                roadmap_text().replace("Status: shipped", "Status: pending", 1).encode("utf-8"))
+            (project / "CHARTER.md").write_bytes(ENFORCED_CHARTER.encode("utf-8"))
+            run_git(repo, "add", ".project")
+            run_git(repo, "commit", "-m", "fixture: roadmap base")
+            parent = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            record_lens(repo, "roadmap")
+            state_checkpoint.checkpoint_approval(repo, "roadmap", parent, selected_milestone="first")
+
+            self.assert_undone(repo, parent, "roadmap")
+            self.assertIsNone(pipeline_state.load_state(repo)[0].milestone)
+
+    def test_approval_undo_rejects_any_other_added_or_altered_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, parent = self.plan_repo(tmp, ".project")
+            record_lens(repo, "plan")
+            state_checkpoint.checkpoint_approval(repo, "plan", parent)
+            approved = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            state = repo / ".project" / "STATE.md"
+            canonical = state.read_text(encoding="utf-8")
+            *head, lens_line, approval_line = canonical.splitlines(keepends=True)
+            prefix = "".join(head)
+            stamp = lens_line[: lens_line.index("lenses ")]
+            not_canonical = "not the canonical approval result"
+            variants = {
+                "invalid lens event": (
+                    prefix + stamp + "lenses plan: fired none; blocked none; no-signal L2\n" + approval_line,
+                    "adds an invalid lens event"),
+                "another gate": (
+                    prefix + stamp + lens_event("define") + "\n" + approval_line,
+                    "adds a lens event other than `lenses plan`"),
+                "a scoped event": (
+                    prefix + stamp + lens_event("plan", "wave 1 cycle 1") + "\n" + approval_line,
+                    "adds a lens event other than `lenses plan`"),
+                "two added lines": (prefix + lens_line + lens_line + approval_line, not_canonical),
+                "an added non-lens line": (prefix + stamp + "owner note\n" + approval_line, not_canonical),
+                "altered content": (
+                    prefix.replace("— fixture", "— fixture edited") + lens_line + approval_line, not_canonical),
+                "a lens line after the approval": (prefix + approval_line + lens_line, not_canonical),
+            }
+            for name, (text, reason) in variants.items():
+                with self.subTest(variant=name):
+                    run_git(repo, "reset", "--hard", approved)
+                    state.write_bytes(text.encode("utf-8"))
+                    run_git(repo, "add", ".project/STATE.md")
+                    run_git(repo, "commit", "--amend", "--no-edit")
+                    target = pipeline_undo.preview(repo)["target"]
+                    self.assertIsNone(target["kind"])
+                    self.assertEqual(len(target["blocked"]), 1, target)
+                    self.assertIn("checkpoint ownership is unproven", target["blocked"][0])
+                    self.assertIn(reason, target["blocked"][0])
+            run_git(repo, "reset", "--hard", approved)
+            self.assertEqual(pipeline_undo.preview(repo)["target"]["kind"], "checkpoint")
 
 
 if __name__ == "__main__":

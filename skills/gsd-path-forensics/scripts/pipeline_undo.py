@@ -118,6 +118,9 @@ INTEGRATE_PREFIX = "integrate: "
 SHIP_LOG_ONLY_LINE = re.compile(
     r"- (?P<date>\d{4}-\d{2}-\d{2}) — ship — (?P<event>[^\r\n]+)\n\Z"
 )
+LENS_LOG_LINE = re.compile(
+    r"- (?P<date>\d{4}-\d{2}-\d{2}) — [a-z]+ — (?P<event>lenses [^\r\n]+)\n"
+)
 SHIPMENT_RECORD_LINE = re.compile(
     r"- (?P<date>\d{4}-\d{2}-\d{2}) — shipped — (?P<event>[^\r\n]+)\n\Z"
 )
@@ -181,6 +184,41 @@ def _git_text(repo: Path, revision: str, relative: str) -> str:
     if result.returncode != 0:
         raise UndoError(f"missing {relative} in {revision}")
     return result.stdout
+
+
+def _approval_lens_state(
+    before,
+    before_text: str,
+    after_text: str,
+    gate: str,
+    expected: dict,
+    project_dir: str,
+) -> Optional[str]:
+    """The parent STATE.md plus the one lens event an approval checkpoint may carry.
+
+    Approval admission requires a fresh `lenses <gate>` event, which the no-op
+    transition writes to the uncommitted STATE.md, so the checkpoint commits it
+    immediately before the approval event. None when that line is not a lens event.
+    """
+    lines = after_text.splitlines(keepends=True)
+    match = LENS_LOG_LINE.fullmatch(lines[-2]) if len(lines) > 1 else None
+    if match is None:
+        return None
+    try:
+        lens = pipeline_state._common.parse_lens_event(match["event"])
+    except pipeline_state._common.LensEventError as error:
+        raise UndoError(f"checkpoint adds an invalid lens event: {error}") from error
+    if lens.gate != gate or lens.scope:
+        raise UndoError(f"checkpoint adds a lens event other than `lenses {gate}`")
+    return _render_transition(
+        before,
+        before_text,
+        expected,
+        {"status": before.status},
+        match["event"],
+        project_dir,
+        match["date"],
+    )[2]
 
 
 def _checkpoint_proof_error(
@@ -251,7 +289,23 @@ def _checkpoint_proof_error(
             kind,
         )
         if rendered != after_text or expected_state != after:
-            return "checkpoint STATE.md is not the canonical approval result"
+            lensed_text = _approval_lens_state(
+                before, before_text, after_text, kind, expected, project_dir
+            )
+            if lensed_text is None:
+                return "checkpoint STATE.md is not the canonical approval result"
+            _, expected_state, rendered = _render_transition(
+                before,
+                lensed_text,
+                expected,
+                changes,
+                event,
+                project_dir,
+                added_dates[-1],
+                kind,
+            )
+            if rendered != after_text or expected_state != after:
+                return "checkpoint STATE.md is not the canonical approval result"
         if kind == "roadmap":
             roadmap_before = _git_text(repo, parent, ".project/ROADMAP.md")
             roadmap_after = _git_text(repo, head, ".project/ROADMAP.md")
