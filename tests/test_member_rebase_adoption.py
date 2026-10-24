@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from scripts import (
+    _common,
     build_state,
     coordinator_migration as migration,
     integration,
@@ -905,6 +906,59 @@ class PendingOpenMemberCloseTests(MemberRebaseFixture):
                 self.assertEqual(error.exception.code, "pull-request")
                 self.assertEqual(self.snapshot(), before)
                 self.assertEqual(self.close_path.read_bytes(), self.close_before)
+
+
+class MemberRebaseLensTests(MemberRebaseFixture):
+    """With decision lenses enforced, a new adoption needs the rebase lens event of its member and target base."""
+
+    assert_adopted = MemberRebaseAdoptionTests.assert_adopted
+
+    def setUp(self) -> None:
+        super().setUp()
+        intent = self.coordinator / ".project" / "intent" / "INTENT.md"
+        intent.parent.mkdir(parents=True, exist_ok=True)
+        intent.write_text("# Intent — demo\n\nDecision lenses: enforced\n", encoding="utf-8")
+        git(self.coordinator, "add", "-A")
+        git(self.coordinator, "commit", "-q", "-m", "test: enforce decision lenses")
+
+    def record_lens(self, base: str) -> str:
+        event = _common.format_lens_event("rebase", _common.lens_scope_member("web", base),
+                                          fired=[("L10", "keep")], no_signal=["L14"])
+        state = self.coordinator / ".project" / "STATE.md"
+        state.write_text(state.read_text(encoding="utf-8") + f"- 2026-10-24 — build — {event}\n", encoding="utf-8")
+        git(self.coordinator, "commit", "-q", "-am", "test: record rebase lenses")
+        return event
+
+    def test_new_adoption_needs_the_lens_event_before_any_mutation(self) -> None:
+        before = self.snapshot()
+        with self.assertRaises(isolation.MemberRebaseError) as error:
+            self.adopt()
+        self.assertEqual(error.exception.code, "lens-required")
+        self.assertIn(f"`lenses rebase member web base {self.onto[:12]}: …`", str(error.exception))
+        self.assertEqual(self.snapshot(), before)
+        # The preview stays an unchecked read-only report.
+        self.assertEqual(isolation.preview_member_rebase(self.coordinator, "web", self.onto, RULING)["verdict"],
+                         "ready")
+        self.record_lens(self.locked_base)  # the lens answered for another target base
+        with self.assertRaises(isolation.MemberRebaseError) as stale:
+            self.adopt()
+        self.assertEqual(stale.exception.code, "lens-required")
+        self.assertEqual(self.bound_tip(), self.old_tip)
+        self.assertFalse(self.journal().exists())
+        self.record_lens(self.onto)
+        self.assert_adopted(self.adopt())
+
+    def test_resuming_an_admitted_adoption_does_not_check_the_lens_again(self) -> None:
+        event = self.record_lens(self.onto)
+        with mock.patch.object(isolation, "_advance_member_bound", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self.adopt()
+        self.assertEqual(json.loads(self.journal().read_text(encoding="utf-8"))["stage"], "published")
+        state = self.coordinator / ".project" / "STATE.md"
+        state.write_text(state.read_text(encoding="utf-8").replace(f"- 2026-10-24 — build — {event}\n", ""),
+                         encoding="utf-8")
+        git(self.coordinator, "commit", "-q", "-am", "test: drop the rebase lens event")
+        self.assert_adopted(self.adopt())
 
 
 class MemberRebaseMasterTests(MemberRebaseFixture):

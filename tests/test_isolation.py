@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from unittest import mock
 
-from scripts import build_state, isolation, pipeline_git
+from scripts import _common, build_state, isolation, pipeline_git
 from tests._platform import requires_symlink
 
 
@@ -2187,6 +2187,124 @@ class IsolationTests(unittest.TestCase):
                     "Why: user  ruling",
                     [".project"],
                 )
+
+    # Build step 7 ruling checkpoints: subject kind, decision lens gate, STATE ruling label.
+    RULINGS = (
+        ("skeptic", "refuted", "all-refuted"),
+        ("redesign", "redesign", "redesign"),
+        ("panel", "panel", "panel"),
+        ("cap", "cap", "cap"),
+    )
+
+    @staticmethod
+    def lens_event(gate: str, wave: int = 1, cycle: int = 2) -> str:
+        return _common.format_lens_event(
+            gate, _common.lens_scope_wave(wave, cycle), no_signal=_common.LENS_GATES[gate])
+
+    @staticmethod
+    def recovery_event(base: str = "a" * 40) -> str:
+        return 'build recovery: {"base": "%s", "branch": "feature/milestone-001", "kind": "plan", "source": "build"}' % base
+
+    def ruling_repo(self, root: Path, *events: str, intent: str = "Decision lenses: enforced\n",
+                    state: tuple = ("build", "active")) -> str:
+        """A bound repo whose committed STATE logs ``events`` under an INTENT with ``intent``."""
+        self.init_bound_repo(root)
+        self.write(root, ".project/intent/INTENT.md", "# Intent — demo\n\n" + intent)
+        self.write(root, ".project/STATE.md", self.state_text(*state))
+        self.append_log(root, *events)
+        git(root, "add", ".project")
+        git(root, "commit", "-q", "-m", "fixture: build state")
+        return git(root, "rev-parse", "HEAD")
+
+    def append_log(self, root: Path, *events: str) -> None:
+        path = root / ".project/STATE.md"
+        path.write_text(path.read_text(encoding="utf-8")
+                        + "".join(f"- 2026-10-24 — build — {event}\n" for event in events), encoding="utf-8")
+
+    def ruling_checkpoint(self, root: Path, head: str, kind: str, wave: int = 1, cycle: int = 2):
+        return isolation.checkpoint(root, head, f"build: record wave {wave} cycle {cycle} {kind} ruling",
+                                    f"Why: persist the {kind} ruling before acting\nWave: {wave}", [".project"])
+
+    def test_build_ruling_subjects_are_generic_build_checkpoints_without_enforcement(self) -> None:
+        for kind, _gate, label in self.RULINGS:
+            for intent in ("", "Decision lenses: off\n"):
+                with self.subTest(kind=kind, intent=intent), tempfile.TemporaryDirectory() as temporary:
+                    subject = f"build: record wave 1 cycle 2 {kind} ruling"
+                    body = f"Why: persist the {kind} ruling before acting\nWave: 1"
+                    isolation._validate_checkpoint_message(subject, body)
+                    repo = Path(temporary) / "repo"
+                    repo.mkdir()
+                    head = self.ruling_repo(repo, "build started", intent=intent)
+                    self.append_log(repo, f"wave 1 cycle 2 {label} ruling: Open fix tasks anyway")
+
+                    result = self.ruling_checkpoint(repo, head, kind)
+
+                    self.assertEqual(result["status"], "committed")
+                    self.assertEqual(git(repo, "log", "-1", "--format=%s"), subject)
+
+    def test_enforced_build_ruling_checkpoint_requires_its_fresh_lens_event(self) -> None:
+        for kind, gate, label in self.RULINGS:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                head = self.ruling_repo(repo, "build started")
+                state = (repo / ".project/STATE.md").read_text(encoding="utf-8")
+                ruling = f"wave 1 cycle 2 {label} ruling: Open fix tasks anyway"
+                self.append_log(repo, ruling)
+
+                with self.assertRaisesRegex(isolation.IsolationError,
+                                            f"record `lenses {gate} wave 1 cycle 2: …` in the STATE.md Log"):
+                    self.ruling_checkpoint(repo, head, kind)
+                self.assertEqual(git(repo, "rev-parse", "HEAD"), head)
+                self.assertEqual(git(repo, "diff", "--cached", "--name-only"), "")
+
+                (repo / ".project/STATE.md").write_text(state, encoding="utf-8")
+                self.append_log(repo, self.lens_event(gate), ruling)
+                result = self.ruling_checkpoint(repo, head, kind)
+                self.assertEqual(result["status"], "committed")
+                # A retry of the same decision reuses the lens event it was admitted with.
+                retried = self.ruling_checkpoint(repo, head, kind)
+                self.assertEqual((retried["status"], retried["commit"]), ("already-complete", result["commit"]))
+
+    def test_build_ruling_lens_event_must_follow_the_previous_ruling_and_recovery(self) -> None:
+        lens = self.lens_event("redesign")
+        reconsider = "wave 1 cycle 2 redesign ruling: Reconsider the component approach"
+        ruling = "wave 1 cycle 2 redesign ruling: Open fix tasks anyway"
+        cases = (
+            ("consumed by the previous ruling", (lens, reconsider), (ruling,), False),
+            ("before the latest recovery", (lens, self.recovery_event()), (ruling,), False),
+            ("another cycle", (self.lens_event("redesign", cycle=1),), (ruling,), False),
+            ("another gate", (self.lens_event("panel"),), (ruling,), False),
+            ("written after the ruling it admits", (), (ruling, lens), False),
+            ("previous milestone", (lens, "archive preflight passed; shipment recorded"), (ruling,), False),
+            ("malformed", ("lenses redesign wave 1 cycle 2: fired none; blocked none; no-signal L2",), (ruling,),
+             False),
+            ("after the previous ruling", (self.lens_event("redesign"), reconsider, lens), (ruling,), True),
+            ("after the latest recovery", (lens, self.recovery_event(), reconsider, lens), (ruling,), True),
+        )
+        for name, committed, working, accepted in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                head = self.ruling_repo(repo, "build started", *committed)
+                self.append_log(repo, *working)
+                if accepted:
+                    self.assertEqual(self.ruling_checkpoint(repo, head, "redesign")["status"], "committed")
+                else:
+                    with self.assertRaisesRegex(isolation.IsolationError, "^decision lenses: "):
+                        self.ruling_checkpoint(repo, head, "redesign")
+                    self.assertEqual(git(repo, "rev-parse", "HEAD"), head)
+
+    def test_ship_refusal_of_build_ruling_checkpoints_precedes_the_lens_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            head = self.ruling_repo(repo, self.lens_event("panel"), state=("ship", "active"))
+            self.append_log(repo, "wave 1 cycle 2 panel ruling: Advance and keep panel findings as warnings")
+
+            with self.assertRaisesRegex(isolation.IsolationError, "no pre-ship commit"):
+                self.ruling_checkpoint(repo, head, "panel")
+            self.assertEqual(git(repo, "rev-parse", "HEAD"), head)
 
     def test_retire_refuses_a_dirty_sidecar_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
