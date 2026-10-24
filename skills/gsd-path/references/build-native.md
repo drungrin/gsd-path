@@ -697,8 +697,12 @@ dispatch contract and perform steps 1–5 by hand.
      Its blocked cycles still count toward the cap and the redesign
      checkpoint through `history`.
      Write each fix task to `.project/tasks/` with `wave`
-     set to the current wave or a newly appended `## Wave N` heading in
-     PLAN.md before dispatch. Its dependencies include every source task of
+     set to the current wave or a newly appended heading in PLAN.md before
+     dispatch. An appended heading names its source exactly as the driver
+     does, `## Wave <M> — fix wave <N> cycle <C> review findings`: completion
+     and archive accept a wave of repair tasks without a review of its own
+     only through that heading (or repair receipts naming one source cycle)
+     and a later review cycle of wave N. Its dependencies include every source task of
      the batch that is in the same repo, and every landed fix task of the
      same source wave and repo that carried one of its findings; its Verify
      runs the Verify of those source tasks; its files are the batch files or a subset of them, never

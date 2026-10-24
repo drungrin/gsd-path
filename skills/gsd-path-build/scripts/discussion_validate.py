@@ -1010,7 +1010,57 @@ def plan_wave_depths(plan_text: str) -> tuple[Sequence[int], dict[int, str]]:
     return wave_numbers, wave_depths
 
 
+FIX_WAVE_HEADING = re.compile(
+    r"^## Wave (?P<wave>[1-9]\d*) — fix wave (?P<source>[1-9]\d*) cycle (?P<cycle>[1-9]\d*) review findings[ \t]*$",
+    re.MULTILINE,
+)
+REVIEW_FINDINGS_SECTION = re.compile(r"^## Review findings[ \t]*$", re.MULTILINE)
+MANIFEST_WAVES_PATTERN = re.compile(
+    r"(\d+)\s+Tasks:\s+(\d+) done / (\d+) total\s+Review cycles used:\s+"
+    r"((?:0|[1-9]\d*)(?:/(?:0|[1-9]\d*))*)"
+    r"(?:\s+Attested:\s+([1-9]\d*))?"
+)
+
+
+def repair_wave_sources(
+    plan_text: str,
+    wave_numbers: Sequence[int],
+    wave_tasks: dict,
+    task_texts: dict,
+    repair_receipts: Sequence,
+) -> dict:
+    """Waves made only of repair tasks, mapped to the (source wave, cycle) that judges them.
+
+    A repair wave has no review of its own: the next review cycle of its source wave
+    judges it (build-native step 7). The source comes from the driver's fix-wave
+    heading, or else from repair receipts that all name one earlier source cycle.
+    """
+    headings = {
+        int(match["wave"]): (int(match["source"]), int(match["cycle"]))
+        for match in FIX_WAVE_HEADING.finditer(plan_text)
+    }
+    receipts: dict = {}
+    for receipt in repair_receipts:
+        receipts.setdefault(receipt.task, set()).add((receipt.wave, receipt.cycle))
+    sources = {}
+    for wave in wave_numbers:
+        tasks = [task_id for task_id, _ in wave_tasks.get(wave, ())]
+        if not tasks or not all(
+            REVIEW_FINDINGS_SECTION.search(task_texts.get(task_id, "")) for task_id in tasks
+        ):
+            continue
+        source = headings.get(wave)
+        if source is None:
+            named = set().union(*(receipts.get(task_id, set()) for task_id in tasks))
+            if len(named) == 1 and all(receipts.get(task_id) == named for task_id in tasks):
+                source = next(iter(named))
+        if source is not None and source[0] in wave_numbers and source[0] < wave:
+            sources[wave] = source
+    return sources
+
+
 def review_cycle_counts(archive: Path) -> Sequence[int]:
+    """Last review cycle per PLAN wave; 0 for a repair wave judged by its source wave."""
     plan = archive / "plan" / "PLAN.md"
     plan_text = plan.read_text(encoding="utf-8")
     wave_numbers, wave_depths = plan_wave_depths(plan_text)
@@ -1052,8 +1102,17 @@ def review_cycle_counts(archive: Path) -> Sequence[int]:
         if verdict not in {"pass", "blocked"}:
             raise ArchiveError(f"{path.name} has an invalid wave verdict")
         artifacts.setdefault(wave, {}).setdefault(cycle, {})[lens] = path
-    if sorted(artifacts) != wave_numbers:
+    repair_waves = repair_wave_sources(
+        plan_text, wave_numbers, wave_tasks, task_texts, repair_receipts
+    )
+    judged = {wave: source for wave, source in repair_waves.items() if wave not in artifacts}
+    if sorted(set(artifacts) | set(judged)) != wave_numbers:
         raise ArchiveError("review cycle waves do not match PLAN.md")
+    for wave, (source, cycle) in judged.items():
+        if max(artifacts.get(source, {0: None})) <= cycle:
+            raise ArchiveError(
+                f"repair wave {wave} requires a review cycle of wave {source} after cycle {cycle}"
+            )
     for receipt in repair_receipts:
         if receipt.wave not in artifacts or receipt.cycle not in artifacts[receipt.wave]:
             raise ArchiveError(
@@ -1069,6 +1128,9 @@ def review_cycle_counts(archive: Path) -> Sequence[int]:
 
     counts = []
     for wave in wave_numbers:
+        if wave in judged:
+            counts.append(0)
+            continue
         cycles = artifacts[wave]
         if sorted(cycles) != list(range(1, max(cycles) + 1)):
             raise ArchiveError(f"review cycles for wave {wave} are not contiguous")
@@ -1265,11 +1327,7 @@ def validate_manifest(project: Path, archive: Path, state: PipelineState) -> tup
     task_files, attested = archive_milestone.landed_task_evidence(project, archive / "tasks", reviewed_head)
     cycle_counts = review_cycle_counts(archive)
     wave_count = len(cycle_counts)
-    counts = re.fullmatch(
-        r"(\d+)\s+Tasks:\s+(\d+) done / (\d+) total\s+Review cycles used:\s+([1-9]\d*(?:/[1-9]\d*)*)"
-        r"(?:\s+Attested:\s+([1-9]\d*))?",
-        fields["Waves:"],
-    )
+    counts = MANIFEST_WAVES_PATTERN.fullmatch(fields["Waves:"])
     if not counts:
         raise ArchiveError("manifest Waves field has an invalid format")
     recorded_waves, done_tasks, total_tasks = (int(counts.group(index)) for index in (1, 2, 3))
