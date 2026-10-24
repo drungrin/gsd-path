@@ -100,7 +100,10 @@ rules are unchanged; never write an active-path artifact.
    chat and wait. Present
    each item's options with the evidence-preferred option first, marked
    `(recommended)` and justified in one line; a pure values call with no
-   evidence either way carries no recommendation, stated as such. For each
+   evidence either way carries no recommendation, stated as such. Before each
+   item, answer the `decide` lenses from
+   [decision lenses](references/decision-lenses.md) and record the `lenses`
+   Log event. For each
    answer, append the ruling under `## User rulings`, revise every affected
    decision so it reflects the ruling, and only then remove its tag.
 6. Re-run the structural gate. When it passes with no unresolved user items,

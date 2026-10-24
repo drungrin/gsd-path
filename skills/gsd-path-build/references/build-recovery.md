@@ -8,7 +8,11 @@ approval. Routing remains a caller handoff under AGENTS.md.
 
 ## Build: checkpoint and enter
 
-1. Record the finding or verbatim user ruling in STATE through its helper.
+1. Before asking the owner to enter recovery, answer the `recovery` lenses
+   from [decision lenses](decision-lenses.md) and record the `lenses` Log
+   event; state the recovery cost (an INTENT.md change sends every wave back
+   to review). Record the finding or verbatim user ruling in STATE through
+   its helper.
    Stop dispatch. Use the normal recovery and retirement procedures until
    every task is either unstarted `pending` with null dispatch metadata or
    proven `done`. Preserve owned uncommitted work before any retirement.

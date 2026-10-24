@@ -52,6 +52,11 @@ bundles this file; spawned agents follow their role brief instead.
 
 ## Stay in role
 
+- Before an owner decision listed in
+  [decision lenses](decision-lenses.md), answer its gate's lenses and record
+  the `lenses` Log event. Bundled helpers refuse the decision without it when
+  INTENT.md or CHARTER.md says `Decision lenses: enforced`.
+
 - On Claude Code, start usage collection once the milestone is bound, before
   dispatching phase work: `usage_collect.py start --repo <primary>`. Re-entry
   retains the original start; do not choose a later window to hide attempts.

@@ -943,4 +943,9 @@ fails its phase gate.
   through an interactive user-input tool when available, with the
   recommended option listed first and justified in one line, alongside the
   real alternatives.
+- Owner decisions listed in
+  [decision lenses](skills/gsd-path/references/decision-lenses.md): answer the
+  gate's lenses and record its `lenses` Log event before recommending.
+  Helpers refuse the decision without it when INTENT.md or CHARTER.md says
+  `Decision lenses: enforced`.
 - Otherwise handle the problem, record it on disk, and continue.

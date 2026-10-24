@@ -1151,3 +1151,220 @@ def rmtree_force(path: Path) -> None:
         shutil.rmtree(path, onexc=clear_readonly)
     else:
         shutil.rmtree(path, onerror=clear_readonly)
+
+
+# Decision lenses (skills/gsd-path/references/decision-lenses.md). A lens event is one
+# normalized Log event with a closed grammar and no free text, so it never contains a
+# substring another Log reader scans for:
+#   lenses <gate>[ <scope>]: fired L3=narrow, L12=fail-closed; blocked L1; no-signal L2, L4
+LENS_IDS = tuple(f"L{number}" for number in range(1, 17))
+LENS_VERDICTS = (
+    "keep",
+    "narrow",
+    "defer-next-milestone",
+    "fail-closed",
+    "redesign",
+    "bounded-measurement",
+    "add-option",
+)
+LENS_REDESIGN_VERDICTS = ("redesign", "fail-closed")
+LENS_GATES = {
+    "define": ("L1", "L2", "L3", "L8", "L10"),
+    "charter": ("L1", "L2", "L3", "L9"),
+    "corrections": ("L3", "L7", "L9"),
+    "decide": ("L4", "L5", "L6"),
+    "roadmap": ("L1", "L2", "L9", "L10", "L15"),
+    "plan": ("L2", "L6", "L7", "L8", "L11", "L12", "L15", "L16"),
+    "patch": ("L1", "L7", "L9"),
+    "recovery": ("L1", "L2", "L9", "L10"),
+    "panel": ("L3", "L5", "L6", "L8", "L11"),
+    "refuted": ("L3", "L8"),
+    "redesign": ("L2", "L3", "L4", "L5", "L6", "L12"),
+    "cap": ("L2", "L3", "L5", "L16"),
+    "fix-routing": ("L2", "L3", "L5", "L6", "L11", "L12"),
+    "rebase": ("L10", "L14"),
+    "ship": ("L1", "L3"),
+    "blocker": ("L13", "L14", "L16"),
+}
+LENS_PROGRAM_GATES = ("charter", "roadmap")
+LENS_EVENT_PREFIX = "lenses "
+LENS_ENFORCEMENT_PATTERN = re.compile(r"(?m)^Decision lenses:[ \t]*(?P<value>enforced|off)\b")
+LENS_MILESTONE_BOUNDARIES = ("archive preflight passed; shipment recorded", "milestone abandoned: ")
+LENS_RECOVERY_RECORD = "build recovery: "
+_LENS_EVENT_RE = re.compile(
+    r"^lenses (?P<gate>[a-z-]+)"
+    r"(?: (?P<scope>wave [1-9]\d* cycle [1-9]\d*|member [a-z0-9][a-z0-9._-]* base [0-9a-f]{12}))?"
+    r": fired (?P<fired>none|L\d+=[a-z-]+(?:, L\d+=[a-z-]+)*)"
+    r"; blocked (?P<blocked>none|L\d+(?:, L\d+)*)"
+    r"; no-signal (?P<quiet>none|L\d+(?:, L\d+)*)$"
+)
+
+
+class LensEventError(ValueError):
+    """A Log event that starts like a lens event but breaks its grammar or its gate's lens set."""
+
+
+class LensEvent(tuple):
+    """(gate, scope, fired, blocked, no_signal); fired is a tuple of (lens, verdict)."""
+
+    __slots__ = ()
+
+    def __new__(cls, gate: str, scope: str, fired, blocked, no_signal):
+        return super().__new__(cls, (gate, scope, tuple(fired), tuple(blocked), tuple(no_signal)))
+
+    gate = property(lambda self: self[0])
+    scope = property(lambda self: self[1])
+    fired = property(lambda self: self[2])
+    blocked = property(lambda self: self[3])
+    no_signal = property(lambda self: self[4])
+
+    def requests_redesign(self, lenses: Optional[Iterable[str]] = None) -> bool:
+        """True when a fired lens (optionally one of ``lenses``) recommends redesign or fail-closed."""
+        wanted = set(lenses) if lenses is not None else None
+        return any(verdict in LENS_REDESIGN_VERDICTS and (wanted is None or lens in wanted)
+                   for lens, verdict in self.fired)
+
+
+def lens_scope_wave(wave: int, cycle: int) -> str:
+    return f"wave {int(wave)} cycle {int(cycle)}"
+
+
+def lens_scope_member(member: str, base: str) -> str:
+    return f"member {member} base {base[:12]}"
+
+
+def format_lens_event(
+    gate: str,
+    scope: str = "",
+    fired: Sequence[Tuple[str, str]] = (),
+    blocked: Sequence[str] = (),
+    no_signal: Sequence[str] = (),
+) -> str:
+    """The canonical event text; raises LensEventError unless it parses back to the same event."""
+    fired_text = ", ".join(f"{lens}={verdict}" for lens, verdict in fired) or "none"
+    blocked_text = ", ".join(blocked) or "none"
+    quiet_text = ", ".join(no_signal) or "none"
+    head = f"{LENS_EVENT_PREFIX}{gate}" + (f" {scope}" if scope else "")
+    event = f"{head}: fired {fired_text}; blocked {blocked_text}; no-signal {quiet_text}"
+    parse_lens_event(event)
+    return event
+
+
+def parse_lens_event(event: str) -> Optional[LensEvent]:
+    """Parse one Log event. None when it is not a lens event; LensEventError when it is malformed."""
+    if not event.startswith(LENS_EVENT_PREFIX):
+        return None
+    match = _LENS_EVENT_RE.match(event)
+    if not match:
+        raise LensEventError(f"lens event does not match the recording grammar: {event}")
+    gate = match["gate"]
+    if gate not in LENS_GATES:
+        raise LensEventError(f"lens event names an unknown gate `{gate}`")
+    scope = match["scope"] or ""
+    fired = [] if match["fired"] == "none" else [
+        tuple(item.split("=", 1)) for item in match["fired"].split(", ")]
+    blocked = [] if match["blocked"] == "none" else match["blocked"].split(", ")
+    quiet = [] if match["quiet"] == "none" else match["quiet"].split(", ")
+    for _, verdict in fired:
+        if verdict not in LENS_VERDICTS:
+            raise LensEventError(f"lens event uses unknown verdict `{verdict}`")
+    answered = [lens for lens, _ in fired] + blocked + quiet
+    unknown = [lens for lens in answered if lens not in LENS_IDS]
+    if unknown:
+        raise LensEventError(f"lens event names unknown lenses: {', '.join(unknown)}")
+    if len(set(answered)) != len(answered):
+        raise LensEventError("lens event answers a lens more than once")
+    expected = set(LENS_GATES[gate])
+    if set(answered) != expected:
+        missing = sorted(expected - set(answered), key=LENS_IDS.index)
+        extra = sorted(set(answered) - expected, key=LENS_IDS.index)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if extra:
+            details.append(f"not at this gate {', '.join(extra)}")
+        raise LensEventError(f"lens event for gate `{gate}` must answer exactly its lenses ({'; '.join(details)})")
+    return LensEvent(gate, scope, fired, blocked, quiet)
+
+
+def lens_enforced(text: Optional[str]) -> bool:
+    """True when INTENT.md or CHARTER.md text declares `Decision lenses: enforced`."""
+    if not text:
+        return False
+    match = LENS_ENFORCEMENT_PATTERN.search(text)
+    return bool(match) and match["value"] == "enforced"
+
+
+def lens_enforced_for(project_dir: Path, gate: str) -> bool:
+    """Whether this project's governing file enforces lenses for ``gate``.
+
+    Program gates read CHARTER.md; every other gate reads the milestone INTENT.md of the
+    routed track (``project_dir`` is `.project` or `.project/next`).
+    """
+    path = project_dir / ("CHARTER.md" if gate in LENS_PROGRAM_GATES else "intent/INTENT.md")
+    if gate in LENS_PROGRAM_GATES and not path.is_file() and project_dir.name == "next":
+        path = project_dir.parent / "CHARTER.md"
+    try:
+        return lens_enforced(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def milestone_log_events(events: Sequence[str]) -> List[str]:
+    """Log events after the last shipment or abandon event: the current milestone's history."""
+    start = 0
+    for index, event in enumerate(events):
+        if event.startswith(LENS_MILESTONE_BOUNDARIES):
+            start = index + 1
+    return list(events[start:])
+
+
+def lens_requirement(
+    events: Sequence[str],
+    gate: str,
+    scope: str = "",
+    consumed: Sequence[str] = (),
+    after_recovery: bool = False,
+) -> Optional[str]:
+    """None when a valid lens event for ``gate``/``scope`` is fresh, else the refusal message.
+
+    ``events`` are Log events (text after the second ` — `). Fresh means: in the current
+    milestone, after the last event starting with any ``consumed`` prefix (the previous decision
+    of this gate and scope), and, when ``after_recovery``, after the last build recovery marker.
+    """
+    if gate not in LENS_GATES:
+        raise LensEventError(f"unknown lens gate `{gate}`")
+    history = milestone_log_events(events)
+    floor = -1
+    for index, event in enumerate(history):
+        if any(event.startswith(prefix) for prefix in consumed):
+            floor = index
+        if after_recovery and event.startswith(LENS_RECOVERY_RECORD):
+            floor = max(floor, index)
+    for event in history[floor + 1:]:
+        try:
+            parsed = parse_lens_event(event)
+        except LensEventError as error:
+            return f"decision lenses: {error}"
+        if parsed and parsed.gate == gate and parsed.scope == scope:
+            return None
+    target = f"`{LENS_EVENT_PREFIX}{gate}" + (f" {scope}" if scope else "") + ": …`"
+    return (f"decision lenses: record {target} in the STATE.md Log before this decision "
+            "(skills/gsd-path/references/decision-lenses.md)")
+
+
+def latest_lens_event(events: Sequence[str], gate: str, scope: str = "",
+                      after_recovery: bool = False) -> Optional[LensEvent]:
+    """The last valid lens event for ``gate``/``scope`` in the current milestone (malformed ones skipped)."""
+    found: Optional[LensEvent] = None
+    for event in milestone_log_events(events):
+        if after_recovery and event.startswith(LENS_RECOVERY_RECORD):
+            found = None
+            continue
+        try:
+            parsed = parse_lens_event(event)
+        except LensEventError:
+            continue
+        if parsed and parsed.gate == gate and parsed.scope == scope:
+            found = parsed
+    return found

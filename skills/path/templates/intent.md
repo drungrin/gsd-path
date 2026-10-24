@@ -25,6 +25,12 @@ Finding skeptics: off   <!-- off | on — build spawns one read-only skeptic
                       the user explicitly overrides all cycle refutations.
                       off is the default. Quick lane stays off. -->
 
+Decision lenses: enforced   <!-- enforced | off — helpers refuse an owner
+                      decision listed in references/decision-lenses.md
+                      until its `lenses` Log event is recorded. enforced is
+                      the default; off only on the user's word, recorded
+                      under Corrections. -->
+
 Surfaces: none   <!-- none | comma-separated list of the human-facing
                       surfaces this milestone delivers: a web app, a CLI, an
                       HTTP API. Anything a person opens, sees, or types into

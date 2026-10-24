@@ -152,7 +152,10 @@ precondition fails.
    `Approve roadmap and inspect <selected-milestone> (recommended)` first.
    Otherwise list `Approve roadmap and start the first
    pending milestone (recommended)` first. In every case, list `Request
-   changes` as the alternative. If the user requests changes,
+   changes` as the alternative. Before asking, answer the `roadmap` lenses
+   from [decision lenses](references/decision-lenses.md) and record the
+   `lenses` Log event; a lens may change which option is recommended and
+   why, and `approve` refuses an enforced CHARTER without the event. If the user requests changes,
    retain the entering state for a milestone-boundary re-slice; otherwise keep
    `phase: roadmap`, `status: active`. Retain the baseline, revise, and re-gate
    against that same baseline.

@@ -260,7 +260,11 @@ as stated in Lookahead mode.
    as the alternative. When `Actionable` is greater than 0, list `Address
    panel findings first (recommended)` first, then `Approve and start build`,
    then `Request changes`. Link the applicable `<track>/review/PLAN-PANEL.md`
-   or skipped receipt. If the user
+   or skipped receipt. Before asking, answer the `plan` lenses (`patch` in
+   patch mode) from [decision lenses](references/decision-lenses.md) and
+   record the `lenses` Log event; a lens may change which option is
+   recommended and its reason, and `approve` refuses an enforced milestone
+   without the event. If the user
    requests changes, keep `phase: plan`, `status: active`, revise, and re-gate.
 6. On approval in an established repository, record the exact full current
    HEAD before changing approval metadata, then run:

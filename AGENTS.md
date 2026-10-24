@@ -184,6 +184,10 @@ full-repo suite on a tiny edit outrank the phase brief.
   intent, or the codebase, followed by the real alternatives. A pure values
   call with no evidence either way carries no recommendation; say so
   explicitly instead of inventing one.
+- At a decision listed in `references/decision-lenses.md`, answer that
+  gate's lenses and record the `lenses` Log event before naming the
+  recommended option. Lenses change only the recommendation, its reason, or
+  one added option; the security exception there overrides every lens.
 - After a user decision, confirm what changed, link the updated artifact again,
   and state whether the active router continues automatically or which exact
   explicit skill the user should invoke next.
@@ -195,6 +199,8 @@ Stop and ask the user only when:
 - proceeding would violate a hard constraint or veto;
 - the review loop reaches its cycle cap, or one review criterion keeps
   blocking after two failed fixes;
+- a `fix-routing` lens returns `redesign` or `fail-closed` (this asks the
+  existing redesign ruling before fix tasks are created);
 - a `NEEDS-USER` item reaches a phase checkpoint; or
 - sources of truth conflict and INTENT.md does not make the resolution clear.
 

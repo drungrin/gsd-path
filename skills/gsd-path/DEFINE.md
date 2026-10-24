@@ -324,6 +324,12 @@ show --repo <absolute-root>` (bundle for legacy projects; off for older selected
 runtimes without config support). Include that preference in the draft.
 Retain `Review panel:` as reviewed: the CHARTER copy, the explicit user choice,
 or the configured future preference. Quick lane keeps the panel off.
+Keep the template's `Decision lenses: enforced` (in program flow, the CHARTER
+value); write `off` only on the user's word, recorded under `## Corrections`.
+Before every approval question, answer the gate's lenses from
+[decision lenses](references/decision-lenses.md) — `define`, `corrections` in a
+Corrections pass, `charter` for CHARTER.md — and record the `lenses` Log event;
+the approval transition refuses an enforced milestone without it.
 
 When the active router recorded an `intent` pre-approval grant and the draft
 needs no answer from the user, run the router's `workflow_run.py preauthorize

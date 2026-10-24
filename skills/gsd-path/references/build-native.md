@@ -154,8 +154,11 @@ dispatch contract and perform steps 1–5 by hand.
    member PR's merge result fails the project's checks), only an explicit
    owner ruling may rebase that branch, and only the helper performs it. With
    no task in flight (`plan/active`, `plan/blocked`, `build/blocked`, or ship
-   before archive preparation), present the preview and ask for the ruling,
-   then apply it with the same arguments:
+   before archive preparation), present the preview, answer the `rebase`
+   lenses from [decision lenses](decision-lenses.md) for scope
+   `member <member> base <target sha12>`, record the `lenses` Log event, and
+   ask for the ruling with a recommendation, then apply it with the same
+   arguments (adoption refuses an enforced milestone without the event):
 
    ```text
    python3 <absolute isolation.py> adopt-member-rebase --repo <absolute primary> \
@@ -621,7 +624,9 @@ dispatch contract and perform steps 1–5 by hand.
      to the primary canonical path, then retire that sidecar. Rerun the
      helper; a locator refuted in an earlier cycle never gets a second
      skeptic, and the helper already routes it.
-   - `all_refuted` true: stop and ask. Present **Outcome** with the blocked
+   - `all_refuted` true: answer the `refuted` lenses for `wave <N> cycle
+     <C>` and record the `lenses` Log event, then stop and ask; a lens may
+     change the recommended option. Present **Outcome** with the blocked
      verdict and the refutation count, **Review** linking the lens and
      skeptic files, and **Next** listing `Re-run the review cycle with the
      skeptic files in the reviewer briefs (recommended — no finding survived
@@ -653,8 +658,10 @@ dispatch contract and perform steps 1–5 by hand.
      **Outcome** naming each criterion and how many cycles it blocked,
      **Review** linking the current review files and the earlier ones that
      `blocked_before` names, and **Next** listing
-     `Reconsider the component approach` and `Open fix tasks anyway`. Mark
-     one `(recommended)` only with a reason drawn from the review evidence.
+     `Reconsider the component approach` and `Open fix tasks anyway`. Before
+     asking, answer the `redesign` lenses for `wave <N> cycle <C>` and record
+     the `lenses` Log event. Mark one `(recommended)` only with a reason
+     drawn from the review evidence and those lenses.
      Record the ruling exactly as for an all-refuted ruling, appending
      `wave <N> cycle <C> redesign ruling: <selected option verbatim>` and
      checkpointing with subject `build: record wave <N> cycle <C> redesign
@@ -667,6 +674,12 @@ dispatch contract and perform steps 1–5 by hand.
      build recovery, or define-Corrections route. A build recovery starts
      a new ruling scope, because it numbers the changed wave from cycle 1
      again. After a crash, resume the recorded choice without asking again.
+   - Before `fix-tasks`, answer the `fix-routing` lenses for `wave <N> cycle
+     <C>` and record the `lenses` Log event; `fix-tasks` refuses an enforced
+     milestone without it. When a fired lens there returns `redesign` or
+     `fail-closed`, `fix-tasks` escalates even if no criterion blocked two
+     earlier cycles: ask the redesign question above and record its ruling
+     the same way. Only `Open fix tasks anyway` releases fix creation.
    - Otherwise batch `fix_batches` into complete fix tasks from the task
      template — one task per batch, never one per finding — each carrying
      its groups' failed criteria and observed evidence verbatim. Each batch
@@ -769,7 +782,12 @@ dispatch contract and perform steps 1–5 by hand.
    Log waiver — or, in program flow (ROADMAP.md exists), to abandon the
    milestone under the Milestone abandon procedure — listing the
    orchestrator's recommended option first marked `(recommended)` with a
-   one-line reason drawn from the review evidence. Never choose silently.
+   one-line reason drawn from the review evidence and the `cap` lenses for
+   `wave <N> cycle <C>`, whose `lenses` Log event is recorded first. Never
+   choose silently. Record the ruling as for an all-refuted ruling,
+   appending `wave <N> cycle <C> cap ruling: <selected option verbatim>` and
+   checkpointing with subject `build: record wave <N> cycle <C> cap ruling`,
+   body `Why: persist the cap ruling before acting`, and `Wave: <N>`.
    At the cap, or when the user selects `Reconsider the component approach`,
    first brief in chat: the existing invariant or contract; findings grouped
    by suspected design decision, marking uncertain grouping; accidental and
@@ -788,6 +806,15 @@ dispatch contract and perform steps 1–5 by hand.
    with the canonical pass plus the actionable count, **Review** linking the
    panel file, and **Next** listing `Open fix tasks from panel findings
    (recommended)` first, then `Advance and keep panel findings as warnings`.
+   Answer the `panel` lenses for `wave <N> cycle <C>` and record the
+   `lenses` Log event first. They may move the recommendation to the advance
+   option only when no finding's consequence reaches an approved criterion
+   or the security exception, judged by consequence and severity rather than
+   by reviewer agreement; say which findings. Record the ruling as for an
+   all-refuted ruling, appending `wave <N> cycle <C> panel ruling: <selected
+   option verbatim>` and checkpointing with subject `build: record wave <N>
+   cycle <C> panel ruling`, body `Why: persist the panel ruling before
+   acting`, and `Wave: <N>`.
    Preference-only panel warnings do not block advance. On pass, checkpoint
    the review artifact, the panel file when present, STATE.md, and wave
    bookkeeping, then report `wave N/M done, C review cycle(s)`.

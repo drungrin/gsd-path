@@ -172,6 +172,11 @@ native review procedure because the driver does not author that artifact.
 A failing helper stops the step: report stderr and run the forensics diagnostic
 under AGENTS.md. A live `in-flight` receipt is resumable work, not a failed helper.
 Apply owner budgets through the dispatch contract. Never infer a new limit.
+When a blocked task, helper failure, or publication block already needs an
+owner ruling, answer the `blocker` lenses from
+[decision lenses](references/decision-lenses.md) and record the `lenses` Log
+event before asking; prefer an already-authorized fallback at one seam over
+investigating a lower layer.
 
 ## Completion
 

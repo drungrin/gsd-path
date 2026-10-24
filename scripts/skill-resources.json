@@ -115,6 +115,7 @@
     "gsd-path-build": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "references/build-recovery.md",
       "references/build-native.md",
       "references/build-abandon.md",
@@ -136,12 +137,14 @@
     "gsd-path-discuss": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "templates/answers.md",
       "templates/dialogue.md"
     ],
     "gsd-path-docs-audit": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "references/dispatch.md",
       "references/model-policy.md",
       "references/docs-auditor.md",
@@ -150,6 +153,7 @@
     "gsd-path-define": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "references/build-recovery.md",
       "references/spec-probes.md",
       "templates/charter.md",
@@ -159,6 +163,7 @@
     "gsd-path-inspect": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "references/codebase-mapper.md",
       "references/dispatch.md",
       "references/model-policy.md",
@@ -167,16 +172,18 @@
       "templates/docs-audit.md",
       "templates/state.md"
     ],
-    "gsd-path-forensics": ["references/runtime-selection.md", "references/operating-rules.md"],
-    "gsd-path-migrate": ["references/runtime-selection.md", "references/operating-rules.md"],
+    "gsd-path-forensics": ["references/runtime-selection.md", "references/operating-rules.md", "references/decision-lenses.md"],
+    "gsd-path-migrate": ["references/runtime-selection.md", "references/operating-rules.md", "references/decision-lenses.md"],
     "gsd-path-loop": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "templates/loop.md"
     ],
     "gsd-path-plan": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "references/build-recovery.md",
       "references/dispatch.md",
       "references/model-policy.md",
@@ -190,6 +197,7 @@
     "gsd-path-research": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "references/dispatch.md",
       "references/model-policy.md",
       "references/researcher.md",
@@ -199,6 +207,7 @@
     "gsd-path-roadmap": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "references/dispatch.md",
       "references/model-policy.md",
       "references/roadmapper.md",
@@ -207,6 +216,7 @@
     "gsd-path-ship": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "references/dispatch.md",
       "references/model-policy.md",
       "references/reviewer.md",
@@ -226,12 +236,13 @@
     "gsd-path-decide": [
       "references/runtime-selection.md",
       "references/operating-rules.md",
+      "references/decision-lenses.md",
       "references/dispatch.md",
       "references/model-policy.md",
       "references/decider.md",
       "templates/synthesis.md"
     ],
-    "gsd-path-undo": ["references/runtime-selection.md", "references/operating-rules.md"]
+    "gsd-path-undo": ["references/runtime-selection.md", "references/operating-rules.md", "references/decision-lenses.md"]
   },
   "script_targets": [
     ["scripts/coordinator_migration.py", "skills/gsd-path/scripts/coordinator_migration.py"],

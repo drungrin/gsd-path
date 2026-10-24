@@ -12,6 +12,12 @@ Review panel: off   <!-- off | detected | claude,gpt,grok,composer,gemini,
                       may override it. off is the default. Named values
                       name at most 3 families. -->
 
+Decision lenses: enforced   <!-- enforced | off — helpers refuse the
+                      charter and roadmap decisions until their `lenses`
+                      Log event is recorded. Milestone INTENT copies this
+                      value. enforced is the default; off only on the
+                      user's word. -->
+
 ## Vision
 
 <2–4 sentences: the program's end state and why it matters.>

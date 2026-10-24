@@ -203,12 +203,15 @@ so the position is unchanged. Then:
    The patch build commits this prior finding set with the approved patch
    artifacts before execution.
 7. Only when every criterion is `met`, every gap passes, project Verify passes,
-   and no required discussion follow-up is pending, keep STATE.md at `phase:
+   and no required discussion follow-up is pending, answer the `ship` lenses
+   from [decision lenses](references/decision-lenses.md) and record the
+   `lenses` Log event, then keep STATE.md at `phase:
    ship`, `status: active`, append `final gate passed; shipping approval
    pending`. Present **Outcome** with the final verdict, **Review** linking the
    resolved absolute FINAL.md path and summarizing the gap artifacts, and
    **Next** asking whether to `Archive and ship (recommended)` or `Stop for
-   review`. The recommendation is grounded in the passing gates. Begin the
+   review`. The recommendation is grounded in the passing gates and the
+   `ship` lenses; a lens may change it. Begin the
    transaction below only after approval; declining leaves review active and
    makes no archive mutation. Do not mark or report `shipped` yet.
 
