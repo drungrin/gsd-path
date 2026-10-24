@@ -12,8 +12,9 @@ forward across cycles, batches fix-task groups by repo and disjoint file
 scope, keeps structural blockers out of skeptic accounting, and reports
 whether the cycle cap is reached. Blocked cycles that a build recovery set
 aside still count toward that cap, and a criterion that keeps blocking asks
-for a redesign ruling before another fix task. It never decides the wave
-verdict.
+for a redesign ruling before another fix task, as does a recorded fix-routing
+decision lens that recommends redesign or fail-closed. It never decides the
+wave verdict.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ import sys
 # Runtime helpers must not modify their immutable installation.
 sys.dont_write_bytecode = True
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 try:
     from . import _common
@@ -517,6 +518,11 @@ def _state_log(project: Path) -> List[str]:
     return _read(state, "STATE.md").splitlines() if state.is_file() else []
 
 
+def _log_events(lines: Sequence[str]) -> List[str]:
+    """Log event texts after the date and phase, split as pipeline_state._log_events splits them."""
+    return [line.split(" — ", 2)[-1] for line in lines if line.startswith("- ") and " — " in line]
+
+
 def _recovery_bases(project: Path) -> List[str]:
     """Build recovery bases in the order the STATE.md Log records them."""
     bases: List[str] = []
@@ -584,16 +590,21 @@ def review_history(repo: Path, project: Path, wave: int, cycle: int, tasks: Dict
     return {"prior_blocked": prior, "effective_cycle": prior + cycle, "cycles": entries}
 
 
-def redesign_ruling(repo: Path, project: Path, wave: int, cycle: int) -> Optional[str]:
+def redesign_ruling(repo: Path, project: Path, wave: int, cycle: int,
+                    reset: Optional[Callable[[str], bool]] = None) -> Optional[str]:
     """The committed ruling on this cycle since the latest build recovery, unchanged in the working STATE.
 
     A recovery numbers a changed wave from cycle 1 again, so a ruling recorded before it names another review.
+    ``reset`` marks other Log events that start a new ruling scope; only a ruling after the latest counts.
     """
     marker = f"wave {wave} cycle {cycle} redesign ruling: "
 
     def last(lines):
         recovery, ruling = None, None
         for line in lines:
+            if reset is not None and any(reset(event) for event in _log_events([line])):
+                recovery, ruling = line, None
+                continue
             event = re.match(r"^- \d{4}-\d{2}-\d{2} — (?:build|define|plan) — (.*)$", line)
             if not event:
                 continue
@@ -611,6 +622,47 @@ def redesign_ruling(repo: Path, project: Path, wave: int, cycle: int) -> Optiona
     if last(current) != committed_event:
         return None
     return committed_event[1]
+
+
+def _opens_fix_tasks(ruling: Optional[str]) -> bool:
+    return ruling == REDESIGN_OPEN or (ruling or "").startswith(REDESIGN_OPEN + " (")
+
+
+def lens_redesign(repo: Path, project: Path, wave: int, cycle: int) -> dict:
+    """A recorded fix-routing lens that recommends redesign or fail-closed holds fix tasks for the redesign ruling.
+
+    Any such `lenses fix-routing wave N cycle C` event of this milestone since the latest build recovery, in
+    the working or the committed STATE.md, counts; a later lens event never withdraws it. Only an `Open fix
+    tasks anyway` redesign ruling recorded after the latest such event, committed and unchanged, releases it.
+    """
+    scope = _common.lens_scope_wave(wave, cycle)
+
+    def fire(event: str) -> Optional[_common.LensEvent]:
+        try:
+            parsed = _common.parse_lens_event(event)
+        except _common.LensEventError:
+            return None
+        if parsed and parsed.gate == "fix-routing" and parsed.scope == scope and parsed.requests_redesign():
+            return parsed
+        return None
+
+    def fires(lines: Sequence[str]) -> List[_common.LensEvent]:
+        found: List[_common.LensEvent] = []
+        for event in _common.milestone_log_events(_log_events(lines)):
+            if event.startswith(RECOVERY_RECORD):
+                found = []
+            elif (parsed := fire(event)) is not None:
+                found.append(parsed)
+        return found
+
+    recorded = _common.run_git(repo, "show", f"HEAD:{(project / 'STATE.md').relative_to(repo).as_posix()}")
+    fired = fires(_state_log(project)) or fires(recorded.stdout.splitlines() if recorded.returncode == 0 else [])
+    ruling = redesign_ruling(repo, project, wave, cycle, reset=lambda event: fire(event) is not None) if fired else None
+    return {
+        "lenses": [{"lens": lens, "verdict": verdict} for lens, verdict in fired[-1].fired
+                   if verdict in _common.LENS_REDESIGN_VERDICTS] if fired else [],
+        "pending": bool(fired) and not _opens_fix_tasks(ruling),
+    }
 
 
 def _fix_batches(groups: Sequence[dict], tasks: Dict[str, dict]) -> List[dict]:
@@ -746,6 +798,7 @@ def compute(
                  "blocked_before": blocked_before[group["locator"]]}
                 for group in fix_groups if len(blocked_before.get(group["locator"], [])) >= REDESIGN_AFTER_BLOCKS]
     ruling = redesign_ruling(repo, project, wave, cycle) if redesign else None
+    lenses = lens_redesign(repo, project, wave, cycle)
     return {
         "status": "ok",
         "wave": wave,
@@ -771,8 +824,10 @@ def compute(
         "history": history,
         "redesign": redesign,
         "redesign_ruling": ruling,
-        "redesign_pending": bool(redesign) and not (
-            ruling == REDESIGN_OPEN or (ruling or "").startswith(REDESIGN_OPEN + " (")),
+        "redesign_pending": bool(redesign) and not _opens_fix_tasks(ruling),
+        # M8: a fix-routing lens fire asks the same redesign question even when `redesign` is empty.
+        "lens_redesign": lenses["lenses"],
+        "lens_redesign_pending": lenses["pending"],
     }
 
 

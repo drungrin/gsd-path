@@ -2473,6 +2473,92 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(again["status"], "exists", again)
         self.assertEqual(again["created"], [])
 
+    @staticmethod
+    def fix_routing_lens(cycle: int = 1, fired=()) -> str:
+        verdicts = dict(fired)
+        return _common.format_lens_event(
+            "fix-routing", _common.lens_scope_wave(1, cycle), fired=list(fired),
+            no_signal=[lens for lens in _common.LENS_GATES["fix-routing"] if lens not in verdicts])
+
+    def log(self, root: Path, *events: str, commit: str = "") -> None:
+        state = root / ".project/STATE.md"
+        state.write_text(state.read_text(encoding="utf-8")
+                         + "".join(f"- 2026-10-24 — build — {event}\n" for event in events), encoding="utf-8")
+        if commit:
+            run_git(root, "add", ".project/STATE.md")
+            run_git(root, "commit", "-qm", commit)
+
+    def blocked_cycle(self, root: Path, enforced: bool = False) -> None:
+        self.fixture(root)
+        if enforced:
+            intent = root / ".project/intent/INTENT.md"
+            intent.write_text(intent.read_text(encoding="utf-8").replace(
+                "Surfaces: none\n", "Surfaces: none\nDecision lenses: enforced\n"), encoding="utf-8")
+            run_git(root, "commit", "-qam", "fixture: enforce decision lenses")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60", verdict="blocked")["status"], "blocked")
+
+    def test_enforced_fix_tasks_requires_a_fresh_fix_routing_lens_event(self) -> None:
+        root = self.root
+        self.blocked_cycle(root, enforced=True)
+        head, tasks = self.head(root), sorted((root / ".project/tasks").iterdir())
+        plan = (root / ".project/plan/PLAN.md").read_bytes()
+        for events in ((), (self.fix_routing_lens(cycle=2),)):
+            with self.subTest(events=events):
+                self.log(root, *events)
+                receipt = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+                self.assertEqual(receipt["status"], "blocked", receipt)
+                self.assertIn("record `lenses fix-routing wave 1 cycle 1: …` in the STATE.md Log",
+                              receipt["blocked"][0]["reason"])
+                self.assertEqual(receipt["created"], [])
+                self.assertEqual(self.head(root), head)
+                self.assertEqual(sorted((root / ".project/tasks").iterdir()), tasks)
+                self.assertEqual((root / ".project/plan/PLAN.md").read_bytes(), plan)
+        event = self.fix_routing_lens(fired=[("L12", "keep")])
+        self.log(root, event)
+        receipt = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+        self.assertEqual(receipt["status"], "created", receipt)
+        self.assertEqual([item["task"] for item in receipt["created"]], ["T003"])
+        self.assertIn(event, run_git(root, "show", "HEAD:.project/STATE.md").stdout)
+        # A retry reuses the committed lens event of this decision.
+        again = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+        self.assertEqual(again["status"], "exists", again)
+
+    def test_fix_tasks_holds_a_recorded_lens_redesign_until_the_open_ruling_is_committed(self) -> None:
+        root = self.root
+        self.blocked_cycle(root)
+        tasks = sorted((root / ".project/tasks").iterdir())
+        self.log(root, self.fix_routing_lens(fired=[("L12", "redesign")]),
+                 commit="build: record wave 1 cycle 1 fix-routing lenses")
+        for ruling, commit in ((None, ""),
+                               ("Reconsider the component approach", "build: record wave 1 cycle 1 redesign ruling"),
+                               ("Open fix tasks anyway", "")):
+            with self.subTest(ruling=ruling, committed=bool(commit)):
+                if ruling:
+                    self.log(root, f"wave 1 cycle 1 redesign ruling: {ruling}", commit=commit)
+                head = self.head(root)
+                receipt = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+                self.assertEqual((receipt["status"], receipt["escalation"]), ("escalate", ["lens_redesign_pending"]))
+                self.assertEqual((receipt["findings"]["redesign"], receipt["findings"]["redesign_pending"]), ([], False))
+                self.assertEqual(receipt["findings"]["lens_redesign"], [{"lens": "L12", "verdict": "redesign"}])
+                self.assertEqual(self.head(root), head)
+                self.assertEqual(sorted((root / ".project/tasks").iterdir()), tasks)
+        run_git(root, "commit", "-qam", "build: record wave 1 cycle 1 redesign ruling")
+        receipt = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+        self.assertEqual(receipt["status"], "created", receipt)
+        self.assertFalse(receipt["findings"]["lens_redesign_pending"])
+        again = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+        self.assertEqual(again["status"], "exists", again)
+
+    def test_existing_escalations_keep_precedence_over_a_lens_redesign(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.log(root, self.fix_routing_lens(fired=[("L3", "fail-closed")]))
+        receipt = self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")
+        self.assertEqual((receipt["status"], receipt["escalation"]),
+                         ("escalate", ["structural_blockers", "lens_redesign_pending"]))
+
     def test_current_product_review_pins_and_validates_its_actual_scope(self) -> None:
         root = self.root
         self.fixture(root)

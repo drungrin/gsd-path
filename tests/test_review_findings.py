@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "review_findings.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import _common  # noqa: E402
 import review_findings  # noqa: E402
 
 PLAN = """# Plan — demo
@@ -749,6 +750,113 @@ class RecoveryHistoryTest(unittest.TestCase):
         self.assertEqual((refuted["refuted_groups"], refuted["redesign"], refuted["redesign_pending"]),
                          (["t001_ac1"], [], False))
         self.assertTrue(refuted["all_refuted"])
+
+
+def lens_event(gate, cycle=1, fired=()):
+    """A decision lens event for wave 1: ``fired`` lenses with their verdicts, every other lens quiet."""
+    verdicts = dict(fired)
+    return _common.format_lens_event(gate, _common.lens_scope_wave(1, cycle), fired=list(fired),
+                                     no_signal=[lens for lens in _common.LENS_GATES[gate] if lens not in verdicts])
+
+
+FIRE = lens_event("fix-routing", fired=[("L12", "redesign")])
+
+
+class LensRedesignTest(unittest.TestCase):
+    """M8: a recorded fix-routing lens that recommends redesign holds fix tasks for the redesign ruling."""
+
+    fixture = RecoveryHistoryTest.fixture
+    full = RecoveryHistoryTest.full
+    backup = RecoveryHistoryTest.backup
+    state = RecoveryHistoryTest.state
+    recovery = staticmethod(RecoveryHistoryTest.recovery)
+    criterion_blocked_three_times = RecoveryHistoryTest.criterion_blocked_three_times
+
+    def blocked_once(self):
+        """Cycle 1 blocks t001_ac1 for the first time: a fix group without a recurrence-derived redesign."""
+        fixture = self.fixture(cycles=5)
+        self.full(fixture, fixture.project / "review", 1, t001_fails=[PARSES.format("no")])
+        return fixture
+
+    def test_a_recorded_redesign_or_fail_closed_fire_asks_even_without_recurrence(self):
+        fixture = self.blocked_once()
+        _, before = fixture.run()
+        self.assertEqual((before["fix_groups"], before["redesign"], before["lens_redesign"],
+                          before["lens_redesign_pending"]), (["t001_ac1"], [], [], False))
+        for fired, pending in (
+            ((), False),
+            ((("L12", "keep"), ("L3", "narrow")), False),
+            ((("L12", "redesign"),), True),
+            ((("L3", "fail-closed"), ("L6", "add-option")), True),
+        ):
+            with self.subTest(fired=fired):
+                self.state(fixture, "build started", lens_event("fix-routing", fired=fired))
+                code, result = fixture.run()
+                self.assertEqual(code, 0, result)
+                self.assertEqual((result["redesign"], result["redesign_pending"]), ([], False))
+                self.assertEqual(result["lens_redesign_pending"], pending)
+                self.assertEqual(result["lens_redesign"], [{"lens": lens, "verdict": verdict} for lens, verdict in fired
+                                                           if verdict in ("redesign", "fail-closed")])
+        # The working file counts before its checkpoint, and a committed fire still counts once dropped from it.
+        self.state(fixture, "build started")
+        self.state(fixture, "build started", FIRE, commit=False)
+        self.assertTrue(fixture.run()[1]["lens_redesign_pending"])
+        self.state(fixture, "build started", FIRE)
+        self.state(fixture, "build started", commit=False)
+        self.assertTrue(fixture.run()[1]["lens_redesign_pending"])
+
+    def test_only_a_committed_open_ruling_after_the_latest_fire_releases_fix_tasks(self):
+        fixture = self.blocked_once()
+        open_ruling = "wave 1 cycle 1 redesign ruling: Open fix tasks anyway"
+        reconsider = "wave 1 cycle 1 redesign ruling: Reconsider the component approach"
+        quiet = lens_event("fix-routing")
+        for name, events, pending in (
+            ("open", (FIRE, open_ruling), False),
+            ("open with a recommendation", (FIRE, open_ruling + " (recommended — the counterexamples are real)"), False),
+            ("open, then a quiet lens", (FIRE, open_ruling, quiet), False),
+            ("fire before the latest recovery", (FIRE, self.recovery(A_BASE)), False),
+            ("fire in an earlier milestone", (FIRE, "archive preflight passed; shipment recorded"), False),
+            ("fire for another cycle", (lens_event("fix-routing", cycle=2, fired=[("L12", "redesign")]),), False),
+            ("fire at another gate", (lens_event("redesign", fired=[("L12", "redesign")]),), False),
+            ("reconsider", (FIRE, reconsider), True),
+            ("missing", (FIRE,), True),
+            ("a later quiet lens does not withdraw the fire", (FIRE, quiet), True),
+            ("open for another cycle", (FIRE, "wave 1 cycle 2 redesign ruling: Open fix tasks anyway"), True),
+            ("open before the fire", (open_ruling, FIRE), True),
+            ("open before the latest fire", (FIRE, open_ruling, FIRE), True),
+            ("open before the latest recovery", (FIRE, open_ruling, self.recovery(A_BASE), FIRE), True),
+            ("not the open choice", (FIRE, open_ruling + "-never"), True),
+        ):
+            with self.subTest(name):
+                self.state(fixture, *events)
+                self.assertEqual(fixture.run()[1]["lens_redesign_pending"], pending)
+        for committed, working in (((FIRE,), (FIRE, open_ruling)),
+                                   ((FIRE, reconsider), (FIRE, open_ruling)),
+                                   ((FIRE, open_ruling), (FIRE, reconsider)),
+                                   ((FIRE, open_ruling), (FIRE, open_ruling, FIRE))):
+            with self.subTest(committed=committed, working=working):
+                self.state(fixture, *committed)
+                self.state(fixture, *working, commit=False)
+                self.assertTrue(fixture.run()[1]["lens_redesign_pending"])
+        self.state(fixture, FIRE, open_ruling)
+        self.assertEqual([fixture.run()[1]["lens_redesign_pending"] for _ in range(2)], [False, False])
+
+    def test_lens_events_leave_the_redesign_ruling_and_recovery_history_unchanged(self):
+        fixture = self.criterion_blocked_three_times()
+        open_ruling = "wave 1 cycle 2 redesign ruling: Open fix tasks anyway"
+        self.state(fixture, self.recovery(A_BASE), open_ruling)
+        _, plain = fixture.run(cycle=2)
+        self.state(fixture, lens_event("recovery", cycle=1), self.recovery(A_BASE), lens_event("redesign", cycle=2),
+                   open_ruling, lens_event("fix-routing", cycle=2, fired=[("L12", "redesign")]),
+                   lens_event("cap", cycle=2, fired=[("L16", "fail-closed")]))
+        _, lensed = fixture.run(cycle=2)
+        self.assertEqual(review_findings._recovery_bases(fixture.project), [A_BASE])
+        self.assertEqual(review_findings.redesign_ruling(fixture.root, fixture.project, 1, 2), "Open fix tasks anyway")
+        for key in ("history", "cap_reached", "redesign", "redesign_ruling", "redesign_pending", "fix_batches"):
+            self.assertEqual(lensed[key], plain[key], key)
+        self.assertFalse(lensed["redesign_pending"])
+        # The fix-routing fire after that ruling asks the redesign question again on its own.
+        self.assertEqual((plain["lens_redesign_pending"], lensed["lens_redesign_pending"]), (False, True))
 
 
 class FixBatchRepoTest(unittest.TestCase):

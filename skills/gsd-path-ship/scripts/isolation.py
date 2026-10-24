@@ -6107,6 +6107,13 @@ def adopt_member_rebase(coordinator: Path, member: str, onto: str, ruling: str) 
     # create even the landing lock or fetch into the member before they pass.
     if not os.path.lexists(path):
         preview_member_rebase(coordinator, member, onto, ruling)
+        # Admission of a new adoption only: resuming a journaled one reuses the lens event it admitted.
+        project = coordinator / ".project"
+        if _common.lens_enforced_for(project, "rebase"):
+            requirement = _common.lens_requirement(
+                _state_log_events(project), "rebase", _common.lens_scope_member(member, onto))
+            if requirement:
+                raise MemberRebaseError("lens-required", requirement)
     with _member_landing_lock(coordinator):
         if os.path.lexists(path):
             journal = _read_member_rebase_journal(path)
@@ -6303,6 +6310,51 @@ def _committed_ship_active(repo: Path) -> bool:
     return fields.get("phase") == "ship" and fields.get("status") == "active"
 
 
+# Build step 7 ruling checkpoints: subject kind -> (decision lens gate, STATE ruling event label).
+BUILD_RULING_SUBJECT = re.compile(r"build: record wave (\d+) cycle (\d+) (skeptic|redesign|panel|cap) ruling")
+BUILD_RULING_GATES = {
+    "skeptic": ("refuted", "all-refuted"),
+    "redesign": ("redesign", "redesign"),
+    "panel": ("panel", "panel"),
+    "cap": ("cap", "cap"),
+}
+
+
+def _state_log_events(project: Path) -> list:
+    """The Log events of a track's working STATE.md, or none when it is absent."""
+    try:
+        text = (project / "STATE.md").read_text(encoding="utf-8")
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    return _pipeline_state_module()._log_events(text)
+
+
+def _build_ruling_lens_error(repo: Path, subject: str) -> Optional[str]:
+    """The decision-lens refusal for a build ruling checkpoint, or None.
+
+    The ruling being recorded is the last `wave N cycle C <label> ruling: ` event in
+    the working STATE.md since the latest build recovery; its lens event precedes it.
+    The lens event must follow the previous ruling of that scope and that recovery.
+    """
+    match = BUILD_RULING_SUBJECT.fullmatch(subject)
+    if not match:
+        return None
+    wave, cycle, kind = int(match.group(1)), int(match.group(2)), match.group(3)
+    gate, label = BUILD_RULING_GATES[kind]
+    project = repo / ".project"
+    if not _common.lens_enforced_for(project, gate):
+        return None
+    consumed = f"wave {wave} cycle {cycle} {label} ruling: "
+    history = _common.milestone_log_events(_state_log_events(project))
+    recovery = max((index for index, event in enumerate(history)
+                    if event.startswith(_common.LENS_RECOVERY_RECORD)), default=-1)
+    rulings = [index for index, event in enumerate(history) if index > recovery and event.startswith(consumed)]
+    if rulings:
+        history = history[: rulings[-1]]
+    return _common.lens_requirement(history, gate, _common.lens_scope_wave(wave, cycle),
+                                    consumed=(consumed,), after_recovery=True)
+
+
 def checkpoint(
     repo: Path,
     expected_head: str,
@@ -6358,6 +6410,9 @@ def checkpoint(
             "outputs uncommitted for archive_milestone.py, and send findings through "
             "the patch plan (see SHIP.md)"
         )
+    lens_error = _build_ruling_lens_error(repo, subject.strip())
+    if lens_error:
+        raise IsolationError(lens_error)
     pending = uncommitted_paths(repo)
     forced: Set[str] = set()
     # Build only: an approval undo resets to a parent without the ledger and would drop it.

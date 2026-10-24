@@ -2235,13 +2235,20 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
         findings = review_findings.compute(primary, options.project_dir, options.wave, options.cycle)
         receipt["findings"] = findings
         escalation = [key for key in ("structural_blockers", "skeptic_groups", "cap_reached", "all_refuted",
-                                      "redesign_pending") if findings.get(key)]
+                                      "redesign_pending", "lens_redesign_pending") if findings.get(key)]
         if escalation:  # step 7's branch table for these stays with the parent and the user
             receipt.update(status="escalate", escalation=escalation)
             return receipt
         if not findings.get("fix_batches"):
             receipt.update(status="none", reason="no fix batches")
             return receipt
+        if _common.lens_enforced_for(project, "fix-routing"):
+            state_path = project / "STATE.md"
+            events = pipeline_state._log_events(state_path.read_text(encoding="utf-8")) if state_path.is_file() else []
+            requirement = _common.lens_requirement(
+                events, "fix-routing", _common.lens_scope_wave(options.wave, options.cycle), after_recovery=True)
+            if requirement:
+                raise DriverStop(requirement)
         texts = contracts._task_texts(primary, options.project_dir)
         groups = {group["locator"]: group for group in findings["groups"]}
         today = now()[:10]
