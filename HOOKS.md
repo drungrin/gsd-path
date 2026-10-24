@@ -343,7 +343,10 @@ such as `rm -rf scratch` passes the archive check; other guard rules still apply
   `files:`, and a `Files:` list of exactly the staged paths. Outside build the
   reviewed HEAD is frozen; product fixes reopen through the patch plan.
   The validated integration merge is allowed to complete before publication
-  proof exists; an ordinary commit with an integration subject is not exempt
+  proof exists; an ordinary commit with an integration subject is not exempt.
+  After `bind-next` switches to the next bound branch, the uncommitted STATE
+  that binds it governs instead of the previous shipped one, whose validators
+  cannot run once its branches are retired
 - deleting the recorded branch or switching to another branch while carrying
   unfinished state does not release product commit protection
 - pushes (to any remote) that move a `feature/milestone-###` ref anywhere but its

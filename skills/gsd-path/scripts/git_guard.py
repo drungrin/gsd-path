@@ -227,6 +227,30 @@ def head_frontmatter():
     return None if content is None else frontmatter_of(content, "HEAD STATE.md")
 
 
+def worktree_frontmatter():
+    path = repo_root() / ".project" / "STATE.md"
+    return frontmatter_of(path.read_text(encoding="utf-8"), "STATE.md") if path.is_file() else None
+
+
+def governing_state(staged):
+    """The STATE a commit answers to: staged, else committed, else a fresh binding.
+
+    bind-next switches to the next bound branch before any phase commits the
+    new STATE, and the previous milestone's validators cannot run once its
+    branches are retired. That uncommitted binding governs instead.
+    """
+    if ".project/STATE.md" in staged:
+        return staged_frontmatter()
+    state = head_frontmatter()
+    if state is None or not shipped(state):
+        return state
+    binding = worktree_frontmatter()
+    if (binding is not None and unshipped_bound_branch(binding) == current_branch()
+            and binding.get("branch") != state.get("branch")):
+        return binding
+    return state
+
+
 def shipped(state):
     return (state.get("phase"), state.get("status")) == ("shipped", "done")
 
@@ -517,7 +541,7 @@ def product_commit_violations(entries, subject, body):
         return []
     # A commit that enters build must stay .project/-only, so the staged STATE
     # counts as much as the committed one.
-    state = staged_frontmatter() if ".project/STATE.md" in staged else head_frontmatter()
+    state = governing_state(staged)
     if state is None:
         return []
     if shipped(state):

@@ -867,6 +867,41 @@ class GitGuardEndToEndTests(unittest.TestCase):
         result = self.run_guard("chore: pin GSD Path runtime")
         self.assertEqual(0, result.returncode, result.stderr)
 
+    def test_uncommitted_next_milestone_binding_governs_after_bind_next(self):
+        self.git("branch", "-m", "feature/milestone-001")
+        (self.repo / ".project" / "STATE.md").write_bytes(
+            "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: mvp\nphase: shipped\nstatus: done\n"
+            "branch: feature/milestone-001\narchive: .project/archive/001-mvp\n---\n".encode("utf-8"),
+        )
+        self.git("add", "-A")
+        self.commit("ship: M001 — mvp")
+        # bind-next switches branches; the router writes the new STATE without a commit.
+        self.git("switch", "-q", "-c", "feature/milestone-002")
+        self.stage_installation()
+        binding = ("---\npipeline: gsd-path/v2\nproject: demo\nmilestone: next\nphase: inspect\n"
+                   "status: active\nbranch: feature/milestone-002\narchive: null\n---\n")
+        (self.repo / ".project" / "STATE.md").write_bytes(binding.encode("utf-8"))
+        result = self.run_guard("chore: upgrade GSD Path runtime to 1.6.2.24")
+        self.assertEqual(0, result.returncode, result.stderr)
+        pre_commit = subprocess.run(
+            [sys.executable, str(SCRIPT), "pre-commit"],
+            cwd=self.repo, capture_output=True, encoding="utf-8", errors="replace",
+        )
+        self.assertEqual(0, pre_commit.returncode, pre_commit.stderr)
+        (self.repo / "app.py").write_bytes("print('landed')\n".encode("utf-8"))
+        self.git("add", "--", "app.py")
+        product = self.run_guard("feat: change app")
+        self.assertEqual(1, product.returncode)
+        self.assertIn("STATE is inspect", product.stderr)
+        # A binding for another branch never displaces the committed shipped STATE.
+        self.git("restore", "--staged", "app.py")
+        self.git("checkout", "--", "app.py")
+        (self.repo / ".project" / "STATE.md").write_bytes(
+            binding.replace("feature/milestone-002", "feature/milestone-003").encode("utf-8"))
+        stray = self.run_guard("chore: upgrade GSD Path runtime to 1.6.2.24")
+        self.assertEqual(1, stray.returncode)
+        self.assertIn("milestone integration is unverified", stray.stderr)
+
     def test_installation_commits_never_carry_other_files(self):
         self.enter_build(phase="plan")
         for relative in (

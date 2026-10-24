@@ -408,8 +408,11 @@ unfinished, a project that also tracks its installed skills or contracts can
 commit them only until the milestone's first plan approval, and only when every
 staged path is installation output: GSD Path skills under a host's project
 skill root, `AGENTS.md`, `WORKFLOW.md`, `.claude/CLAUDE.md`,
-`.cursor/agents/gsd-path.md`, `.gsd-path/` and host hook settings. After that
-approval, upgrade such a project at the next milestone boundary. A local update
+`.cursor/agents/gsd-path.md`, `.gsd-path/` and host hook settings. This holds
+for the next milestone's inspect before any phase commits its binding: after
+`bind-next` switches branches, the uncommitted STATE governs, not the previous
+shipped one. After that approval, upgrade such a project at the next
+milestone boundary. A local update
 leaves the previous skills in `disabled-gsd-skills` beside the skill root; move
 that backup out of the worktree before the next approval, which refuses any
 change outside `.project/`. Existing versions remain available for other
