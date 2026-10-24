@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.20**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.21**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,94 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.21 — 2026-10-24
+
+Upstream package base remains `1.6.2`. The fork revision continues from 20 to 21.
+
+Implementation:
+[`db58f1c1 — add the decision lens event grammar and freshness check`](https://github.com/drungrin/gsd-path/commit/db58f1c1f7f08878770e7afa4bb84a297452f12f),
+[`2dd4e698 — add the decision lenses reference and wire it into every owner decision`](https://github.com/drungrin/gsd-path/commit/2dd4e6984a488f77640f5ee83cb2027a9ffa6296),
+[`30efed29 — refuse approvals without fresh decision lenses`](https://github.com/drungrin/gsd-path/commit/30efed29de26c294a0083aaf5b553fac2044a452),
+[`c7ecff76 — let approval undo accept the checkpoint's lens event`](https://github.com/drungrin/gsd-path/commit/c7ecff76e3ac1aa887715eb8013befafa1d00679),
+[`2eb23140 — require lens events at build ruling and rebase admission`](https://github.com/drungrin/gsd-path/commit/2eb23140d33c42f78cbf44e185a1d8156aa9890b),
+[`59000752 — route a fix-routing redesign fire to the redesign ruling`](https://github.com/drungrin/gsd-path/commit/59000752ba3ac0d6f4d37f7cfec53594a6eaa7ba),
+[`1ea442c5 — name the fix-routing escalation key in the build contract`](https://github.com/drungrin/gsd-path/commit/1ea442c57e4250e10b9f5c686bbc1b01e96fe997).
+
+Fix:
+[`e3d3a796 — let completion and archive accept repair waves judged by their source wave`](https://github.com/drungrin/gsd-path/commit/e3d3a7966498575cbabe130b5f609d8d12c5948c).
+
+### Decision lenses at owner decisions
+
+- Owner questions named a recommended option from habit or from mechanical
+  defaults: the ship question was grounded only in passing gates, plan and
+  panel questions recommended from an actionable count, and fix tasks were
+  routed silently until a criterion had blocked twice or the cycle cap was
+  reached. Nothing asked whether a decision was about to repair a proxy,
+  absorb unrelated work, or keep changing the same design assumption.
+- `references/decision-lenses.md` is a self-contained reference: sixteen
+  one-line questions named after laws of software, a security exception, a
+  precedence order, a gate table, and a closed Log event grammar
+  (`lenses <gate>[ <scope>]: fired …; blocked …; no-signal …`). Every gate
+  must answer exactly its lenses; the event carries no free text. It is
+  bundled with every skill that bundles the operating rules, and AGENTS.md,
+  the operating rules, define, decide, roadmap, plan, build, build recovery
+  and ship point to it.
+- Helpers refuse a decision without a fresh lens event when the milestone
+  INTENT.md (program gates: CHARTER.md) contains `Decision lenses: enforced`,
+  which new INTENT and CHARTER templates carry. Milestones without the line are
+  never refused. Enforced points: the INTENT, Corrections, CHARTER and
+  ship-pending transitions; plan, patch, roadmap and re-slice approvals; the
+  all-refuted, redesign, panel and cap ruling checkpoints; member rebase
+  adoption; and `fix-tasks`. A retry or resume reuses the recorded event.
+- Approval undo accepts exactly one valid lens event of the approval's own
+  gate immediately before the approval event; every other STATE.md
+  difference is still rejected.
+- A `fix-routing` lens with a `redesign` or `fail-closed` verdict makes
+  `collect` report `lens_redesign_pending`, and `fix-tasks` escalates to the
+  existing redesign question even when no criterion blocked twice. Only an
+  `Open fix tasks anyway` ruling recorded after the latest such event,
+  committed and unchanged, releases it. Existing escalation keys keep
+  precedence.
+- Panel-on-pass and cycle-cap rulings now have Log events
+  (`wave N cycle C panel ruling:` / `cap ruling:`) and checkpoint subjects.
+
+### Repair waves at build completion and archive
+
+- Upstream `ddc998bd` made a repair wave need no review of its own, because
+  the next review cycle of its source wave judges it, in `build_state.py`
+  and build-native.md. `review_cycle_counts`, which build completion and
+  archive use, still required a review file for every PLAN wave, so
+  completion stopped with "review cycle waves do not match PLAN.md" once
+  every task had landed. Upstream main has the same gap.
+- A wave whose tasks all carry `## Review findings` is now accepted without
+  its own review only when its fix-wave heading (`## Wave M — fix wave N
+  cycle C review findings`) or the repair receipts of all its tasks name one
+  earlier source cycle, and that source wave was reviewed again after it.
+  The source wave's last cycle must still pass. Such a wave reports 0 review
+  cycles in the completion receipt and the archive manifest. Any other
+  unreviewed wave fails as before. Native appended fix waves must use the
+  same heading.
+
+Validation: the canonical full Python suite passed (3,422 tests, 39 skipped)
+and Node passed 118 of 119 tests with one skipped; all 616 skill resources are
+synchronized and `git diff --check` passes. New tests cover the lens grammar,
+every helper-enforced gate (refusal, acceptance, stale events, retries and
+resumes, projects without the switch), the approval-undo proof, the
+fix-routing escalation and its release ruling, and the repair-wave rule; each
+behavior test fails without its change. On a project blocked at completion by
+two appended fix waves, the previous validator raised "review cycle waves do
+not match PLAN.md" and the new one accepted the waves as 3/2/1/0/0. Two
+cross-model review panels reviewed the design twice before implementation; no
+panel reviewed the code.
+
+Limits: the lens questions are advisory judgment; the helpers prove that a
+complete, fresh event was recorded, not that its answers are right. The
+`decide`, `recovery` and `blocker` gates are contract-only. Owner override
+records, the ship non-pass inventory, per-milestone file publication for
+review families without `end_turn`, and the alignment-queue decline record
+are planned for later releases. Live host scenarios were not run. No
+upstream submission has been made.
 
 ## 1.6.2.20 — 2026-10-22
 
