@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.21**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.22**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,40 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.22 — 2026-10-24
+
+Upstream package base remains `1.6.2`. The fork revision continues from 21 to 22.
+
+Fix:
+[`ddcae396 — let the ship editorial helper name the archive`](https://github.com/drungrin/gsd-path/commit/ddcae39635f4c65f97dc776bc0a12af142008b19).
+
+### Ship editorial step in archive context
+
+- Ship step 4 runs `pr_editorial.py context` and `prepare` with
+  `--archive .project/archive/<NNN>-<slug>`, the only archive form the helper
+  accepts. The guard admitted archive operands only for `pipeline_state.py`
+  and `archive_milestone.py`, so Claude Code refused the documented
+  editorial step ("commands run in archive context must be provably
+  read-only") and every pull-request ship stopped before preflight. Upstream
+  main has the same gap.
+- `pr_editorial.py` reads the archived evidence and writes only
+  `.project/publications/`, outside the archive. A new
+  `ARCHIVE_CONTEXT_HELPERS` set adds it to the pipeline helpers for the
+  archive-context check alone. The closed-milestone helper set is unchanged,
+  and the runtime-directory, interpreter and shell-composition rules still
+  apply to it.
+
+Validation: `tests.test_guard_hook` passed (165 tests); the new test fails
+without the change. The guard-related modules `test_guard_hook_windows`,
+`test_git_guard`, `test_member_sidecar_hooks`, `test_core_hook_settings`,
+`test_member_writes`, `test_review_output` and `test_runtime_lifecycle`
+passed (139 tests, 7 skipped), and `test_install` passed (159 tests). The
+canonical full suite was not run for this revision.
+
+Limits: found and exercised on one Claude Code project mid-ship; other hosts'
+hook adapters share the same `command_denial` path but were not run live. No
+upstream submission has been made.
 
 ## 1.6.2.21 — 2026-10-24
 
