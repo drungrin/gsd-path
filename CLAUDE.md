@@ -22,6 +22,17 @@ for maintaining this fork live here instead.
   submission or merge links when they exist, so changes can later be
   contributed without including unrelated fork bookkeeping. Never invent a
   commit hash or claim an upstream submission that did not happen.
+- Always split a fork change by upstream applicability. Before committing,
+  check the affected code against the latest `upstream/main`. A fix or
+  feature that also applies to code present upstream goes in its own commit
+  with its tests, free of fork-only code and fork bookkeeping, so it can be
+  proposed upstream as is. Fork-only code goes in separate commits. `FORK.md`
+  names which implementation commits apply upstream.
+- When a session analysis, consumer run, or fork change shows that a fork
+  decision makes the outcome worse than upstream behavior (more blocks,
+  rulings, failures, review cycles, or cost), tell the user plainly with the
+  evidence, even when not asked, so they can decide whether to revert it.
+  Never revert a fork decision on your own.
 - This repository is public. Tests, fixtures, and documentation use synthetic
   organizations, projects, repository names, and accounts. Never copy private
   identifiers, credentials, personal filesystem paths, or content from a
