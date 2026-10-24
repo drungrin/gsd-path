@@ -153,6 +153,15 @@ class ReviewOutputTests(unittest.TestCase):
         with self.assertRaisesRegex(isolation.IsolationError, "incomplete"):
             self.stage()
 
+    def test_raw_unicode_line_separators_inside_events_do_not_split_records(self):
+        self.events.insert(1, {"type": "user", "agentId": self.agent,
+                               "message": {"content": "-- a\u2028b\u2029c\x85d"}})
+        self.transcript.write_text("".join(json.dumps(event, ensure_ascii=False) + "\n" for event in self.events),
+                                   encoding="utf-8")
+        self.assertIn("\u2028", self.transcript.read_text(encoding="utf-8"))
+        self.stage()
+        self.assertEqual((self.sidecar / self.relative).read_bytes(), REPORT.encode("utf-8"))
+
     def test_thinking_is_excluded_and_text_blocks_are_joined_without_changes(self):
         self.events[-1]["message"]["content"] = [
             {"type": "thinking", "thinking": "private reasoning"},

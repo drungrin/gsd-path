@@ -4072,7 +4072,8 @@ def stage_review(
         raise IsolationError("review transcript has no assignment metadata")
     try:
         meta = json.loads(metadata.read_bytes())
-        events = [json.loads(line) for line in transcript.read_bytes().decode("utf-8").splitlines() if line.strip()]
+        # Hosts write U+2028, U+2029 and U+0085 raw inside JSON strings; only LF ends a record.
+        events = [json.loads(line) for line in transcript.read_bytes().decode("utf-8").split("\n") if line.strip()]
     except (ValueError, UnicodeError, OSError) as error:
         raise IsolationError("review transcript or metadata is incomplete or invalid") from error
     if not isinstance(meta, dict) or meta.get("description") != assignment:

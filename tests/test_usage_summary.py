@@ -93,6 +93,12 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(self.report()['total']['messages'],1)
         self.assertIn('Collection incomplete',usage_report.summary(self.report()))
 
+    def test_raw_unicode_line_separators_inside_events_do_not_split_records(self):
+        self.path.write_text(json.dumps(self.event(toolUseResult='a\u2028b\u2029c\x85d'),ensure_ascii=False)+'\n',
+                             encoding='utf-8')
+        result=usage_collect.collect(self.repo,[self.path])
+        self.assertEqual((result['status'],result['messages']),('complete',1))
+
     def test_final_usage_corrects_provisional_input_into_cached_tokens(self):
         initial,final=self.event(output=0),self.event(output=10)
         initial['message']['usage']={'input_tokens':2500,'output_tokens':0}

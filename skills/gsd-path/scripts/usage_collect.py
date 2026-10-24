@@ -147,7 +147,8 @@ def read_transcript(path, config, cutoff):
     last_stop = None
     rows, errors, cwd = [], [], None
     lower, upper = instant(config['since']), instant(cutoff)
-    for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+    # Claude Code writes U+2028, U+2029 and U+0085 raw inside JSON strings; only LF ends a record.
+    for number, line in enumerate(path.read_text(encoding='utf-8').split('\n'), 1):
         if not line.strip():
             continue
         try:
