@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.22**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.23**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,65 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.23 — 2026-10-24
+
+Upstream package base remains `1.6.2`. The fork revision continues from 22 to 23.
+
+Fixes:
+[`0b9e0236 — price Claude Haiku 5.5 and name unpriced models at prepare`](https://github.com/drungrin/gsd-path/commit/0b9e0236ba9f6e97d5a4dc341c759c25d0bcdadf),
+[`fba8a66c — keep PR copy free of pipeline identifiers`](https://github.com/drungrin/gsd-path/commit/fba8a66c0faed2a279f41e4570647df29870d959).
+
+### Unpriced models in the usage report
+
+- A multi-repo pull-request ship published two model rows as
+  `Sem preço / Unpriced (<hash>)`. The offline price snapshot held five
+  models and lacked `claude-haiku-5-5`, and a personal routing alias had no
+  mapping. The hashed identity also hid the raw id from the ship owner, so
+  nothing named the gap before publication.
+- The snapshot is refreshed from models.dev as of 2026-10-24 and adds Claude
+  Haiku 5.5 (with its context tier), Claude Fable 5.1 and GPT-6 Sol. Existing
+  prices did not change.
+- `pr_editorial.py prepare` returns `usage_unpriced_models`, the raw ids left
+  without a price after alias mapping. Ship names them to the user in the
+  handoff, never in published copy, so an alias or price refresh can precede
+  publication. Unknown costs remain explicit.
+
+### Self-contained PR copy
+
+- The same ship titled the member PR `feat(m001): ...` and cited requirement,
+  milestone, criterion, edge-case, pitfall and decision identifiers that only
+  the coordinator's pipeline record defines. Product readers could not
+  resolve them, although ship already asked for copy that works without
+  coordinator access.
+- `prepare` refuses a title scope that names the milestone (`m001`,
+  `milestone-1`, `001`). It also refuses any cited identifier of a pipeline
+  shape (`M###`, `T###`, `SC#`, `E#`, `N#`, or a two-digit or zero-padded
+  catalog id such as `REQ-07`) that the `.project/` Markdown record defines.
+  Milestone ids are refused even when the record lacks them. Technical terms
+  such as S256, BM25, UTF-8 and SHA-256 and product paths such as
+  `docs/evidence/m001` still pass. Committed publications keep loading as
+  recorded, so in-flight ships are unaffected.
+- Ship, operating rules, workflow, README and the editorial template state
+  the rule.
+
+Validation: on the unsplit change, the canonical Python suite passed (3,427
+tests, 39 skipped), Node tests passed (118, one skipped) and resource
+synchronization checked 616 resources. After the split, the first commit
+passed `test_pr_editorial`, `test_usage_summary`, `test_editorial_delivery`
+and `test_git_metadata_policy` (61 tests) with a clean synchronization
+check. Synthetic examples then replaced the documentation and test
+identifiers, and `test_pr_editorial` passed again. Replaying a real
+milestone ledger with the new snapshot and alias priced every model row. The
+new check, run against that milestone's two recorded publications, refused
+both titles and every cited pipeline identifier.
+
+Limits: the identifier shapes are heuristic. A three-digit catalog id that is
+not zero-padded (`REQ-123`) is not detected, and a technical term with a
+pipeline shape that the record also mentions (`UTF-16`) is refused and must
+be reworded. Publications that are already committed or published are not
+rewritten. Product code that cites pipeline identifiers in comments or test
+names is out of scope. No upstream submission has been made.
 
 ## 1.6.2.22 — 2026-10-24
 
