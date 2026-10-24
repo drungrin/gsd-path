@@ -3,7 +3,7 @@
   "sections": {
     "problem": "<explain the concrete problem and why the change is needed>",
     "changes": "<describe delivered behavior and affected contracts>",
-    "scope": "<name included work and relevant exclusions>",
+    "scope": "<name included work and relevant exclusions by what they do, not by pipeline ids>",
     "validation": "<summarize recorded commands and results, including skips and limitations>",
     "risks": "<describe actual integration risks, compatibility and known limitations>"
   },

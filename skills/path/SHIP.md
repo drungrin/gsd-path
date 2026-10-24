@@ -287,9 +287,14 @@ The persisted `STATE.archive` field is the transaction identity.
    title describing delivered behavior, and populated problem, changes,
    scope, validation, and risks/limitations sections in the selected language.
    Keep protocol identifiers in receipts/tags rather than using `integrate:`
-   or a branch name as the PR title. Include recorded commands/results and
-   skips. The description must work for readers without coordinator access;
-   local or temporary evidence paths cannot be published. Reuse recorded
+   or a branch name as the PR title. The title scope names the affected
+   area, never the milestone (`m001`). Include recorded commands/results and
+   skips. The description must work for readers without coordinator access:
+   say what each milestone, task, success criterion, edge case, requirement,
+   pitfall or decision means instead of citing its pipeline identifier
+   (`M002`, `T004`, `SC1`, `E5`, `REQ-07`, `P-04`). `prepare` refuses a
+   milestone scope and any such identifier the pipeline record defines.
+   Local or temporary evidence paths cannot be published. Reuse recorded
    evidence instead of executing commands again to write copy.
 
    For Azure, inspect actual work items referenced by approved intent and

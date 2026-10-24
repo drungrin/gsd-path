@@ -118,6 +118,25 @@ class EditorialTests(unittest.TestCase):
             self.authored['sections']['validation']=value
             with self.assertRaises(pr_editorial.EditorialError):self.prepare()
 
+    def test_milestone_title_scope_is_refused(self):
+        for title in ('feat(m001): deliver search','chore(milestone-1): ship the record','feat(001): deliver search'):
+            with self.subTest(title=title):
+                self.authored['title']=title
+                with self.assertRaisesRegex(pr_editorial.EditorialError,'milestone'):self.prepare()
+
+    def test_pipeline_identifiers_must_be_described_in_words(self):
+        (self.repo/'.project/ROADMAP.md').write_text('### M002 — upload\n\nCloses REQ-07, P-04 and T004 '
+            'with SC1, E5 and N3 over PKCE S256, BM25, UTF-8 and SHA-256.\n')
+        self.authored['sections']['scope']='Completes REQ-07 and SC1; E5 and P-04 passed; upload lands in M003.'
+        with self.assertRaisesRegex(pr_editorial.EditorialError,'E5, M003, P-04, REQ-07, SC1;'):self.prepare()
+        self.authored['sections']['scope']=('PKCE S256, BM25 statistics, UTF-8 bodies, SHA-256 digests, '
+            'the Xeon E7 host and `docs/evidence/m002` stay in scope.')
+        self.assertEqual(self.prepare()['sections']['scope'],self.authored['sections']['scope'])
+
+    def test_recorded_publications_load_without_the_authoring_rules(self):
+        publication_fixture(self.repo,ARCHIVE,'coordinator',HEAD,AZURE.web_url,title='feat(m001): legacy copy')
+        self.assertEqual(pr_editorial.load(self.repo,ARCHIVE,'coordinator',HEAD)['title'],'feat(m001): legacy copy')
+
     def test_changed_evidence_and_wrong_head_invalidate_editorial(self):
         self.prepare()
         with self.assertRaisesRegex(pr_editorial.EditorialError,'HEAD'):

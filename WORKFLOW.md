@@ -669,8 +669,10 @@ Before PR publication, ship prepares the editorial artifact through
 `pr_editorial.py` using the project `editorial_language`. Every PR uses a
 Conventional Commit title and populated problem, changes, scope, validation,
 and risks/limitations sections; the archive's language does not select the
-publication language. Records persist in `.project/publications/` without
-rewriting archived evidence. Azure publications include an explicit acceptance
+publication language. The copy is self-contained: `prepare` refuses a
+milestone title scope and pipeline identifiers such as `M002`, `SC1` or
+`REQ-07` that only the pipeline record defines. Records persist in
+`.project/publications/` without rewriting archived evidence. Azure publications include an explicit acceptance
 and disposition plan for linked work items. Delivery updates and discussion
 comments occur only after normal integration and tag proof. The runtime uses
 revision tests and service history for optimistic updates and repeat safety;

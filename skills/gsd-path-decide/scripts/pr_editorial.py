@@ -30,6 +30,9 @@ LANGUAGES = {
 SECTIONS = ('problem', 'changes', 'scope', 'validation', 'risks')
 TITLE = re.compile(r'(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: \S[^\r\n]*')
 SHA = re.compile(r'[0-9a-f]{40}')
+# Milestones, tasks, success criteria, edge and never cases, and two-digit or
+# zero-padded catalog ids such as requirements, pitfalls and decisions.
+IDENTIFIER = re.compile(r'(?<![\w/.-])(?:M\d{3,}|T\d{3,}|SC\d+|[EN]\d+|[A-Z]{1,5}-(?:\d{2}|0\d{2,}))(?![\w/-]|\.\w)')
 
 
 class EditorialError(ValueError):
@@ -146,6 +149,23 @@ def require_body_format(body, selected_language):
             raise EditorialError('PR description requires a populated ' + heading + ' section')
 
 
+def require_self_contained(repo, value):
+    """Authoring rules; committed publications keep loading as recorded."""
+    scope = TITLE.fullmatch(value['title']).group(2)
+    if scope and re.fullmatch(r'\((?:m|milestone-?)?\d+\)', scope):
+        raise EditorialError('PR title scope names the milestone; name the affected area instead')
+    defined = set()
+    for path in (repo / '.project').rglob('*.md'):
+        if path.is_file() and not path.is_symlink():
+            defined.update(IDENTIFIER.findall(path.read_text(encoding='utf-8', errors='replace')))
+    copy = '\n'.join((value['title'], *value['sections'].values()))
+    cited = sorted({token for token in IDENTIFIER.findall(copy)
+                    if token in defined or re.fullmatch(r'M\d+', token)})
+    if cited:
+        raise EditorialError('PR copy cites pipeline identifiers its readers cannot resolve: '
+                             + ', '.join(cited) + '; describe what each one means instead')
+
+
 def discover_work_items(content):
     patterns = (r'_workitems/edit/(\d+)', r'\bAB#(\d+)\b', r'(?<!\w)#(\d+)\b',
                 r'\b(?:board|work[ -]item)\s+(\d+)\b')
@@ -172,6 +192,7 @@ def prepare(repo, archive, member, reviewed_head, authored, call=None):
         except (OSError, ValueError) as error:
             usage_status = {'status': 'incomplete', 'reason': str(error)}
     validate_document(value)
+    require_self_contained(repo, value)
     checkout = repo
     if member != 'coordinator':
         if __package__:

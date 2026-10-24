@@ -532,7 +532,10 @@ an atomic close across repos.
 Every generated PR has an editorial publication: a Conventional Commit title
 and self-contained problem, changes, scope, validation, and risks/limitations
 sections. Ship authors this copy from approved intent, the manifest, reviewed
-diff, and recorded verification; the runtime validates and publishes it.
+diff, and recorded verification; the runtime validates and publishes it. The
+copy describes milestones, criteria, and requirements in words: the runtime
+refuses a milestone title scope and identifiers that only the pipeline record
+defines.
 Choose the project language with `path_config.py set editorial_language pt-BR`
 (`en` is the default). Presentation language can change during active ship;
 integration and review policy remain locked. Prepared publications live in

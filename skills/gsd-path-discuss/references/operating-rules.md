@@ -74,6 +74,9 @@ bundles this file; spawned agents follow their role brief instead.
   self-contained description in the configured `editorial_language`, grounded
   in approved intent, manifest, reviewed diff and recorded verification.
   Every PR includes problem, changes, scope, validation and risks/limitations.
+  The title scope names the affected area, never the milestone, and the copy
+  says what milestones, tasks, criteria, cases, requirements and decisions
+  mean instead of citing their pipeline identifiers.
   Publication records persist under `.project/publications/` outside archives.
   Azure work items are linked from an explicit acceptance/disposition plan;
   comments and state changes run only after the actual integration is proven.
