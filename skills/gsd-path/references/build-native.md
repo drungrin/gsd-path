@@ -676,10 +676,13 @@ dispatch contract and perform steps 1–5 by hand.
      again. After a crash, resume the recorded choice without asking again.
    - Before `fix-tasks`, answer the `fix-routing` lenses for `wave <N> cycle
      <C>` and record the `lenses` Log event; `fix-tasks` refuses an enforced
-     milestone without it. When a fired lens there returns `redesign` or
-     `fail-closed`, `fix-tasks` escalates even if no criterion blocked two
-     earlier cycles: ask the redesign question above and record its ruling
-     the same way. Only `Open fix tasks anyway` releases fix creation.
+     milestone without it (`blocked`, reason naming the event to record;
+     recording it is the whole repair). When a fired lens there returns
+     `redesign` or `fail-closed`, `collect` reports `lens_redesign_pending`
+     and `fix-tasks` escalates even if no criterion blocked two earlier
+     cycles: ask the redesign question above and record its ruling the same
+     way. Only `Open fix tasks anyway`, recorded after the latest such lens
+     event, releases fix creation; a later quiet lens event does not.
    - Otherwise batch `fix_batches` into complete fix tasks from the task
      template — one task per batch, never one per finding — each carrying
      its groups' failed criteria and observed evidence verbatim. Each batch
