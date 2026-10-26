@@ -11,10 +11,12 @@ observations, selects the groups that need a skeptic, carries refutations
 forward across cycles, batches fix-task groups by repo and disjoint file
 scope, keeps structural blockers out of skeptic accounting, and reports
 whether the cycle cap is reached. Blocked cycles that a build recovery set
-aside still count toward that cap, and a criterion that keeps blocking asks
-for a redesign ruling before another fix task, as does a recorded fix-routing
-decision lens that recommends redesign or fail-closed. It never decides the
-wave verdict.
+aside still count toward that cap, and a criterion that keeps blocking, or that
+two completed repairs already carried, asks for a redesign ruling before
+another fix task, as does a recorded fix-routing decision lens that recommends
+redesign or fail-closed. `panel-repairs` reports the same repair count for the
+actionable findings of a panel on a passing cycle. It never decides the wave
+verdict.
 """
 
 from __future__ import annotations
@@ -62,7 +64,24 @@ RECOVERY_BACKUP = re.compile(r"^build-recovery-(?P<base>[0-9a-f]{40})$")
 RECOVERY_RECORD = "build recovery: "
 # A fix group needs a redesign ruling when its criterion already blocked this many earlier cycles of the wave.
 REDESIGN_AFTER_BLOCKS = 2
+# The same holds when this many completed repair tasks already carried the criterion.
+REDESIGN_AFTER_REPAIRS = REDESIGN_AFTER_BLOCKS
 REDESIGN_OPEN = "Open fix tasks anyway"
+RECONSIDER = "Reconsider the component approach"
+CRITERION_REFERENCE = re.compile(
+    r"\b[Tt](?P<task>\d{3}) acceptance (?P<ac>[1-9]\d*)\b"
+    r"|\b[Tt](?P<ltask>\d{3})_[Aa][Cc](?P<lac>[1-9]\d*)\b"
+    r"|\b[Ss][Cc](?P<sc>[1-9]\d*)\b"
+)
+WAVE_CYCLE_PAIR = re.compile(r"\bwave ([1-9]\d*) cycle ([1-9]\d*)\b", re.IGNORECASE)
+PANEL_ITEM = re.compile(r"- (?P<severity>high|medium|low) / (?P<kind>[a-z-]+) — (?P<text>.+)")
+BARE_REFERENCE = re.compile(
+    r"(?:[Tt]\d{3} acceptance [1-9]\d*|[Tt]\d{3}_[Aa][Cc][1-9]\d*|[Ss][Cc][1-9]\d*)[.:]?"
+)
+PANEL_OPEN = "Open fix tasks from panel findings"
+RECONSIDER_RULING = re.compile(
+    r"^wave (?P<wave>\d+) cycle (?P<cycle>\d+) (?:redesign|panel) ruling: Reconsider the component approach\b")
+RECONSIDERED_EVENT = re.compile(r"^wave (?P<wave>\d+) cycle (?P<cycle>\d+) reconsidered: (?P<criteria>\[.*\])$")
 
 
 class ReviewFindingsError(Exception):
@@ -591,13 +610,14 @@ def review_history(repo: Path, project: Path, wave: int, cycle: int, tasks: Dict
 
 
 def redesign_ruling(repo: Path, project: Path, wave: int, cycle: int,
-                    reset: Optional[Callable[[str], bool]] = None) -> Optional[str]:
+                    reset: Optional[Callable[[str], bool]] = None, kind: str = "redesign") -> Optional[str]:
     """The committed ruling on this cycle since the latest build recovery, unchanged in the working STATE.
 
     A recovery numbers a changed wave from cycle 1 again, so a ruling recorded before it names another review.
     ``reset`` marks other Log events that start a new ruling scope; only a ruling after the latest counts.
+    ``kind`` names the ruling (`redesign`, `panel`, `cap`).
     """
-    marker = f"wave {wave} cycle {cycle} redesign ruling: "
+    marker = f"wave {wave} cycle {cycle} {kind} ruling: "
 
     def last(lines):
         recovery, ruling = None, None
@@ -626,6 +646,416 @@ def redesign_ruling(repo: Path, project: Path, wave: int, cycle: int,
 
 def _opens_fix_tasks(ruling: Optional[str]) -> bool:
     return ruling == REDESIGN_OPEN or (ruling or "").startswith(REDESIGN_OPEN + " (")
+
+
+# --- repair attempts -------------------------------------------------------
+#
+# Criterion identity is the normalized authoritative text. A finding names it
+# verbatim (canonical reviews) or by reference (`T001 acceptance 2`,
+# `t001_ac2`, `SC3`, as panels do); a repair carries it on `Criterion:` lines.
+# Counts are per criterion, read as the review recorded them, and restart for
+# a criterion after a committed `Reconsider` ruling on it.
+
+
+def _task_files(project: Path) -> Dict[str, Path]:
+    tasks_dir = project / "tasks"
+    if not tasks_dir.is_dir():
+        return {}
+    files = {}
+    for path in sorted(tasks_dir.iterdir()):
+        named = TASK_FILE_NAME.fullmatch(path.name)
+        if named:
+            files[named.group("id")] = path
+    return files
+
+
+def _split_task(text: str) -> tuple:
+    parts = text.split("---", 2)
+    return (parts[1], parts[2]) if len(parts) == 3 else ("", text)
+
+
+def _read_at(repo: Optional[Path], path: Path, commit: Optional[str]) -> Optional[str]:
+    """A file as committed at ``commit``, or in the working tree when ``commit`` is None."""
+    if commit is None or repo is None:
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+    shown = _common.run_git(repo, "show", f"{commit}:{path.relative_to(repo).as_posix()}")
+    return shown.stdout if shown.returncode == 0 else None
+
+
+def _task_texts_at(repo: Optional[Path], project: Path, commit: Optional[str]) -> Dict[str, tuple]:
+    """Task id -> (path, text) in the working tree, or as committed at ``commit``."""
+    if commit is None or repo is None:
+        return {task_id: (path, _read(path, f"task {path.name}")) for task_id, path in _task_files(project).items()}
+    tasks = (project / "tasks").relative_to(repo).as_posix()
+    texts = {}
+    for name in _common.run_git(repo, "ls-tree", "--name-only", commit, "--", f"{tasks}/").stdout.splitlines():
+        named = TASK_FILE_NAME.fullmatch(posixpath.basename(name))
+        if named:
+            texts[named.group("id")] = (repo / name, _common.run_git(repo, "show", f"{commit}:{name}").stdout)
+    return texts
+
+
+class _Criteria:
+    """Resolves criterion references against the task and INTENT.md texts of one snapshot."""
+
+    def __init__(self, repo: Optional[Path], project: Path, commit: Optional[str] = None) -> None:
+        self.repo, self.project, self.commit = repo, project, commit
+        self._tasks: Optional[Dict[str, tuple]] = None
+        self._intent: Optional[List[str]] = None
+
+    def _items(self, match: "re.Match[str]") -> List[str]:
+        if match["sc"]:
+            if self._intent is None:
+                text = _read_at(self.repo, self.project / "intent" / "INTENT.md", self.commit)
+                self._intent = _numbered_items(_section(text, "Success criteria")) if text else []
+            return self._intent
+        if self._tasks is None:
+            self._tasks = _task_texts_at(self.repo, self.project, self.commit)
+        found = self._tasks.get("T" + (match["task"] or match["ltask"]))
+        return _numbered_items(_section(_split_task(found[1])[1], "Acceptance criteria")) if found else []
+
+    def resolve(self, source: str, identities: List[str], unresolved: List[str]) -> None:
+        for match in CRITERION_REFERENCE.finditer(source):
+            items, index = self._items(match), int(match["ac"] or match["lac"] or match["sc"])
+            if index <= len(items):
+                text = _normalize(str(items[index - 1]))
+                if text not in identities:
+                    identities.append(text)
+            elif match.group(0) not in unresolved:
+                unresolved.append(match.group(0))
+
+    def of_finding(self, text: str, locator: Optional[str] = None, references: bool = True) -> tuple:
+        """The criterion identities a finding names, and the references that resolve to none."""
+        identities, unresolved = [_normalize(text)], []
+        if locator:
+            self.resolve(locator, identities, unresolved)
+        if references:
+            self.resolve(text, identities, unresolved)
+        return identities, unresolved
+
+    def carried(self, section: str) -> tuple:
+        """The identities a repair's `Criterion:` lines carry; a line that is only a reference resolves."""
+        identities, unresolved = [], []
+        for value in re.findall(r"(?m)^Criterion:[ \t]*(.+)$", section):
+            line = _normalize(value)
+            if BARE_REFERENCE.fullmatch(line):
+                self.resolve(line, identities, unresolved)
+                continue
+            if line not in identities:
+                identities.append(line)
+            leading = BARE_REFERENCE.match(line)
+            if leading and leading.group(0)[-1:] in ":.":
+                self.resolve(leading.group(0), identities, unresolved)
+        return identities, unresolved
+
+
+def criterion_texts(project: Path, text: str, locator: Optional[str] = None,
+                    references: bool = True) -> tuple:
+    """The criterion identities a finding names in the working tree, and the unresolved references."""
+    return _Criteria(None, project).of_finding(text, locator, references)
+
+
+def repair_tasks(repo: Optional[Path], project: Path, commit: Optional[str] = None) -> List[dict]:
+    """Every task that carries `## Review findings`, with its status, wave, repo and carried criteria."""
+    resolver = _Criteria(repo, project, commit)
+    repairs = []
+    for task_id, (path, text) in _task_texts_at(repo, project, commit).items():
+        frontmatter, body = _split_task(text)
+        section = _section(body, "Review findings")
+        if section is None:
+            continue
+        status = re.search(r"(?m)^status:[ \t]*([A-Za-z-]+)", frontmatter)
+        wave = re.search(r"(?m)^wave:[ \t]*(\d+)", frontmatter)
+        member = re.search(r"(?m)^repo:[ \t]*(?P<name>[^\s#]+)", frontmatter)
+        criteria, unresolved = resolver.carried(section)
+        repairs.append({
+            "task": task_id,
+            "path": str(path),
+            "status": status.group(1) if status else None,
+            "wave": int(wave.group(1)) if wave else None,
+            "repo": member.group("name").strip("\"'") if member else None,
+            "criteria": criteria,
+            "unresolved": unresolved,
+        })
+    return repairs
+
+
+def _publication(repo: Path, path: Path) -> Optional[str]:
+    """The commit that published a review file as it reads now; None reads the working tree.
+
+    Plan approval restores an unchanged wave without a new publication, so a restored review keeps its
+    original commit, while a new review under a reused name, or one not committed as is, reads as it is now.
+    """
+    if not path.is_file():
+        return None
+    return _review_origin(repo, path.relative_to(repo).as_posix(), "HEAD", _read(path, "review"))
+
+
+def _review_commit(repo: Path, project: Path, wave: int, cycle: int) -> Optional[str]:
+    """The commit that published this cycle's canonical review as it reads now."""
+    for name in (f"wave-{wave}.cycle{cycle}.md", f"wave-{wave}.cycle{cycle}.contract.md"):
+        path = project / "review" / name
+        if path.is_file():
+            return _publication(repo, path)
+    return None
+
+
+def _milestone_lines(lines: Sequence[str]) -> List[str]:
+    """Log lines after the last shipment or abandon: the current milestone."""
+    start = 0
+    for index, line in enumerate(lines):
+        if any(event.startswith(_common.LENS_MILESTONE_BOUNDARIES) for event in _log_events([line])):
+            start = index + 1
+    return list(lines[start:])
+
+
+def _introducing_commit(repo: Path, relative: str, line: str, head: str = "HEAD", occurrence: int = 1) -> Optional[str]:
+    """The commit whose Log first held ``occurrence`` copies of ``line``: the one that recorded that copy."""
+    for commit in reversed(_common.run_git(repo, "log", "--format=%H", "-S", line, head, "--", relative).stdout.split()):
+        if _common.run_git(repo, "show", f"{commit}:{relative}").stdout.splitlines().count(line) >= occurrence:
+            return commit
+    return None
+
+
+def reconsider_event(wave: int, cycle: int, identities: Sequence[str]) -> str:
+    """The Log event that names the criteria a `Reconsider` ruling covers; their repair counts restart."""
+    return f"wave {wave} cycle {cycle} reconsidered: {json.dumps(sorted(set(identities)), ensure_ascii=False)}"
+
+
+def _reconsider_resets(repo: Path, project: Path, commit: Optional[str]) -> List[tuple]:
+    """(criteria, completed task ids) for each recorded `reconsidered` event of this milestone.
+
+    Each event must follow its own cycle's `Reconsider` ruling; the tasks completed when it was committed
+    no longer count for its criteria, in every wave.
+    """
+    state = (project / "STATE.md").relative_to(repo).as_posix()
+    head = commit or "HEAD"
+    recorded = _common.run_git(repo, "show", f"{head}:{state}")
+    if recorded.returncode:
+        return []
+    lines = recorded.stdout.splitlines()
+    milestone = len(lines) - len(_milestone_lines(lines))
+    resets, reconsidered = [], set()
+    for index in range(milestone, len(lines)):
+        for event in _log_events([lines[index]]):
+            ruling = RECONSIDER_RULING.match(event)
+            if ruling:
+                reconsidered.add((ruling["wave"], ruling["cycle"]))
+            named = RECONSIDERED_EVENT.match(event)
+            if not named or (named["wave"], named["cycle"]) not in reconsidered:
+                continue
+            try:
+                criteria = {_normalize(item) for item in json.loads(named["criteria"]) if isinstance(item, str)}
+            except ValueError:
+                continue
+            introduced = _introducing_commit(repo, state, lines[index], head, lines[:index + 1].count(lines[index]))
+            if introduced is None:
+                continue
+            done = {repair["task"] for repair in repair_tasks(repo, project, introduced) if repair["status"] == "done"}
+            resets.append((criteria, done))
+    return resets
+
+
+def repair_attempts(repo: Path, project: Path, identities: Sequence[str], exclude: Sequence[str] = (),
+                    commit: Optional[str] = None) -> Dict[str, List[dict]]:
+    """Per criterion identity, the completed repair tasks that carried it.
+
+    ``commit`` reads the tasks as a recorded review saw them; None reads the working tree. Repairs completed
+    before a recorded `reconsidered` event for that criterion no longer count.
+    """
+    resets = _reconsider_resets(repo, project, commit)
+    repairs = [repair for repair in repair_tasks(repo, project, commit)
+               if repair["status"] == "done" and repair["task"] not in exclude]
+    counts: Dict[str, List[dict]] = {}
+    for identity in identities:
+        reset = set().union(*(done for criteria, done in resets if identity in criteria))
+        counts[identity] = [{"task": repair["task"], "path": repair["path"], "matched": identity,
+                             **({"repo": repair["repo"]} if repair["repo"] else {})}
+                            for repair in repairs if identity in repair["criteria"] and repair["task"] not in reset]
+    return counts
+
+
+def _most_repaired(counts: Dict[str, List[dict]]) -> List[dict]:
+    return max(counts.values(), key=len, default=[])
+
+
+def _panel_items(text: str, heading: Optional[str] = None) -> List[dict]:
+    """Merged panel findings, from one summary section or the whole summary; By family repeats them."""
+    summary = text.split("\n## By family", 1)[0]
+    if heading is not None:
+        summary = _section(summary, heading) or ""
+    items = []
+    for block in re.split(r"(?m)(?=^- (?:high|medium|low) / )", summary):
+        head = PANEL_ITEM.match(block)
+        if not head:
+            continue
+        evidence = re.search(r"(?m)^  evidence: (.*)$", block)
+        source = re.search(r"(?m)^  source: (.*)$", block)
+        items.append({"severity": head["severity"], "kind": head["kind"], "text": head["text"].strip(),
+                      "evidence": evidence.group(1) if evidence else "",
+                      "source": source.group(1) if source else None})
+    return items
+
+
+def panel_repairs(repo: Path, project_dir: str, wave: int, cycle: int) -> dict:
+    """Repair attempts behind each actionable panel finding of a cycle, for the panel-on-pass question."""
+    project = repo / project_dir
+    path = project / "review" / f"wave-{wave}.cycle{cycle}.panel.md"
+    text = _read(path, "panel")
+    count = re.search(r"(?m)^Actionable:\s*(\d+)\s*$", text)
+    if not count:
+        raise ReviewFindingsError("panel file has no Actionable count")
+    items = _panel_items(text, "Actionable")
+    if len(items) != int(count.group(1)):
+        raise ReviewFindingsError(f"panel reports Actionable: {count.group(1)} but lists {len(items)} actionable findings")
+    reviewed = _publication(repo, path)
+    resolver = _Criteria(repo, project, reviewed)
+    findings = []
+    for item in items:
+        identities, unresolved = resolver.of_finding(item["text"])
+        counts = repair_attempts(repo, project, identities, commit=reviewed)
+        findings.append({"kind": item["kind"], "criterion": item["text"], "unresolved": unresolved,
+                         "repair_attempts": _most_repaired(counts),
+                         "repair_criteria": [{"criterion": identity, "tasks": [entry["task"] for entry in entries]}
+                                             for identity, entries in counts.items() if entries]})
+    repeated = [item["criterion"] for item in findings if len(item["repair_attempts"]) >= REDESIGN_AFTER_REPAIRS]
+    triggering = [entry["criterion"] for item in findings for entry in item["repair_criteria"]
+                  if len(entry["tasks"]) >= REDESIGN_AFTER_REPAIRS]
+    unresolved = sorted({reference for item in findings for reference in item["unresolved"]})
+    ruling = redesign_ruling(repo, project, wave, cycle, kind="panel")
+    return {
+        "status": "ok",
+        "wave": wave,
+        "cycle": cycle,
+        "panel": str(path),
+        "actionable": len(findings),
+        "findings": findings,
+        "repeated": repeated,
+        "reconsider_event": reconsider_event(wave, cycle, triggering) if triggering else None,
+        "unresolved": unresolved,
+        "ruling": ruling,
+        "pending": bool(repeated or unresolved) and not _opens_panel_fixes(ruling),
+    }
+
+
+def _opens_panel_fixes(ruling: Optional[str]) -> bool:
+    return ruling == PANEL_OPEN or (ruling or "").startswith(PANEL_OPEN + " (")
+
+
+def _repair_source(project: Path, wave: int) -> Optional[tuple]:
+    """The (wave, cycle) a repair answers: its wave heading's single pair, or its own reviewed wave's last cycle."""
+    plan = _read(project / "plan" / "PLAN.md", "PLAN.md")
+    for match in PLAN_WAVE_HEADING.finditer(plan):
+        if int(match["wave"]) == wave:
+            pairs = {(int(w), int(c)) for w, c in WAVE_CYCLE_PAIR.findall(match["title"])}
+            if len(pairs) == 1:
+                return next(iter(pairs))
+    cycles = [int(found.group("cycle")) for found in (REVIEW_CYCLE_FILE.fullmatch(path.name)
+              for path in (project / "review").glob(f"wave-{wave}.cycle*.md")) if found]
+    return (wave, max(cycles)) if cycles else None
+
+
+def _completed_at(repo: Path, path: str) -> Optional[str]:
+    """The commit where the current copy of a task file's frontmatter first recorded `status: done`.
+
+    A path an earlier task used before it was removed and added again does not lend its history, and the
+    words `status: done` in the task body are not a completion.
+    """
+    added = _common.run_git(repo, "log", "--diff-filter=A", "--format=%H", "--", path).stdout.split()
+    for commit in reversed(_common.run_git(repo, "log", "--format=%H", "--", path).stdout.split()):
+        if added and not _descends(repo, added[0], commit):
+            continue
+        frontmatter, _ = _split_task(_common.run_git(repo, "show", f"{commit}:{path}").stdout)
+        status = re.search(r"(?m)^status:[ \t]*([A-Za-z-]+)", frontmatter)
+        if status and status.group(1) == "done":
+            return commit
+    return None
+
+
+def _descends(repo: Path, ancestor: str, commit: str) -> bool:
+    return _common.run_git(repo, "merge-base", "--is-ancestor", ancestor, commit).returncode == 0
+
+
+def _latest_opening(repo: Path, project: Path, wave: int, cycle: int) -> Optional[str]:
+    """The commit introducing the latest committed redesign or panel ruling on the cycle, when it opens fix tasks.
+
+    Only rulings in this milestone and after the latest build recovery count, the working Log must not have
+    changed it, and of the two kinds the later ruling decides.
+    """
+    state = (project / "STATE.md").relative_to(repo).as_posix()
+    recorded = _common.run_git(repo, "show", f"HEAD:{state}")
+    if recorded.returncode:
+        return None
+    markers = {kind: f"wave {wave} cycle {cycle} {kind} ruling: " for kind in ("redesign", "panel")}
+
+    def last(lines: Sequence[str]) -> Optional[tuple]:
+        latest = None
+        for index in range(len(lines) - len(_milestone_lines(lines)), len(lines)):
+            for event in _log_events([lines[index]]):
+                if event.startswith(RECOVERY_RECORD):
+                    latest = None
+                for kind, marker in markers.items():
+                    if event.startswith(marker):
+                        latest = (kind, event[len(marker):].strip(), lines[index], lines[:index + 1].count(lines[index]))
+        return latest
+
+    latest = last(recorded.stdout.splitlines())
+    if latest is None or last(_state_log(project)) != latest:
+        return None
+    kind, value, line, occurrence = latest
+    opens = _opens_fix_tasks(value) if kind == "redesign" else _opens_panel_fixes(value)
+    return _introducing_commit(repo, state, line, occurrence=occurrence) if opens else None
+
+
+def repair_release(repo: Path, project_dir: str, task_id: str) -> Optional[str]:
+    """Why a repair task must not be dispatched yet, or None.
+
+    A repair carrying a criterion that two completed repairs already carried needs, after the later of them
+    completed, either a committed redesign or panel ruling that opens fix tasks for the cycle it answers, or
+    the approved plan that added it. Malformed or unresolvable repairs are held, never released.
+    """
+    project = repo / project_dir
+    path = _task_files(project).get(task_id)
+    if path is None:
+        return None
+    frontmatter, body = _split_task(_read(path, f"task {path.name}"))
+    section = _section(body, "Review findings")
+    if section is None:
+        return None
+    wave = re.search(r"(?m)^wave:[ \t]*(\d+)", frontmatter)
+    if not wave:
+        return f"repair {task_id} carries Review findings but has no wave"
+    source = _repair_source(project, int(wave.group(1)))
+    if source is None:
+        return (f"repair {task_id}: the heading of wave {wave.group(1)} must name exactly one "
+                "`wave N cycle C`, or the wave must have a review of its own")
+    identities, unresolved = _Criteria(repo, project).carried(section)
+    if unresolved:
+        return f"repair {task_id} carries criterion references that resolve to no criterion: {', '.join(unresolved)}"
+    counts = repair_attempts(repo, project, identities, exclude=(task_id,))
+    repeated = [entries for entries in counts.values() if len(entries) >= REDESIGN_AFTER_REPAIRS]
+    if not repeated:
+        return None
+    completions = [_completed_at(repo, Path(entry["path"]).relative_to(repo).as_posix())
+                   for entries in repeated for entry in entries]
+    trigger = [commit for commit in completions if commit]
+
+    def after_trigger(commit: Optional[str]) -> bool:
+        return (commit is not None and len(trigger) == len(completions)
+                and all(_descends(repo, landed, commit) for landed in trigger))
+
+    added = _common.run_git(repo, "log", "--diff-filter=A", "--format=%H%x09%s", "--",
+                            path.relative_to(repo).as_posix()).stdout.splitlines()
+    if added:
+        commit, _, subject = added[0].partition("\t")
+        if subject == "plan: build plan approved" and after_trigger(commit):
+            return None
+    if after_trigger(_latest_opening(repo, project, *source)):
+        return None
+    carried = ", ".join(sorted({entry["task"] for entries in repeated for entry in entries}))
+    return (f"repair {task_id} carries a criterion that completed repairs {carried} already carried; "
+            f"record a committed wave {source[0]} cycle {source[1]} redesign or panel ruling that opens "
+            "fix tasks after them before dispatching it")
 
 
 def lens_redesign(repo: Path, project: Path, wave: int, cycle: int) -> dict:
@@ -753,10 +1183,20 @@ def compute(
     current_skeptics = skeptics_by_cycle.get(cycle, {})
 
     groups = group_findings(findings)
+    reviewed = _review_commit(repo, project, wave, cycle)
+    resolver = _Criteria(repo, project, reviewed)
+    covers: Dict[str, List[str]] = {}
     for group in groups:
         locator = group["locator"]
         group["first_seen_cycle"] = first_seen.get(locator, cycle)
         group["repeat"] = locator in first_seen
+        identities, _ = resolver.of_finding(group["criterion"], locator, references=False)
+        counts = repair_attempts(repo, project, identities, commit=reviewed)
+        group["repair_attempts"] = _most_repaired(counts)
+        group["repair_criteria"] = [{"criterion": identity, "tasks": [entry["task"] for entry in entries]}
+                                    for identity, entries in counts.items() if entries]
+        covers[locator] = [identity for identity, entries in counts.items()
+                           if len(entries) >= REDESIGN_AFTER_REPAIRS] or identities
         group["skeptic"] = None
         earlier = earlier_refuted.get(locator)
         current = current_skeptics.get(locator)
@@ -795,10 +1235,14 @@ def compute(
                 blocked_before.setdefault(locator, []).append({"recovery": entry["recovery"], "cycle": entry["cycle"]})
     # Two fixes of the same criterion already failed: another fix task needs the user's ruling first.
     redesign = [{"locator": group["locator"], "criterion": group["criterion"],
-                 "blocked_before": blocked_before[group["locator"]]}
-                for group in fix_groups if len(blocked_before.get(group["locator"], [])) >= REDESIGN_AFTER_BLOCKS]
+                 "blocked_before": blocked_before.get(group["locator"], []),
+                 "repair_attempts": group["repair_attempts"]}
+                for group in fix_groups
+                if len(blocked_before.get(group["locator"], [])) >= REDESIGN_AFTER_BLOCKS
+                or len(group["repair_attempts"]) >= REDESIGN_AFTER_REPAIRS]
     ruling = redesign_ruling(repo, project, wave, cycle) if redesign else None
     lenses = lens_redesign(repo, project, wave, cycle)
+    covered = [identity for entry in redesign for identity in covers[entry["locator"]]]
     return {
         "status": "ok",
         "wave": wave,
@@ -823,6 +1267,7 @@ def compute(
         "panel": panel,
         "history": history,
         "redesign": redesign,
+        "reconsider_event": reconsider_event(wave, cycle, covered) if covered else None,
         "redesign_ruling": ruling,
         "redesign_pending": bool(redesign) and not _opens_fix_tasks(ruling),
         # M8: a fix-routing lens fire asks the same redesign question even when `redesign` is empty.
@@ -1285,18 +1730,10 @@ def _recurrence_findings(project: Path, wave: int, cycle: int) -> List[dict]:
                              "evidence": re.split(r"(?:^|\s)fix:\s", found, maxsplit=1)[0]})
     panel = project / "review" / f"wave-{wave}.cycle{cycle}.panel.md"
     if panel.is_file():
-        text = _read(panel, "panel")
-        # The merged summary already includes every family; By family repeats it.
-        summary = text.split("\n## By family", 1)[0]
-        for block in re.split(r"(?m)(?=^- (?:high|medium|low) / )", summary):
-            heading = re.match(r"- (?:high|medium|low) / criterion — (.+)", block)
-            if not heading:
-                continue
-            evidence = re.search(r"(?m)^  evidence: (.*)$", block)
-            source = re.search(r"(?m)^  source: (.*)$", block)
-            findings.append({"source": "panel:" + (source.group(1) if source else "unknown"),
-                             "criterion": heading.group(1),
-                             "evidence": evidence.group(1) if evidence else ""})
+        for item in _panel_items(_read(panel, "panel")):
+            if item["kind"] == "criterion":
+                findings.append({"source": "panel:" + (item["source"] or "unknown"),
+                                 "criterion": item["text"], "evidence": item["evidence"]})
     return findings
 
 
@@ -1423,7 +1860,7 @@ def recurrence(repo: Path, project_dir: str, wave: int, cycle: int,
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("command", choices=("collect", "repair-evidence", "recurrence"))
+    result.add_argument("command", choices=("collect", "repair-evidence", "recurrence", "panel-repairs"))
     result.add_argument("--repo", type=Path, required=True, help="absolute repository root")
     result.add_argument("--project-dir", default=DEFAULT_PROJECT_DIR)
     result.add_argument("--wave", type=int, required=True)
@@ -1460,6 +1897,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if arguments.command == "recurrence":
             return emit(recurrence(arguments.repo, arguments.project_dir, arguments.wave,
                                    arguments.cycle, arguments.review_base, heads))
+        if arguments.command == "panel-repairs":
+            return emit(panel_repairs(arguments.repo, arguments.project_dir, arguments.wave, arguments.cycle))
         return emit(
             compute(
                 arguments.repo,

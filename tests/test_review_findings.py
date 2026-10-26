@@ -500,6 +500,373 @@ class CapCycleTest(unittest.TestCase):
         self.assertEqual((groups["t001_ac2"]["first_seen_cycle"], groups["t001_ac2"]["repeat"]), (2, False))
 
 
+REPAIR = """---
+id: {id}
+title: Fix wave 1 cycle 1 review findings in T001
+wave: 2
+deps: [T001]
+status: {status}
+files:
+  - src/parser.py
+---
+
+# {id} — Fix wave 1 cycle 1 review findings in T001
+
+## Acceptance criteria
+
+1. {criterion}
+
+## Review findings
+
+### t001_ac1
+
+Criterion: {criterion}
+- (canonical reviewer) found: no, parser.py:1
+"""
+
+PANEL = """# Wave panel
+
+Mode: named
+Wave: 1
+Cycle: {cycle}
+Families: gpt, muse
+Actionable: {count}
+Warnings: 1
+Conflicts: 0
+
+## Actionable
+
+- high / criterion — {criterion}: quoted rows still fail
+  evidence: src/parser.py:3
+  found: a quoted comma splits the row
+  fix: honor quotes
+  source: wave-1.cycle{cycle}.panel-gpt.md
+
+## Warnings
+
+- medium / criterion — T002 acceptance 1: the table could be wider
+  source: wave-1.cycle{cycle}.panel-muse.md
+
+## By family
+
+# Panel — wave 1, cycle {cycle}
+
+- high / criterion — {criterion}: quoted rows still fail
+"""
+
+
+class RepairAttemptsTest(unittest.TestCase):
+    """Completed repairs of one criterion count toward the redesign question, on blocked and panel-only cycles."""
+
+    def fixture(self, heading="fix wave 1 cycle 1 review findings"):
+        fixture = Fixture(self, skeptics="off")
+        plan = fixture.project / "plan" / "PLAN.md"
+        plan.write_text(plan.read_text(encoding="utf-8") + f"\n## Wave 2 — {heading}\n\nReview depth: full\n",
+                        encoding="utf-8")
+        write(fixture.project / "intent" / "INTENT.md",
+              "# Intent\n\n## Success criteria\n\n1. Parser accepts CSV\n")
+        return fixture
+
+    def repair(self, fixture, task_id, status="done", criterion="Parses CSV rows", extra="", wave=2):
+        write(fixture.project / "tasks" / f"{task_id}-fix-wave-1-cycle-1.md",
+              REPAIR.format(id=task_id, status=status, criterion=criterion).replace("wave: 2", f"wave: {wave}")
+              + extra)
+
+    def git(self, fixture, *args):
+        return subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.test", *args],
+                              cwd=fixture.root, check=True, capture_output=True, encoding="utf-8").stdout
+
+    def commit(self, fixture, message, *events):
+        if not (fixture.root / ".git").is_dir():
+            self.git(fixture, "init", "-q")
+        if events:
+            state = fixture.project / "STATE.md"
+            previous = state.read_text(encoding="utf-8") if state.is_file() else "# Project State\n\n## Log\n\n"
+            write(state, previous + "".join(f"- 2026-10-26 — build — {event}\n" for event in events))
+        self.git(fixture, "add", "-A")
+        self.git(fixture, "commit", "-qm", message, "--allow-empty")
+
+    @staticmethod
+    def tasks(entries):
+        return [entry["task"] for entry in entries]
+
+    def test_two_completed_repairs_ask_for_redesign_before_a_second_block(self):
+        fixture = self.fixture()
+        fixture.lens("contract", t001_fails=[PARSES.format("no")])
+        fixture.lens("adversarial", verdict="pass")
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T005", status="pending")
+        self.repair(fixture, "T006", criterion="Renders a table")
+        _, result = fixture.run()
+        (group,) = result["groups"]
+        self.assertEqual(self.tasks(group["repair_attempts"]), ["T003"])
+        self.assertEqual(group["repair_attempts"][0]["matched"], "Parses CSV rows")
+        self.assertEqual(result["redesign"], [])
+
+        self.repair(fixture, "T004")
+        _, result = fixture.run()
+        (entry,) = result["redesign"]
+        self.assertEqual((entry["locator"], entry["blocked_before"]), ("t001_ac1", []))
+        self.assertEqual(self.tasks(entry["repair_attempts"]), ["T003", "T004"])
+        self.assertTrue(result["redesign_pending"])
+        self.assertEqual(result["reconsider_event"], 'wave 1 cycle 1 reconsidered: ["Parses CSV rows"]')
+
+    def test_counts_follow_the_review_as_recorded(self):
+        fixture = self.fixture()
+        fixture.lens("contract", t001_fails=[PARSES.format("no")])
+        fixture.lens("adversarial", verdict="pass")
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T004", status="pending")
+        self.commit(fixture, "build: record wave 1 cycle 1 review")
+        self.repair(fixture, "T004")
+        _, result = fixture.run()
+        self.assertEqual(self.tasks(result["groups"][0]["repair_attempts"]), ["T003"])
+        # A review rewritten under the same name is read as it is now.
+        fixture.lens("contract", t001_fails=[PARSES.format("still no")])
+        _, result = fixture.run()
+        self.assertEqual(self.tasks(result["groups"][0]["repair_attempts"]), ["T003", "T004"])
+
+    def test_references_resolve_to_task_and_intent_criteria(self):
+        fixture = self.fixture()
+        texts, unresolved = review_findings.criterion_texts(
+            fixture.project, "T001 acceptance 1 (t002_ac2); INTENT SC1, T009 acceptance 4 and sc7")
+        self.assertTrue({"Parses CSV rows", "Handles empty input", "Parser accepts CSV"} <= set(texts))
+        self.assertEqual(unresolved, ["T009 acceptance 4", "sc7"])
+
+    def test_counts_are_per_criterion(self):
+        fixture = self.fixture()
+        self.repair(fixture, "T003", criterion="Parses CSV rows")
+        self.repair(fixture, "T004", criterion="Rejects malformed rows")
+        counts = review_findings.repair_attempts(
+            fixture.root, fixture.project, ["Parses CSV rows", "Rejects malformed rows"])
+        self.assertEqual({key: self.tasks(value) for key, value in counts.items()},
+                         {"Parses CSV rows": ["T003"], "Rejects malformed rows": ["T004"]})
+
+    def test_panel_repairs_count_actionable_findings_only(self):
+        fixture = self.fixture()
+        write(fixture.project / "review" / "wave-1.cycle3.panel.md",
+              PANEL.format(cycle=3, count=1, criterion="T001 acceptance 1 (t001_ac1)"))
+        self.repair(fixture, "T003")
+        result = review_findings.panel_repairs(fixture.root, ".project", 1, 3)
+        (finding,) = result["findings"]
+        self.assertEqual(self.tasks(finding["repair_attempts"]), ["T003"])
+        self.assertFalse(result["pending"])
+
+        self.repair(fixture, "T004")
+        self.commit(fixture, "state", "wave 1 cycle 3 panel ruling: Advance and keep panel findings as warnings")
+        result = review_findings.panel_repairs(fixture.root, ".project", 1, 3)
+        self.assertEqual(result["repeated"], ["T001 acceptance 1 (t001_ac1): quoted rows still fail"])
+        self.assertTrue(result["pending"])
+
+        self.commit(fixture, "state", "wave 1 cycle 3 panel ruling: Open fix tasks from panel findings (recommended)")
+        self.assertFalse(review_findings.panel_repairs(fixture.root, ".project", 1, 3)["pending"])
+
+        write(fixture.project / "review" / "wave-1.cycle3.panel.md",
+              PANEL.format(cycle=3, count=2, criterion="T001 acceptance 1"))
+        with self.assertRaisesRegex(review_findings.ReviewFindingsError, "Actionable: 2 but lists 1"):
+            review_findings.panel_repairs(fixture.root, ".project", 1, 3)
+
+    def test_an_unresolved_panel_reference_is_never_a_zero_count(self):
+        fixture = self.fixture()
+        write(fixture.project / "review" / "wave-1.cycle3.panel.md",
+              PANEL.format(cycle=3, count=1, criterion="T009 acceptance 4"))
+        result = review_findings.panel_repairs(fixture.root, ".project", 1, 3)
+        self.assertEqual((result["repeated"], result["unresolved"], result["pending"]),
+                         ([], ["T009 acceptance 4"], True))
+
+    def test_reconsider_restarts_only_its_criteria_and_keeps_later_completions(self):
+        fixture = self.fixture()
+        write(fixture.project / "review" / "wave-1.cycle2.panel.md",
+              PANEL.format(cycle=2, count=1, criterion="T001 acceptance 1"))
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T004")
+        self.repair(fixture, "T005", status="pending")
+        self.repair(fixture, "T006", criterion="Renders a table")
+        event = review_findings.panel_repairs(fixture.root, ".project", 1, 2)["reconsider_event"]
+        self.assertEqual(event, 'wave 1 cycle 2 reconsidered: ["Parses CSV rows"]')
+        self.commit(fixture, "build: record wave 1 cycle 2 panel ruling",
+                    "wave 1 cycle 2 panel ruling: Reconsider the component approach", event)
+        self.repair(fixture, "T005")
+        self.repair(fixture, "T007", criterion="Renders a table")
+        counts = review_findings.repair_attempts(fixture.root, fixture.project, ["Parses CSV rows", "Renders a table"])
+        self.assertEqual(self.tasks(counts["Parses CSV rows"]), ["T005"])
+        self.assertEqual(self.tasks(counts["Renders a table"]), ["T006", "T007"])
+        # The reset follows the criterion into every wave; an event without its ruling resets nothing.
+        self.repair(fixture, "T008", wave=3)
+        self.assertEqual(self.tasks(review_findings.repair_attempts(
+            fixture.root, fixture.project, ["Parses CSV rows"])["Parses CSV rows"]), ["T005", "T008"])
+        self.commit(fixture, "state", 'wave 2 cycle 1 reconsidered: ["Renders a table"]')
+        self.assertEqual(len(review_findings.repair_attempts(
+            fixture.root, fixture.project, ["Renders a table"])["Renders a table"]), 2)
+
+    def test_a_reused_review_name_reads_its_own_publication(self):
+        fixture = self.fixture()
+        fixture.lens("contract", t001_fails=[PARSES.format("no")])
+        fixture.lens("adversarial", verdict="pass")
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T004", status="pending")
+        self.commit(fixture, "build: record wave 1 cycle 1 review")
+        review = fixture.project / "review"
+        kept = {path.name: path.read_text(encoding="utf-8") for path in review.iterdir()}
+        for path in review.iterdir():
+            path.unlink()
+        self.commit(fixture, "archive the milestone")
+        self.repair(fixture, "T004")
+        for name, text in kept.items():
+            write(review / name, text)
+        self.commit(fixture, "build: record wave 1 cycle 1 review again")
+        _, result = fixture.run()
+        self.assertEqual(self.tasks(result["groups"][0]["repair_attempts"]), ["T003", "T004"])
+
+    def test_a_republished_panel_counts_at_its_own_publication(self):
+        fixture = self.fixture()
+        fixture.lens("contract", cycle=3, verdict="pass")
+        panel = fixture.project / "review" / "wave-1.cycle3.panel.md"
+        write(panel, PANEL.format(cycle=3, count=1, criterion="T001 acceptance 1"))
+        self.repair(fixture, "T003")
+        self.commit(fixture, "build: record wave 1 cycle 3 review")
+        self.repair(fixture, "T004")
+        write(panel, PANEL.format(cycle=3, count=1, criterion="T001 acceptance 1 (rerun)"))
+        self.commit(fixture, "build: record wave 1 cycle 3 panel again")
+        self.assertTrue(review_findings.panel_repairs(fixture.root, ".project", 1, 3)["repeated"])
+
+    def test_a_lowercase_reference_resolves(self):
+        fixture = self.fixture()
+        for reference in ("t001 acceptance 1", "T001_AC1"):
+            texts, unresolved = review_findings.criterion_texts(fixture.project, reference)
+            self.assertIn("Parses CSV rows", texts)
+            self.assertEqual(unresolved, [])
+
+    def held_repair(self, fixture, criterion="Parses CSV rows"):
+        self.repair(fixture, "T003", criterion=criterion)
+        self.repair(fixture, "T004", criterion=criterion)
+        self.repair(fixture, "T005", status="pending", criterion=criterion)
+        self.commit(fixture, "build: record repairs")
+
+    def test_a_third_repair_waits_for_a_later_ruling_that_opens_fix_tasks(self):
+        fixture = self.fixture()
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T005", status="pending")
+        self.commit(fixture, "build: record T003", "wave 1 cycle 1 redesign ruling: Open fix tasks anyway")
+        self.assertIsNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+        self.repair(fixture, "T004")
+        self.commit(fixture, "build: record T004 landing")
+        reason = review_findings.repair_release(fixture.root, ".project", "T005")
+        self.assertIn("completed repairs T003, T004", reason)
+        self.assertIn("wave 1 cycle 1 redesign or panel ruling", reason)
+
+        self.commit(fixture, "build: record wave 1 cycle 1 redesign ruling",
+                    "wave 1 cycle 1 redesign ruling: Open fix tasks anyway (recommended)")
+        self.assertIsNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+        self.commit(fixture, "build: record wave 1 cycle 1 panel ruling",
+                    "wave 1 cycle 1 panel ruling: Advance and keep panel findings as warnings")
+        self.assertIsNotNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+    def test_a_repeated_opening_after_the_repairs_releases(self):
+        fixture = self.fixture()
+        opening = "wave 1 cycle 1 redesign ruling: Open fix tasks anyway"
+        self.repair(fixture, "T005", status="pending")
+        self.commit(fixture, "build: record the ruling", opening)
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T004")
+        self.commit(fixture, "build: record repairs")
+        self.assertIsNotNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+        self.commit(fixture, "build: record the ruling again", opening)
+        self.assertIsNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+    def test_a_reused_task_path_does_not_lend_its_old_completion(self):
+        fixture = self.fixture()
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T004")
+        self.repair(fixture, "T005", status="pending")
+        self.commit(fixture, "build: record an earlier milestone's T003 and T004")
+        for task_id in ("T003", "T004"):
+            (fixture.project / "tasks" / f"{task_id}-fix-wave-1-cycle-1.md").unlink()
+        self.commit(fixture, "archive them")
+        self.commit(fixture, "build: record the ruling", "wave 1 cycle 1 redesign ruling: Open fix tasks anyway")
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T004")
+        self.commit(fixture, "build: record repairs")
+        self.assertIsNotNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+    def test_status_words_in_a_task_body_are_not_a_completion(self):
+        fixture = self.fixture()
+        body = "\n## Context\n\nThe check must not print `status: done` for a failed pull.\n"
+        self.repair(fixture, "T003", status="pending", extra=body)
+        self.repair(fixture, "T004", status="pending", extra=body)
+        self.repair(fixture, "T005", status="pending")
+        self.commit(fixture, "build: record repairs")
+        self.commit(fixture, "build: record the ruling", "wave 1 cycle 1 redesign ruling: Open fix tasks anyway")
+        self.repair(fixture, "T003", extra=body)
+        self.repair(fixture, "T004", extra=body)
+        self.commit(fixture, "build: record T003 and T004 landings")
+        self.assertIsNotNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+    def test_a_mixed_criterion_line_resolves_its_leading_reference(self):
+        fixture = self.fixture()
+        self.held_repair(fixture)
+        write(fixture.project / "tasks" / "T005-fix-wave-1-cycle-1.md",
+              REPAIR.format(id="T005", status="pending", criterion="T001 acceptance 1: quoted rows still fail"))
+        self.assertIn("completed repairs T003, T004", review_findings.repair_release(fixture.root, ".project", "T005"))
+
+    def test_a_plan_that_only_edits_a_held_repair_does_not_release_it(self):
+        fixture = self.fixture()
+        self.held_repair(fixture)
+        path = fixture.project / "tasks" / "T005-fix-wave-1-cycle-1.md"
+        path.write_text(path.read_text(encoding="utf-8") + "\n## Log\n\n- planned again\n", encoding="utf-8")
+        self.commit(fixture, "plan: build plan approved")
+        self.assertIsNotNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+    def test_independent_criteria_do_not_add_up(self):
+        fixture = self.fixture()
+        self.repair(fixture, "T003", criterion="Parses CSV rows")
+        self.repair(fixture, "T004", criterion="Rejects malformed rows")
+        self.repair(fixture, "T005", status="pending", criterion="Parses CSV rows",
+                    extra="\n### t001_ac2\n\nCriterion: Rejects malformed rows\n")
+        self.commit(fixture, "build: record repairs")
+        self.assertIsNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+    def test_a_bare_reference_carried_by_a_repair_resolves(self):
+        fixture = self.fixture()
+        self.held_repair(fixture)
+        for reference in ("T001 acceptance 1", "t001 acceptance 1"):
+            write(fixture.project / "tasks" / "T005-fix-wave-1-cycle-1.md",
+                  REPAIR.format(id="T005", status="pending", criterion=reference))
+            self.assertIn("completed repairs T003, T004",
+                          review_findings.repair_release(fixture.root, ".project", "T005"))
+        write(fixture.project / "tasks" / "T005-fix-wave-1-cycle-1.md",
+              REPAIR.format(id="T005", status="pending", criterion="T009 acceptance 4"))
+        self.assertIn("resolve to no criterion: T009 acceptance 4",
+                      review_findings.repair_release(fixture.root, ".project", "T005"))
+
+    def test_malformed_repairs_are_held(self):
+        fixture = self.fixture(heading="more repairs")
+        self.held_repair(fixture)
+        self.assertIn("must name exactly one", review_findings.repair_release(fixture.root, ".project", "T005"))
+        path = fixture.project / "tasks" / "T005-fix-wave-1-cycle-1.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("wave: 2\n", ""), encoding="utf-8")
+        self.assertIn("has no wave", review_findings.repair_release(fixture.root, ".project", "T005"))
+
+    def test_only_the_current_plan_approval_after_the_repairs_releases(self):
+        fixture = self.fixture()
+        self.repair(fixture, "T005", status="pending")
+        self.commit(fixture, "plan: build plan approved")
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T004")
+        self.commit(fixture, "build: record repairs")
+        self.assertIsNotNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+        path = fixture.project / "tasks" / "T005-fix-wave-1-cycle-1.md"
+        text = path.read_text(encoding="utf-8")
+        path.unlink()
+        self.commit(fixture, "build: retire T005")
+        path.write_text(text, encoding="utf-8")
+        self.commit(fixture, "plan: build plan approved")
+        self.assertIsNone(review_findings.repair_release(fixture.root, ".project", "T005"))
+
+
 class CarryForwardTest(unittest.TestCase):
     def test_earlier_refutation_with_unchanged_evidence_is_carried(self):
         fixture = Fixture(self)
@@ -723,7 +1090,7 @@ class RecoveryHistoryTest(unittest.TestCase):
         self.assertFalse(result["cap_reached"])
         self.assertEqual(result["fix_groups"], ["t001_ac1", "t001_ac2"])
         self.assertEqual(result["redesign"], [{"locator": "t001_ac1", "criterion": "Parses CSV rows", "blocked_before": [
-            {"recovery": A_BASE, "cycle": 1}, {"recovery": None, "cycle": 1}]}])
+            {"recovery": A_BASE, "cycle": 1}, {"recovery": None, "cycle": 1}], "repair_attempts": []}])
         self.assertEqual((result["redesign_ruling"], result["redesign_pending"]), (None, True))
 
     def test_only_the_open_ruling_of_this_cycle_since_the_last_recovery_releases_fix_tasks(self):

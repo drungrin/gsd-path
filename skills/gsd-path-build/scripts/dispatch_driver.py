@@ -72,6 +72,8 @@ class DriverStop(RuntimeError):
         self.details = details
 
 
+# Blocks that hold one task while the round dispatches and settles the others.
+TASK_HOLDS = ("model-selection", "repair-ruling")
 STOP_ERRORS = (DriverStop, isolation.IsolationError, build_state.BuildStateError,
                contracts.HandoffError, review_findings.ReviewFindingsError,
                pipeline_state.PipelineStateError, archive_milestone.ArchiveError, model_policy.PolicyError)
@@ -1305,7 +1307,7 @@ class Round:
         capacity = self.options.capacity
         selected = []
         rejected = {item["task_id"] for item in self.receipt["blocked"]
-                    if item.get("code") == "model-selection"}
+                    if item.get("code") in TASK_HOLDS}
         for task in ready["ready"]:
             if capacity is not None and len(in_flight) + len(selected) >= capacity:
                 break
@@ -1317,6 +1319,16 @@ class Round:
             if used >= self.options.max_attempts:
                 raise DriverStop(f"task {task['id']} reached the attempt limit ({self.options.max_attempts}) "
                                  "for this milestone; a person must rule", task=task["id"], attempts=used)
+            release = getattr(review_findings, "repair_release", None)
+            if release is None:
+                warning = "the pinned runtime predates the repair-count hold; repairs dispatch without it"
+                if warning not in self.receipt.setdefault("warnings", []):
+                    self.receipt["warnings"].append(warning)
+            hold = release(self.primary, self.project_dir, task["id"]) if release else None
+            if hold:
+                # Only this repair waits for the owner's ruling; other ready tasks still dispatch.
+                self.receipt["blocked"].append({"task_id": task["id"], "reason": hold, "code": "repair-ruling"})
+                continue
             self.admit(task["id"])
             candidate = retain_selection(self.root, {'task_id': task['id'], 'task_file': task['task_file'],
                                                      'worktree': str(self.primary)})
@@ -1386,7 +1398,7 @@ class Round:
                 self.receipt["in_flight"] = []
                 changed = self.settle() or changed
                 if self.receipt["questions"] or any(
-                        item.get("code") != "model-selection" for item in self.receipt["blocked"]):
+                        item.get("code") not in TASK_HOLDS for item in self.receipt["blocked"]):
                     self.receipt["status"] = "question" if self.receipt["questions"] else "blocked"
                     return self.receipt
                 # ready is expensive and its inputs only move when a landing or redispatch happened

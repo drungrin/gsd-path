@@ -598,7 +598,14 @@ dispatch contract and perform steps 1–5 by hand.
    `history.effective_cycle`, those plus the current cycle number, reaches
    `max_review_cycles`. A recovery never refills the budget. `redesign` lists
    each fix group whose criterion already blocked two earlier cycles of the
-   wave, with those cycles. Exit 2 blocks the wave. Never regroup,
+   wave, with those cycles, or that two completed repair tasks already
+   carried. Every group reports those tasks as `repair_attempts`. They are
+   counted per criterion, as the review recorded them, across waves and
+   build recoveries, like the blocked cycles in `history`. Reusing a set-aside
+   review's fix tasks is a separate rule. The count restarts for the criteria
+   that `reconsider_event` names once that event is committed after a
+   `Reconsider the component approach` ruling.
+   Exit 2 blocks the wave. Never regroup,
    re-derive a locator, or re-decide refutation in model reasoning; act on
    the result in this order:
    - `structural_blockers` non-empty: a missing or invalid lens, panel, or
@@ -654,11 +661,17 @@ dispatch contract and perform steps 1–5 by hand.
    - `redesign_pending` true: two fixes of the same criterion already
      failed, so stop before another fix task. First give the brief at the
      end of this step for the `redesign` groups, with their
-     `blocked_before` cycles and the `recurrence` files. Then ask, with
-     **Outcome** naming each criterion and how many cycles it blocked,
+     `blocked_before` cycles, `repair_attempts` and the `recurrence` files,
+     as one account per criterion: a repair and the blocked cycle it
+     answered are one failure, not two. Then ask, with
+     **Outcome** naming each criterion, how many cycles it blocked and how
+     many repairs it took,
      **Review** linking the current review files and the earlier ones that
      `blocked_before` names, and **Next** listing
-     `Reconsider the component approach` and `Open fix tasks anyway`. Before
+     `Reconsider the component approach` and `Open fix tasks anyway`. When the
+     user selects `Reconsider the component approach`, append the helper's
+     `reconsider_event` to the Log right after the ruling, in the same
+     checkpoint. Before
      asking, answer the `redesign` lenses for `wave <N> cycle <C>` and record
      the `lenses` Log event. Mark one `(recommended)` only with a reason
      drawn from the review evidence and those lenses.
@@ -785,7 +798,8 @@ dispatch contract and perform steps 1–5 by hand.
    cycle, and every skeptic file collected for the wave, plus the STATE.md
    attempt log. Show `history.cycles` (recovery, cycle, verdict, locators)
    and `history.prior_blocked`, so the question counts the blocked cycles
-   that earlier build recoveries set aside. Ask whether to redirect the
+   that earlier build recoveries set aside, and each blocking group's
+   `repair_attempts`. Ask whether to redirect the
    approach, raise the cap to a value above `history.effective_cycle`, or send
    define to amend INTENT.md `## Corrections` — never rewrite an AC from a
    Log waiver — or, in program flow (ROADMAP.md exists), to abandon the
@@ -814,10 +828,26 @@ dispatch contract and perform steps 1–5 by hand.
    go in Context or Approach. Its Verify uses suitable structural or generated
    checks and never claims finitely many tests prove a universal rule.
    When the canonical verdict is `pass` and `wave-N.cycleC.panel.md` reports
-   `Actionable` greater than 0, do not advance silently: present **Outcome**
+   `Actionable` greater than 0, do not advance silently. Run `python3
+   <absolute review_findings.py> panel-repairs --repo <absolute primary>
+   --wave <N> --cycle <C>`: it resolves each actionable finding's criterion
+   references (`T001 acceptance 2`, `t001_ac2`, `SC3`) and, per criterion,
+   reports the completed repairs that already carried it (`repeated` lists
+   the findings with two or more), together with every reference it cannot
+   resolve (`unresolved`). Present **Outcome**
    with the canonical pass plus the actionable count, **Review** linking the
    panel file, and **Next** listing `Open fix tasks from panel findings
    (recommended)` first, then `Advance and keep panel findings as warnings`.
+   When `repeated` is not empty, list `Reconsider the component approach`
+   first instead, recommended because two or more repairs did not close the
+   criterion, with the redesign brief below and the repair counts. Keep both
+   other options. Show every `unresolved` reference: its repair count is
+   unknown, never zero. When the user selects `Reconsider the component
+   approach`, append the helper's `reconsider_event` right after the panel
+   ruling, in the same checkpoint. Reconsidering never drops
+   a reachable violation that the security exception covers; narrowing a
+   criterion or its supported domain goes through the existing plan-defect,
+   build recovery or define-Corrections route.
    Answer the `panel` lenses for `wave <N> cycle <C>` and record the
    `lenses` Log event first. They may move the recommendation to the advance
    option only when no finding's consequence reaches an approved criterion
@@ -827,6 +857,14 @@ dispatch contract and perform steps 1–5 by hand.
    option verbatim>` and checkpointing with subject `build: record wave <N>
    cycle <C> panel ruling`, body `Why: persist the panel ruling before
    acting`, and `Wave: <N>`.
+   A repair task whose criterion two completed repairs already carried is
+   dispatched only after the later of those repairs completed and either a
+   committed redesign or panel ruling that opens fix tasks for the cycle it
+   answers was recorded, or an approved plan added it. The later of the two
+   ruling kinds decides. A repair without a wave, without a single source
+   cycle, or with a criterion reference that resolves to nothing is held.
+   `dispatch_driver.py round` holds such a task with code `repair-ruling`
+   and keeps dispatching the others; dispatch by hand follows the same rule.
    Preference-only panel warnings do not block advance. On pass, checkpoint
    the review artifact, the panel file when present, STATE.md, and wave
    bookkeeping, then report `wave N/M done, C review cycle(s)`.

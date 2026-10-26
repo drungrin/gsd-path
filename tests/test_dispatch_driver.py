@@ -1634,6 +1634,62 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "done", receipt)
         self.assertEqual([item["task"] for item in receipt["landed"]], ["T001", "T002"])
 
+    def repair_round(self, root: Path) -> "dispatch_driver.Round":
+        self.fixture(root)
+        repair = ("---\nid: {id}\ntitle: Fix wave 1 cycle 1 review findings\nwave: 1\nstatus: {status}\n---\n\n"
+                  "## Review findings\n\n### t001_ac1\n\nCriterion: Parses CSV rows\n")
+        for task_id, status in (("T003", "done"), ("T004", "done"), ("T005", "pending")):
+            (root / f".project/tasks/{task_id}-fix-wave-1-cycle-1.md").write_text(
+                repair.format(id=task_id, status=status), encoding="utf-8")
+        (root / ".project/review").mkdir(exist_ok=True)
+        (root / ".project/review/wave-1.cycle1.md").write_text("# Review — wave 1, cycle 1\n", encoding="utf-8")
+        run_git(root, "add", ".")
+        run_git(root, "commit", "-m", "build: record repairs")
+        options = argparse.Namespace(project_dir=".project", wave=1, capacity=None, max_attempts=2,
+                                     child_command="unused")
+        return dispatch_driver.Round(root, options)
+
+    def ready_patches(self, round_: "dispatch_driver.Round", *task_ids: str):
+        ready = {"current_wave": 1, "ready": [
+            {"id": task_id, "wave": 1, "verify_heavy": False, "task_file": f".project/tasks/{task_id}.md"}
+            for task_id in task_ids]}
+        return (mock.patch.object(dispatch_driver.build_state, "ready", return_value=ready),
+                mock.patch.object(round_, "in_flight_states", return_value=[]),
+                mock.patch.object(round_, "checkpoint_bookkeeping"))
+
+    def test_round_holds_only_a_repair_whose_criterion_needs_a_ruling(self) -> None:
+        round_ = self.repair_round(self.root)
+        ready, flights, bookkeeping = self.ready_patches(round_, "T005")
+        with ready, flights, bookkeeping, mock.patch.object(round_, "admit") as admit:
+            self.assertFalse(round_.dispatch_ready())
+        admit.assert_not_called()
+        (held,) = round_.receipt["blocked"]
+        self.assertEqual((held["task_id"], held["code"]), ("T005", "repair-ruling"))
+        self.assertIn("completed repairs T003, T004", held["reason"])
+        self.assertIn("repair-ruling", dispatch_driver.TASK_HOLDS)
+
+    def test_a_held_repair_does_not_stop_an_independent_task(self) -> None:
+        round_ = self.repair_round(self.root)
+        ready, flights, bookkeeping = self.ready_patches(round_, "T005", "T001")
+        admitted = RuntimeError("admitted")
+        with ready, flights, bookkeeping, mock.patch.object(round_, "admit", side_effect=admitted) as admit:
+            with self.assertRaises(RuntimeError):
+                round_.dispatch_ready()
+        admit.assert_called_once_with("T001")
+        self.assertEqual([item["task_id"] for item in round_.receipt["blocked"]], ["T005"])
+
+    def test_round_warns_when_the_pinned_runtime_has_no_repair_hold(self) -> None:
+        round_ = self.repair_round(self.root)
+        ready, flights, bookkeeping = self.ready_patches(round_, "T005")
+        stop = RuntimeError("admitted")
+        with ready, flights, bookkeeping, \
+                mock.patch.object(dispatch_driver.review_findings, "repair_release", None), \
+                mock.patch.object(round_, "admit", side_effect=stop):
+            with self.assertRaises(RuntimeError):
+                round_.dispatch_ready()
+        self.assertEqual(round_.receipt["warnings"],
+                         ["the pinned runtime predates the repair-count hold; repairs dispatch without it"])
+
     def test_native_failure_then_round_retry_stops_at_max_attempts(self) -> None:
         root = self.root
         self.fixture(root, deps_t002="[T001]")
