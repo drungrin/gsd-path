@@ -548,6 +548,10 @@ class DispatchDriverTests(unittest.TestCase):
         ledger = (root / ".project/build/verify-ledger.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(ledger), 1)
         self.assertEqual([item["ledger"] for item in receipt["landed"]], [True, False])
+        # A parallel Verify runs inside its task isolate: cwd and worktree agree.
+        for item in receipt["landed"]:
+            self.assertEqual(item["verify"]["cwd"], item["verify"]["worktree"])
+            self.assertRegex(item["verify"]["base"], r"^[0-9a-f]{40}$")
         for task in ("T001", "T002"):
             text = (root / f".project/tasks/{task}-demo.md").read_text(encoding="utf-8")
             self.assertIn("status: done", text)
@@ -1065,6 +1069,12 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertTrue(own["reuse"], own)
         self.assertNotIn("regressions", own["entry"]["execution"])
         self.assertFalse(lookup(str(root), verify_t001, landed["commit"])["hit"])
+        # The serial Verify runs in the sidecar; `cwd` names that directory, `worktree` the checkout.
+        execution = own["entry"]["execution"]
+        self.assertTrue(execution["cwd"].endswith("task-t002-verify"), execution)
+        self.assertNotEqual(execution["cwd"], execution["worktree"])
+        self.assertEqual(Path(execution["worktree"]).resolve(), root.resolve())
+        self.assertRegex(execution["base"], r"^[0-9a-f]{40}$")
 
     def test_later_wave_task_without_a_shared_file_runs_only_its_own_verify(self) -> None:
         root = self.root
@@ -1228,6 +1238,19 @@ class DispatchDriverTests(unittest.TestCase):
         task.write_bytes((task.read_text(encoding="utf-8")
                           + "- 2026-10-10 — implemented src/app.py; Verify pass\n").encode("utf-8"))
         return head
+
+    def test_finish_reason_is_visible_when_nothing_landed_or_blocked(self) -> None:
+        # Issue #469 item 6: a finish that neither lands nor records a
+        # blocked entry must still carry a visible cause.
+        from scripts import dispatch_driver as driver_module
+        receipt = {
+            "landed": [], "blocked": [], "questions": [],
+            "dispatched": [], "in_flight": [], "wave": 1,
+        }
+        result = driver_module.finish_receipt(receipt)
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("reason", result)
+        self.assertTrue(result["reason"])
 
     def test_finish_runs_again_after_a_failed_serial_verify_once_the_task_is_fixed(self) -> None:
         root = self.root
@@ -2464,6 +2487,27 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["review_cycles"], [2])
         self.assertEqual(first.read_bytes(), original)
         self.assertEqual(self.state_cli(root, "validate")["state"]["phase"], "ship")
+
+    def test_complete_passes_after_an_appended_repair_wave_re_review(self) -> None:
+        # Issue #361: a blocked wave's fix lands in an appended wave; the source
+        # wave's next cycle judges the repair, so completion must not demand a
+        # review artifact of the repair wave's own.
+        root = self.root
+        self.fixture(root, wave_t002=2)
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60", verdict="blocked")["status"], "blocked")
+        self.assertEqual(self.driver(root, "fix-tasks", "--wave", "1", "--cycle", "1")["plan_wave"], 3)
+        self.assertEqual([item["task"] for item in self.round(root, "--wait", "60", wave=3)["landed"]], ["T003"])
+        self.assertEqual(self.review(root, "--wait", "60", cycle=2)["status"], "pass")
+        self.assertEqual(self.round(root, "--wait", "60", wave=2)["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60", wave=2)["status"], "pass")
+        receipt = self.driver(root, "complete")
+        self.assertEqual(receipt["status"], "done", receipt)
+        # The fork counts the judged repair wave as 0 cycles of its own.
+        self.assertEqual(receipt["review_cycles"], [2, 1, 0])
+        self.assertEqual(self.state(root), "ship/active")
+        self.assertTrue((root / ".project/build/evidence.json").is_file())
+        self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
 
     def test_complete_recovers_build_done_after_passing_review(self) -> None:
         root = self.root

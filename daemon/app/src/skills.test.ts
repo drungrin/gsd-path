@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { failure, isNewer, joinNames, notDetected, pendingSkills, releaseOptions, sharedRoots, skillRows, targetVersion } from "./skills";
+import { failure, frameworkRows, isNewer, joinNames, notDetected, pendingFrameworks, pendingSkills, releaseOptions, sharedRoots, skillRows, targetVersion } from "./skills";
 import type { HostInfo, PluginStatus } from "./skills";
 
 const host = (id: string, name: string, found: boolean, root: string): HostInfo =>
@@ -140,12 +140,34 @@ describe("failure", () => {
       text: "Permission denied writing to ~/.claude/skills. Run `chmod -R u+w ~/.claude/skills`, then try again.",
     });
   });
-  it("says nothing was changed only when the installer rolled back", () => {
+  it("says nothing was changed only when the installer rolled back or refused", () => {
     expect(failure("installed", ["Codex", "Zed"], "installation failed and was rolled back: disk full")).toMatchObject({
       title: "Codex and Zed were not installed", unchanged: "Nothing was changed.", fix: null });
+    expect(failure("installed", ["Cursor"], "installer refused the request (exit 2), nothing was changed: error: bad flag").unchanged)
+      .toBe("Nothing was changed.");
+    expect(failure("installed", ["Cursor"], "host cursor failed").unchanged).toBeNull();
   });
-  it("warns that a partial install changed some folders", () => {
-    expect(failure("installed", ["Cursor"], "partial install (exit 2): cursor failed").unchanged)
-      .toBe("Some folders were changed. Read the installer output.");
+});
+
+describe("frameworkRows", () => {
+  const core = { installed: "1.11.0", latest: "1.17.0", checked: "2026-10-18T12:00:00Z", update_available: true, detected: true,
+    hosts: [{ host: "claude", dir: "/Users/me/.claude", version: "1.13.0" }, { host: "codex", dir: "/Users/me/.codex", version: "1.3.1" }] };
+  it("lists the CLI and every host, and offers the update when one is behind", () => {
+    const rows = frameworkRows(plugin({ frameworks: { "gsd-core": core } }));
+    expect(rows).toEqual([{ name: "gsd-core", where: "/Users/me/.claude, /Users/me/.codex",
+      version: "CLI\u00a01.11.0\nclaude\u00a01.13.0\ncodex\u00a01.3.1", status: "Update to 1.17.0", tone: "acc", update: true, error: null }]);
+    expect(pendingFrameworks(plugin({ frameworks: { "gsd-core": core } }))).toEqual(["gsd-core 1.17.0"]);
+  });
+  it("says not checked before the first check, and hides frameworks that are not installed", () => {
+    const pi = { installed: "1.21.1", hosts: [], latest: null, checked: null, update_available: false, detected: true };
+    const none = { ...pi, installed: null, detected: false };
+    expect(frameworkRows(plugin({ frameworks: { "gsd-pi": pi, "gsd-core": none } })).map((row) => [row.name, row.where, row.status, row.update]))
+      .toEqual([["gsd-pi", "global command", "Not checked yet", false]]);
+    expect(pendingFrameworks(plugin({ frameworks: { "gsd-pi": pi } }))).toEqual([]);
+    expect(frameworkRows(plugin())).toEqual([]);  // an older daemon sends no frameworks
+  });
+  it("shows a failed registry check next to the framework and keeps the last known version", () => {
+    const rows = frameworkRows(plugin({ frameworks: { "gsd-core": core } }), { "gsd-pi": null, "gsd-core": "offline" });
+    expect(rows.map((row) => [row.name, row.status, row.error])).toEqual([["gsd-core", "Update to 1.17.0", "offline"]]);
   });
 });

@@ -4,6 +4,47 @@ Changes to the desktop app in `daemon/app` and the monitor daemon it bundles.
 The app has its own version and `app-v<version>` tags, separate from the
 [npm package](../../CHANGELOG.md). Newest first.
 
+## [Unreleased]
+
+### Added
+- The Projects board lists gsd-pi (`.gsd/`) and gsd-core (`.planning/`)
+  projects. A folder with more than one framework shows one card per
+  framework, with a framework badge. These cards are read-only.
+- gsd-core cards show their milestone, phase step (discuss, research, plan,
+  execute, verify), plans as tasks, phases as waves, the milestone timeline,
+  VERIFICATION and UAT results, and STATE.md concerns (amber).
+- gsd-pi cards show their milestone, phase step, slices as waves, tasks,
+  every milestone, assessments, the verification ledger, STATE.md blockers and
+  the next command. They read `gsd.db` read-only, with a fallback to the older
+  markdown layout.
+- **History & files** lists `.planning` and `.gsd` records and opens a gsd-pi
+  or gsd-core card at its own `STATE.md`. A `.gsd` folder that links into
+  `~/.gsd/projects/` is followed; every other link is still refused.
+- Cards that share a folder name their framework in the tray and the Stats
+  scope list, and Stats keeps each card's time per phase apart. The phase chart
+  of a gsd-pi or gsd-core card follows its own steps.
+- The Skills page lists gsd-pi and gsd-core with their installed versions
+  (gsd-core per agent host) and the latest release. **Check for updates** reads
+  them too (a failed check shows its error next to the framework), the update
+  banner names any that are behind, and **Update…** shows
+  the commands and then runs each framework's own update.
+
+### Fixed
+- When the installer refuses a request (exit 2), the failure card says
+  "installer refused the request" and "Nothing was changed." It no longer says
+  "partial install" and "Some folders were changed", because the installer
+  refuses before it writes anything.
+
+### Fixed
+- On macOS and Linux, when the app or `gsd-path-daemon install` finds a
+  `~/.gsd-path/venv` made by another Python, it rebuilds the venv for the
+  current Python. Before, the venv mixed two Pythons: each launch reinstalled
+  the daemon but still ran the old one.
+
+### Fixed
+- The Tasks table no longer squeezes short columns, such as task ID and
+  wave, to one character per line. Task file paths wrap at `/`.
+
 ## [0.1.2] - 2026-10-03
 
 ### Fixed

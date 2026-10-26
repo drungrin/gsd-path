@@ -20,6 +20,12 @@ export type Spend = SpendSlot & {
 };
 export type Project = {
   root: string;
+  /** Card id: the root for GSD Path, "<root>::<flavor>" for gsd-pi and gsd-core. Older daemons omit it. */
+  id?: string; flavor?: string;
+  /** The phase strip; gsd-pi and gsd-core cards send their own. Missing means PHASES. */
+  phases?: string[] | null;
+  /** gsd-pi and gsd-core records, state file first. GSD Path cards have none. */
+  record_files?: { path: string; label: string }[] | null;
   project?: string | null; repository?: string | null; project_root?: string | null; worktree_root?: string | null;
   milestone?: string | null; phase?: string | null; status?: string | null; branch?: string | null;
   integration?: string | null;
@@ -63,6 +69,11 @@ export const DASH = "—";
 export const PHASES = ["inspect", "define", "research", "decide", "roadmap", "plan", "build", "ship"];
 
 export const nameOf = (p: Project) => p.repository || p.project || p.root;
+export const idOf = (p: Project) => p.id || p.root;
+/** The name with the framework, where cards that share a folder sit side by side (tray, stats, switcher). */
+export const labelOf = (p: Project) => nameOf(p) + (flavorOf(p) ? ` · ${flavorOf(p)}` : "");
+/** The framework badge; GSD Path cards have none. */
+export const flavorOf = (p: Project) => (p.flavor && p.flavor !== "gsd-path" ? p.flavor : null);
 export const stateOf = (p: Project) => p.workflow?.state ?? "unverified";
 export const stateLabel = (p: Project) => p.workflow?.label ?? "Unverified";
 /** Health comes from the daemon; older payloads get a local guess. */
@@ -72,11 +83,15 @@ export const healthTone = (p: Project): Tone => ({ red: "bad", amber: "warn" } a
 export const reasons = (p: Project) => (p.attention ?? []).map((item) => item.label).filter(Boolean).join(" · ")
   || (stateOf(p) === "idle" && p.workflow?.reason) || "";
 
-/** Eight cells: done before the current phase; a shipped project fills all. */
+export const phasesOf = (p: Project) => p.phases ?? PHASES;
+/** The file "History & files" opens first. */
+export const stateFileOf = (p: Project) => p.record_files?.[0]?.path ?? ".project/STATE.md";
+
+/** One cell per phase: done before the current phase; a shipped project fills all. */
 export function phaseCells(p: Project): Cell[] {
-  const state = stateOf(p);
-  const index = state === "shipped" ? PHASES.length : PHASES.indexOf(p.phase ?? "");
-  return PHASES.map((_, k) => (k < index ? "done" : k > index ? "todo" : state === "blocked" ? "blocked" : "now"));
+  const state = stateOf(p), phases = phasesOf(p);
+  const index = state === "shipped" ? phases.length : phases.indexOf(p.phase ?? "");
+  return phases.map((_, k) => (k < index ? "done" : k > index ? "todo" : state === "blocked" ? "blocked" : "now"));
 }
 
 const isDone = (m: Milestone) => m.status === "shipped" || m.status === "archived" || !!m.archive;

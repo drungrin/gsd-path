@@ -114,7 +114,14 @@ so the position is unchanged. Then:
    head and holds the exact output; there is no reusable ledger entry.
    Single-repo re-entry at the same command and commit reuses the execution,
    including a failed one, and finishes interrupted collection without running
-   the command again.
+   the command again. The one exception is an owner-diagnosed host failure (for
+   example a host toolchain version the project does not pin): re-run
+   `workflow_run.py prepare-final` with `--rerun` to retire the recorded
+   execution, run the command again, and append a second ledger entry marked
+   `rerun` — the failed entry stays as history. Product failures never take
+   `--rerun`; they go through the patch plan. The sidecar inherits the
+   orchestrator environment, PATH included, by design: the Verify must run the
+   project's own toolchain, so a host/PATH mismatch is a host failure.
    Missing legacy output requires evidence reconciliation, not a blind rerun.
    Any non-zero result stops this step; preserve its stderr and diagnose through
    the bundled forensics contract. Do not launch reviewers while project Verify
@@ -173,7 +180,8 @@ so the position is unchanged. Then:
    verdict `met` with a non-`none` Check or Reference, and every criterion
    listed in PLAN.md's Surface contract requires a matching `Surface` field
    and a non-`none` Check. A non-zero exit is
-   `ship/blocked`; never rerun project Verify to repair the evidence.
+   `ship/blocked`; never rerun project Verify to repair the evidence (a
+   host-caused command failure uses the `prepare-final --rerun` route above).
 6. Redispatch one complete corrected brief for a missing or invalid reviewer
    artifact under the same logical task name, following the runtime dispatch
    contract. Before dispatch, record the invalid destination's exact SHA-256.
@@ -398,7 +406,16 @@ The persisted `STATE.archive` field is the transaction identity.
    needs retry: report its reason and resume `close-members`, without rerunning
    project Verify or merging again. Never substitute a chat acknowledgement
    for the actual Azure merge proof. When it returns `integrated`, keep its `body`
-   for the ship commit below.
+   for the ship commit below. When it refuses with
+   `member reviewed HEAD reached <default> outside Path`, the member's work
+   was already published past its reviewed HEAD by an earlier user-approved
+   step: present the member, its reviewed HEAD, and the live default-branch
+   tip, and ask the user whether to adopt that landing. Only on an explicit
+   user approval rerun the same command with
+   `--adopt-landed-member <member>=<live tip SHA>`; the helper then publishes
+   the bound branch and an `adopted-landing` milestone tag at that tip and
+   makes no merge. A mismatched or stale SHA is refused, and a later rerun
+   validates the adoption without the flag.
 5. Only after preflight passes, record shipment through the journaled helper;
    for a program it atomically replaces both ROADMAP.md and STATE.md, setting
    the current entry to `Status: shipped` with the exact `Archive:` pointer:
@@ -453,7 +470,13 @@ The persisted `STATE.archive` field is the transaction identity.
      `build/rebase-adoption.json`) may advance the ref from the adopted head
      to its immediate, canonical `.project/`-only ship child under an exact-SHA
      lease after the helper proves the clean ship state, receipt, and archived
-     tasks. Every other value blocks. If origin/main advances
+     tasks, and a strict ancestor of the ship commit — a build task may have
+     legitimately pushed the bound branch as a deploy pin (#464) — is adopted
+     only after the user approves, by rerunning with
+     `integrate --adopt-published-bound <live 40-hex SHA>`; the helper requires
+     the SHA to equal the live tip exactly and fast-forwards under the same
+     exact lease, and direct integration only. Every other value blocks. If
+     origin/main advances
      after the local merge but rejects the push, a retry may discard and
      rebuild only the unpublished canonical merge and tag under the helper's
      existing recovery checks.
@@ -585,10 +608,15 @@ Run this recovery setup from a separate checkout, outside the closed primary
 worktree's guard.
 
 1. Create separate disposable trust and validation checkouts from the same
-   published origin and `STATE.branch`. This separation is required because an
-   explicit runtime upgrade changes the trust checkout's declaration and launcher,
-   while archive validation requires a clean checkout. Never use the primary
-   worktree for either role.
+   published origin and its default branch (checking out `STATE.branch` when
+   it still exists; a rebase-merged pull request may have deleted it). This
+   separation is required because an explicit runtime upgrade changes the
+   trust checkout's declaration and launcher, while archive validation
+   requires a clean checkout. Never use the primary worktree for either role.
+   A rebase-merged milestone additionally needs the original ship commits to
+   resolve — use a checkout that fetched and retained them (the primary
+   always does; a clone that never fetched the bound branch does not), and a
+   checkout whose originals were collected cannot carry a full validation.
 2. From the trusted fixed GSD Path checkout, preview and then explicitly upgrade only the
    disposable trust checkout's managed trust anchor:
 
@@ -615,6 +643,11 @@ worktree's guard.
    python3 -B <verified-runtime>/archive_milestone.py refresh-origin --repo <validation-root>
    python3 -B <verified-runtime>/archive_milestone.py validate-integrated --repo <validation-root> --slug <STATE.milestone>
    ```
+
+   When the validation checkout is on the default branch after the milestone
+   closed (the bound branch is gone), pass `--historical`; a rebase-merged
+   landing is then accepted only through the milestone tag's Ship/Landing
+   pair plus a re-proven rebase replay.
 
 4. A pass restores the normal shipped handoff without another commit or
    publication action. Remove only the disposable checkouts. A failure is a

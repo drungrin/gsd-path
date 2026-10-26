@@ -1,10 +1,10 @@
 // One project: the same sections as projectPage() and projectRecords() in the daemon dashboard.
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { facts, milestoneRows, nowBox, phaseTrack, usageTiles } from "../project";
 import { filesHash, statsHash } from "../route";
 import { api } from "../shell";
-import { DASH, duration, healthTone, int, money, nameOf, shortDate, shortTime, tokens } from "../status";
+import { DASH, duration, flavorOf, healthTone, idOf, stateFileOf, int, money, nameOf, shortDate, shortTime, tokens } from "../status";
 import type { Project } from "../status";
 import { Fold, Table } from "../ui";
 import type { usePlugin } from "../skillsApi";
@@ -12,7 +12,7 @@ import { SetupCard } from "./SetupCard";
 
 type Row = Record<string, unknown>;
 type Records = { verify_records: Row[]; usage_records: Row[]; turns: Row[]; activity: Row[]; sources: Row[] };
-type Activity = { root?: string; at?: string; type?: string; detail?: string };
+type Activity = { root?: string; id?: string; at?: string; type?: string; detail?: string };
 
 const WAVE_MARK = { done: "✓", now: "●", blocked: "●", todo: "○" };
 const GOOD = new Set(["pass", "met", "approve", "approved"]);
@@ -31,6 +31,9 @@ function RecordTable({ rows, columns }: { rows: Row[] | undefined; columns: [str
   return <Table head={columns.map(([, label]) => label)} rows={rows.map((row) => columns.map(([key]) => cell(row[key])))} />;
 }
 
+// gsd-pi and gsd-core projects have no GSD Path install to set up.
+const NoSetup = ({ children }: { children: ReactNode }) => <>{children}</>;
+
 export function ProjectPage({ project: p, now, stamp, skills }: { project: Project; now: number; stamp: string | null; skills: ReturnType<typeof usePlugin> }) {
   const [activity, setActivity] = useState<Activity[]>([]);
   const [records, setRecords] = useState<{ data?: Records; error?: string; busy?: boolean; at?: string }>({});
@@ -39,23 +42,24 @@ export function ProjectPage({ project: p, now, stamp, skills }: { project: Proje
     // Keep the last list when a read fails.
     api<{ events?: Activity[] }>("GET", "/activity").then((result) => setActivity(result.events ?? []), () => {});
   }, [p.root, stamp]);
-  useEffect(() => setRecords({}), [p.root]);
+  useEffect(() => setRecords({}), [idOf(p)]);
 
   const loadRecords = async () => {
     setRecords((old) => ({ ...old, busy: true, error: undefined }));
     try {
-      const data = await api<Records>("GET", "/api/project-data?" + new URLSearchParams({ root: p.root }));
+      const data = await api<Records>("GET", "/api/project-data?" + new URLSearchParams({ root: idOf(p) }));
       setRecords({ data, at: new Date().toLocaleTimeString() });
     } catch (error) {
       setRecords({ error: String(error) });
     }
   };
 
-  const source = (path: string, label: string) => <a className="link" href={filesHash(p.root, path)}>{label} ↗</a>;
+  const source = (path: string, label: string) => <a className="link" href={filesHash(idOf(p), path)}>{label} ↗</a>;
+  const Setup = flavorOf(p) ? NoSetup : SetupCard;
   const box = nowBox(p), tiles = usageTiles(p), sp = p.spend;
   const tasks = p.tasks ?? [], criteria = p.criteria ?? [], reviews = p.reviews ?? [], ledger = p.ledger ?? [];
   const answers = p.answers ?? [], attention = p.attention ?? [];
-  const events = activity.filter((event) => event.root === p.root).slice(0, 30);
+  const events = activity.filter((event) => (event.id ?? event.root) === idOf(p)).slice(0, 30);
   const section = (title: string, count: string | number, rows: unknown[], table: ReactNode) =>
     rows.length > 0 && <Fold title={title} count={count}>{table}</Fold>;
 
@@ -63,10 +67,10 @@ export function ProjectPage({ project: p, now, stamp, skills }: { project: Proje
     <main className="page project">
       <a className="crumb" href="#/projects">‹ Projects</a>
       <div className="phead">
-        <h1 className="title"><i className={`dot ${healthTone(p)}`} />{nameOf(p)}</h1>
+        <h1 className="title"><i className={`dot ${healthTone(p)}`} />{nameOf(p)}{flavorOf(p) && <span className="pill mute flavor">{flavorOf(p)}</span>}</h1>
         <span className="mono">Project folder: {p.project_root || p.root}</span>
         {p.worktree_root && <span className="mono">Worktree: {p.worktree_root}</span>}
-        <a className="right" href={filesHash(p.root)}>History &amp; files ↗</a>
+        <a className="right" href={filesHash(idOf(p), stateFileOf(p))}>History &amp; files ↗</a>
       </div>
       <dl className="facts">{facts(p, now).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>
       {p.handoff && <p className="handoff">{p.handoff.outcome} — {p.handoff.next}</p>}
@@ -125,13 +129,13 @@ export function ProjectPage({ project: p, now, stamp, skills }: { project: Proje
 
           {section("Success criteria", `${criteria.filter((c) => c.verdict === "met").length} of ${criteria.length} met`, criteria,
             <Table head={["ID", "Criterion", "Verdict"]}
-              rows={criteria.map((c) => [<span className="mono">{c.id || DASH}</span>, c.text, <Verdict value={c.verdict} />])} />)}
+              rows={criteria.map((c) => [<span className="mono id">{c.id || DASH}</span>, c.text, <Verdict value={c.verdict} />])} />)}
           {section("Tasks and files", `${p.tasks_done ?? 0} of ${p.tasks_total || tasks.length}`, tasks,
             <Table head={["ID", "Task", "Wave", "Status", "Files"]} rows={tasks.map((task) => [
-              <span className="mono">{task.id}</span>, task.title,
-              task.wave != null ? `${task.wave} ${p.waves?.[task.wave] ?? ""}` : DASH,
-              `${task.status === "done" ? "✓" : task.status === "failed" ? "✗" : "○"} ${task.status || "pending"}`,
-              task.files.length ? <span className="mono">{task.files.map((file) => <div key={file}>{file}</div>)}</span> : DASH,
+              <span className="mono id">{task.id}</span>, task.title,
+              <span className="whole">{task.wave != null ? `${task.wave} ${p.waves?.[task.wave] ?? ""}` : DASH}</span>,
+              <span className="whole">{`${task.status === "done" ? "✓" : task.status === "failed" ? "✗" : "○"} ${task.status || "pending"}`}</span>,
+              task.files.length ? <span className="mono">{task.files.map((file) => <div key={file}>{file.split("/").map((part, at, all) => <Fragment key={at}>{part}{at < all.length - 1 && <>/<wbr /></>}</Fragment>)}</div>)}</span> : DASH,
             ])} />)}
           {section("Reviews", reviews.length, reviews,
             <Table head={["Review", "Cycle", "Depth", "Verdict", "Note"]} num={[1]} rows={reviews.map((review) => [
@@ -145,16 +149,16 @@ export function ProjectPage({ project: p, now, stamp, skills }: { project: Proje
             ])} />)}
           {section("Pending answers", answers.length, answers, <>
             <RecordTable rows={answers} columns={[["id", "Answer"], ["question", "Question"], ["status", "Status"], ["follow_up", "Follow-up"], ["owner", "Owner"]]} />
-            {source(".project/discuss/ANSWERS.md", "Read complete discussion record")}
+            {!p.record_files && source(".project/discuss/ANSWERS.md", "Read complete discussion record")}
           </>)}
         </section>
 
         <section>
-          <SetupCard project={p} skills={skills}>
+          <Setup project={p} skills={skills}>
           <h2>Usage</h2>
-          {!tiles || !sp ? <p className="note">No host session logs matched this project yet. <a href={statsHash(p.root)}>See charts ›</a></p> : <>
+          {!tiles || !sp ? <p className="note">No host session logs matched this project yet. <a href={statsHash(idOf(p))}>See charts ›</a></p> : <>
             <dl className="tiles">{tiles.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>
-            <a className="see-charts" href={statsHash(p.root)}>See charts ›</a>
+            <a className="see-charts" href={statsHash(idOf(p))}>See charts ›</a>
             <h2>Models</h2>
             <Table head={["Model", "Host", "Turns", "Tokens", "Cost"]} num={[2, 3, 4]} rows={(sp.models ?? []).map((m) => [
               <span className="mono">{m.model}</span>, m.host, int(m.turns), tokens(m.tokens), money(m.cost)])} />
@@ -180,7 +184,7 @@ export function ProjectPage({ project: p, now, stamp, skills }: { project: Proje
               <span className="mono">{shortDate(event.at)}</span>, event.type, event.detail])} />
           ) : <p className="note">No recorded changes yet.</p>}
           {p.lesson && <><h2>Latest lesson</h2><p className="vision">{p.lesson}</p></>}
-          </SetupCard>
+          </Setup>
         </section>
       </div>
 
@@ -200,11 +204,11 @@ export function ProjectPage({ project: p, now, stamp, skills }: { project: Proje
         {records.data && <>
           <Fold title="Full verification ledger">
             <RecordTable rows={records.data.verify_records} columns={[["recorded_at", "Recorded"], ["task", "Task"], ["command", "Command"], ["commit", "Commit"], ["result", "Result"]]} />
-            {source(".project/build/verify-ledger.jsonl", "Read original ledger")}
+            {!p.record_files && source(".project/build/verify-ledger.jsonl", "Read original ledger")}
           </Fold>
           <Fold title="Full pipeline usage records">
             <RecordTable rows={records.data.usage_records} columns={[["task", "Task"], ["phase", "Phase"], ["model", "Model"], ["tokens_in", "Input"], ["tokens_out", "Output"], ["cost", "Cost"]]} />
-            {source(".project/build/usage.jsonl", "Read original usage")}
+            {!p.record_files && source(".project/build/usage.jsonl", "Read original usage")}
           </Fold>
           <Fold title="Full host turn ledger">
             <RecordTable rows={records.data.turns} columns={[["at", "Time"], ["agent", "Agent"], ["host", "Host"], ["model", "Model"], ["tokens_in", "Input"], ["tokens_cached", "Cached"], ["tokens_out", "Output"], ["duration_s", "Seconds"], ["cost", "Cost"]]} />
@@ -218,8 +222,10 @@ export function ProjectPage({ project: p, now, stamp, skills }: { project: Proje
           </Fold>
         </>}
         <div className="tools">
-          {source(".project/ROADMAP.md", "Roadmap")}{source(".project/intent/INTENT.md", "Intent")}{source(".project/plan/PLAN.md", "Plan")}
-          {source(".project/review/FINAL.md", "Final review")}{source(".project/LESSONS.md", "Lessons")}
+          {p.record_files ? p.record_files.slice(1).map((file) => <span key={file.path}>{source(file.path, file.label)}</span>) : <>
+            {source(".project/ROADMAP.md", "Roadmap")}{source(".project/intent/INTENT.md", "Intent")}{source(".project/plan/PLAN.md", "Plan")}
+            {source(".project/review/FINAL.md", "Final review")}{source(".project/LESSONS.md", "Lessons")}
+          </>}
         </div>
       </section>
     </main>

@@ -77,7 +77,7 @@ def _max_wave_cycle(root: Path, project_dir: str, wave: int) -> int:
     return maximum
 
 
-WAVE_SC_HEADING = re.compile(r"^### (SC[1-9]\d*) — (.+)$")
+WAVE_SC_HEADING = re.compile(r"^### (SC[1-9]\d*) — (.+): (pass|fail)$")
 WAVE_TASK_HEADING = re.compile(
     r"^## (?P<task>T\d{3}) — (?P<title>.+): (?P<verdict>pass|fail)$"
 )
@@ -684,18 +684,59 @@ def _member_tips(root: Path) -> Dict[str, str]:
         import isolation
     except ImportError:  # pragma: no cover - package import used by tests
         from scripts import isolation
-    lock = root / ".project/build/members.json"
-    if not lock.is_file():
+    shown = isolation.run_git(root, "show", "HEAD:.project/build/members.json")
+    if shown.returncode != 0:
         return {}
-    tips: Dict[str, str] = {}
+    # A review sidecar of the coordinator validates against the same member
+    # markers (#467): the coordinator is the one the member marker names, so
+    # repair advice never points at a disposable sidecar. Both locks are read
+    # from committed state, and the coordinator's must agree with the reviewed
+    # tree's, so a mutable primary cannot swap the branch under a reviewed final.
     try:
-        for item in json.loads(lock.read_text(encoding="utf-8"))["members"]:
-            checkout, _, entry = isolation._member_context(root, item["name"])
-            tips[entry["name"]] = isolation.git_output(
-                checkout, "rev-parse", "--verify", f"refs/heads/{entry['branch']}^{{commit}}")
+        members = json.loads(shown.stdout)["members"]
+        if not members:
+            return {}
+        coordinator = _coordinator_for_member_markers(root, members[0]["name"])
+        tips: Dict[str, str] = {}
+        for item in members:
+            checkout, _, entry = isolation._member_context(coordinator, item["name"], lock_at="HEAD")
+            if entry != item:
+                raise HandoffError(
+                    "member lock differs between the reviewed tree and its "
+                    f"coordinator for {item['name']}")
+            tips[item["name"]] = isolation.git_output(
+                checkout, "rev-parse", "--verify", f"refs/heads/{item['branch']}^{{commit}}")
     except isolation.IsolationError as error:
         raise HandoffError(str(error)) from error
     return tips
+
+
+def _coordinator_for_member_markers(root: Path, name: str) -> Path:
+    """The coordinator that the marker of member `name`, as listed in root's
+    committed MEMBERS.md, names and verifies; it must share root's repository."""
+    try:
+        import isolation
+        import members
+    except ImportError:  # pragma: no cover - package import used by tests
+        from scripts import isolation, members
+    stale = f"member marker for {name} is missing or stale; run members.py repair --repo <coordinator>"
+    shown = isolation.run_git(root, "show", "HEAD:.project/MEMBERS.md")
+    if shown.returncode != 0:
+        raise HandoffError(f"member {name} is not in MEMBERS.md")
+    try:
+        listed = {item["name"]: item for item in members.parse_members(shown.stdout)}
+        if name not in listed:
+            raise HandoffError(f"member {name} is not in MEMBERS.md")
+        role = members.member_role(Path(listed[name]["checkout"]).resolve())
+    except members.MembersError as error:
+        raise HandoffError(str(error)) from error
+    if role is None or role["name"] != name:
+        raise HandoffError(stale)
+    coordinator = Path(role["coordinator"])
+    if isolation.common_git_dir(coordinator) != isolation.common_git_dir(root):
+        raise HandoffError(
+            f"member marker for {name} names a coordinator outside this repository: {coordinator}")
+    return coordinator
 
 
 def _strip_comments(text: str) -> str:
@@ -867,6 +908,66 @@ def _numbered_entries(section: str, *, continuations: bool = False) -> List[Tupl
     return entries
 
 
+CLAIM_ID_IN_REVIEW = re.compile(r"\b(?P<task>T\d{3})/(?P<kind>AC|IF)(?P<number>[1-9]\d*)\b")
+CLAIM_DISPOSITION_LINE = re.compile(
+    r"^- (?P<ids>[^—]+?) — disposition: "
+    r"(?P<authority>[^:]*\b\d{4}-\d{2}-\d{2}\b[^:]*): (?P<reason>\S.*)$"
+)
+
+
+def _interface_bullets(task_text: str) -> Dict[int, str]:
+    """The task's interface contract bullets, numbered by position."""
+    try:
+        section = _section(task_text, "Interface contract")
+    except HandoffError:
+        return {}
+    bullets: Dict[int, str] = {}
+    for line in _strip_comments(section).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- ") and stripped not in {"- None"}:
+            bullets[len(bullets) + 1] = stripped[2:].strip()
+        elif stripped and not stripped.startswith("- ") and bullets:
+            # A continuation of the previous bullet joins it with one space.
+            bullets[len(bullets)] += " " + stripped
+    return bullets
+
+
+def task_claims(task_text: str, task_id: str) -> Dict[str, str]:
+    """Every acceptance and interface claim of a task under a stable id.
+
+    `T012/AC3` names the third numbered item of `## Acceptance criteria`;
+    `T012/IF2` the second bullet of `## Interface contract` (#474). The ids
+    are stable for the life of the task file: numbering is position-derived.
+    """
+    claims: Dict[str, str] = {}
+    try:
+        section = _section(task_text, "Acceptance criteria")
+    except HandoffError:
+        section = None
+    if section is not None:
+        # Ids are positional: a frozen landed task may repeat a criterion
+        # number (#374), and the third numbered item is still AC3.
+        position = 0
+        for line in _strip_comments(section).splitlines():
+            match = NUMBERED_ITEM_PATTERN.fullmatch(line.strip())
+            if match is None:
+                continue
+            position += 1
+            claims[f"{task_id}/AC{position}"] = match.group(2).strip()
+        try:
+            joined = _numbered_items(section, continuations=True)
+        except HandoffError:
+            joined = {}
+        if joined and sorted(joined) == list(range(1, len(joined) + 1)) and len(joined) == position:
+            # Continuation lines below a numbered item join it (#374 wraps);
+            # a repeated-number frozen task keeps its positional claims.
+            for number, body in joined.items():
+                claims[f"{task_id}/AC{number}"] = body
+    for number, body in _interface_bullets(task_text).items():
+        claims[f"{task_id}/IF{number}"] = body
+    return claims
+
+
 def _numbered_items(section: str, *, continuations: bool = False) -> Dict[int, str]:
     items: Dict[int, str] = {}
     for number, text in _numbered_entries(section, continuations=continuations):
@@ -874,6 +975,48 @@ def _numbered_items(section: str, *, continuations: bool = False) -> Dict[int, s
             raise HandoffError(f"repeated numbered item {number}")
         items[number] = text
     return items
+
+
+CORRECTION_ENTRY = re.compile(r"^- (?P<id>C[1-9]\d*) (?P<date>\d{4}-\d{2}-\d{2}): (?P<text>\S.*)$")
+CORRECTION_CITATION = re.compile(r"\b(?P<id>C[1-9]\d*)\b")
+EXCLUDED_BY_LINE = re.compile(
+    r"^- Excluded by (?P<correction>C[1-9]\d*): (?P<subclaim>\S.*)$"
+)
+
+
+def _corrections(intent: str) -> Dict[str, str]:
+    """The numbered, append-only owner corrections of INTENT.md (#477).
+
+    Each entry is `- C1 <YYYY-MM-DD>: <what the user said>` under
+    `## Corrections`. Ids run contiguously from 1; the section is
+    append-only, so a landed id never changes meaning.
+    """
+    body = _common.section_body(intent, "Corrections")
+    corrections: Dict[str, str] = {}
+    if body is None:
+        return corrections
+    for line in _strip_comments(body).splitlines():
+        if not line.strip():
+            continue
+        if line.strip().casefold() in {"- none", "none"}:
+            return {}
+        match = CORRECTION_ENTRY.fullmatch(line.strip())
+        if match is None:
+            raise HandoffError(
+                f"INTENT.md Corrections entry is not numbered: {line.strip()!r}; "
+                "renumber entries as `- C1 <YYYY-MM-DD>: <ruling>` — a correction "
+                "needs citable identity (#477)"
+            )
+        if match.group("id") in corrections:
+            raise HandoffError(
+                f"INTENT.md Corrections repeats {match.group('id')}; ids are "
+                "append-only and never rewritten"
+            )
+        corrections[match.group("id")] = f"{match.group('date')}: {match.group('text')}"
+    expected = [f"C{number}" for number in range(1, len(corrections) + 1)]
+    if list(corrections) != expected:
+        raise HandoffError("INTENT.md Corrections ids must be contiguous from 1")
+    return corrections
 
 
 def _success_criteria(intent: str) -> Dict[str, str]:
@@ -1403,6 +1546,7 @@ def validate_intent(
     intent = _read(root, _intent_path(project_dir))
     criteria = _success_criteria(intent)
     _surfaces(intent, "INTENT.md")
+    _corrections(intent)
     edges = edge_coverage(intent, criteria)
     rows = prohibitions(intent, criteria)
     return {
@@ -2200,6 +2344,81 @@ def validate_wave(
     return validate_wave_evidence(root, project_dir, review)
 
 
+def _uncovered_claims(
+    section_lines: Sequence[str],
+    task_text: str,
+    task_id: str,
+    corrections: Optional[Dict[str, str]] = None,
+):
+    """Claims a task review section leaves unaccounted for (#474).
+
+    A claim is accounted for when a `- ✅`/`- ❌` marker line cites its
+    stable id or copies it verbatim before an evidence separator, or when
+    an authorized disposition line names it. One observation may cover
+    several claims when each is identified. A disposition is authorized
+    only by a numbered INTENT Correction it cites (#477): a disposition
+    without a correction citation fails the review, and so does a
+    citation of a correction that does not exist — a reviewer cannot mint
+    a deferral.
+    """
+    claims = task_claims(task_text, task_id)
+    if not claims:
+        return []
+    # Issue #392: a quote may drop the `- ` markers of the criterion's
+    # sub-bullet lines, so a criterion is also read without them.
+    bare_claims = task_claims(_common.without_sub_bullet_markers(task_text), task_id)
+    covered: set = set()
+    for line in section_lines:
+        stripped = line.strip()
+        disposition = CLAIM_DISPOSITION_LINE.fullmatch(stripped)
+        if disposition is not None and re.search(r"[A-Za-z]", disposition.group("authority")):
+            cited = disposition.group("ids")
+            if corrections is not None:
+                authority = " ".join(
+                    (disposition.group("authority"), disposition.group("reason"))
+                )
+                referenced = [
+                    match.group("id")
+                    for match in CORRECTION_CITATION.finditer(authority)
+                ]
+                if not referenced:
+                    raise HandoffError(
+                        f"disposition of {cited.strip()} cites no INTENT Correction; "
+                        "an authorized disposition names one, e.g. "
+                        "`- <ids> — disposition: owner ruling 2026-10-26 (C1): <reason>`"
+                    )
+                missing = [
+                    correction for correction in referenced
+                    if correction not in corrections
+                ]
+                if missing:
+                    raise HandoffError(
+                        f"disposition of {cited.strip()} cites "
+                        + ", ".join(missing)
+                        + ", which INTENT.md Corrections does not define; "
+                        "a disposition cannot create its own authority"
+                    )
+        elif stripped.startswith(("- ✅ ", "- ❌ ")):
+            cited = stripped
+        else:
+            cited = ""
+        for match in CLAIM_ID_IN_REVIEW.finditer(cited):
+            covered.add(f"{match.group('task')}/{match.group('kind')}{match.group('number')}")
+        if stripped.startswith(("- ✅ ", "- ❌ ")):
+            # Reuse the canonical quote matcher: a criterion may itself
+            # contain em dashes and may be quoted with or without its
+            # sub-bullet markers (#374, #392).
+            item = stripped[4:]
+            for claim_id, body in claims.items():
+                bare = bare_claims.get(claim_id, body)
+                if _common.quoted_criterion(item, [body, bare]) is not None:
+                    # A verbatim quote identifies the claim it quotes;
+                    # supporting several claims requires naming each id.
+                    covered.add(claim_id)
+                    break
+    return [(claim_id, body) for claim_id, body in claims.items() if claim_id not in covered]
+
+
 def validate_wave_evidence(
     root: Path, project_dir: str = DEFAULT_PROJECT_DIR, review: str = ""
 ) -> Dict[str, object]:
@@ -2207,7 +2426,11 @@ def validate_wave_evidence(
 
     if not review:
         raise HandoffError("wave validation requires --review")
-    review_path = PurePosixPath(review)
+    # Native Windows separators are accepted at the CLI boundary and
+    # normalized before interpretation; every other restriction applies
+    # unchanged (#470).
+    normalized_review = review.replace("\\", "/")
+    review_path = PurePosixPath(normalized_review)
     name = review_path.name
     named = WAVE_REVIEW_NAME.fullmatch(name)
     if not named:
@@ -2222,6 +2445,7 @@ def validate_wave_evidence(
     lens = named.group("lens")
     intent = _read(root, _intent_path(project_dir))
     criteria = _success_criteria(intent)
+    corrections = _corrections(intent)
     plan = _read(root, f"{project_dir}/plan/PLAN.md")
     rows = _coverage_rows(plan)
     wave_depths, _waves = _plan_waves(plan)
@@ -2327,6 +2551,17 @@ def validate_wave_evidence(
         for item in evidence:
             item = task_review_observation(item, tasks[task_id])
             _non_placeholder(item, f"{name} task {task_id} {verdict} evidence")
+        uncovered = _uncovered_claims(
+            lines[heading_index + 1 : end], tasks[task_id], task_id, corrections
+        )
+        if uncovered:
+            raise HandoffError(
+                f"{name} task {task_id} does not account for "
+                + "; ".join(f"{claim_id} ({body[:80]})" for claim_id, body in uncovered)
+                + "; account for every claim with an evidence reference, a "
+                "finding, or an authorized disposition "
+                "(`- <ids> — disposition: <authority> <YYYY-MM-DD>: <reason>`)"
+            )
         task_verdicts.append(verdict)
 
     if not is_last_cycle:
@@ -2360,24 +2595,20 @@ def validate_wave_evidence(
         raise HandoffError(f"{name} is missing ## Intent coverage")
     verdicts: Dict[str, str] = {}
     coverage_lines = _strip_comments(coverage).splitlines()
+    for line in coverage_lines:
+        if line.strip().startswith("### ") and not WAVE_SC_HEADING.fullmatch(line):
+            raise HandoffError(
+                f"{name} has an invalid Intent coverage heading: {line.strip()}; "
+                "use `### SCn — <criterion>: pass` or `: fail` with an em dash (—)"
+            )
     sc_headings = [
         (index, match)
         for index, line in enumerate(coverage_lines)
-        if (match := WAVE_SC_HEADING.fullmatch(line.strip())) is not None
+        if (match := WAVE_SC_HEADING.fullmatch(line)) is not None
     ]
     for position, (heading_index, match) in enumerate(sc_headings):
-        sc_id = match.group(1)
-        heading_text, separator, verdict = match.group(2).rpartition(":")
-        verdict = verdict.strip()
-        if verdict not in {"pass", "fail"}:
-            raise HandoffError(f"{name} {sc_id} heading must end with `: pass` or `: fail`")
-        if (
-            sc_id in criteria
-            and (
-                not separator
-                or not _common.quotes_criterion(heading_text, criteria[sc_id])
-            )
-        ):
+        sc_id, heading_text, verdict = match.groups()
+        if sc_id in criteria and not _common.quotes_criterion(heading_text, criteria[sc_id]):
             raise HandoffError(f"{name} {sc_id} heading text differs from INTENT.md")
         if sc_id in verdicts:
             raise HandoffError(f"{name} Intent coverage repeats {sc_id}")
@@ -2399,9 +2630,29 @@ def validate_wave_evidence(
             )
         for item in evidence:
             _non_placeholder(item, f"{name} {sc_id} {verdict} evidence")
+        for line in coverage_lines[heading_index + 1 : end]:
+            excluded = EXCLUDED_BY_LINE.fullmatch(line.strip())
+            if excluded is None:
+                continue
+            if excluded.group("correction") not in corrections:
+                raise HandoffError(
+                    f"{name} {sc_id} excludes a subclaim by "
+                    f"{excluded.group('correction')}, which INTENT.md "
+                    "Corrections does not define; an exclusion cannot create "
+                    "its own authority (#477)"
+                )
+            if verdict != "pass":
+                raise HandoffError(
+                    f"{name} {sc_id} excludes a subclaim but its verdict is "
+                    f"{verdict}; an exclusion records retained scope, not a "
+                    "failure"
+                )
         verdicts[sc_id] = verdict
-    if sorted(verdicts, key=lambda n: int(n[2:])) != owned:
-        raise HandoffError(f"{name} Intent coverage must cover exactly {', '.join(owned)}")
+    if list(verdicts) != owned:
+        raise HandoffError(
+            f"{name} Intent coverage must cover exactly {', '.join(owned)} "
+            "in ascending SC order"
+        )
     if overall == "pass" and "fail" in verdicts.values():
         raise HandoffError(f"{name} Wave verdict is pass while an owned SC failed")
     return {
@@ -2602,12 +2853,43 @@ def validate_final(
     }
 
 
+def _reopened_patch_plan(root: Path, project_dir: str) -> bool:
+    """Whether the current stay in plan began with `patch plan reopened`.
+
+    Every event is logged under the phase it leaves the track in, so the
+    trailing run of `plan` log entries is the current stay in plan; its first
+    entry is the transition into plan. `planning resumed` after a blocked
+    patch planner stays inside that run.
+    """
+
+    try:
+        _state, text, _path = load_state(root.resolve(), project_dir)
+    except PipelineStateError as error:
+        raise HandoffError(str(error)) from error
+    entries = []
+    for line in (_common.section_body(text, "Log") or "").splitlines():
+        parts = line.split(" — ", 2)
+        if line.startswith("- ") and len(parts) == 3:
+            entries.append((parts[1].strip(), " ".join(parts[2].split())))
+    stay = []
+    for phase, event in reversed(entries):
+        if phase != "plan":
+            break
+        stay.append(event)
+    return bool(stay) and stay[-1] == "patch plan reopened"
+
+
 def validate_patch_findings(
     root: Path, project_dir: str = DEFAULT_PROJECT_DIR
 ) -> Dict[str, object]:
     """Validate the review-to-patch hand-off and return its summary."""
 
-    _require_state(root, "ship", "blocked", project_dir)
+    accepted = {("ship", "blocked")}
+    if _reopened_patch_plan(root, project_dir):
+        # Patch step 1 moves ship/blocked to plan/active before step 2 runs
+        # this check, and a blocked patch planner resumes into plan/active.
+        accepted.add(("plan", "active"))
+    _require_state_one_of(root, accepted, project_dir)
     handoff = _read(root, f"{project_dir}/review/PATCH-FINDINGS.md")
     reviewed_head = _reviewed_head(handoff, "PATCH-FINDINGS.md")
     if _line_value(handoff, "State:") != "ship/blocked":
@@ -2672,7 +2954,7 @@ def parser() -> argparse.ArgumentParser:
     argument_parser.add_argument(
         "phase",
         choices=("intent", "research", "decide", "roadmap", "patch", "plan", "wave", "final",
-                 "member-evidence"),
+                 "member-evidence", "effective-contract"),
     )
     argument_parser.add_argument("--repo", type=Path, required=True)
     argument_parser.add_argument(
@@ -2706,6 +2988,85 @@ def parser() -> argparse.ArgumentParser:
     return argument_parser
 
 
+def effective_contract(root: Path, project_dir: str = DEFAULT_PROJECT_DIR) -> Dict[str, object]:
+    """The currently effective obligations, separated from deferrals (#477).
+
+    Per owned success criterion: the original text, the subclaims current
+    reviews exclude under approved corrections, and the resulting state —
+    `original-claim` (nothing excluded) or `retained-scope` (at least one
+    cited exclusion). Claim dispositions from current reviews list the
+    claims, the cited correction, and `deferred`. The view derives only
+    from the current INTENT Corrections and review files; superseded task
+    history stays untouched.
+    """
+    intent = _read(root, _intent_path(project_dir))
+    criteria = _success_criteria(intent)
+    corrections = _corrections(intent)
+    excluded_under: Dict[str, list] = {sc_id: [] for sc_id in criteria}
+    dispositions: list = []
+    review_dir = root / project_dir / "review"
+    if review_dir.is_dir() and not review_dir.is_symlink():
+        named = [
+            (match.group("wave"), match.group("lens") or "", int(match.group("cycle")), path)
+            for path in sorted(review_dir.iterdir())
+            if path.is_file()
+            and (match := WAVE_REVIEW_NAME.fullmatch(path.name)) is not None
+        ]
+        latest = {}
+        for wave, lens, cycle, path in named:
+            key = (wave, lens)
+            if key not in latest or cycle > latest[key][0]:
+                latest[key] = (cycle, path)
+        for path in sorted((entry[1] for entry in latest.values()), key=lambda item: item.name):
+            current_sc = None
+            for line in _strip_comments(path.read_text(encoding="utf-8")).splitlines():
+                heading = WAVE_SC_HEADING.fullmatch(line.strip())
+                if heading is not None:
+                    current_sc = heading.group(1)
+                    continue
+                excluded = EXCLUDED_BY_LINE.fullmatch(line.strip())
+                if excluded is not None:
+                    if current_sc in excluded_under and excluded.group("correction") in corrections:
+                        excluded_under[current_sc].append({
+                            "review": path.name,
+                            "correction": excluded.group("correction"),
+                            "subclaim": excluded.group("subclaim"),
+                        })
+                    continue
+                disposition = CLAIM_DISPOSITION_LINE.fullmatch(line.strip())
+                if disposition is not None and re.search(r"[A-Za-z]", disposition.group("authority")):
+                    authority = " ".join((disposition.group("authority"), disposition.group("reason")))
+                    cited = CORRECTION_CITATION.findall(authority)
+                    if not cited or not all(correction in corrections for correction in cited):
+                        continue
+                    dispositions.append({
+                        "state": "deferred",
+                        "review": path.name,
+                        "claims": [
+                            f"{task}/{kind}{number}"
+                            for task, kind, number
+                            in CLAIM_ID_IN_REVIEW.findall(disposition.group("ids"))
+                        ],
+                        "corrections": cited,
+                        "reason": disposition.group("reason"),
+                    })
+    effective = [
+        {
+            "criterion": sc_id,
+            "original": text,
+            "state": "retained-scope" if excluded_under[sc_id] else "original-claim",
+            "excluded": excluded_under[sc_id],
+        }
+        for sc_id, text in criteria.items()
+    ]
+    return {
+        "command": "effective-contract",
+        "corrections": corrections,
+        "criteria": effective,
+        "dispositions": dispositions,
+    }
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = parser().parse_args(argv)
     try:
@@ -2717,6 +3078,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 repo, arguments.project_dir, arguments.member, arguments.kind,
                 arguments.path, arguments.pin,
             )
+        elif arguments.phase == "effective-contract":
+            result = effective_contract(repo, arguments.project_dir)
         else:
             validators = {
                 "intent": validate_intent,

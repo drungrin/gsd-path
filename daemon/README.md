@@ -18,6 +18,70 @@ and task facts retained. Explicit [Path settings](#path-settings) saves and
 [plugin lifecycle](#plugin-lifecycle) actions can write project configuration
 or installation files. They cannot advance pipeline phases.
 
+It also lists projects run by the other GSD frameworks: a folder with
+`.gsd/` holding `STATE.md`, `gsd.db` or `milestones/` (gsd-pi), or with
+`.planning/` holding `STATE.md` or `ROADMAP.md` (gsd-core). `~/.gsd`, the
+gsd-pi home, is not a project. A folder with more than one framework shows one
+card per framework. These cards are read-only, and GSD Path setup actions do
+not apply to them.
+
+A gsd-pi card is read from `.gsd/`. gsd-pi keeps its record in `gsd.db`, and
+the daemon opens it read-only. A project with no rows there is read from the
+older markdown layout (`milestones/M###/` with `slices/S##/` and task
+summaries), and then from the milestone registry in `STATE.md`. When a
+`gsd.db-wal` file is present, SQLite's read-only reads update its shared index
+`gsd.db-shm`, as any reader does; the change watch ignores that file, so the
+card's activity time is gsd-pi's own.
+
+- **Phase strip**: the same five steps as a gsd-core card. The STATE.md
+  `**Phase:**` value maps onto them (for example `executing` is execute and
+  `completing-milestone` is verify). Without it, the open slice decides:
+  no tasks is plan, open tasks is execute, all tasks closed is verify. When
+  every slice is closed, the step is verify.
+- **Waves and tasks**: the slices of the active milestone are waves, and their
+  tasks are tasks (`S02-T01`).
+- **Milestones**: every milestone, with its vision as the goal.
+- **Reviews and verify ledger**: `assessments` rows are reviews, and
+  `verification_evidence` rows are the verify ledger, for the active milestone.
+- **Attention**: items under the STATE.md `Blockers` heading, blocked tasks
+  and failed assessments.
+- **Next step**: the STATE.md `Next Action` text and the `state.json` next
+  command.
+- **State**: **Shipped** when the phase is `complete` or every milestone is
+  closed; **Blocked** and **Paused** from the phase; **Not started** with no
+  milestone; otherwise the step, such as **In execute**.
+
+A gsd-core card is read from `.planning/` the way gsd-core decides
+completion, from files on disk:
+
+- **Phase strip**: the steps of the current phase: `discuss`, `research`,
+  `plan`, `execute`, `verify`. The step comes from the phase folder: no
+  `CONTEXT.md` is discuss, `CONTEXT.md` is research, `RESEARCH.md` is plan,
+  plans with a missing `SUMMARY.md` are execute, and all summaries present is
+  verify.
+- **Waves and tasks**: each phase folder of the current milestone is a wave,
+  named from the ROADMAP `### Phase N:` heading. A ROADMAP phase with no folder
+  yet is a wave at `discuss` when its number is above the highest phase folder
+  or equals the STATE.md `current_phase`; lower ROADMAP phases (archived
+  milestones) are skipped. Each `NN-PP-PLAN.md` (or nested
+  `plans/PLAN-NN*.md`) is a task, done when its SUMMARY exists, as gsd-core
+  counts them: a `status: superseded` plan is left out, and a SUMMARY with
+  `status: blocked` marks the task blocked. ROADMAP checkboxes are not read.
+- **Milestones**: `MILESTONES.md` headings (`## vX.Y Name (Shipped: …)`),
+  sorted by version, plus the STATE.md `milestone` and `milestone_name` (the
+  placeholder name `milestone` is ignored). Between milestones the card shows
+  the last one shipped.
+- **Reviews**: `NN-VERIFICATION.md` and `NN-UAT.md` with their `status`.
+  `passed` reads as pass and `gaps_found` as failed. `human_needed` adds an
+  attention item.
+- **Attention**: items under the STATE.md `Blockers/Concerns` heading, as
+  amber concerns (gsd-core lists issues that affect future work there), and
+  blocked plans.
+- **State**: **Shipped** when STATE.md says `milestone_complete` or every wave
+  has a passed VERIFICATION; **Blocked** when STATE.md `status` is `blocked`;
+  **Paused** when it is `paused`;
+  **Not started** with no phase folder; otherwise the step, such as **In execute**.
+
 ## Install (one command)
 
 From a repository checkout:
@@ -360,7 +424,8 @@ one global op-lock — a second concurrent operation gets
   local_hosts?, hooks?, dry_run?}` → `{ok, argv, stdout_tail, error}`.
 - `POST /api/plugin/update` — `{scope, root?, dry_run?}`.
 - `POST /api/plugin/check` — reads the registry now →
-  `{ok, error, latest, update_available, installed}`. `latest` is the registry
+  `{ok, error, latest, update_available, installed, frameworks, framework_errors}`.
+  The same check reads the latest gsd-pi and gsd-core versions (see below). `latest` is the registry
   `latest`; `update_available` compares the installed versions with the
   release in use (the chosen release, or `latest` when none is chosen).
 - `POST /api/plugin/release` — `{version}` chooses a published release;
@@ -397,6 +462,42 @@ one global op-lock — a second concurrent operation gets
   when marker-matched. Nothing under `.project/` is ever planned or
   removed.
 
+### gsd-pi and gsd-core versions
+
+`GET /api/plugin/status` also carries `frameworks`: for `gsd-pi` and
+`gsd-core`, `{installed, hosts, latest, checked, update_available, detected}`.
+
+- `installed` is the version of the global npm package behind the `gsd` or
+  `gsd-core` command (found on `PATH` and the usual Node folders, because the
+  app's daemon starts with a short `PATH`).
+- `hosts` lists gsd-core's agent host installs, `[{host, dir, version}]`,
+  read from `<config dir>/gsd-core/VERSION` in each host's config folder
+  (the folders gsd-core itself uses, with their env overrides).
+- `latest` comes from the npm registry only when **Check for updates** runs
+  (`POST /api/plugin/check`), and is cached in `~/.gsd-path/frameworks.json`.
+  Until then no update is claimed. A failed registry read keeps the last known
+  `latest` and is returned in `framework_errors` (`{name: error|null}`).
+
+`POST /api/frameworks/update` — `{name: "gsd-pi"|"gsd-core", dry_run?}`.
+`dry_run` returns the commands without running them →
+`{ok, commands, stdout_tail, error}`; without it the commands run in order, the
+first failure stops the update, and each run is logged to
+`~/.gsd-path/frameworks.log`. Like the plugin routes it needs the app token and
+runs one operation at a time. The commands are each framework's own update:
+
+- gsd-pi: `gsd update` (gsd-pi installs `@opengsd/gsd-pi@latest` with the
+  package manager that owns it and checks the result).
+- gsd-core: `npm install -g @opengsd/gsd-core@latest` when the global command
+  is installed, then for every host install
+  `npx -y --package=@opengsd/gsd-core@latest -- gsd-core --<host> --global --config-dir <dir>`,
+  the same command as gsd-core's `/gsd-update`. `npm` and `npx` come from the
+  folder of the `gsd-core` command when they are there, so the update lands in
+  the same npm prefix.
+
+After a successful update the framework's own cached update notice
+(`~/.gsd/.update-check`, `~/.cache/gsd/gsd-update-check*.json`) is removed,
+as its updater does.
+
 Power users can always drive the plugin installer directly with
 `node scripts/install.mjs`, `python3 scripts/install.py`, or `npx @opengsd/gsd-path`
 from a checkout — the daemon is a convenience wrapper around the same
@@ -409,7 +510,12 @@ Top level: `schema` (`gsd-path-daemon/status/v1`), `generated_at`,
 VERSION-stamp probes plus the update-check cache, never a source refresh; see
 "Plugin lifecycle"). Each project object carries (keys are stable and additive):
 
-- Identity/state: `root` (discovered project path), `project` (project state name),
+- Identity/state: `id` (card id: `root` for GSD Path, `<root>::gsd-pi` or
+  `<root>::gsd-core` for the other frameworks; API `root` parameters that
+  select a watched project accept it), `flavor` (`gsd-path`, `gsd-pi` or
+  `gsd-core`), `phases` (the phase strip for a gsd-pi or gsd-core card; null
+  means the GSD Path phases), `record_files` (`[{path, label}]`, the gsd-pi or
+  gsd-core records with the state file first; null for GSD Path), `root` (discovered project path), `project` (project state name),
   `repository` (Git repository folder name when available), `project_root`
   (corresponding path under the main checkout, or the discovered project path
   for bare-backed worktrees and non-Git projects), `worktree_root` (linked
@@ -529,8 +635,10 @@ logon.
 ## Project history and files
 
 Open a project and choose **History & files**. The viewer lists Git-tracked and
-non-ignored repository files plus `.project` records, including archived
-milestones. UTF-8 text is shown in full. Markdown has Preview and Raw views;
+non-ignored repository files plus `.project`, `.planning` (gsd-core) and `.gsd`
+(gsd-pi) records, including archived milestones. A gsd-pi or gsd-core card
+opens its own `STATE.md` first, and its **Records & sources** links point to
+that framework's files. UTF-8 text is shown in full. Markdown has Preview and Raw views;
 HTML is escaped and images are represented by their alt text, without loading
 remote resources. Relative document links open within the same project and
 preserve the selected commit when viewing historical contents.
@@ -540,14 +648,18 @@ also retains a selected commit reached through a relative link when that commit
 is absent from the path's history. Working tree shows current contents.
 Uncommitted older contents are not
 retained, and history does not follow renames. Binary files, symlinks, hard
-links, `.git` internals, and paths outside watched projects are rejected.
+links, `.git` internals, and paths outside watched projects are rejected. One
+link is followed: a `.gsd` folder that links into `~/.gsd/projects/`, where
+gsd-pi keeps project state (POSIX only). Links inside it are still rejected.
 Secure working-tree reads currently require POSIX directory descriptors;
 unsupported platforms report that limitation instead of using an unsafe fallback.
 
 **Records & sources → Load full records** loads the full recorded pipeline
 usage, verification ledger, daemon activity, and indexed host turns on demand.
 Data coverage distinguishes available files, loaded records, invalid JSONL
-lines, missing files, and unverified runtime state. Host turns are the records
+lines, missing files, and unverified runtime state. A gsd-pi or gsd-core card
+lists its own records as sources and its verify ledger, with no GSD Path usage
+or runtime sources. Host turns are the records
 currently indexed from Codex and Claude Code logs, not a guarantee that every
 host log was parsed. The regular status snapshot still uses recent-record
 windows; full records and files are fetched separately.

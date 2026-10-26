@@ -8,21 +8,47 @@ tasks in this wave as the rubric. For each task:
    Never infer either SHA from task ids, branch position, or nearby history.
 2. Fail a missing, malformed, or invalid SHA. Inspect the commit with
    `git show --format=fuller --stat --patch <commit> --`.
-3. In the supplied verify sidecar at `base`, apply only the complete
-   binary patch from `commit^..commit` for the task's declared product files
-   and inspect the diff. Use the orchestrator's recorded isolated Verify
-   output in that task's Log as the Verify evidence. Do not re-run the
-   task Verify command or PLAN.md's project Verify. Re-run a command only
-   when the recorded output plus the isolated diff cannot check the
-   criterion. Never use the primary worktree or branch tip as task
-   evidence. Do not create or remove Git worktrees yourself.
-4. Mark `pass` or `fail`. Before the evidence separator (` — `), copy the
-   complete task acceptance or interface criterion (see Review file format
-   below). Do not substitute an AC id or summary: finding grouping binds
-   this text to the task. Give the observed result, repo-relative source
+3. Select the inspection mode your brief supplies and record it — never
+   improvise a third:
+   - **Reconstructed product** (default): the brief supplies a verify
+     sidecar at `base`. In it, apply only the complete binary patch from
+     `commit^..commit` for the task's declared product files and inspect
+     the diff. Use the orchestrator's recorded isolated Verify output in
+     that task's Log as the Verify evidence.
+   - **Immutable patch**: the brief supplies one later combined checkout
+     with report-write authority only. Inspect the immutable objects
+     directly — `git show`/`git diff` on the recorded commits — and prove
+     the identity before judging: (a) the landing commit's parent
+     `commit^` equals the task file's recorded `base` (or the patch's
+     resulting blobs at `base` equal the landing commit's blobs for the
+     declared files), and (b) any file judged from the combined checkout
+     has its blob there equal to the landing commit's blob at that path.
+     Without both identities the review blocks: a mismatch means the
+     supplied checkout is not the reviewed product.
+   In both modes: do not re-run the task Verify command or PLAN.md's
+   project Verify; re-run a command only when the recorded output plus
+   the diff cannot check the criterion. Never use the primary worktree
+   or branch tip as task evidence. Do not create or remove Git worktrees
+   yourself.
+4. Mark `pass` or `fail`. Before the evidence separator (` — `), name the
+   criterion (see Review file format below): copy the complete task
+   acceptance or interface criterion verbatim, or — on a `pass` line only —
+   cite the criterion by its stable id in the task's numbered acceptance or
+   interface list (`T012/AC3`, `T012/IF2`) together with the evidence. A
+   `fail` line always copies the criterion verbatim: finding grouping binds
+   that text to the task. Give the observed result, repo-relative source
    paths with a line or range, and concrete fix direction for each failure.
    Separate multiple source citations with `;` and cite the lines supporting
    the current failure, not just the file or historical faulty lines.
+5. Account for every claim. Each acceptance criterion (`T012/AC3`) and
+   interface bullet (`T012/IF2`) of the task must appear in its
+   section as an evidence reference, a finding, or an explicitly
+   authorized disposition — a bare line naming the id with
+   `disposition: <authority and date> (<Cn>): <reason>`, where `Cn` is a
+   numbered INTENT.md correction. No citation, or a `Cn` that
+   `## Corrections` does not define, fails the gate. One observation may
+   support several claims when each is identified by its id. The wave gate
+   rejects a review that leaves a claim unaccounted for.
 
 When an approved strategy-change repair addresses an input class, inspect the
 full class-wide rule, not just its examples. Check an additional representative
@@ -39,8 +65,12 @@ criteria. The same applies to the entry `orchestrator regression Verify of
 Then check each INTENT.md success criterion owned by a task in this wave
 against that same isolated product. In each `### SCn —` heading, copy the
 complete criterion text from INTENT.md `## Success criteria` (see Review
-file format below). Mark `pass` or `fail` with evidence; a failed owned SC
-blocks the wave. Omit the Intent coverage section when no task in the wave owns
+file format below). Write the headings in ascending SC id order (SC2 before
+SC4), and separate the id from the text with an em dash (—). Mark `pass`
+or `fail` with evidence; a failed owned SC blocks the wave. Under a `pass`
+SC, record each subclaim a numbered INTENT.md correction excludes as
+`- Excluded by <Cn>: <subclaim>`; the gate rejects an exclusion under a
+failing SC or one that cites an undefined correction. Omit the Intent coverage section when no task in the wave owns
 an SC. When INTENT.md `## Edge coverage` or `## Prohibitions` has rows for
 an owned SC, judge it against those rulings too: cite each `held-out` edge
 id with its held-out test's recorded output and each `judgment` prohibition
@@ -49,8 +79,12 @@ fails the SC.
 
 Allow changed paths only in the task's `files` plus its assigned task file.
 Within the task file, allow orchestrator-owned `base`, `worktree`,
-`task_branch`, `status`, and `agent` fields plus append-only Log
-entries; block contract-body changes in the task commit. Warn on disabled tests
+`task_branch`, `status`, and `agent` fields — and, on a member task,
+`member_base` — plus append-only Log entries; block contract-body changes
+in the task commit. `base` names the task's starting commit in the
+coordinator repository; `member_base` names the starting commit in the
+member repository from which the member task branch and isolate were
+created. Warn on disabled tests
 or Verify commands that cannot fail unless either defeats a criterion. Set the
 wave verdict to `pass` only when every task passes and every owned INTENT
 success criterion for the wave passes.
@@ -74,10 +108,14 @@ criterion text does not match. Apply the rules before you write the file.
   `- ❌ ` for fail. Each task section and each `### SCn —` block needs one
   or more lines with the marker of its own verdict. A failed task needs a
   `- ❌ ` criterion line, also when other text describes the failure.
-- **Criterion text.** In a task evidence line and in a `### SCn —` heading,
-  copy every word of the criterion. Join wrapped lines and sub-bullets with
-  one space. You can keep or remove the `- ` markers of the sub-bullets.
-  A changed, added, removed or moved word does not match.
+- **Criterion text.** In a `### SCn —` heading and on every `- ❌ ` fail
+  line, copy every word of the criterion. Join wrapped lines and
+  sub-bullets with one space. You can keep or remove the `- ` markers of
+  the sub-bullets. A changed, added, removed or moved word does not
+  match. On a `- ✅ ` pass line, name the criterion either by copying it
+  verbatim or by citing its stable id in the task's numbered acceptance
+  or interface list (`T001/AC1`, `T001/IF2`) together with the evidence;
+  the wave gate does not compare pass-line criterion text.
 - **Angle brackets.** Text such as `<b>` or `<path>` outside backticks reads
   as an unfilled template placeholder and is rejected. Write literal markup
   and code in backticks inside a sentence, for example: the output has
@@ -151,8 +189,9 @@ runtime checks freshness and derives the final view from these records.
 ## Deep review lenses
 
 A `deep` wave spawns two independent reviewers in parallel, each with a fresh
-context and its own verify sidecar at the recorded review base. Every
-Wave mode rule above applies to both lenses.
+context and its own isolated workspace at the recorded review base (a verify
+sidecar in reconstructed mode, or the supplied combined checkout in immutable
+mode). Every Wave mode rule above applies to both lenses.
 
 - **Contract** — logical task name
   `review_wave_<wave>_cycle_<cycle>_contract`; stages

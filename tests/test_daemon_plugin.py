@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "daemon"))
 
@@ -206,11 +207,13 @@ class ArgvTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("boom error", result["error"])
 
-    def test_wrapper_partial_exit_two(self):
-        self.runner.responses = [(2, "", "host zed failed")]
+    def test_wrapper_exit_two_is_a_refusal(self):
+        self.runner.responses = [(2, "", "error: --hooks-init requires at least one target or --all")]
         result = self.manager.install_global()
         self.assertFalse(result["ok"])
-        self.assertIn("partial", result["error"])
+        self.assertEqual(result["error"], "installer refused the request (exit 2), nothing was changed: "
+                         "error: --hooks-init requires at least one target or --all")
+        self.assertNotIn("partial", result["error"])
 
 
 class SourceTests(unittest.TestCase):
@@ -637,7 +640,7 @@ class EndpointTests(unittest.TestCase):
         make_global_install(cls.manager, "kimi", version="1.0.0")
         cls.manager._write_cache("9.9.9")
         watcher = Watcher(Config(parents=[str(parent)]))
-        cls.server = serve(watcher, port=0, plugin=cls.manager)
+        cls.server = serve(watcher, port=0, plugin=cls.manager, frameworks=mock.Mock(**{"status.return_value": {}}))
         cls.port = cls.server.server_address[1]
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()

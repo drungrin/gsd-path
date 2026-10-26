@@ -35,7 +35,10 @@ reality:
   item in INTENT.md `## Success criteria`.
 - Confirm your Interface contract text appears verbatim in every sibling
   task file it exchanges with. Sibling task files under `.project/tasks/`
-  are readable in your worktree — read-only; never edit them.
+  are readable in your worktree — read-only; never edit them. On a member
+  task the orchestrator pins them under
+  `.gsd-path-coordinator/.project/tasks/` beside your live task copy —
+  read them there.
 - Confirm every path the Verify command references exists or is declared.
 
 Route any mismatch before writing a line of product code: a clear defect — a
@@ -86,8 +89,8 @@ them.
 
 - You are not alone in the repository. Other agents may use sibling worktrees;
   do not inspect, revert, or overwrite their changes.
-- Never edit `base`, `worktree`, `task_branch`, `status`, or `agent`.
-  The orchestrator owns them.
+- Never edit `base`, `worktree`, `task_branch`, `status`, `agent`, or
+  `member_base` (member tasks). The orchestrator owns them.
 - Never stage, commit, amend, rebase, reset, or otherwise mutate Git.
 - Never add an unnamed dependency, weaken verification, or improve adjacent
   code.

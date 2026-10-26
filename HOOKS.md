@@ -11,13 +11,18 @@ Optional enforcement for pipeline invariants prompt contracts cannot guarantee:
 
 Closed branches still allow read-only Git inspection (`status`, `log`, `diff`, plain
 `cat-file` reads of one object, branch and worktree listing) and the router handoff helpers, including
-`git fetch origin`, SHA resolution, and next-base selection. Branch switching remains
-router-owned. The [ship contract](skills/gsd-path-ship/SKILL.md) owns integration
+`git fetch [REMOTE]`, SHA resolution, and next-base selection. They also allow a
+simple literal delete or move whose every operand is outside the closed repository,
+its member checkouts, and the pipeline state roots, and is no ancestor of them.
+Branch switching remains router-owned. The [ship contract](skills/gsd-path-ship/SKILL.md) owns integration
 conflict handling and published-validation recovery.
 
 `cat-file` options are restricted by `CLOSED_LISTING_GIT_OPTIONS` in
 [`scripts/guard_hook.py`](scripts/guard_hook.py); filter and text-conversion forms
-are blocked because they can execute external commands.
+are blocked because they can execute external commands. A closed-branch fetch takes
+no global option but `-C`, no command-line refspec or option, and a configured remote
+whose repo config fetches read-only; `_closed_fetch_allowed` in the same file owns the
+exact proof.
 
 **Docs:** [DOCS.md](DOCS.md) (hub) · [UPDATE.md](UPDATE.md) (refresh hooks) · [QUICK.md](QUICK.md) (first install with `--hooks`)
 
@@ -94,6 +99,11 @@ hook.
   the rename when the directory is tracked.
 - **`<hook>.gsd-path-chained` already exists beside a foreign hook:** the
   installer stops. Decide which of the two files you want to keep.
+- **You disabled a hook by renaming it to `<hook>.disabled*`:** while
+  `<hook>` itself is absent, the installer and `--member-of` leave it disabled
+  (`(left disabled)`), and doctor reports it as deliberately disabled instead
+  of missing. To enable the guard again, remove or rename the disabled file
+  and rerun the installer.
 
 Git hooks are local to a clone. A bot that merges on the server, such as
 Renovate, never runs them, and its commits on the default branch do not
@@ -195,6 +205,18 @@ See [UPDATE.md](UPDATE.md).
   target a routing control (`.git`, `.project/STATE.md`, `.project/next`,
   `.gsd-path`) while `.project/STATE.md` exists, or target a product file
   outside the routed build phase (same rule as direct file-edit tools)
+- PowerShell expression forms the guard cannot inspect: a .NET static member
+  call (`[System.IO.File]::WriteAllText`) outside a small read-only type list
+  (`[Math]`, `[string]`, number, date, and similar types), anywhere in the
+  command, including script blocks; dynamic-execution commands and their
+  aliases (`Invoke-Expression`/`iex`, `Invoke-Command`, `Add-Type`,
+  `Start-Process`, `Start-Job`, `New-Object`) as the program or inside a
+  script block; the `&` call operator; and the same forms inside wrapped
+  `-Command` payloads. A `$name = value` or `$env:NAME = value` assignment
+  with only plain literal words is process-local and passes; a bare-word
+  value is checked as the command it runs. A richer value keeps the
+  unresolvable-executable denial, and `$env:HOME`, `$env:XDG_CONFIG_HOME`,
+  and `$env:GIT_*` are denied like the `env` form
 - repeated assignments to the same shell variable within one command; split
   these into separate tool calls so write targets can be resolved
 - copies whose destinations, including nested recursive-copy entries, resolve
@@ -220,6 +242,10 @@ See [UPDATE.md](UPDATE.md).
   backticks, glob characters (`*`, `?`, `[`, `]`), braces, or `..` path components,
   and must not start with `~`. Quoted spaces in paths and quoted punctuation
   within arguments, such as the shipment event's semicolon, are allowed
+- deletion or move commands, in every phase, that target or contain a
+  pipeline state root (`~/.gsd-path`, `GSD_PATH_WORKTREE_ROOT`, or a pinned
+  workspace root). Deletes inside the agent's own managed worktree under such
+  a root stay allowed. Workspace receipts that cannot be read deny the command
 - deletion or move commands outside a single simple segment, including command
   chains, pipes, newlines, grouping, directory changes, and command substitution
 - deletion or move commands with any argument outside the literal-path character

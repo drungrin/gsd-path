@@ -3800,17 +3800,11 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
         self.assertEqual(ship.returncode, 0, ship.stderr)
         return archive.name, self.git(repo, "rev-parse", "HEAD").stdout.strip()
 
-    def integrate(self, repo: Path) -> subprocess.CompletedProcess[str]:
-        return self.run_command(
-            sys.executable,
-            str(ARCHIVE_SCRIPT),
-            "integrate",
-            "--repo",
-            str(repo),
-            "--slug",
-            "demo",
-            cwd=PROJECT_ROOT,
-        )
+    def integrate(self, repo: Path, adopt: Optional[str] = None) -> subprocess.CompletedProcess[str]:
+        command = [sys.executable, str(ARCHIVE_SCRIPT), "integrate", "--repo", str(repo), "--slug", "demo"]
+        if adopt is not None:
+            command += ["--adopt-published-bound", adopt]
+        return self.run_command(*command, cwd=PROJECT_ROOT)
 
     def enable_pull_request_integration(self, repo: Path) -> None:
         state = repo / ".project" / "STATE.md"
@@ -5630,6 +5624,100 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
     def test_pull_request_integration_rejects_rebase_landing_with_other_changes(self) -> None:
         self.integrate_rebase_merge(moved=True, forge=True)
 
+    def historical_rebase_validation_setup(self, root: Path, *, moved: bool = False):
+        repo = root / "primary"
+        repo.mkdir()
+        self.make_publishable_bound_repo(repo, root / "origin.git")
+        # A branch-only task commit plus a restamped FINAL.md put the reviewed
+        # HEAD after the main fork point, so the rebase rewrites it (#450);
+        # without this the rebased parent still covers the reviewed HEAD and
+        # the historical acceptance never engages.
+        (repo / "src").mkdir(exist_ok=True)
+        (repo / "src" / "controlroom.txt").write_bytes(b"branch-only task\n")
+        self.git(repo, "add", "src")
+        self.git(repo, "commit", "-q", "-m", "T001: branch-only task commit")
+        self.restamp_final_review(repo)
+        self.enable_pull_request_integration(repo)
+        archive_name, ship_sha = self.ship_canonical_bound(repo)
+        self.git(repo, "push", "-q", "origin", "feature/milestone-001")
+        landing = self.rebase_merge(repo, ship_sha, moved=moved)
+        pull = self.merged_pull_request(ship_sha, landing)
+
+        def github():
+            return (
+                mock.patch.object(integration, "github_repository", return_value="open-gsd/demo"),
+                mock.patch.object(integration, "run_command", side_effect=self.github_api([pull])),
+            )
+
+        repository, command = github()
+        with repository, command:
+            integration.integrate(repo, "demo")
+        validation = root / "validation"
+        self.git(
+            repo, "worktree", "add", "-b", "validate-landed", str(validation), landing
+        )
+        return repo, validation, archive_name, ship_sha, landing, github
+
+    def test_rebase_merge_historical_validation_accepts_landed_main(self) -> None:
+        # Issue #450: after a rebase merge, validation over the landed default
+        # branch accepts the rebased ship copy through the tag's Ship/Landing
+        # pair and a re-proven replay.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo, validation, archive_name, ship_sha, landing, github = (
+                self.historical_rebase_validation_setup(Path(temporary_directory))
+            )
+            repository, command = github()
+            with repository, command:
+                validated = integration.validate_integrated(
+                    validation, "demo", refresh=False, historical=True
+                )
+            self.assertEqual(validated["commit"], landing)
+            self.assertEqual(validated["landing"], landing)
+
+    def test_rebase_merge_historical_validation_rejects_a_mismatched_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo, validation, archive_name, ship_sha, landing, github = (
+                self.historical_rebase_validation_setup(Path(temporary_directory))
+            )
+            repository, command = github()
+            with repository, command:
+                # Baseline: the untouched tag validates historically.
+                integration.validate_integrated(validation, "demo", refresh=False, historical=True)
+            tag = f"milestone/{archive_name}"
+            contents = self.git(repo, "for-each-ref", "--format=%(contents)", f"refs/tags/{tag}").stdout
+            self.assertIn(f"Landing: {landing}", contents)
+            tampered = contents.replace(f"Landing: {landing}", f"Landing: {ship_sha}")
+            self.git(repo, "tag", "-d", tag)
+            self.git(repo, "tag", "-a", tag, "-m", tampered, landing)
+
+            repository, command = github()
+            with repository, command:
+                with self.assertRaisesRegex(
+                    archive_milestone.ArchiveError, "does not match ship parent"
+                ):
+                    integration.validate_integrated(validation, "demo", refresh=False, historical=True)
+
+    def test_validate_integrated_historical_flag_runs_from_default_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo, validation, archive_name, ship_sha, landing, github = (
+                self.historical_rebase_validation_setup(Path(temporary_directory))
+            )
+            repository, command = github()
+            with repository, command:
+                refused = archive_milestone.main(
+                    ["validate-integrated", "--repo", str(validation), "--slug", "demo"]
+                )
+            self.assertEqual(refused, 1)
+            repository, command = github()
+            with repository, command:
+                accepted = archive_milestone.main(
+                    [
+                        "validate-integrated", "--repo", str(validation),
+                        "--slug", "demo", "--historical",
+                    ]
+                )
+            self.assertEqual(accepted, 0)
+
     def reject_remote_ref(self, remote: Path, ref: str) -> Path:
         hook = remote / "hooks" / "pre-receive"
         hook.write_bytes(
@@ -5975,6 +6063,94 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(),
                 ancestor,
             )
+
+    def test_integrate_adopts_a_published_bound_ancestor(self) -> None:
+        # Issue #464: a build task legitimately pushed the bound branch as a
+        # deploy pin; the live remote is a strict ancestor of the ship commit.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repo = root / "primary"
+            repo.mkdir()
+            remote = root / "origin.git"
+            self.make_publishable_bound_repo(repo, remote)
+            _archive_name, ship_sha = self.ship_canonical_bound(repo)
+            ancestor = self.git(repo, "rev-parse", f"{ship_sha}^").stdout.strip()
+            self.assertEqual(
+                self.git(repo, "push", "-q", "origin", f"{ancestor}:refs/heads/feature/milestone-001").returncode,
+                0,
+            )
+
+            # A wrong SHA is refused before anything moves; both refs untouched.
+            main_before = self.git(remote, "rev-parse", "main").stdout.strip()
+            wrong = self.integrate(repo, adopt="b" * 40)
+            self.assertNotEqual(wrong.returncode, 0, wrong.stdout)
+            self.assertIn("moved or collides", wrong.stderr)
+            self.assertEqual(
+                self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(), ancestor)
+            self.assertEqual(
+                self.git(remote, "rev-parse", "main").stdout.strip(), main_before)
+
+            # The matching SHA adopts: exact-lease fast-forward to the ship commit.
+            adopted = self.integrate(repo, adopt=ancestor)
+            self.assertEqual(adopted.returncode, 0, adopted.stderr)
+            self.assertEqual(
+                self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(), ship_sha)
+
+            # A rerun without the flag is idempotent: the remote now equals ship.
+            retry = self.integrate(repo)
+            self.assertEqual(retry.returncode, 0, retry.stderr)
+
+    def test_integrate_adopt_refuses_a_diverged_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repo = root / "primary"
+            repo.mkdir()
+            remote = root / "origin.git"
+            self.make_publishable_bound_repo(repo, remote)
+            _archive_name, ship_sha = self.ship_canonical_bound(repo)
+            # A commit NOT under the ship commit: true divergence (a sibling of
+            # the ship commit, built without moving the bound worktree).
+            parent = self.git(repo, "rev-parse", f"{ship_sha}^").stdout.strip()
+            tree = self.git(repo, "rev-parse", f"{parent}^{{tree}}").stdout.strip()
+            diverged = self.git(
+                repo, "commit-tree", "-p", parent, "-m", "divergence", tree,
+            ).stdout.strip()
+            self.assertEqual(
+                self.git(repo, "push", "-q", "origin", f"{diverged}:refs/heads/feature/milestone-001").returncode,
+                0,
+            )
+
+            refused = self.integrate(repo, adopt=diverged)
+            self.assertNotEqual(refused.returncode, 0, refused.stdout)
+            self.assertIn("diverges from the ship commit", refused.stderr)
+            self.assertEqual(
+                self.git(remote, "rev-parse", "feature/milestone-001").stdout.strip(), diverged)
+
+    def test_integrate_adopt_flag_refuses_non_direct_modes(self) -> None:
+        for enable in (self.enable_pull_request_integration, self.enable_external_landing_integration):
+            with self.subTest(enable=enable.__name__), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                repo = root / "primary"
+                repo.mkdir()
+                remote = root / "origin.git"
+                self.make_publishable_bound_repo(repo, remote)
+                enable(repo)
+                self.ship_canonical_bound(repo)
+                refused = self.integrate(repo, adopt="a" * 40)
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                self.assertIn("applies only to direct integration", refused.stderr)
+
+    def test_integrate_adopt_cli_rejects_a_malformed_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo = Path(temporary_directory) / "primary"
+            repo.mkdir()
+            malformed = self.run_command(
+                sys.executable, str(ARCHIVE_SCRIPT), "integrate",
+                "--repo", str(repo), "--slug", "demo", "--adopt-published-bound", "abc",
+                cwd=PROJECT_ROOT,
+            )
+            self.assertEqual(malformed.returncode, 2)
+            self.assertIn("40-hex SHA", malformed.stderr)
 
     def test_integrate_rebuilds_an_unpublished_merge_after_main_advances(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

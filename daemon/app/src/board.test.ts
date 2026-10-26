@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { boardRow, filterCounts, setupPill, updateBanner, visibleProjects } from "./board";
 import { asking, blocked, building, shipped, status } from "./fixtures";
 import type { HostInfo, PluginStatus, ProjectSetup } from "./skills";
+import { phaseTrack } from "./project";
 import { nameOf } from "./status";
 
 const NOW = Date.parse(status.generated_at!);
@@ -48,11 +49,24 @@ describe("boardRow", () => {
   });
   it("shows the milestone, phase, tasks and usage of a project in build", () => {
     expect(boardRow(building, NOW)).toEqual({
-      root: "/work/gsd-path", name: "gsd-path", tone: "warn", path: "/work/gsd-path",
+      id: "/work/gsd-path", root: "/work/gsd-path", flavor: null, name: "gsd-path", tone: "warn", path: "/work/gsd-path",
       number: "M004", slug: "daemon", cells: ["done", "done", "done", "done", "done", "done", "now", "todo"], phase: "build",
       state: "active", label: "In build", note: "no activity for 2d", ago: "2d ago",
       tasks: "2/3", cost: "$26.10", turns: "90 turns",
     });
+  });
+  it("gives each framework in one folder its own card id and badge", () => {
+    const core = { ...building, id: "/work/gsd-path::gsd-core", flavor: "gsd-core" };
+    expect(boardRow(core, NOW)).toMatchObject({ id: "/work/gsd-path::gsd-core", root: "/work/gsd-path", flavor: "gsd-core" });
+    expect(boardRow({ ...building, flavor: "gsd-path" }, NOW).flavor).toBeNull();
+    expect(visibleProjects([building, core], "all", "gsd-core").map((p) => p.id)).toEqual(["/work/gsd-path::gsd-core"]);
+  });
+  it("draws a gsd-core card with its own five steps", () => {
+    const core = { ...building, flavor: "gsd-core", phases: ["discuss", "research", "plan", "execute", "verify"], phase: "plan" };
+    expect(boardRow(core, NOW).cells).toEqual(["done", "done", "now", "todo", "todo"]);
+    expect(phaseTrack(core).map((step) => [step.label, step.state])).toEqual([
+      ["discuss", "done"], ["research", "done"], ["plan", "now"], ["execute", "todo"], ["verify", "todo"]]);
+    expect(boardRow({ ...core, workflow: { state: "shipped", label: "Shipped" } }, NOW).cells).toEqual(Array(5).fill("done"));
   });
   it("shows a blocked project with its reason and no invented usage", () => {
     expect(boardRow(blocked, NOW)).toMatchObject({
@@ -110,9 +124,16 @@ describe("updateBanner", () => {
     expect(updateBanner(hosts, plugin(), status.projects)).toEqual({
       count: 2, title: "2 updates available", text: "skills for Codex and Zed, runtime for gsd-path" });
   });
+  it("lists a gsd-pi or gsd-core update", () => {
+    const frameworks = { "gsd-pi": { installed: "1.21.1", hosts: [], latest: "1.22.0", checked: null, update_available: true, detected: true } };
+    expect(updateBanner(hosts, plugin({ hosts: {}, projects: [], frameworks }), [])?.text).toBe("gsd-pi 1.22.0");
+  });
   it("counts one update in the singular", () => {
     const one = plugin({ hosts: { claude: { installed: true, version: "1.4.0" } } });
     expect(updateBanner(hosts, one, status.projects)).toEqual({ count: 1, title: "1 update available", text: "runtime for gsd-path" });
+    // A gsd-core card in the same folder shares the folder, not the GSD Path runtime.
+    const core = { ...building, id: "/work/gsd-path::gsd-core", flavor: "gsd-core" };
+    expect(updateBanner(hosts, one, [...status.projects, core])?.text).toBe("runtime for gsd-path");
   });
   it("compares a runtime with the chosen release, not the latest one", () => {
     const chosen = plugin({ hosts: {}, releases: { latest: "1.4.0", selected: "1.3.2", versions: ["1.4.0", "1.3.2"] } });

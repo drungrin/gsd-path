@@ -474,7 +474,8 @@ approves.
   from two sessions at the same time.
 - Do not push `feature/milestone-00n` by hand, and do not merge another branch into
   it.
-- Do not squash or rebase the integration pull request or merge request.
+- Do not squash the integration pull request or merge request, and do not
+  rebase or fast-forward an `external-landing` merge request.
 
 ---
 

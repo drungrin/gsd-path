@@ -1431,6 +1431,133 @@ def command_can_destroy_files(invocation):
     )
 
 
+def _deletion_overlaps(candidate, root):
+    """Whether a recursive delete of `candidate` could remove `root`.
+
+    A candidate inside the root deletes its contents, and a candidate that
+    CONTAINS the root deletes it wholesale (`rm -r` of a parent directory), so
+    both directions deny. Existing-path identity covers case variants that a
+    lexical comparison misses on case-insensitive filesystems.
+    """
+    try:
+        candidate.relative_to(root)
+        return True
+    except ValueError:
+        pass
+    try:
+        root.relative_to(candidate)
+        return True
+    except ValueError:
+        pass
+    return _within_existing_root(candidate, root) or _within_existing_root(root, candidate)
+
+
+def _strictly_inside(candidate, root):
+    if candidate == root:
+        return False
+    try:
+        candidate.relative_to(root)
+        return True
+    except ValueError:
+        return any(_same_existing_path(ancestor, root) for ancestor in candidate.parents)
+
+
+def destructive_state_root_reason(operands, working_directories):
+    """Why a destructive operand is pipeline state, or None when outside it.
+
+    Delete restrictions cover the pipeline's state directories, not only the
+    repository (#468): the guard's home tree, the configured worktree root,
+    and every pinned workspace root sit outside any repository, so the path
+    kinds alone would call them external. Unresolvable workspace state denies
+    rather than guesses.
+    """
+    directories = working_directories or [os.getcwd()]
+    commons = set()
+    checkouts = set()
+    for directory in directories:
+        result = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "--show-toplevel", "--git-common-dir"],
+            capture_output=True, encoding="utf-8", errors="replace", check=False,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+        lines = result.stdout.splitlines()
+        if result.returncode == 0 and len(lines) == 2:
+            checkouts.add(Path(lines[0]).resolve(strict=False))
+            common = Path(lines[1])
+            if not common.is_absolute():
+                common = Path(directory) / common
+            commons.add(common.resolve(strict=False))
+    try:
+        roots = _workspace_roots_for_commons(commons)
+    except ValueError as error:
+        return f"pipeline workspace state cannot be resolved: {error}"
+    for operand in operands:
+        for candidate in target_paths(operand, directories, Path(os.getcwd())):
+            for root in roots:
+                # A managed worktree under a state root is the agent's own
+                # checkout; deletes inside it are ordinary product work.
+                if _deletion_overlaps(candidate, root) and not any(
+                    _strictly_inside(candidate, checkout) and _strictly_inside(checkout, root)
+                    for checkout in checkouts
+                ):
+                    return f"destructive target is pipeline state: {operand}"
+    return None
+
+
+def _closed_repo_root(working_directories):
+    """The closed-milestone repository for these working directories, if any."""
+    for directory in working_directories or [os.getcwd()]:
+        root = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "--show-toplevel"],
+            capture_output=True, encoding="utf-8", errors="replace", check=False,
+        )
+        if root.returncode != 0:
+            continue
+        repo = Path(root.stdout.strip())
+        if closed_milestone_reason(repo):
+            return repo
+    return None
+
+
+def closed_destructive_scope_reason(arguments, working_directories):
+    """Why a destructive command stays inside pipeline scope, or None outside it.
+
+    A closed milestone accepts no new work, but a scratch file entirely outside
+    the repository and every state root is no work (#468). The allowance needs
+    every operand provably external to the closed repository — the path kinds
+    check the lexical path, the symlink-resolved path, control aliases, and
+    member checkouts — and the state-root check covers the directories that
+    live outside the repository.
+    """
+    end = arguments.index("--") if "--" in arguments else len(arguments)
+    operands = [
+        argument for argument in arguments[:end] if argument and not argument.startswith("-")
+    ] + [argument for argument in arguments[end + 1:] if argument]
+    if not operands:
+        return "destructive command names no target"
+    repo = _closed_repo_root(working_directories)
+    if repo is None:
+        return "pipeline scope cannot be classified"
+    control_roots = repository_control_roots(repo)
+    try:
+        import members  # the guard's runtime directory
+        member_roots = [Path(member["checkout"]) for member in members.read_members(repo)]
+    except Exception as error:
+        return f"member scope cannot be resolved: {error}"
+    for operand in operands:
+        if target_kind(operand, working_directories, repo, control_roots) != "external":
+            return f"destructive target stays inside the repository: {operand}"
+        # A recursive delete of an ancestor removes the repository (and any
+        # member checkout) even though the operand itself classifies external.
+        for candidate in target_paths(operand, working_directories, repo):
+            if _deletion_overlaps(candidate, repo.resolve()):
+                return f"destructive target contains the repository: {operand}"
+            for member_root in member_roots:
+                if _deletion_overlaps(candidate, member_root.resolve(strict=False)):
+                    return f"destructive target contains a member checkout: {operand}"
+    return destructive_state_root_reason(operands, working_directories)
+
+
 def literal_path(operand):
     if len(operand) >= 2 and operand[0] in "\"'" and operand[-1] == operand[0]:
         operand = operand[1:-1]
@@ -2687,6 +2814,114 @@ def unresolved_runner_word(token):
     ) and not parameters_double_quoted(token)
 
 
+POWERSHELL_ASSIGNMENT_TARGET = re.compile(r"^\$(?:env:)?[A-Za-z_][A-Za-z0-9_]*$")
+POWERSHELL_LITERAL_VALUE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:/\\ +,-]*")
+POWERSHELL_STATIC_CALL = re.compile(r"\[(?P<type>[^\]()]+)\]::")
+POWERSHELL_PURE_TYPES = frozenset(
+    {
+        "math", "string", "int", "int32", "long", "int64", "double", "bool",
+        "byte", "char", "decimal", "single", "guid", "datetime", "timespan",
+        "version",
+        "system.math", "system.string", "system.int32", "system.int64",
+        "system.double", "system.boolean", "system.guid", "system.datetime",
+        "system.timespan", "system.version",
+    }
+)
+POWERSHELL_DYNAMIC_COMMANDS = frozenset(
+    {
+        "invoke-expression", "iex", "invoke-command", "icm", "add-type",
+        "start-process", "saps", "sap", "start-job", "new-object",
+    }
+)
+
+
+def powershell_assignment_invocation(segment, unwrap_runners=True):
+    """The invocation a validated PowerShell assignment runs, or None.
+
+    ``$name = literal`` and ``$env:NAME = literal`` set a process-local
+    variable or environment entry. PowerShell runs a bare-word value as a
+    pipeline, so the value is judged as the command it would run. The value
+    must be plain literals; anything richer — expansions, substitutions,
+    member access — keeps the unresolvable denial rather than guessing at
+    expression semantics. An environment name that changes where Git reads
+    its configuration is refused exactly like the shell form (#468).
+    """
+    if len(segment) < 3 or segment[1] != "=":
+        return None
+    if POWERSHELL_ASSIGNMENT_TARGET.fullmatch(segment[0]) is None:
+        return None
+    name = segment[0].removeprefix("$")
+    folded = name.casefold()
+    if ":" in name:
+        variable, _, scope = name.partition(":")
+        if variable != "env":
+            return None
+        if scope.casefold() in {"home", "xdg_config_home"} or scope.casefold().startswith("git_"):
+            raise ValueError(
+                f"{name} changes where Git reads its configuration, which the guard "
+                "cannot validate; run git without it"
+            )
+    elif folded in {"home", "xdg_config_home"} or folded.startswith("git_"):
+        return None  # shell-style names keep their shell semantics, not PowerShell's
+    if any(POWERSHELL_LITERAL_VALUE.fullmatch(token) is None for token in segment[2:]):
+        return None
+    # A value naming a write or dynamic command runs it; deny without resolving paths.
+    command_names = SHELL_WRITE_COMMANDS | POWERSHELL_DYNAMIC_COMMANDS
+    if any(token.casefold().removesuffix(".exe") in command_names for token in segment[2:]):
+        return None
+    return command_invocation(segment[2:], unwrap_runners)
+
+
+def powershell_expression_reason(tokens, depth=0):
+    """Why a PowerShell expression form stays denied, or None when safe.
+
+    PowerShell expression statements are not executables: assignments are
+    process-local, while .NET static member calls run arbitrary code
+    (``[System.IO.File]::WriteAllText`` writes a file the write-target
+    classification never sees). The guard allows the provably pure type
+    members and denies every other static call — wherever the token appears,
+    including inside a script block or a wrapped ``-Command`` payload — plus
+    every dynamic-execution command (aliases included) inside a block or as
+    the executable, and the call operator (#468).
+    """
+    previous = None
+    for token in tokens:
+        if token == "&" and (
+            previous is None
+            or previous.endswith("{")
+            or set(previous) <= set("|;&()\n\r")
+        ):
+            return "the PowerShell call operator target cannot be resolved"
+        previous = token
+    for segment in command_segments(tokens):
+        wrapped = wrapped_command_tokens(segment, expand_parameters=False)
+        if wrapped is not None:
+            if depth >= 4:
+                return "nested command payloads exceed the guard's inspection depth"
+            reason = powershell_expression_reason(wrapped, depth + 1)
+            if reason:
+                return reason
+            continue
+        invocation = command_invocation(list(segment))
+        if invocation is None:
+            continue
+        executable = invocation[0]
+        if executable in POWERSHELL_DYNAMIC_COMMANDS:
+            return f"dynamic execution cannot be inspected by the guard: {executable}"
+        block_depth = 0
+        for token in segment:
+            match = POWERSHELL_STATIC_CALL.search(token)
+            if match is not None and match.group("type").strip().casefold() not in POWERSHELL_PURE_TYPES:
+                return (f"static member call is not on the guard's read-only type "
+                        f"whitelist: {token}")
+            word = token.lstrip("{")
+            block_depth += len(token) - len(word)
+            if block_depth and word.rstrip("}").casefold() in POWERSHELL_DYNAMIC_COMMANDS:
+                return f"dynamic execution cannot be inspected by the guard: {token}"
+            block_depth = max(0, block_depth - (len(word) - len(word.rstrip("}"))))
+    return None
+
+
 def command_invocation(segment, unwrap_runners=True):
     """`unwrap_runners` is False where a command runner itself must be judged."""
     index = 0
@@ -2781,6 +3016,9 @@ def command_invocation(segment, unwrap_runners=True):
             break
     arguments = segment[index + 1 :]
     if SHELL_PARAMETER_SYNTAX.search(executable):
+        assignment = powershell_assignment_invocation(list(segment[index:]), unwrap_runners)
+        if assignment is not None:
+            return assignment
         raise ValueError(
             f"executable {segment[index]} cannot be resolved by the guard; "
             "name the program literally"
@@ -2918,6 +3156,16 @@ def git_command(segment, assignments=None):
             if option != "-C":
                 require_resolved_git_word(value)
             index += 1
+        if option not in {"-C", "-c", "--config-env"} and git_option_in(
+            option, GIT_PARAMETER_DENIED_OPTIONS
+        ):
+            # A denied global option executes a program git runs
+            # (--upload-pack/--exec/...); it must never slip past as a
+            # pre-subcommand token the subcommand checks never see (#468).
+            # -c/--config-env keep their dedicated config-key checks below.
+            raise ValueError(
+                f"git option {option} cannot be verified by the guard"
+            )
         if option in {"-c", "--config-env"}:
             config_key, _, config_value = str(value).partition("=")
             config_key = config_key.casefold()
@@ -3594,6 +3842,10 @@ def _update_ref_names(target, refs, context, no_deref):
 
 
 def _workspace_roots(contexts):
+    return _workspace_roots_for_commons({context["common"] for context in contexts})
+
+
+def _workspace_roots_for_commons(commons):
     roots = [(Path.home() / ".gsd-path").resolve()]
     configured = os.environ.get("GSD_PATH_WORKTREE_ROOT")
     if configured:
@@ -3601,7 +3853,7 @@ def _workspace_roots(contexts):
         if not configured_root.is_absolute():
             raise ValueError("GSD_PATH_WORKTREE_ROOT must be absolute")
         roots.append(configured_root.resolve())
-    for common in {context["common"] for context in contexts}:
+    for common in commons:
         receipts = common / "gsd-path" / "workspaces"
         if not os.path.lexists(receipts):
             continue
@@ -4531,6 +4783,106 @@ def closed_git_listing(tokens):
     return not positionals
 
 
+REMOTE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+FETCH_DESTINATION = re.compile(r"^refs/remotes/[^\s]+/")
+
+
+FETCH_BEHAVIOR_KEYS = (
+    "remote.{remote}.uploadpack", "fetch.uploadpack",
+    "remote.{remote}.prune", "fetch.prune",
+    "remote.{remote}.pruneTags", "fetch.pruneTags",
+    "remote.{remote}.mirror", "remote.{remote}.tagopt",
+)
+
+
+def _configured_fetch_read_only(repo, remote) -> bool:
+    """The configured remote fetches into remote-tracking refs only.
+
+    Repo config can change what a bare `git fetch REMOTE` does, so the
+    guard proves it instead of assuming it: the remote has a URL (an
+    unconfigured name makes git fetch from a local directory of that
+    name); none of uploadpack (runs a program), prune/pruneTags (delete
+    refs), mirror (rewrites every ref) or tagopt (forces tag fetches) is
+    set at any scope; and every `remote.<name>.fetch` refspec writes only
+    under refs/remotes/ (a hand-added `+refs/heads/main:refs/heads/retired`
+    moves a local branch). Default tag auto-follow still creates missing
+    tags that point at fetched commits; it never moves an existing ref.
+    """
+    def config(*arguments):
+        try:
+            return subprocess.run(
+                ["git", "config", *arguments], cwd=repo, capture_output=True,
+                encoding="utf-8", errors="replace", check=False,
+            )
+        except OSError:
+            return None
+
+    url = config("--get", f"remote.{remote}.url")
+    if url is None or url.returncode != 0 or not url.stdout.strip():
+        return False
+    for key in FETCH_BEHAVIOR_KEYS:
+        result = config("--get", key.format(remote=remote))
+        if result is None or result.returncode != 1:
+            return False
+    refspecs = config("--get-all", f"remote.{remote}.fetch")
+    if refspecs is None or refspecs.returncode not in (0, 1):
+        return False
+    for line in refspecs.stdout.splitlines():
+        destination = line.rsplit(":", 1)[-1].strip()
+        if not FETCH_DESTINATION.match(destination):
+            return False
+    return True
+
+
+def _closed_fetch_allowed(git, segment, directories) -> bool:
+    """A read-only fetch on a closed milestone (#468).
+
+    `git fetch [REMOTE]` is allowed only once these properties are PROVEN,
+    never assumed:
+    (1) the raw segment is `git (-C DIR)* fetch`: no other global option
+    precedes the subcommand (walked on raw tokens, consuming each -C with
+    its value, so neither valueless flags like -p nor a -C value named
+    fetch can slip past; --upload-pack/--exec additionally raise in
+    git_command);
+    (2) the remote's configuration fetches read-only (see
+    _configured_fetch_read_only).
+    Any refspec or option on the command line stays denied.
+    """
+    if git is None:
+        return False
+    subcommand, arguments, _options = git
+    if subcommand != "fetch":
+        return False
+    words = [str(token) for token in segment]
+    index = 1
+    while words[index:index + 1] == ["-C"]:
+        index += 2
+    if words[index:index + 1] != ["fetch"]:
+        return False
+    remote = arguments[0] if arguments else None
+    if remote is not None and not REMOTE_NAME.fullmatch(remote):
+        return False
+    if len(arguments) > 1:
+        return False
+    if remote is None:
+        # No argument fetches the current branch's remote, else origin.
+        remote = "origin"
+        if directories:
+            branch = _git_output([], directories[0], "branch", "--show-current")
+            if branch:
+                configured_branch_remote = subprocess.run(
+                    ["git", "config", "--get", f"branch.{branch}.remote"],
+                    cwd=directories[0], capture_output=True, encoding="utf-8",
+                    errors="replace", check=False,
+                ).stdout.strip()
+                if configured_branch_remote:
+                    remote = configured_branch_remote
+    return all(
+        _configured_fetch_read_only(Path(directory), remote)
+        for directory in directories or [Path.cwd()]
+    )
+
+
 def closed_shell_execution_reason(
     command, tokens, working_directories, initial_assignments=None
 ):
@@ -4577,12 +4929,20 @@ def closed_shell_execution_reason(
         if invocation is None:
             continue
         executable, _ = invocation
-        if executable in DIRECTORY_CHANGE_COMMANDS or checked_segment == ["git", "fetch", "origin"]:
+        if executable in DIRECTORY_CHANGE_COMMANDS or _closed_fetch_allowed(
+            git, segment, directories
+        ):
             continue
         plain = checked_segment[:next((i for i, token in enumerate(checked_segment) if is_redirection(token)), len(checked_segment))]
         if executable in {"echo", "printf"} or closed_git_listing(plain) or archive_command_is_read_only(
             shlex.join(plain), plain, True, CLOSED_READ_GIT_COMMANDS
         ):
+            continue
+        if command_can_destroy_files(invocation) and closed_destructive_scope_reason(
+            list(invocation[1]), directories
+        ) is None:
+            # A literal delete entirely outside the repository and every state
+            # root is scratch cleanup, not new work on the closed milestone (#468).
             continue
         return closed
     return None
@@ -4616,6 +4976,16 @@ def command_denial(command, working_directories, allow_destructive=True):
             )
         ):
             return DESTRUCTIVE_SHAPE_REASON
+        if destructive:
+            state_reason = destructive_state_root_reason(
+                [operand for _, operands in destructive for operand in operands],
+                working_directories,
+            )
+            if state_reason:
+                return state_reason
+        expression_reason = powershell_expression_reason(tokens)
+        if expression_reason:
+            return expression_reason
         reason = closed_shell_execution_reason(command, tokens, working_directories)
         if reason:
             return reason

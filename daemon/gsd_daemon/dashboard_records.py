@@ -42,6 +42,8 @@ RECORDS_CSS = r'''
 RECORDS_JS = r'''
 const RECORDS = {root:null, data:null, error:'', busy:false, loadedAt:null};
 const FILES = {root:null, path:'.project/STATE.md', revision:'', format:'preview', query:'', files:[], coverage:[], scope:'', data:null, history:null, error:'', busy:false, request:0};
+// gsd-pi and gsd-core cards send their records, state file first.
+const stateFileOf = p => (p.record_files && p.record_files[0] && p.record_files[0].path) || '.project/STATE.md';
 const sourceLink = (path,label='View source') => `<button class="source-link" data-open-file="${esc(path)}">${esc(label)} ↗</button>`;
 async function fileRequest(params) {
   const response = await fetch('/api/project-files?' + new URLSearchParams(params));
@@ -83,7 +85,7 @@ function filesPage(p) {
   const entries=FILES.files.filter(f=>f.path.toLowerCase().includes(FILES.query.toLowerCase()));
   const data=FILES.data, history=FILES.history;
   const markdown=/\.(md|markdown)$/i.test(FILES.path);
-  return `<div class="breadcrumb"><button class="source-link" data-nav="board">Projects</button> / <button class="source-link" data-root="${esc(p.root)}">${esc(p.repository||p.project||p.root)}</button> / History & files</div>
+  return `<div class="breadcrumb"><button class="source-link" data-nav="board">Projects</button> / <button class="source-link" data-root="${esc(p.id||p.root)}">${esc(p.repository||p.project||p.root)}</button> / History & files</div>
     <div class="phead"><h1>History & files</h1><span class="dim">Read-only · ${esc(p.repository||p.project||p.root)}</span></div>
     <p class="note">Current files and committed versions. Uncommitted older contents are not retained by the watcher.</p>
     <div class="file-workspace"><aside class="file-sidebar"><label for="file-search">Find a file</label><input id="file-search" class="file-search" data-file-search placeholder="Name or path…" value="${esc(FILES.query)}"><nav class="file-list" aria-label="Project files">${entries.length?['Project records','Archived milestone','Repository'].map(group=>{const files=entries.filter(f=>f.group===group);return files.length?`<h3>${group}</h3>${files.map(f=>`<button data-select-file="${esc(f.path)}" aria-current="${f.path===FILES.path?'page':'false'}"><span>${esc(f.path.split('/').pop())}</span><small>${esc(f.path.split('/').slice(0,-1).join('/')||'Project root')}</small></button>`).join('')}`:''}).join(''):`<p class="note">${FILES.busy?'Loading files…':'No matching files.'}</p>`}</nav><p class="note">${esc(FILES.scope)}</p>${FILES.coverage.length?`<p class="file-error">${FILES.coverage.length} file sources need attention.</p><details><summary>Read errors</summary><pre class="record-json">${esc(JSON.stringify(FILES.coverage,null,2))}</pre></details>`:''}</aside>
@@ -98,17 +100,17 @@ function recordTable(rows, columns) {
   return `<div class="tablewrap"><table class="t"><thead><tr>${columns.map(([_,label])=>`<th>${esc(label)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${columns.map(([key])=>`<td>${esc(row[key]==null?'—':typeof row[key]==='object'?JSON.stringify(row[key]):row[key])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 function projectRecords(p) {
-  const matching=RECORDS.root===p.root, data=matching?RECORDS.data:null;
+  const matching=RECORDS.root===(p.id||p.root), data=matching?RECORDS.data:null;
   const section=(id,label,body)=>`<details data-section="${id}"><summary>${label}</summary>${body}</details>`;
-  return `<section class="project-records"><h2>Records & sources</h2><div class="record-tools">${sourceLink('.project/STATE.md','History & files')}<button class="source-link" data-load-records="${esc(p.root)}" ${matching&&RECORDS.busy?'disabled':''}>${data?'Refresh full records':'Load full records'}</button><span class="records-status">${matching&&RECORDS.busy?'Loading…':data?'Loaded '+esc(RECORDS.loadedAt):'Full histories load on demand.'}</span></div>${matching&&RECORDS.error?`<p class="record-error" role="alert">${esc(RECORDS.error)}</p>`:''}
-    ${section('discussions','Discussion answers',recordTable(p.answers||[],[['id','Answer'],['question','Question'],['status','Status'],['follow_up','Follow-up'],['owner','Owner']])+sourceLink('.project/discuss/ANSWERS.md','Read complete discussion record'))}
+  return `<section class="project-records"><h2>Records & sources</h2><div class="record-tools">${sourceLink(stateFileOf(p),'History & files')}<button class="source-link" data-load-records="${esc(p.id||p.root)}" ${matching&&RECORDS.busy?'disabled':''}>${data?'Refresh full records':'Load full records'}</button><span class="records-status">${matching&&RECORDS.busy?'Loading…':data?'Loaded '+esc(RECORDS.loadedAt):'Full histories load on demand.'}</span></div>${matching&&RECORDS.error?`<p class="record-error" role="alert">${esc(RECORDS.error)}</p>`:''}
+    ${section('discussions','Discussion answers',recordTable(p.answers||[],[['id','Answer'],['question','Question'],['status','Status'],['follow_up','Follow-up'],['owner','Owner']])+(p.record_files?'':sourceLink('.project/discuss/ANSWERS.md','Read complete discussion record')))}
     ${section('build-usage','Pipeline usage by phase and task',p.usage?recordTable(p.usage.by_phase,[['phase','Phase'],['tokens','Tokens']])+recordTable(p.usage.by_task,[['task','Task'],['model','Model'],['tokens','Tokens']]):'<p class="note">No parsed pipeline usage is available.</p>')}
-    ${data?section('full-verification','Full verification ledger',recordTable(data.verify_records,[['recorded_at','Recorded'],['task','Task'],['command','Command'],['commit','Commit'],['result','Result']])+sourceLink('.project/build/verify-ledger.jsonl','Read original ledger')):''}
-    ${data?section('full-usage','Full pipeline usage records',recordTable(data.usage_records,[['task','Task'],['phase','Phase'],['model','Model'],['tokens_in','Input'],['tokens_out','Output'],['cost','Cost']])+sourceLink('.project/build/usage.jsonl','Read original usage')):''}
+    ${data?section('full-verification','Full verification ledger',recordTable(data.verify_records,[['recorded_at','Recorded'],['task','Task'],['command','Command'],['commit','Commit'],['result','Result']])+(p.record_files?'':sourceLink('.project/build/verify-ledger.jsonl','Read original ledger'))):''}
+    ${data?section('full-usage','Full pipeline usage records',recordTable(data.usage_records,[['task','Task'],['phase','Phase'],['model','Model'],['tokens_in','Input'],['tokens_out','Output'],['cost','Cost']])+(p.record_files?'':sourceLink('.project/build/usage.jsonl','Read original usage'))):''}
     ${data?section('full-turns','Full host turn ledger',recordTable(data.turns,[['at','Time'],['agent','Agent'],['host','Host'],['model','Model'],['tokens_in','Input'],['tokens_cached','Cached'],['tokens_out','Output'],['duration_s','Seconds'],['cost','Cost']])):''}
     ${data?section('full-activity','Full recorded activity',recordTable(data.activity,[['at','Time'],['type','Change'],['detail','Detail']])):''}
     ${data?section('coverage','Data coverage',`<p class="note">Available means the file can be opened, not that every field was parsed. Loaded sources report their actual record count. Unsupported hosts are not counted as zero.</p>`+recordTable(data.sources,[['path','Source'],['status','Status'],['records','Records'],['invalid_lines','Invalid lines'],['error','Read error'],['detail','Detail']])):''}
-    <div class="record-tools">${sourceLink('.project/ROADMAP.md','Roadmap')}${sourceLink('.project/intent/INTENT.md','Intent')}${sourceLink('.project/plan/PLAN.md','Plan')}${sourceLink('.project/review/FINAL.md','Final review')}${sourceLink('.project/LESSONS.md','Lessons')}</div></section>`;
+    <div class="record-tools">${p.record_files?p.record_files.slice(1).map(f=>sourceLink(f.path,f.label)).join(''):sourceLink('.project/ROADMAP.md','Roadmap')+sourceLink('.project/intent/INTENT.md','Intent')+sourceLink('.project/plan/PLAN.md','Plan')+sourceLink('.project/review/FINAL.md','Final review')+sourceLink('.project/LESSONS.md','Lessons')}</div></section>`;
 }
 document.getElementById('stage').addEventListener('click',event=>{
   const b=event.target.closest('button');

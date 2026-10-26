@@ -1570,6 +1570,12 @@ def _route_state(repo: Path, project_dir: str = ".project") -> dict[str, object]
             mode="milestone" if status == "done" else "normal",
             reason=f"state is {phase}/{status}",
         )
+    if phase == "plan" and status == "blocked":
+        return _route_result(
+            state,
+            "block",
+            reason="plan is blocked; resolve the correction or user decision named by the plan gate before resuming",
+        )
     if phase == "plan" and status != "done":
         return _route_result(state, "run-phase", phase="plan", reason=f"state is {phase}/{status}")
     if phase == "plan":
@@ -3039,9 +3045,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.project_dir,
             )
         elif args.command == "approve" and (args.defer_checkpoint or args.patch):
-            if args.expected_head is not None:
+            if args.defer_checkpoint and args.expected_head is not None:
                 raise PipelineStateError(
-                    "--expected-head is not accepted with --defer-checkpoint or --patch"
+                    "--expected-head is not accepted with --defer-checkpoint"
                 )
             result = state_checkpoint.defer_approval(
                 args.repo,
@@ -3050,6 +3056,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.milestone,
                 args.patch,
             )
+            if args.expected_head is not None:
+                result["expected_head_accepted"] = args.expected_head
         elif args.command == "approve":
             if args.expected_head is None:
                 raise PipelineStateError(

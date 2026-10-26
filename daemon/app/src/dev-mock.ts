@@ -5,7 +5,7 @@ import { mockEnvironment } from "./mocks/environment";
 import { mockSettings } from "./mocks/settings";
 import { mockSkills } from "./mocks/skills";
 import { mockStats } from "./mocks/stats";
-import { status } from "./fixtures";
+import { building, status } from "./fixtures";
 import type { Launch, Shell } from "./shell";
 
 const launch = (over: Partial<Launch> = {}): Launch => ({
@@ -51,7 +51,12 @@ else localStorage.removeItem("gsd-path.setup-done");
 
 // The daemon's read endpoints, by path (without the query).
 const API: Record<string, unknown> = {
-  "/status": status,
+  // ?flavors adds a gsd-core card in the GSD Path folder: one card per framework.
+  "/status": query.has("flavors") ? { ...status, projects: [...status.projects, {
+    ...building, id: "/work/gsd-path::gsd-core", flavor: "gsd-core", health: "amber",
+    phases: ["discuss", "research", "plan", "execute", "verify"], phase: "execute",
+    workflow: { state: "active", label: "In execute" },
+    attention: [{ kind: "question", label: "Phase 02 needs a human check", ref: "02-VERIFICATION.md" }] }] } : status,
   "/api/refresh": { ok: true },
   "/activity": { events: [
     { root: "/work/gsd-path", at: "2026-09-29T03:58:00+00:00", type: "phase-changed", detail: "plan → build" },

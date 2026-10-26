@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
+from unittest import mock
 
 from scripts import check_task_briefs
 from tests._platform import requires_symlink
@@ -156,6 +157,37 @@ class TaskBriefTests(unittest.TestCase):
             self.assertEqual(summary["base"], base)
             self.assertEqual(summary["tasks"], 2)
             self.assertGreater(summary["checked"], 0)
+
+    def test_many_tasks_batch_git_lookups_report_progress_and_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.init_repo(root)
+            for number in range(1, 46):
+                self.write_task(root, f"T{number:03d}",
+                                context="The task extends `src/app.py`.")
+            base = self.commit(root)
+
+            calls: list[tuple[str, ...]] = []
+            real_run_git = check_task_briefs._run_git
+
+            def counting_run_git(repo, *arguments):
+                calls.append(arguments)
+                return real_run_git(repo, *arguments)
+
+            with mock.patch.object(check_task_briefs, "_run_git", counting_run_git):
+                exit_code, stdout, stderr = self.lint(root, base)
+
+            self.assertEqual(exit_code, 0, stderr)
+            # Path existence comes from one cached listing per base, never a
+            # per-path cat-file: 45 tasks with shared prose and Verify paths
+            # stay at a handful of git invocations.
+            self.assertFalse([arguments for arguments in calls if "cat-file" in arguments])
+            self.assertLessEqual(len(calls), 10, calls)
+            summary = json.loads(stdout)
+            self.assertEqual(summary["tasks"], 45)
+            self.assertIsInstance(summary["elapsed_seconds"], float)
+            self.assertIn("20/45 tasks", stderr)
+            self.assertIn("40/45 tasks", stderr)
 
     def test_uncommitted_supplied_contracts_are_valid_prose_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -367,6 +399,182 @@ class TaskBriefTests(unittest.TestCase):
                 self.assertEqual(result, 1)
                 self.assertIn(path, error)
 
+    def test_landed_briefs_skip_reads_and_keep_coordinator_base(self) -> None:
+        # A landed member task's base is a member commit: its `coordinator:`
+        # read must not search the coordinator there, and a landed brief's
+        # reads are history that later member changes cannot break (#471).
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.init_repo(root)
+            self.write(root, "docs/x.md", "# x\n")
+            member = root / "web"
+            member.mkdir()
+            git(member, "init", "-q", "-b", "main")
+            git(member, "config", "user.email", "t@example.test")
+            git(member, "config", "user.name", "T")
+            (member / "a.yml").write_bytes(b"a: 1\n")
+            git(member, "add", ".")
+            git(member, "commit", "-q", "-m", "member base")
+            member_commit = git(member, "rev-parse", "HEAD").strip()
+            git(member, "rm", "-q", "a.yml")
+            git(member, "commit", "-q", "-m", "drop a.yml")
+            git(member, "update-ref", "refs/remotes/origin/main", "HEAD")
+            self.write(root, ".project/MEMBERS.md",
+                       "# Members\n\n## web\n"
+                       f"Checkout: {member}\n"
+                       "Remote: https://github.com/acme/web.git\n"
+                       "Integration: default\n"
+                       "Default branch: main\n")
+            self.write(root, ".gitignore", "web/\n")
+            self.write_task(root, "T001", files=("src/app.py",), contract="- None",
+                            context="Read `docs/x.md`.", verify="python3 src/app.py")
+            self.write_task(root, "T002", files=("src/owned.py",), contract="- None",
+                            context="Read `a.yml`.", verify="python3 src/owned.py")
+            for task_id, extra in (("T001", "repo: web\nreads:\n  - coordinator: docs/x.md"),
+                                   ("T002", "reads:\n  - web: a.yml")):
+                task = root / f".project/tasks/{task_id}-demo.md"
+                task.write_bytes(task.read_text(encoding="utf-8").replace(
+                    "\n---\n", f"\n{extra}\n---\n", 1).encode("utf-8"))
+            head = self.commit(root)
+            with self.assertRaises(check_task_briefs.BriefError) as failure:
+                check_task_briefs.validate_task_briefs(root, head)
+            self.assertIn("reads entry web: a.yml is missing at repository web", str(failure.exception))
+            result = check_task_briefs.validate_task_briefs(
+                root, head, landed_bases={"T001": member_commit, "T002": head},
+            )
+            self.assertEqual(result["tasks"], 2)
+
+    def test_reads_field_covers_cross_repository_tokens(self) -> None:
+        # A coordinator task declares a member path as a read: the token in
+        # its prose is covered, the entry must exist at the member's base,
+        # and files: cannot smuggle a repository-qualified entry (#471).
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.init_repo(root)
+            member = Path(directory) / "web"
+            member.mkdir()
+            git(member, "init", "-q", "-b", "main")
+            git(member, "config", "user.email", "t@example.test")
+            git(member, "config", "user.name", "T")
+            (member / ".github").mkdir()
+            (member / ".github" / "workflows").mkdir()
+            (member / ".github" / "workflows" / "windows-build.yml").write_bytes(
+                b"name: build\n")
+            git(member, "add", ".")
+            git(member, "commit", "-q", "-m", "member base")
+            git(member, "update-ref", "refs/remotes/origin/main", "HEAD")
+            (root / ".project").mkdir(exist_ok=True)
+            (root / ".project" / "MEMBERS.md").write_bytes(
+                ("# Members\n\n## web\n"
+                 f"Checkout: {member}\n"
+                 "Remote: https://github.com/acme/web.git\n"
+                 "Integration: default\n"
+                 "Default branch: main\n").encode("utf-8"))
+            self.write_task(root, "T001",
+                            files=("src/app.py",), contract="- None",
+                            context="The workflow lives in `.github/workflows/windows-build.yml`.",
+                            verify="python3 tests/test_app.py")
+            task = root / ".project/tasks/T001-demo.md"
+            task.write_bytes(task.read_text(encoding="utf-8").replace(
+                "files:\n  - src/app.py",
+                "files:\n  - src/app.py\nreads:\n  - web: .github/workflows/windows-build.yml",
+            ).encode("utf-8"))
+            base = self.commit(root)
+
+            # Without the read, the cross-repo token is flagged.
+            task.write_bytes(task.read_text(encoding="utf-8").replace(
+                "reads:\n  - web: .github/workflows/windows-build.yml", ""
+            ).encode("utf-8"))
+            exit_code, _stdout, stderr = self.run_main(["--repo", str(root), "--base", base])
+            self.assertEqual(exit_code, 1, stderr)
+            self.assertIn("missing at the layer base: .github/workflows/windows-build.yml", stderr)
+
+            # With the read, it passes; a missing member path names repo and base.
+            task.write_bytes(task.read_text(encoding="utf-8").replace(
+                "files:\n  - src/app.py",
+                "files:\n  - src/app.py\nreads:\n  - web: .github/workflows/windows-build.yml"
+            ).encode("utf-8"))
+            exit_code, _stdout, stderr = self.run_main(["--repo", str(root), "--base", base])
+            self.assertEqual(exit_code, 0, stderr)
+            task.write_bytes(task.read_text(encoding="utf-8").replace(
+                "- web: .github/workflows/windows-build.yml",
+                "- web: .github/workflows/absent.yml").encode("utf-8"))
+            exit_code, _stdout, stderr = self.run_main(["--repo", str(root), "--base", base])
+            self.assertEqual(exit_code, 1, stderr)
+            self.assertIn("reads entry web: .github/workflows/absent.yml is missing at repository web", stderr)
+
+            # A repository-qualified files entry is refused.
+            task.write_bytes(task.read_text(encoding="utf-8").replace(
+                "reads:\n  - web: .github/workflows/absent.yml", "").replace(
+                "files:\n  - src/app.py",
+                "files:\n  - src/app.py\n  - web: .github/workflows/windows-build.yml"
+            ).encode("utf-8"))
+            exit_code, _stdout, stderr = self.run_main(["--repo", str(root), "--base", base])
+            self.assertEqual(exit_code, 1, stderr)
+            self.assertIn("files entries are repository-local", stderr)
+
+
+    def test_gitlink_paths_follow_their_commit_presence(self) -> None:
+        # A submodule gitlink counts as a file exactly while its commit object
+        # exists in this repository — the previous cat-file semantics. A declared
+        # path under the gitlink is a non-directory ancestor only in that case,
+        # and prose naming an absent gitlink never reads as a path at all.
+        for present in (False, True):
+            with self.subTest(present=present), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.init_repo(root)
+                base = self.commit(root)
+                if present:
+                    sha = git(root, "commit-tree", git(root, "rev-parse", "HEAD^{tree}"),
+                              "-m", "gitlink target")
+                else:
+                    sha = "0123456789" * 4
+                git(root, "update-index", "--add", "--cacheinfo", f"160000,{sha},vendor/lib")
+                # Commit the staged gitlink directly: `git add .` would drop an
+                # index entry whose path has no working-tree counterpart.
+                git(root, "commit", "-m", "gitlink base")
+                base = git(root, "rev-parse", "HEAD")
+                self.write_task(root, "T001", files=("src/app.py",), contract="- None",
+                                context="The vendor lives at `vendor/lib`.",
+                                verify="python3 tests/test_app.py")
+                result, _, error = self.lint(root, base)
+                self.assertEqual(result, 0, error)  # prose: present names it, absent is no path
+                self.write_task(root, "T001", files=("vendor/lib/payload.py",), contract="- None",
+                                context="Create the owned file.",
+                                verify="python3 vendor/lib/payload.py")
+                result, _, error = self.lint(root, base)
+                if present:
+                    self.assertEqual(result, 1)
+                    self.assertIn("non-directory ancestor", error)
+                else:
+                    self.assertEqual(result, 0, error)
+
+    def test_prose_naming_an_absent_gitlink_is_missing_at_base(self) -> None:
+        # Old `cat-file -e <base>:<path>` failed for a gitlink whose commit is
+        # absent, so prose naming it is a hallucinated path; present passes.
+        for present in (False, True):
+            with self.subTest(present=present), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.init_repo(root)
+                self.commit(root)
+                if present:
+                    sha = git(root, "commit-tree", git(root, "rev-parse", "HEAD^{tree}"),
+                              "-m", "gitlink target")
+                else:
+                    sha = "0123456789" * 4
+                git(root, "update-index", "--add", "--cacheinfo", f"160000,{sha},vendor/lib.py")
+                git(root, "commit", "-m", "gitlink base")
+                base = git(root, "rev-parse", "HEAD")
+                self.write_task(root, "T001", files=("src/app.py",), contract="- None",
+                                context="The vendor lives at `vendor/lib.py`.",
+                                verify="python3 tests/test_app.py")
+                result, _, error = self.lint(root, base)
+                if present:
+                    self.assertEqual(result, 0, error)
+                else:
+                    self.assertEqual(result, 1)
+                    self.assertIn("missing at the layer base: vendor/lib.py", error)
+
     def test_hallucinated_prose_path_in_context_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -548,6 +756,22 @@ class TaskBriefTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 1)
             self.assertIn("..", stderr)
+
+    def test_project_files_entry_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.init_repo(root)
+            self.write_happy_tasks(root)
+            self.write_task(
+                root, "T003", files=(".project/handoff/bundle.md",), contract="- None",
+                context="The task adds a file.",
+            )
+            base = self.commit(root)
+
+            exit_code, _stdout, stderr = self.lint(root, base)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("must stay out of .project/: .project/handoff/bundle.md", stderr)
 
     def test_missing_section_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

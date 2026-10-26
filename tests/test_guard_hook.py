@@ -3008,8 +3008,9 @@ class GuardHookTests(unittest.TestCase):
                 'rm -rf "scratch"',
                 'rm -rf "scratch folder"',
             )
-            # Windows needs PATH (to find git) and SYSTEMROOT to start any process.
-            kept = {name: os.environ[name] for name in ("PATH", "SYSTEMROOT") if os.name == "nt" and name in os.environ}
+            # Windows needs PATH (to find git), SYSTEMROOT to start any process, and
+            # USERPROFILE so the state-root check can resolve the home directory.
+            kept = {name: os.environ[name] for name in ("PATH", "SYSTEMROOT", "USERPROFILE") if os.name == "nt" and name in os.environ}
             with mock.patch.dict(os.environ, kept, clear=True):
                 for commands, assertion in ((denied, self.assert_denied), (allowed, self.assert_allowed)):
                     for command in commands:
@@ -3523,6 +3524,140 @@ class GuardHookTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assert_allowed(self.bash(command))
+
+    def make_closed_milestone_repo(self) -> Path:
+        """A shipped milestone repo on its bound branch: the shell rule that
+        reports "accepts no new work" engages for tool cwd inside it."""
+        import tempfile
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name) / "repo"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "feature/milestone-001", str(root)], check=True)
+        subprocess.run(["git", "config", "user.name", "Guard test"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+        state = root / ".project/STATE.md"
+        state.parent.mkdir()
+        state.write_text(
+            "---\n"
+            "pipeline: gsd-path/v2\n"
+            "project: demo\n"
+            "milestone: demo\n"
+            "phase: shipped\n"
+            "status: done\n"
+            "branch: feature/milestone-001\n"
+            "archive: .project/archive/001-demo\n"
+            "---\n\n# Project State\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", ".project/STATE.md"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "ship: M001 — demo"],
+            cwd=root, check=True,
+        )
+        return root
+
+    def test_fetch_family_survives_a_closed_milestone(self):
+        repo = self.make_closed_milestone_repo()
+
+        def inside(command):
+            return {
+                "tool_name": "Bash",
+                "tool_input": {"command": command, "cwd": str(repo)},
+            }
+
+        # The fetch family needs configured remotes (an unconfigured name
+        # makes git fetch from a local directory of that name).
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(repo)], cwd=repo, check=True
+        )
+        subprocess.run(["git", "remote", "add", "upstream", str(repo)], cwd=repo, check=True)
+        for command in ("git fetch", "git fetch origin", "git fetch upstream"):
+            with self.subTest(command=command):
+                self.assert_allowed(inside(command))
+
+        # A configured refspec that would move a local branch is refused.
+        subprocess.run(["git", "remote", "add", "peer", str(repo)], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "config", "remote.peer.fetch",
+             "+refs/heads/main:refs/heads/retired"],
+            cwd=repo, check=True,
+        )
+        self.assert_denied(inside("git fetch peer"))
+        # Restoring remote-tracking-only refspecs re-allows the fetch.
+        subprocess.run(
+            ["git", "config", "remote.peer.fetch",
+             "+refs/heads/*:refs/remotes/peer/*"],
+            cwd=repo, check=True,
+        )
+        self.assert_allowed(inside("git fetch peer"))
+
+        # An unconfigured remote name is refused (git would fetch from a
+        # local directory of that name).
+        self.assert_denied(inside("git fetch neighbor"))
+
+        # Configured fetch behavior that runs a program, deletes refs,
+        # rewrites every ref or forces tags is refused; unsetting it
+        # restores the allowance.
+        for key, value in (
+            ("remote.origin.uploadpack", "touch pwned; git-upload-pack"),
+            ("remote.origin.prune", "true"),
+            ("remote.origin.pruneTags", "true"),
+            ("fetch.prune", "true"),
+            ("fetch.pruneTags", "true"),
+            ("remote.origin.mirror", "true"),
+            ("remote.origin.tagopt", "--tags"),
+        ):
+            with self.subTest(key=key):
+                subprocess.run(["git", "config", key, value], cwd=repo, check=True)
+                self.assert_denied(inside("git fetch origin"))
+                subprocess.run(["git", "config", "--unset", key], cwd=repo, check=True)
+                self.assert_allowed(inside("git fetch origin"))
+
+        # A -C value that is literally named fetch must not let a later
+        # global flag ride in before the real subcommand.
+        (repo / "fetch").mkdir()
+        self.assert_allowed(inside("git -C fetch fetch origin"))
+        for command in (
+            "git -C fetch -p fetch origin",
+            "git -C fetch --no-pager fetch origin",
+            "git -C fetch --bare fetch origin",
+        ):
+            with self.subTest(command=command):
+                self.assert_denied(inside(command))
+
+        denied = (
+            "git fetch origin main",
+            "git fetch origin +refs/heads/*:refs/heads/*",
+            "git fetch --prune origin",
+            "git fetch --write-commit-graph origin",
+            "git fetch --update-head-ok origin main",
+            "git fetch --upload-pack='rm -rf /' origin",
+            "git -c diff.context=5 fetch origin",
+            "git --git-dir=/tmp/other fetch origin",
+            "git fetch http://evil/",
+            "git fetch ../neighbor",
+            "git pull",
+            "git push",
+            "git -p fetch origin",
+            "git --no-pager fetch origin",
+        )
+        for command in denied:
+            with self.subTest(command=command):
+                self.assert_denied(inside(command))
+
+    def test_git_global_execution_options_deny_everywhere(self):
+        # The pre-#468 hole: global options before the subcommand were
+        # stripped before the read-only checks, so --upload-pack/--exec
+        # slipped past a nominally read-only fetch.
+        for command in (
+            "git --upload-pack='touch /tmp/x' fetch origin",
+            "git --exec='rm' fetch origin",
+            "git --upload-pack='rm -rf /' status",
+            "git --receive-pack='sh' push origin main",
+        ):
+            with self.subTest(command=command):
+                self.assert_denied(self.bash(command))
 
     def test_allows_issue_327_read_only_shell_cases(self):
         repository = shlex.quote(str(Path.cwd()))
@@ -4267,6 +4402,222 @@ class GuardHookTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertEqual(json.loads(result.stdout)["permissionDecision"], "deny")
+
+
+class PowerShellExpressionTests(unittest.TestCase):
+    """PowerShell assignments parse; non-pure expressions stay denied (#468)."""
+
+    assert_denied = GuardHookTests.assert_denied
+    assert_allowed = GuardHookTests.assert_allowed
+
+    def setUp(self) -> None:
+        import tempfile
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.repo = Path(temporary.name) / "repo"
+        GuardHookTests.init_git_repo(self, self.repo)
+        self.home = Path(temporary.name) / "home"
+        self.home.mkdir()
+        patcher = mock.patch.dict(
+            os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home)}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def powershell(self, command):
+        return {"tool_name": "PowerShell", "tool_input": {"command": command, "cwd": str(self.repo)}}
+
+    def test_process_local_assignments_pass(self) -> None:
+        for command in (
+            '$env:PATH = "x"',
+            "$build_root = C:/work/src",
+            "$count = 5",
+            '$env:PATH = "x"; Get-Location',
+        ):
+            with self.subTest(command=command):
+                self.assert_allowed(self.powershell(command))
+
+    def test_assignments_with_unresolvable_values_stay_denied(self) -> None:
+        for command in (
+            "$x = $y",
+            "$x = $(Get-Content secret.txt)",
+            "$env:PATH = $other",
+            "$x = [System.IO.File]::ReadAllText('f')",
+            # A bare-word value runs as a pipeline; it is judged as that command.
+            "$x = git config core.fsmonitor evil",
+            "$x = Remove-Item C:/Users/x/file.txt",
+            "$x = iex foo",
+        ):
+            with self.subTest(command=command):
+                self.assert_denied(self.powershell(command))
+
+    def test_assignment_chained_with_a_destructive_command_stays_denied(self) -> None:
+        self.assert_denied(
+            self.powershell('$env:PATH = "x"; Remove-Item -Recurse ' + str(self.repo / ".project"))
+        )
+
+    def test_pure_static_members_pass_and_others_deny(self) -> None:
+        self.assert_allowed(self.powershell("[Math]::Abs(-1)"))
+        self.assert_allowed(self.powershell("[System.Math]::Max(1, 2)"))
+        for command in (
+            "[System.IO.File]::WriteAllText('x','y')",
+            "[Environment]::SetEnvironmentVariable('a','b','Machine')",
+            "[System.Net.WebClient]::new()",
+        ):
+            with self.subTest(command=command):
+                self.assert_denied(self.powershell(command))
+
+    def test_dynamic_execution_and_opaque_payloads_deny(self) -> None:
+        for command in (
+            'Invoke-Expression "Remove-Item -Recurse x"',
+            'iex "Remove-Item -Recurse x"',
+            "Add-Type -TypeDefinition 'class X {}'",
+            "Start-Process notepad",
+            "saps notepad",
+            "New-Object System.Net.WebClient",
+            "& $cmd",
+            "& foo",
+            "&foo",
+            "1 | % { & foo }",
+            "powershell -EncodedCommand YWJj",
+            "pwsh -enc YWJj",
+            # A script block executes its contents: the static call is an
+            # argument of ForEach-Object, not an executable.
+            "1 | ForEach-Object { [System.IO.File]::WriteAllText('x','y') }",
+            "Get-ChildItem | ForEach-Object { iex $_.FullName }",
+            "1 | % {iex x}",
+            "1 | % {[System.IO.File]::WriteAllText('x','y')}",
+            # Wrapped payloads are inspected with the same rules.
+            "pwsh -Command '[System.IO.File]::WriteAllText(\"x\",\"y\")'",
+        ):
+            with self.subTest(command=command):
+                self.assert_denied(self.powershell(command))
+
+    def test_git_configuration_assignments_deny(self) -> None:
+        # The PowerShell env form is refused exactly like the shell form:
+        # it changes where Git reads its configuration.
+        self.assert_denied(self.powershell("$env:GIT_CONFIG_GLOBAL = cfg; git status"))
+        self.assert_denied(self.powershell("$env:GIT_CONFIG_COUNT = 1; git fetch origin"))
+
+
+class DestructiveScopeTests(unittest.TestCase):
+    """Out-of-repo scratch deletes pass; pipeline state stays protected (#468)."""
+
+    status = GuardHookTests.status
+    make_closed_milestone_repo = GuardHookTests.make_closed_milestone_repo
+    bash_in = GuardHookTests.bash_in
+    assert_denied = GuardHookTests.assert_denied
+    assert_allowed = GuardHookTests.assert_allowed
+
+    def setUp(self) -> None:
+        import tempfile
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.scratch = Path(temporary.name).resolve() / "scratch"
+        self.scratch.mkdir()
+        (self.scratch / "file.txt").write_bytes(b"scratch\n")
+        # A controlled home keeps the state-root check away from this machine's
+        # real ~/.gsd-path tree.
+        self.home = Path(temporary.name).resolve() / "home"
+        self.home.mkdir()
+        patcher = mock.patch.dict(
+            os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home)}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def inside_closed(self, repo, command):
+        return {"tool_name": "Bash", "tool_input": {"command": command, "cwd": str(repo)}}
+
+    def test_closed_milestone_allows_out_of_repo_scratch_deletes(self) -> None:
+        repo = self.make_closed_milestone_repo()
+        target = self.scratch / "file.txt"
+        for command in (f"rm {target.as_posix()}", f"rm -f {target.as_posix()}",
+                        f"Remove-Item '{target.as_posix()}'"):
+            with self.subTest(command=command):
+                self.assert_allowed(self.inside_closed(repo, command))
+        # The scratch directory itself is also outside every scope root.
+        self.assert_allowed(self.inside_closed(repo, f"rm -r {self.scratch.as_posix()}"))
+
+    def test_closed_milestone_keeps_denying_in_scope_deletes(self) -> None:
+        repo = self.make_closed_milestone_repo()
+        product = repo / "app.py"
+        product.write_bytes(b"x\n")
+        for command in (
+            f"rm {product.as_posix()}",
+            f"rm {(repo / '.project' / 'STATE.md').as_posix()}",
+            f"rm {(repo / '.gsd-path' / 'runtime.json').as_posix()}",
+        ):
+            with self.subTest(command=command):
+                self.assert_denied(self.inside_closed(repo, command))
+        # Wildcards and variables never reach the scope check: the shape gate
+        # refuses them first.
+        self.assert_denied(self.inside_closed(repo, f"rm {self.scratch.as_posix()}/*.txt"))
+        # A symlink into the repository resolves inside it.
+        link = self.scratch / "link-to-repo"
+        self.addCleanup(lambda: link.unlink() if link.is_symlink() else None)
+        link.symlink_to(repo)
+        self.assert_denied(self.inside_closed(repo, f"rm {(link / 'app.py').as_posix()}"))
+        # A recursive delete of an ANCESTOR removes the repository (and any
+        # state root) even though the operand itself classifies external.
+        self.assert_denied(self.inside_closed(repo, f"rm -r {repo.parent.as_posix()}"))
+        self.assert_denied(self.inside_closed(repo, f"rm -r {self.home.as_posix()}"))
+
+    def test_state_roots_stay_protected_in_every_phase(self) -> None:
+        state = self.home / ".gsd-path" / "runtimes" / "abc123"
+        state.mkdir(parents=True)
+        marker = state / "manifest.json"
+        marker.write_bytes(b"{}\n")
+        repo = self.make_closed_milestone_repo()
+        # Closed milestone: the state root is inside pipeline scope.
+        self.assert_denied(self.inside_closed(repo, f"rm {marker.as_posix()}"))
+        self.assert_denied(self.inside_closed(repo, f"rm -r {state.as_posix()}"))
+        # The same rule denies in an active phase, before the closed check runs.
+        self.assert_denied(self.bash_in(repo, f"rm {marker.as_posix()}"))
+        # A scratch file outside the state root still passes in an active phase.
+        self.assert_allowed(self.bash_in(repo, f"rm {(self.scratch / 'file.txt').as_posix()}"))
+
+    def test_managed_worktree_under_a_state_root_allows_its_own_deletes(self) -> None:
+        repo = self.scratch / "primary"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com",
+             "commit", "-q", "--allow-empty", "-m", "init"], check=True,
+        )
+        worktree = self.home / ".gsd-path" / "projects" / "A" / "B" / "task" / "t1"
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-q", "-b", "t1", str(worktree)],
+            check=True,
+        )
+        (worktree / "build").mkdir()
+        for command in ("rm -rf build", f"rm -rf {(worktree / 'build').as_posix()}", "mv a.py b.py"):
+            with self.subTest(command=command):
+                self.assert_allowed(self.bash_in(worktree, command))
+        # The checkout itself and state beside it stay protected.
+        state = self.home / ".gsd-path" / "runtimes" / "abc123"
+        state.mkdir(parents=True)
+        for command in (f"rm -r {worktree.as_posix()}", f"rm -r {state.as_posix()}", f"rm -r {worktree.parent.as_posix()}"):
+            with self.subTest(command=command):
+                self.assert_denied(self.bash_in(worktree, command))
+
+    def test_closed_milestone_checks_operands_after_double_dash(self) -> None:
+        repo = self.make_closed_milestone_repo()
+        target = self.scratch / "file.txt"
+        self.assert_allowed(self.inside_closed(repo, f"rm -- {target.as_posix()}"))
+        self.assert_denied(self.inside_closed(repo, f"rm -- {target.as_posix()} -foo"))
+
+    def test_closed_milestone_protects_member_checkout_ancestors(self) -> None:
+        repo = self.make_closed_milestone_repo()
+        member = self.scratch / "members" / "app"
+        member.mkdir(parents=True)
+        (repo / ".project" / "MEMBERS.md").write_text(
+            "# Members\n\n## app\n"
+            f"Checkout: {member}\nRemote: https://github.com/example/app.git\n"
+            "Integration: default\n",
+            encoding="utf-8",
+        )
+        self.assert_denied(self.inside_closed(repo, f"rm -r {member.parent.as_posix()}"))
+        self.assert_allowed(self.inside_closed(repo, f"rm {(self.scratch / 'file.txt').as_posix()}"))
 
 
 if __name__ == "__main__":

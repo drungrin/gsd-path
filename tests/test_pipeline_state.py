@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -1344,6 +1345,25 @@ class PipelineStateTests(unittest.TestCase):
         run_git(repo, "commit", "-m", "fixture: plan intent correction base")
         return repo
 
+    def test_blocked_plan_stops_router_until_explicit_resume(self) -> None:
+        repo = self._plan_intent_correction_repo(status="blocked")
+        before = (repo / ".project/STATE.md").read_bytes()
+        self.assertEqual(pipeline_state.route_state(repo)["route"]["action"], "block")
+        status = pipeline_state.status_state(repo)
+        for key in ("next", "phase_next", "router_next"):
+            self.assertTrue(status["handoff"][key].startswith("block:"))
+            self.assertIn("correction or user decision", status["handoff"][key])
+        self.assertEqual((repo / ".project/STATE.md").read_bytes(), before)
+
+        pipeline_state.transition_state(
+            repo,
+            {"phase": "plan", "status": "blocked", "branch": "feature/milestone-001", "archive": None},
+            {"status": "active"},
+            "planning resumed",
+        )
+        route = pipeline_state.route_state(repo)["route"]
+        self.assertEqual((route["action"], route["phase"]), ("run-phase", "plan"))
+
     def test_plan_intent_correction_transitions_to_define_from_active(self) -> None:
         repo = self._plan_intent_correction_repo()
         result = pipeline_state.transition_state(
@@ -2270,6 +2290,81 @@ class PipelineStateTests(unittest.TestCase):
             self.assertEqual(result["status"], "approved")
             self.assertNotEqual(run_git(repo, "rev-parse", "HEAD").stdout.strip(), expected_head)
             self.assertFalse(pipeline_state._git_path(repo, pipeline_state.CHECKPOINT_JOURNAL_NAME).exists())
+
+    def test_patch_approve_accepts_expected_head(self) -> None:
+        # Issue #469 item 1: --patch pinned no checkpoint, so the typed head
+        # is recorded rather than rejected; the approval itself still runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = self._approval_repo(tmp, "plan")
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                code = pipeline_state.main([
+                    "approve", "--repo", str(repo), "--kind", "plan",
+                    "--project-dir", ".project", "--patch",
+                    "--expected-head", "a" * 40,
+                ])
+            self.assertEqual(code, 0)
+            self.assertIn('"expected_head_accepted": "' + "a" * 40 + '"', captured.getvalue())
+
+    def test_deferred_approve_still_rejects_expected_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = self._approval_repo(tmp, "plan")
+            captured = io.StringIO()
+            with contextlib.redirect_stderr(captured):
+                code = pipeline_state.main([
+                    "approve", "--repo", str(repo), "--kind", "plan",
+                    "--project-dir", ".project", "--defer-checkpoint",
+                    "--expected-head", "a" * 40,
+                ])
+            self.assertEqual(code, 1)
+            self.assertIn("--expected-head is not accepted with --defer-checkpoint", captured.getvalue())
+
+    def test_plan_approval_names_tracked_unsupported_entries(self) -> None:
+        # Issue #466: unsupported .project entries must surface at plan
+        # approval — before build, where removing them is cheapest.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, expected_head = self._approval_repo(tmp, "plan")
+            handoff = repo / ".project" / "handoff"
+            handoff.mkdir()
+            (handoff / "bundle.md").write_bytes("bundle\n".encode("utf-8"))
+            run_git(repo, "add", ".project/handoff")
+            run_git(repo, "commit", "-q", "-m", "cloud bootstrap leftover")
+            expected_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            with self.assertRaisesRegex(
+                pipeline_state.PipelineStateError,
+                "unsupported .project artifacts: handoff",
+            ):
+                state_checkpoint.checkpoint_approval(repo, "plan", expected_head)
+
+            # A staged removal satisfies the gate and the approval checkpoint
+            # commits the deletion.
+            run_git(repo, "rm", "-rq", ".project/handoff")
+            result = state_checkpoint.checkpoint_approval(repo, "plan", expected_head)
+            self.assertEqual(result["status"], "approved")
+            remaining = run_git(
+                repo, "ls-tree", "--name-only", "HEAD", ".project/"
+            ).stdout.split()
+            self.assertNotIn(".project/handoff", remaining)
+
+    def test_plan_approval_accepts_unstaged_removal_of_tracked_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, expected_head = self._approval_repo(tmp, "plan")
+            handoff = repo / ".project" / "handoff"
+            handoff.mkdir()
+            (handoff / "bundle.md").write_bytes("bundle\n".encode("utf-8"))
+            run_git(repo, "add", ".project/handoff")
+            run_git(repo, "commit", "-q", "-m", "cloud bootstrap leftover")
+            expected_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            shutil.rmtree(handoff)
+            result = state_checkpoint.checkpoint_approval(repo, "plan", expected_head)
+
+            self.assertEqual(result["status"], "approved")
+            remaining = run_git(
+                repo, "ls-tree", "-r", "--name-only", "HEAD", ".project/"
+            ).stdout.split()
+            self.assertNotIn(".project/handoff/bundle.md", remaining)
 
     def test_plan_approval_allows_runtime_model_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

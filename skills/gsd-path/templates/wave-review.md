@@ -38,15 +38,25 @@ Tasks reviewed: <count>
      the task file. An evidence line starts with `- ✅ ` (pass) or `- ❌ `
      (fail). A section needs one or more lines with the marker of its own
      verdict, so a failed task needs a `- ❌ ` criterion line.
-     Per task criterion: copy every word of the acceptance/interface
-     criterion before the em dash; join wrapped lines and sub-bullets with
-     spaces (the `- ` markers of sub-bullets are optional). An AC id or
-     summary alone cannot be matched by review_findings.py.
+     On a `- ✅ ` line, name the criterion either by copying every word of
+     the acceptance/interface criterion before the em dash (join wrapped
+     lines and sub-bullets with spaces; the `- ` markers of sub-bullets are
+     optional) or by citing its stable id in the task's numbered list
+     (`T001/AC1`, `T001/IF2`) together with the evidence. A `- ❌ ` line
+     always copies the criterion verbatim: review_findings.py groups
+     findings by that text.
      Write literal markup and code in backticks inside a sentence: text
      such as <b> outside backticks reads as an unfilled placeholder. -->
 - ✅ <criterion> — <evidence: verify output / file:line checked>
 - ❌ <criterion> — found: <what exists instead, file:line>
   fix: <concrete direction a coder can execute without re-investigating>
+- <task id>/<ACn|IFn> — disposition: <authority and date> (<Cn>): <reason>
+     <!-- Only for a claim an INTENT.md correction defers or excludes; cite
+          its number (C1) — a disposition with no citation, or with a Cn
+          that INTENT.md `## Corrections` does not define, fails the gate. Every
+          acceptance criterion and interface bullet must otherwise appear
+          above, as evidence or a finding. One line may cite several ids
+          (T001/AC1, T001/AC2) when one observation covers them. -->
 
 Warnings (non-blocking):
 - <weakened test / unfailable verify / none>
@@ -59,18 +69,24 @@ Contract violations (blocking):
 ## Intent coverage
 
 <!-- One heading per INTENT.md success criterion owned by a task in this
-     wave, ending `: pass` or `: fail`. `scripts/check_handoffs.py wave
-     --review <this file>` gates the SC id set and verdicts. Omit this
-     section when no task in the wave owns an SC.
+     wave, ending `: pass` or `: fail`, in ascending SC id order (SC2
+     before SC4), with an em dash (—) after the id. `scripts/check_handoffs.py
+     wave --review <this file>` gates the SC ids, their order, and
+     verdicts. Omit this section when no task in the wave owns an SC.
      Copy every word of the criterion from INTENT.md `## Success criteria`:
      join indented continuation lines and sub-bullets with a single space
      (the `- ` markers of sub-bullets are optional). The gate compares every
      other word: no paraphrase, no dropped sub-bullet.
      Each SC block needs an evidence line with the marker of its own
-     verdict: `- ✅ ` (pass) or `- ❌ ` (fail). -->
+     verdict: `- ✅ ` (pass) or `- ❌ ` (fail).
+     Under a `pass` SC only, record each subclaim an INTENT.md correction
+     excludes as `- Excluded by <Cn>: <subclaim>`; the Cn must exist in
+     INTENT.md `## Corrections`. An exclusion records retained scope, not
+     a failure. -->
 
 ### SC1 — <criterion from INTENT.md>: <pass | fail>
 - ✅ <evidence: verify output / file:line checked>
+- Excluded by <Cn>: <subclaim the correction removes>
 - ❌ <criterion> — found: <what exists instead, file:line>
   fix: <concrete direction a coder can execute without re-investigating>
 <!-- Quick-lane final scope (Review scope: final): add after the evidence line:

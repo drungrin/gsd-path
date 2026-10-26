@@ -984,6 +984,86 @@ State: ship/blocked
             self.assertEqual(result["findings"], ["P001", "P002"])
             self.assertEqual(result["reviewed_head"], RESEARCH_HEAD)
 
+    def write_plan_state_log(self, root: Path, *log: str) -> None:
+        self.write_state(root, "plan", "active")
+        state = root / ".project/STATE.md"
+        text = state.read_text(encoding="utf-8")
+        state.write_bytes(
+            text.replace("- 2026-08-03 — plan — handoff ready\n", "".join(
+                f"- 2026-08-03 — {entry}\n" for entry in log
+            )).encode("utf-8"),
+        )
+
+    def test_patch_findings_accept_a_reopened_patch_plan(self) -> None:
+        logs = {
+            "reopened": (
+                "ship — final review blocked",
+                "plan — patch plan reopened",
+            ),
+            "resumed": (
+                "ship — final review blocked",
+                "plan — patch plan reopened",
+                "plan — patch planner blocked",
+                "plan — planning resumed",
+            ),
+        }
+        for name, log in logs.items():
+            with self.subTest(log=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_plan_state_log(root, *log)
+                self.write_review_sources(root)
+                self.write_patch_findings(root)
+
+                result = check_handoffs.validate_patch_findings(root)
+
+                self.assertEqual(result["findings"], ["P001", "P002"])
+                self.assertEqual(result["reviewed_head"], RESEARCH_HEAD)
+
+    def test_patch_findings_reject_plan_active_without_a_patch_reopen(self) -> None:
+        logs = {
+            "normal plan": ("decide — decide approved", "plan — planning started"),
+            "normal resume": (
+                "plan — planning started",
+                "plan — planner blocked",
+                "plan — planning resumed",
+            ),
+            "earlier reopen": (
+                "plan — patch plan reopened",
+                "build — build started",
+                "plan — build repair planning",
+            ),
+        }
+        for name, log in logs.items():
+            with self.subTest(log=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_plan_state_log(root, *log)
+                self.write_review_sources(root)
+                self.write_patch_findings(root)
+
+                with self.assertRaisesRegex(
+                    check_handoffs.HandoffError,
+                    "STATE.md must be one of ship/blocked, found plan/active",
+                ):
+                    check_handoffs.validate_patch_findings(root)
+
+    def test_patch_findings_reopened_plan_still_requires_the_reviewed_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_state_log(
+                root, "ship — final review blocked", "plan — patch plan reopened"
+            )
+            self.write_review_sources(root)
+            self.write_patch_findings(root)
+            final_review = root / ".project/review/FINAL.md"
+            final_review.write_bytes(
+                final_review.read_text(encoding="utf-8").replace(
+                    RESEARCH_HEAD, "b" * 40
+                ).encode("utf-8"),
+            )
+
+            with self.assertRaisesRegex(check_handoffs.HandoffError, "Reviewed HEAD differs"):
+                check_handoffs.validate_patch_findings(root)
+
     def test_patch_findings_explain_the_full_gap_locator_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2817,7 +2897,9 @@ Tasks reviewed: 2
             )
             old = "- ✅ The demo command prints hello. — ran hello.py"
             review.write_bytes(original.replace(
-                old, "- ❌ Render `a - b` — found: prints `a b`, src/app.py:3"
+                old,
+                "- ❌ Render `a - b` — found: prints `a b`, src/app.py:3\n"
+                "- ✅ Render `a b` — prints `a b` as accepted",
             ).encode("utf-8"))
             self.assertEqual(check_handoffs.validate_wave(root, review=relative)["verdict"], "blocked")
             (group,) = review_findings.compute(root, ".project", 1, 1)["groups"]
@@ -2977,6 +3059,263 @@ Tasks reviewed: 2
                         self.assertIn(f"{relative.rsplit('/', 1)[1]} task T001", failed.stderr)
                         self.assertIn(reason, failed.stderr)
 
+    def test_wave_requires_every_claim_accounted_for(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            relative = self.write_wave_review(root)
+            self.write_coverage_task(
+                root, "T001", "- SC1",
+                acceptance="1. First claim holds.\n2. Second claim holds.",
+            )
+            task_path = root / ".project/tasks/T001-demo.md"
+            task_path.write_bytes(task_path.read_text(encoding="utf-8").replace(
+                "## Acceptance criteria\n\n1. First claim holds.\n2. Second claim holds.",
+                "## Acceptance criteria\n\n1. First claim holds.\n2. Second claim holds."
+                "\n\n## Interface contract\n\n- `render(name)` returns the greeting.",
+            ).encode("utf-8"))
+            review = root / relative
+
+            # Id citations cover every claim, including the interface bullet,
+            # and one observation may cover several identified claims.
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "- ✅ The demo command prints hello. — ran hello.py",
+                "- ✅ T001/AC1, T001/AC2 — both hold in one run of the suite\n"
+                "- ✅ T001/IF1 — render observed",
+            ).encode("utf-8"))
+            result = check_handoffs.validate_wave(root, review=relative)
+            self.assertEqual(result["verdict"], "pass")
+
+            # An authorized disposition accounts for a claim without proving
+            # it, but only by citing a numbered INTENT Correction (#477).
+            intent = root / ".project/intent/INTENT.md"
+            intent.write_bytes(intent.read_text(encoding="utf-8").replace(
+                "## Success criteria",
+                "## Corrections\n\n- C1 2026-10-26: \"AC2 is deferred out of scope\"\n\n"
+                "## Success criteria",
+            ).encode("utf-8"))
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "- ✅ T001/AC1, T001/AC2 — both hold in one run of the suite",
+                "- ✅ T001/AC1 — observed\n"
+                "- T001/AC2 — disposition: owner ruling 2026-10-26 (C1): out of scope",
+            ).encode("utf-8"))
+            self.assertEqual(
+                check_handoffs.validate_wave(root, review=relative)["verdict"], "pass"
+            )
+            # A correction that does not exist cannot authorize anything.
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "(C1): out of scope", "(C9): out of scope"
+            ).encode("utf-8"))
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "C9.*does not define"
+            ):
+                check_handoffs.validate_wave(root, review=relative)
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "owner ruling 2026-10-26 (C9): out of scope",
+                "deferred by 2026-10-26 owner ruling: out of scope",
+            ).encode("utf-8"))
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "cites no INTENT Correction"
+            ):
+                check_handoffs.validate_wave(root, review=relative)
+
+            # A disposition without a dated authority and a reason accounts
+            # for nothing.
+            authorized = (
+                "- T001/AC2 — disposition: deferred by 2026-10-26 owner ruling: out of scope"
+            )
+            for unauthorized in (
+                "- T001/AC2 — disposition: skipped",
+                "- T001/AC2 — disposition: owner ruling: out of scope",
+                "- T001/AC2 — disposition: 2026-10-26: out of scope",
+                "- T001/AC2 — disposition: owner 2026-10-26: ",
+                "Narrative T001/AC2 disposition: owner 2026-10-26: out of scope",
+            ):
+                with self.subTest(unauthorized=unauthorized):
+                    review.write_bytes(review.read_text(encoding="utf-8").replace(
+                        authorized, unauthorized
+                    ).encode("utf-8"))
+                    with self.assertRaisesRegex(check_handoffs.HandoffError, r"T001/AC2"):
+                        check_handoffs.validate_wave(root, review=relative)
+                    review.write_bytes(review.read_text(encoding="utf-8").replace(
+                        unauthorized, authorized
+                    ).encode("utf-8"))
+
+            # Dropping every reference to the second acceptance claim fails,
+            # naming its stable id.
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "- ✅ T001/AC1 — observed\n"
+                "- T001/AC2 — disposition: deferred by 2026-10-26 owner ruling: out of scope",
+                "- ✅ First claim holds. — observed\n",
+            ).encode("utf-8"))
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, r"T001/AC2"
+            ):
+                check_handoffs.validate_wave(root, review=relative)
+
+    def test_wave_validates_excluded_by_against_corrections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            intent = root / ".project/intent/INTENT.md"
+            intent.write_bytes(intent.read_text(encoding="utf-8").replace(
+                "## Success criteria",
+                "## Corrections\n\n- C1 2026-10-26: \"the slow-path output is excluded\"\n\n"
+                "## Success criteria",
+            ).encode("utf-8"))
+            relative = self.write_wave_review(root)
+            review = root / relative
+            old = "- {marker} hello.py output"
+            marker_line = "- ✅ hello.py output"
+
+            # A passing SC may exclude a subclaim by an existing correction.
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                marker_line,
+                marker_line + "\n- Excluded by C1: the slow-path output",
+            ).encode("utf-8"))
+            self.assertEqual(
+                check_handoffs.validate_wave(root, review=relative)["verdict"], "pass"
+            )
+
+            # An exclusion citing a correction that does not exist fails.
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "- Excluded by C1: the slow-path output",
+                "- Excluded by C7: the slow-path output",
+            ).encode("utf-8"))
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "C7.*does not define"
+            ):
+                check_handoffs.validate_wave(root, review=relative)
+
+            # An exclusion on a failing SC is a contradiction, not retained scope.
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "- Excluded by C7: the slow-path output",
+                "- Excluded by C1: the slow-path output",
+            ).replace(
+                "### SC1 — The demo command prints hello.: pass",
+                "### SC1 — The demo command prints hello.: fail",
+            ).replace(
+                "- ✅ hello.py output",
+                "- ❌ hello.py output — prints goodbye instead",
+            ).replace("Wave verdict: pass", "Wave verdict: blocked").encode("utf-8"))
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "retained scope, not a failure"
+            ):
+                check_handoffs.validate_wave(root, review=relative)
+
+    def test_corrections_require_numbered_append_only_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            intent = root / ".project/intent/INTENT.md"
+            original = intent.read_text(encoding="utf-8")
+
+            def corrections_with(section: str) -> None:
+                intent.write_bytes(original.replace("## Success criteria", section).encode("utf-8"))
+
+            corrections_with(
+                "## Corrections\n\n- 2026-10-26: \"old-format ruling\"\n\n## Success criteria"
+            )
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "not numbered"
+            ):
+                check_handoffs.validate_wave(root, review=self.write_wave_review(root))
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "not numbered"
+            ):
+                check_handoffs.validate_intent(root)
+
+            corrections_with(
+                "## Corrections\n\n- C1 2026-10-26: \"first\"\n"
+                "- C1 2026-10-27: \"duplicate\"\n\n## Success criteria"
+            )
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "repeats C1"
+            ):
+                check_handoffs.validate_wave(root, review=self.write_wave_review(root))
+
+            corrections_with(
+                "## Corrections\n\n- C1 2026-10-26: \"first\"\n"
+                "- C3 2026-10-27: \"skip\"\n\n## Success criteria"
+            )
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "contiguous"
+            ):
+                check_handoffs.validate_wave(root, review=self.write_wave_review(root))
+
+    def test_effective_contract_separates_retained_scope_from_deferrals(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            intent = root / ".project/intent/INTENT.md"
+            intent.write_bytes(intent.read_text(encoding="utf-8").replace(
+                "## Success criteria",
+                "## Corrections\n\n- C1 2026-10-26: \"the slow-path output is excluded\"\n\n"
+                "## Success criteria",
+            ).encode("utf-8"))
+            relative = self.write_wave_review(root)
+            review = root / relative
+            review.write_bytes(review.read_text(encoding="utf-8").replace(
+                "- ✅ hello.py output",
+                "- ✅ hello.py output\n- Excluded by C1: the slow-path output",
+            ).replace(
+                "- ✅ The demo command prints hello. — ran hello.py",
+                "- ✅ T001/AC1 — observed\n"
+                "- T001/AC2 — disposition: owner ruling 2026-10-26 (C1): out of scope",
+            ).encode("utf-8"))
+
+            result = check_handoffs.effective_contract(root)
+
+            self.assertEqual(result["corrections"], {"C1": '2026-10-26: "the slow-path output is excluded"'})
+            states = {entry["criterion"]: entry["state"] for entry in result["criteria"]}
+            self.assertEqual(states, {"SC1": "retained-scope", "SC2": "original-claim"})
+            sc1 = next(entry for entry in result["criteria"] if entry["criterion"] == "SC1")
+            self.assertEqual(sc1["excluded"][0]["correction"], "C1")
+            self.assertEqual(sc1["excluded"][0]["subclaim"], "the slow-path output")
+            (disposition,) = result["dispositions"]
+            self.assertEqual(disposition["claims"], ["T001/AC2"])
+            self.assertEqual(disposition["corrections"], ["C1"])
+            self.assertEqual(disposition["state"], "deferred")
+
+            # Only the latest cycle of a wave feeds the view, and entries a
+            # correction does not authorize never appear in it.
+            later = root / ".project/review/wave-1.cycle2.md"
+            later.write_bytes(
+                (root / ".project/review/wave-1.cycle1.md").read_text(encoding="utf-8")
+                .replace("Cycle: 1", "Cycle: 2")
+                .replace("- Excluded by C1: the slow-path output", "")
+                .replace(
+                    "- T001/AC2 — disposition: owner ruling 2026-10-26 (C1): out of scope",
+                    "- T001/AC2 — disposition: owner ruling 2026-10-26 (C9): out of scope",
+                )
+                .encode("utf-8")
+            )
+            result = check_handoffs.effective_contract(root)
+            states = {entry["criterion"]: entry["state"] for entry in result["criteria"]}
+            self.assertEqual(states, {"SC1": "original-claim", "SC2": "original-claim"})
+            self.assertEqual(result["dispositions"], [])
+
+            # A legacy disposition citing no correction, and an exclusion
+            # hidden in a comment, are not effective either.
+            latest = root / ".project/review/wave-1.cycle3.md"
+            latest.write_bytes(
+                later.read_text(encoding="utf-8")
+                .replace("Cycle: 2", "Cycle: 3")
+                .replace(
+                    "- ✅ hello.py output",
+                    "- ✅ hello.py output\n<!-- - Excluded by C1: the slow-path output -->",
+                )
+                .replace(
+                    "- T001/AC2 — disposition: owner ruling 2026-10-26 (C9): out of scope",
+                    "- T001/AC2 — disposition: deferred by 2026-10-26 owner ruling: out of scope",
+                )
+                .encode("utf-8")
+            )
+            result = check_handoffs.effective_contract(root)
+            states = {entry["criterion"]: entry["state"] for entry in result["criteria"]}
+            self.assertEqual(states, {"SC1": "original-claim", "SC2": "original-claim"})
+            self.assertEqual(result["dispositions"], [])
+
     def test_wave_rejects_placeholder_task_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3016,7 +3355,39 @@ Tasks reviewed: 2
         t002 = "## T002 — Demo task T002: pass\n\n- ✅ The demo test suite is green. — unittest OK\n\n"
         blocked = ("Wave verdict: pass", "Wave verdict: blocked")
         order = "must review exactly T001, T002 in task id order"
+        sc1 = "### SC1 — The demo command prints hello.: pass\n- ✅ hello.py output\n"
+        sc2 = "### SC2 — The demo test suite is green.: pass\n- ✅ unittest\n"
         cases = (
+            # Issue #437: completion compares SC headings by position, so the gate does too.
+            (
+                "SC sections out of ascending order",
+                [(sc1 + sc2, sc2 + sc1)],
+                "Intent coverage must cover exactly SC1, SC2 in ascending SC order",
+            ),
+            (
+                "SC heading with an ASCII hyphen",
+                [("### SC2 — The demo", "### SC2 - The demo")],
+                "has an invalid Intent coverage heading: ### SC2 - The demo test suite is "
+                "green.: pass; use `### SCn — <criterion>: pass` or `: fail` with an em dash (—)",
+            ),
+            (
+                "SC verdict without a space after the colon",
+                [("green.: pass", "green.:pass")],
+                "has an invalid Intent coverage heading: ### SC2 — The demo test suite is green.:pass; "
+                "use `### SCn — <criterion>: pass` or `: fail` with an em dash (—)",
+            ),
+            (
+                "SC heading with trailing whitespace",
+                [("green.: pass", "green.: pass ")],
+                "has an invalid Intent coverage heading: ### SC2 — The demo test suite is green.: pass; "
+                "use `### SCn — <criterion>: pass` or `: fail` with an em dash (—)",
+            ),
+            (
+                "indented SC heading",
+                [("### SC2 — The demo", " ### SC2 — The demo")],
+                "has an invalid Intent coverage heading: ### SC2 — The demo test suite is green.: pass; "
+                "use `### SCn — <criterion>: pass` or `: fail` with an em dash (—)",
+            ),
             ("sections in PLAN table order", [(t001 + t002, t002 + t001)], order),
             ("blocked review, sections out of order", [blocked, (t001 + t002, t002 + t001)], order),
             ("blocked review, unknown task", [blocked, ("## T002 — Demo", "## T009 — Demo")], order),
@@ -3101,6 +3472,32 @@ Tasks reviewed: 2
                 check_handoffs.HandoffError, "wave review must be the canonical path"
             ):
                 check_handoffs.validate_wave(root, review="/" + relative)
+
+    def test_wave_accepts_windows_separators_in_the_review_path(self) -> None:
+        # Issue #470: a native Windows spelling of the same canonical path
+        # validates; separators are normalized at the CLI boundary and every
+        # other restriction applies unchanged.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            relative = self.write_wave_review(root)
+            backslashed = relative.replace("/", "\\")
+
+            result = check_handoffs.validate_wave(root, review=backslashed)
+
+            self.assertEqual(result["wave"], 1)
+            # The other restrictions still refuse: traversal, absolute, and
+            # noncanonical depth all keep their canonical-path error.
+            for hostile in (
+                ".project\\review\\..\\review\\wave-1.cycle1.md",
+                "\\\\.project\\review\\wave-1.cycle1.md",
+                "review\\wave-1.cycle1.md",
+            ):
+                with self.subTest(path=hostile), self.assertRaisesRegex(
+                    check_handoffs.HandoffError,
+                    "unrecognized wave review file|wave review must be the canonical path",
+                ):
+                    check_handoffs.validate_wave(root, review=hostile)
 
     def test_wave_rejects_the_wrong_task_standing_in(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

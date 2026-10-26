@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import functools
 import hashlib
 import io
 import json
@@ -27,7 +26,7 @@ import sys
 sys.dont_write_bytecode = True
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Dict, Iterator, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 if __package__:
     from .pipeline_git import (
@@ -99,6 +98,13 @@ INLINE_LIST_PATTERN = _common.INLINE_LIST_PATTERN
 LIST_ITEM_PATTERN = _common.LIST_ITEM_PATTERN
 COLLECT_JOURNAL_SCHEMA = "gsd-path/collect-artifact/v1"
 NULL_SHA = "0" * 40
+RETIRE_HINT = (
+    " A stale isolate or sidecar from an earlier attempt may be there; retire it first:"
+    " `python3 -B <absolute isolation.py> retire --repo <absolute primary>"
+    " --worktree <path> --branch <branch> --force` (retire --force exists for exactly"
+    " this; a stale review sidecar must be hash-compared against its archived copy"
+    " before retiring)"
+)
 
 
 class IsolationError(RuntimeError):
@@ -175,8 +181,21 @@ def common_git_dir(repo: Path) -> Path:
 
 
 def sidecar_root(primary: Path, kind: str, name: str, *, pin: bool = False) -> Path:
+    # Recovery resolves the same placements per task; each resolution lists
+    # every worktree. Within one read-only run the answer cannot change, so
+    # the entrypoint-cleared memo answers repeats (#469).
+    key = ("sidecar-root", str(primary), kind, name)
+    run_active = ("head-sha", str(primary)) in _RECOVERY_MEMO
     try:
-        return worktree_paths.worktree_path(primary, kind, _common.branch_slug(name) if kind in {"task", "verify"} else name, pin=pin)
+        if run_active and not pin and key in _RECOVERY_MEMO:
+            return _RECOVERY_MEMO[key]  # type: ignore[return-value]
+        resolved = worktree_paths.worktree_path(
+            primary, kind, _common.branch_slug(name) if kind in {"task", "verify"} else name, pin=pin)
+        if run_active and not pin:
+            # Only a read-only recovery run memoizes; pinning writes a
+            # placement receipt and must always run for real (#469).
+            _RECOVERY_MEMO[key] = resolved
+        return resolved
     except (ValueError, OSError) as error:
         raise IsolationError(str(error)) from error
 
@@ -519,6 +538,105 @@ def _long_path(absolute: str) -> str:
     return "\\\\?\\" + absolute
 
 
+def _is_link_like(status: os.stat_result) -> bool:
+    """A symlink, or on Windows any name-surrogate reparse point such as a junction.
+
+    Path.is_symlink() is false for a junction, which still redirects the
+    path; the reparse name-surrogate bit covers junctions and symlinks on
+    every supported Python (3.9+) without os.path.isjunction (3.12+). The
+    same classification is used by guard_hook and detect_project.
+    """
+    return stat.S_ISLNK(status.st_mode) or bool(
+        getattr(status, "st_reparse_tag", 0) & 0x20000000  # IO_REPARSE_TAG name surrogate
+    )
+
+
+def _tracked_symlinks(tree: Path, when: str) -> Set[str]:
+    """Paths, relative to `tree`, that its index (and submodules') tracks as symlinks."""
+    tracked_links: Set[str] = set()
+    if os.path.lexists(os.path.join(tree, ".git")):
+        listed = run_git(tree, "ls-files", "-s", "-z", "--recurse-submodules")
+        if listed.returncode != 0:
+            raise IsolationError(
+                f"could not list tracked files in {tree} {when}: "
+                + (listed.stderr or listed.stdout).strip())
+        for record in listed.stdout.split("\0"):
+            info, _, path = record.partition("\t")
+            if info.startswith("120000 "):
+                tracked_links.add(path)
+    return tracked_links
+
+
+def _unlink_link_like(tree: Path) -> None:
+    """Unlink every link-like entry under a disposable tree before git removes it.
+
+    `git worktree remove` on Git for Windows older than 2.54 recurses through
+    NTFS junctions and deletes the target's contents (#462); untracked or
+    gitignored junctions pass the cleanliness checks that guard removal.
+    Unlinking each link — never traversing it — leaves git nothing to follow
+    and keeps POSIX symlinks on the same single code path. A link that cannot
+    be removed is a hard error: removal never proceeds with links present.
+    A symlink git tracks as a symlink is left for git, which removes it as an
+    index entry without traversing it; unlinking it would make a clean tree
+    dirty. A junction, or a symlink replacing a tracked non-link, is unlinked.
+    """
+    remaining: List[str] = []
+    tracked_links = _tracked_symlinks(tree, "before removal")
+
+    def _unlink_one(entry: str) -> bool:
+        try:
+            os.unlink(entry)
+            return True
+        except OSError:
+            try:
+                os.rmdir(entry)  # an empty link-like dir on some platforms
+                return True
+            except OSError:
+                remaining.append(entry)
+                return False
+
+    def _scan_failed(error: OSError) -> None:
+        # A directory that cannot be scanned leaves an unaudited subtree, and
+        # an incomplete sweep must never hand git a tree that may still hold
+        # a junction (#462).
+        raise IsolationError(f"could not scan {tree} before removal: {error}")
+
+    root = Path(_long_path(os.path.abspath(tree))) if os.name == "nt" else tree
+
+    def _spared(entry: str, status: os.stat_result) -> bool:
+        return stat.S_ISLNK(status.st_mode) and (
+            os.path.relpath(entry, root).replace(os.sep, "/") in tracked_links)
+    for directory, dirnames, _files in os.walk(root, topdown=True, onerror=_scan_failed):
+        for base in dirnames[:]:
+            entry = os.path.join(directory, base)
+            try:
+                status = os.lstat(entry)
+            except OSError as error:
+                _scan_failed(error)
+                return  # unreachable; _scan_failed raises
+            if not _is_link_like(status):
+                continue
+            # Prune BEFORE unlinking: os.walk(followlinks=False) still
+            # descends Windows junctions — they are directories, not
+            # symlinks, at the stat level (CPython issue 88174) — so a
+            # link whose unlink fails must already be out of the walk.
+            dirnames.remove(base)
+            if not _spared(entry, status):
+                _unlink_one(entry)
+        for name in _files:
+            entry = os.path.join(directory, name)
+            try:
+                status = os.lstat(entry)
+            except OSError as error:
+                _scan_failed(error)
+                return  # unreachable; _scan_failed raises
+            if _is_link_like(status) and not _spared(entry, status):
+                _unlink_one(entry)
+    if remaining:
+        raise IsolationError(
+            "could not unlink link-like entries before removal: " + ", ".join(remaining))
+
+
 def _force_rmtree(path: Path) -> None:
     """Delete a sidecar tree directly, tolerating read-only files and long paths."""
     def _writable(function, target, _error):
@@ -544,6 +662,10 @@ def _remove_worktree(primary: Path, destination: Path, force: bool) -> None:
     sidecar intact for diagnosis.
     """
     tree_delete_failure = ("failed to delete", "directory not empty", "permission denied")
+
+    if destination.is_dir():
+        # Defuse first: never let git traverse a junction or symlink (#462).
+        _unlink_link_like(destination)
 
     def failure(*flags: str) -> str:
         result = run_git(primary, "worktree", "remove", *flags, str(destination))
@@ -586,6 +708,8 @@ def _cleanup_reserved_worktree(
     records = _registered_worktrees(primary)
     registered = records.get(destination.resolve())
     if registered == ref and _same_directory(destination, reserved_directory):
+        if destination.is_dir():
+            _unlink_link_like(destination)
         run_git(primary, "worktree", "remove", "--force", str(destination))
         records = _registered_worktrees(primary)
     elif registered is None and _same_directory(destination, reserved_directory):
@@ -608,7 +732,7 @@ def create_named_worktree(
             f"refusing to check out the bound branch {bound} in a second worktree"
         )
     if os.path.lexists(destination):
-        raise IsolationError(f"worktree path already exists: {destination}")
+        raise IsolationError(f"worktree path already exists: {destination}." + RETIRE_HINT)
     destination.parent.mkdir(parents=True, exist_ok=True)
     ref = f"refs/heads/{branch}"
     # `reflog` records the creating owner atomically with the reservation.
@@ -620,7 +744,7 @@ def create_named_worktree(
         destination.mkdir()
     except FileExistsError as error:
         run_git(primary, "update-ref", "-d", ref, base)
-        raise IsolationError(f"worktree path already exists: {destination}") from error
+        raise IsolationError(f"worktree path already exists: {destination}." + RETIRE_HINT) from error
     except OSError as error:
         run_git(primary, "update-ref", "-d", ref, base)
         raise IsolationError(f"cannot reserve worktree path {destination}: {error}") from error
@@ -775,12 +899,112 @@ def member_bound_checkout(coordinator: Path, member: str) -> Dict[str, object]:
             raise IsolationError(f"bound checkout is missing or invalid: {destination}")
     if not holders:
         if os.path.lexists(destination):
-            raise IsolationError(f"worktree path already exists: {destination}")
+            raise IsolationError(f"worktree path already exists: {destination}." + RETIRE_HINT)
         destination.parent.mkdir(parents=True, exist_ok=True)
         added = run_git(checkout, "worktree", "add", str(destination), branch)
         if added.returncode != 0:
             raise IsolationError((added.stderr or added.stdout).strip() or "git worktree add failed")
     return {"branch": branch, "checkout": str(destination.resolve()), "member": member}
+
+
+def _member_prepare_command(coordinator: Path, member: str) -> Optional[str]:
+    """The member's declared Prepare command from MEMBERS.md, if any (#463)."""
+    try:
+        import members
+    except ImportError:  # pragma: no cover - package import used by tests
+        from scripts import members
+    try:
+        rows = members.read_members(coordinator)
+    except members.MembersError as error:
+        raise IsolationError(str(error)) from error
+    for row in rows:
+        if row["name"] == member:
+            return row.get("prepare") or None
+    return None
+
+
+def _refuse_link_like(tree: Path) -> None:
+    """Refuse an isolate that provisioning left link-like entries in (#463).
+
+    Prepare must copy, never link: a link into the primary checkout would let
+    the isolate read and mutate shared inputs, and retirement would silently
+    defuse it (#462). Checked at handout, after the command exits zero. A
+    symlink the member repo tracks as a symlink is checked-out content, not
+    provisioning, and is spared; a junction, or a symlink replacing a tracked
+    non-link, is refused.
+    """
+    found: List[str] = []
+    tracked_links = _tracked_symlinks(tree, "after Prepare")
+    root = Path(_long_path(os.path.abspath(tree))) if os.name == "nt" else tree
+
+    def _scan_failed(error: OSError) -> None:
+        raise IsolationError(f"could not scan {tree} after Prepare: {error}")
+
+    def _refused(entry: str, status: os.stat_result) -> bool:
+        return _is_link_like(status) and not (stat.S_ISLNK(status.st_mode) and (
+            os.path.relpath(entry, root).replace(os.sep, "/") in tracked_links))
+
+    for directory, dirnames, files in os.walk(root, topdown=True, onerror=_scan_failed):
+        for base in dirnames[:]:
+            entry = os.path.join(directory, base)
+            try:
+                status = os.lstat(entry)
+            except OSError as error:
+                _scan_failed(error)
+                return
+            if _is_link_like(status):
+                dirnames.remove(base)  # never descend a link
+                if _refused(entry, status):
+                    found.append(entry)
+        for name in files:
+            entry = os.path.join(directory, name)
+            try:
+                status = os.lstat(entry)
+            except OSError as error:
+                _scan_failed(error)
+                return
+            if _refused(entry, status):
+                found.append(entry)
+    if found:
+        raise IsolationError(
+            "member Prepare left link-like entries; provisioning must copy, "
+            "never link: " + ", ".join(found))
+
+
+def run_member_prepare(coordinator: Path, member: str, sidecar: Path) -> Optional[Dict[str, object]]:
+    """Run the member's declared Prepare command inside a fresh isolate (#463).
+
+    A bare member worktree lacks uninitialized submodules and gitignored build
+    inputs; the committed MEMBERS.md `Prepare:` command provisions them before
+    any Verify runs. The command runs with the isolate as cwd, through the
+    same bash argv Verify uses (host-neutral, and a script file on Windows);
+    a non-zero exit is a loud IsolationError carrying the output so the
+    attempt fails before a Verify burns time against a half-provisioned
+    tree. Provisioning must copy, never link, outside the isolate (#462) —
+    retirement defuses links, and a link would let the isolate mutate shared
+    inputs. Retained isolates keep their provisioning (#461): this runs only
+    where a fresh isolate is created.
+    """
+    command = _member_prepare_command(coordinator, member)
+    if command is None:
+        return None
+    completed = subprocess.run(
+        _common.bash_argv(command), cwd=sidecar,
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+    receipt = {
+        "command": command,
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+    if completed.returncode != 0:
+        raise IsolationError(
+            f"member {member} Prepare failed in {sidecar}: "
+            f"{completed.stderr.strip() or completed.stdout.strip() or completed.returncode}"
+        )
+    _refuse_link_like(sidecar)
+    return receipt
 
 
 def isolate_member_task(coordinator: Path, member: str, task_id: str) -> Dict[str, object]:
@@ -800,7 +1024,22 @@ def isolate_member_task(coordinator: Path, member: str, task_id: str) -> Dict[st
     branch = f"{TASK_BRANCH_PREFIX}{_common.branch_slug(name)}"
     destination = sidecar_root(checkout, "task", name, pin=True)
     create_named_worktree(checkout, branch, destination, member_base, bound=str(bound["branch"]))
+    try:
+        prepared = run_member_prepare(coordinator, member, destination)
+    except BaseException as error:
+        # A fresh tree with a failed Prepare has nothing to land; retire it so
+        # the retry starts clean instead of refusing on the existing path.
+        try:
+            _remove_worktree(checkout, destination, force=True)
+            run_git(checkout, "update-ref", "-d", f"refs/heads/{branch}", member_base)
+        except IsolationError as cleanup_error:
+            raise IsolationError(
+                f"{error}; retiring the fresh isolate also failed: {cleanup_error}") from error
+        finally:
+            release_workspace_quietly(checkout)
+        raise
     return {
+        "prepare": prepared,
         "bound_branch": bound["branch"],
         "bound_checkout": bound["checkout"],
         "kind": "task",
@@ -1051,6 +1290,15 @@ def activate_member_task(
     elif not copy.is_file():
         copy.parent.mkdir(parents=True, exist_ok=True)
         _common.atomic_write(copy, activated)
+    # Pin the sibling preflight inputs (#484): the coder's role requires the
+    # Interface-contract-sharing sibling task files; a member sidecar receives
+    # them from the immutable coordinator base beside the live task copy.
+    for sibling_file in _member_sibling_contract_files(coordinator, resolved_base, task_file):
+        sibling_copy = _safe_member_task_copy(sidecar, sibling_file)
+        sibling_copy.parent.mkdir(parents=True, exist_ok=True)
+        _common.atomic_write(
+            sibling_copy, git_text(coordinator, "show", f"{resolved_base}:{sibling_file}")
+        )
     ref = member_task_authorization_ref(project, task_id)
     created = run_git(checkout, "update-ref", ref, member_base, "0" * 40)
     if created.returncode != 0 and run_git(checkout, "rev-parse", "--verify", "--quiet", ref).stdout.strip() != member_base:
@@ -1060,6 +1308,137 @@ def activate_member_task(
             "task_file": task_file, "worktree": str(sidecar)}
     _write_native_member_dispatch_record(coordinator, result)
     return result
+
+
+def reauthorize_member_task(coordinator: Path, member: str, task_id: str) -> Dict[str, object]:
+    """Re-arm the member task authorization a failed finish cleared (#461).
+
+    A failed finish clears the authorization ref so that attempt cannot land.
+    When the failure was environmental, the sidecar still stands at the same
+    member base with the same live copy, and this explicit command re-records
+    the authorization at that base so a rerunning finish can land without a
+    full re-isolate. The copy is coder-writable, so every binding comes from
+    orchestrator-owned records instead: the dispatch ledger's native member
+    activation names the agent, base, member base, task file, and branch the
+    live copy must still match, the coordinator task must still be pending,
+    the contract at the recorded base must be unchanged with an append-only
+    Log, the member base must stand unchanged and unlanded, and no member
+    landing journal may be pending. Nothing inside the failed attempt's own
+    machinery invokes this; it is an owner decision, under the driver lock.
+    """
+    coordinator = require_directory(coordinator, "coordinator")
+    try:
+        if __package__:
+            from . import dispatch_driver
+        else:
+            import dispatch_driver
+    except ImportError:  # pragma: no cover - package import used by tests
+        from scripts import dispatch_driver
+    try:
+        lock = dispatch_driver.acquire_lock(coordinator)
+    except dispatch_driver.DriverStop as error:
+        raise IsolationError(str(error)) from error
+    with lock:
+        return _reauthorize_member_task_locked(dispatch_driver, coordinator, member, task_id)
+
+
+def _reauthorize_member_task_locked(
+        dispatch_driver, coordinator: Path, member: str, task_id: str) -> Dict[str, object]:
+    checkout, project, entry = _member_context(coordinator, member)
+    task_id = validate_task_id(task_id)
+    # The orchestrator-recorded activation is the source of truth for every
+    # binding; the live copy only proves continuity against it.
+    record = None
+    for state in dispatch_driver.latest_states(dispatch_driver.records_root(coordinator)):
+        if (state.get("task_id") == task_id and state.get("mode") == "member"
+                and state.get("member") == member):
+            record = state
+            break
+    if record is None:
+        raise IsolationError(f"member task {task_id} has no recorded member activation")
+    branch = member_task_branch_name(project, task_id)
+    if record.get("task_branch") not in (None, branch):
+        raise IsolationError(f"member task {task_id} activation names another task branch")
+    recorded_member_base = require_full_sha(str(record["member_base"]))
+    recorded_base = require_full_sha(str(record["base"]))
+    # The native record's task_file names the sidecar copy path (including
+    # the copy-directory prefix); the contract file is the coordinator path.
+    task_file = str(record.get("contract_file") or record["task_file"])
+    if task_file.startswith(MEMBER_TASK_COPY_DIR + "/"):
+        task_file = task_file[len(MEMBER_TASK_COPY_DIR) + 1:]
+    sidecar = sidecar_root(checkout, "task", f"{project}-{task_id}")
+    if require_attached(sidecar) != branch:
+        raise IsolationError(f"member task sidecar is not on its task branch: {sidecar}")
+    copy = _safe_member_task_copy(sidecar, task_file)
+    if not copy.is_file():
+        raise IsolationError(f"member task {task_id} live copy is missing: {copy}")
+    copy_text = copy.read_text(encoding="utf-8")
+    fields, error = task_frontmatter(copy_text)
+    if error or fields is None or fields.get("id") != task_id:
+        raise IsolationError(error or "unreadable member task live copy")
+    if fields.get("status") != "in-progress":
+        raise IsolationError(f"member task {task_id} live copy is not in-progress")
+    agent = fields.get("agent")
+    if not agent:
+        raise IsolationError(f"member task {task_id} live copy lacks its agent")
+    recorded_agent = record.get("agent")
+    if recorded_agent and agent != recorded_agent:
+        raise IsolationError(
+            f"member task {task_id} live copy activation fields differ from its "
+            "recorded activation; re-isolate instead")
+    if not recorded_agent:
+        # Activations recorded before the agent field existed name no agent;
+        # the field is informational today (no authorization decision
+        # consumes it), so a legacy record accepts the copy's non-empty one.
+        pass
+    if (fields.get("base") != recorded_base
+            or fields.get("member_base") != recorded_member_base):
+        raise IsolationError(
+            f"member task {task_id} live copy activation fields differ from its "
+            "recorded activation; re-isolate instead")
+    # A settled coordinator task has nothing left to authorize.
+    coordinator_task = coordinator / task_file
+    coordinator_fields, coordinator_error = task_frontmatter(
+        coordinator_task.read_text(encoding="utf-8"))
+    if coordinator_error or coordinator_fields is None:
+        raise IsolationError(coordinator_error or f"unreadable coordinator task: {task_file}")
+    if coordinator_fields.get("status") != "pending":
+        raise IsolationError(
+            f"member task {task_id} is {coordinator_fields.get('status')} in the "
+            "coordinator; there is nothing to reauthorize")
+    member_base = recorded_member_base
+    # The coder's uncommitted work may sit in the sidecar; the task branch and
+    # the member bound branch must still stand at the recorded member base,
+    # and nothing may have landed yet.
+    tip = run_git(checkout, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").stdout.strip()
+    if tip != member_base:
+        raise IsolationError(f"member task branch {branch} moved off its member base")
+    if run_git(checkout, "merge-base", "--is-ancestor", member_base,
+               f"refs/heads/{entry['branch']}").returncode != 0:
+        raise IsolationError("member task member base is not on the member bound branch")
+    resolved_base = require_commit(coordinator, recorded_base)
+    _member_contract(coordinator, resolved_base, task_file, member)
+    contract = git_text(coordinator, "show", f"{resolved_base}:{task_file}")
+    member_log_delta(contract, copy_text)
+    path = _member_journal_path(coordinator, task_id)
+    if os.path.lexists(path):
+        raise IsolationError(
+            f"a member landing is pending for {task_id}; run recover_member_landing first")
+    for pending in sorted(path.parent.glob("*.json")):
+        if json.loads(pending.read_text(encoding="utf-8"))["member"] == member:
+            raise IsolationError(
+                f"member {member} has pending landing {pending.stem}; run recover_member_landing first")
+    ref = member_task_authorization_ref(project, task_id)
+    recorded = run_git(checkout, "rev-parse", "--verify", "--quiet", ref).stdout.strip()
+    if recorded and recorded != member_base:
+        raise IsolationError("member task authorization names another member base")
+    if not recorded:
+        created = run_git(checkout, "update-ref", ref, member_base, "0" * 40)
+        if created.returncode != 0:
+            raise IsolationError("could not record member task authorization")
+    return {"agent": agent, "base": resolved_base, "copy": str(copy), "member": member,
+            "member_base": member_base, "status": "in-progress", "task_branch": branch,
+            "task_file": task_file, "worktree": str(sidecar), "reauthorized": not recorded}
 
 
 def retained_member_task(
@@ -1192,6 +1571,36 @@ def _require_member_coordinator_branch(coordinator: Path) -> None:
 def _record_member_journal(path: Path, journal: Dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _common.atomic_write(path, json.dumps(journal, indent=2, sort_keys=True) + "\n")
+
+
+def _member_sibling_contract_files(
+    coordinator: Path, base: str, task_file: str
+) -> List[str]:
+    """Sibling task files sharing this task's Interface contract, at the base.
+
+    The coder's sibling-interface preflight needs each sibling's task file;
+    a member activation projects only the live task, so the preflight had no
+    sanctioned read (#484). Siblings are recognized by their Interface
+    contract text: every other task at `base` that shares at least one
+    Interface-contract bullet with this task. The copies land beside the live task under the
+    member copy directory, read from the immutable `base` tree.
+    """
+    def contract_bullets(text: str) -> Set[str]:
+        body = _common.section_body(text, "Interface contract")
+        return set() if body is None else _common.contract_shapes(body)
+
+    live = contract_bullets(git_text(coordinator, "show", f"{base}:{task_file}"))
+    if not live:
+        return []
+    listing = git_output(
+        coordinator, "ls-tree", "-r", "--name-only", base, "--", ".project/tasks")
+    siblings: List[str] = []
+    for sibling_file in listing.splitlines():
+        if not sibling_file.endswith(".md") or sibling_file == task_file:
+            continue
+        if contract_bullets(git_text(coordinator, "show", f"{base}:{sibling_file}")) & live:
+            siblings.append(sibling_file)
+    return siblings
 
 
 def _member_contract(
@@ -1501,8 +1910,11 @@ def isolate_member_verify(coordinator: Path, sidecar: Path) -> Dict[str, Dict[st
             branch = verify_branch_name(project + "-" + str(entry["name"]))
             destination = sidecar.parent / entry["name"]
             create_named_worktree(checkout, branch, destination, tip, bound=entry["branch"])
+            # Registered before Prepare so a failed provisioning retires with
+            # the loop's existing cleanup (#463).
             created[entry["name"]] = {"checkout": str(checkout), "worktree": str(destination),
                                      "branch": branch, "tip": tip}
+            run_member_prepare(coordinator, entry["name"], destination)
     except BaseException:
         retire_member_verify(created)
         raise
@@ -1861,7 +2273,7 @@ def ensure_verify_sidecar(primary: Path, base: str, branch: str) -> Dict[str, ob
     ref = f"refs/heads/{branch}"
     registered = _registered_worktrees(primary)
     if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
-        raise IsolationError(f"worktree path already exists: {destination}")
+        raise IsolationError(f"worktree path already exists: {destination}." + RETIRE_HINT)
     if destination.is_dir():
         try:
             # A leftover empty directory (a half-deleted sidecar) clears;
@@ -1894,6 +2306,8 @@ def ensure_verify_sidecar(primary: Path, base: str, branch: str) -> Dict[str, ob
                 "worktree": str(destination),
             }
     if destination.resolve() in registered:
+        if destination.is_dir():
+            _unlink_link_like(destination)
         cleared = run_git(primary, "worktree", "remove", str(destination))
         if cleared.returncode != 0:
             run_git(primary, "worktree", "prune")
@@ -2064,6 +2478,16 @@ def _commit_pending(
     return current_sha(repo)
 
 
+# Run-scoped memo for read-only recovery queries (#469): recovery re-proves
+# every task against the same immutable commits, so shared-base lookups (tree
+# kinds, blob listings, serial bookkeeping, the primary worktree report) answer
+# once per run. Each public recovery entrypoint clears it, so a process that
+# mutates between runs never reads a stale entry, and only immutable inputs —
+# full commit shas or per-run constants — are ever keyed.
+_RECOVERY_MEMO: Dict[tuple, object] = {}
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+
 def undeclared_paths(
     repo: Path, base: str, paths: Set[str], declared: Set[str]
 ) -> list[str]:
@@ -2073,11 +2497,17 @@ def undeclared_paths(
     An entry that is a file at `base` covers only itself: the task-brief lint
     rejects a path below a base file.
     """
+    cacheable = _FULL_SHA.fullmatch(base) is not None
 
-    @functools.lru_cache(maxsize=None)
     def directory(entry: str) -> bool:
+        key = ("tree-kind", str(repo), base, entry)
+        if cacheable and key in _RECOVERY_MEMO:
+            return _RECOVERY_MEMO[key]  # type: ignore[index]
         kind = run_git(repo, "cat-file", "-t", f"{base}:{entry}")
-        return kind.returncode != 0 or kind.stdout.strip() == "tree"
+        covering = kind.returncode != 0 or kind.stdout.strip() == "tree"
+        if cacheable:
+            _RECOVERY_MEMO[key] = covering
+        return covering
 
     return sorted(
         path
@@ -2868,13 +3298,52 @@ def _declared_task_paths(
         return None, str(error)
 
 
+def _tree_blob_map(repo: Path, revision: str) -> Dict[str, tuple[str, str, str]]:
+    """{path: (mode, type, oid)} for one commit's full tree."""
+    mapping: Dict[str, tuple[str, str, str]] = {}
+    for entry in git_output(
+        repo, "ls-tree", "-r", "-z", revision
+    ).split("\0"):
+        if not entry:
+            continue
+        meta, separator, name = entry.partition("\t")
+        if not separator:
+            continue
+        parts = meta.split()
+        if len(parts) == 3:
+            mapping[name] = (parts[0], parts[1], parts[2])
+    return mapping
+
+
 def _regular_blob_oid(repo: Path, revision: str, path: str) -> str:
+    # A full-sha revision addresses immutable content: the listing answers
+    # once per run (#469). Moving names are never cached, but within one
+    # read-only run HEAD is the entrypoint's recorded head, so resolve it.
+    if revision == "HEAD":
+        recorded = _RECOVERY_MEMO.get(("head-sha", str(repo)))
+        if isinstance(recorded, str):
+            # Every task compares against the same run head: one full listing
+            # answers all of them (#469).
+            map_key = ("head-tree", str(repo), recorded)
+            if map_key not in _RECOVERY_MEMO:
+                _RECOVERY_MEMO[map_key] = _tree_blob_map(repo, recorded)
+            mapping = _RECOVERY_MEMO[map_key]
+            assert isinstance(mapping, dict)
+            entry = mapping.get(path)
+            if entry is None or entry[1] != "blob" or entry[0] not in {"100644", "100755"}:
+                raise IsolationError(f"task path is not a regular file in HEAD: {path}")
+            return entry[2]
+    key = ("blob-oid", str(repo), revision, path)
+    if _FULL_SHA.fullmatch(revision) is not None and key in _RECOVERY_MEMO:
+        return str(_RECOVERY_MEMO[key])
     entries = git_output(repo, "ls-tree", revision, "--", path).splitlines()
     if len(entries) != 1:
         raise IsolationError(f"task path is not a regular file in {revision}: {path}")
     parts = entries[0].split(maxsplit=3)
     if len(parts) != 4 or parts[0] not in {"100644", "100755"} or parts[1] != "blob":
         raise IsolationError(f"task path is not a regular file in {revision}: {path}")
+    if _FULL_SHA.fullmatch(revision) is not None:
+        _RECOVERY_MEMO[key] = parts[2]
     return parts[2]
 
 
@@ -3184,6 +3653,23 @@ def _worktree_report(
         return None, f"invalid sidecar worktree {path}: {error}"
 
 
+def _primary_worktree_report(
+    primary: Path, bound: str, head: str
+) -> tuple[Optional[Dict[str, object]], Optional[str]]:
+    """The primary's own worktree report, answered once per recovery run.
+
+    Recovery is read-only and the run's head is fixed, so every serial task
+    sees the same answer; the entrypoint-cleared memo scopes it to one run
+    (#469).
+    """
+    key = ("primary-report", str(primary), bound, head)
+    if key in _RECOVERY_MEMO:
+        return _RECOVERY_MEMO[key]  # type: ignore[return-value]
+    report = _worktree_report(primary, primary, bound)
+    _RECOVERY_MEMO[key] = report
+    return report
+
+
 def _retained_task_contract_error(
     current_text: str, isolate_text: str
 ) -> Optional[str]:
@@ -3248,6 +3734,15 @@ def _serial_bookkeeping_error(primary: Path, base: str, head: str) -> Optional[s
     """Prove that serial task history advanced only through linear .project commits."""
     if base == head:
         return None
+    key = ("serial-bookkeeping", str(primary), base, head)
+    if key in _RECOVERY_MEMO:
+        return _RECOVERY_MEMO[key]  # type: ignore[return-value]
+    error = _serial_bookkeeping_proof(primary, base, head)
+    _RECOVERY_MEMO[key] = error
+    return error
+
+
+def _serial_bookkeeping_proof(primary: Path, base: str, head: str) -> Optional[str]:
     if run_git(primary, "merge-base", "--is-ancestor", base, head).returncode != 0:
         return "recorded base is not an ancestor of the current branch"
     commits = git_output(
@@ -3604,7 +4099,7 @@ def _recover_task(
                     "block",
                     reason=f"{status} serial task advanced past its base: {advance_error}",
                 )
-            primary_worktree, primary_error = _worktree_report(primary, primary, bound)
+            primary_worktree, primary_error = _primary_worktree_report(primary, bound, head)
             if primary_error:
                 return result("block", reason=primary_error)
             report["worktree"] = primary_worktree
@@ -3660,11 +4155,14 @@ def _recover_task(
                     "block",
                     reason=f"{status} serial task advanced past its base: {advance_error}",
                 )
-            primary_worktree, primary_error = _worktree_report(primary, primary, bound)
+            primary_worktree, primary_error = _primary_worktree_report(primary, bound, head)
             if primary_error:
                 return result("block", reason=primary_error)
             report["worktree"] = primary_worktree
-        return result("reconcile", base=base)
+        return result(
+            "reconcile", base=base,
+            reason=f"{status} task needs recovery; run reconcile for its classification",
+        )
 
     recorded_base = str(fields.get("base", ""))
     try:
@@ -3747,9 +4245,7 @@ def _recover_task(
             primary, recorded_base, task_file, task_text, subject
         )
         if retry_error is None:
-            primary_worktree, primary_error = _worktree_report(
-                primary, primary, bound
-            )
+            primary_worktree, primary_error = _primary_worktree_report(primary, bound, head)
             if primary_error:
                 return result("block", reason=primary_error)
             report["worktree"] = primary_worktree
@@ -3854,6 +4350,20 @@ def recover(primary: Path, tasks_dir: Path) -> Dict[str, object]:
         raise IsolationError(f"primary is not its Git root: {primary}")
     bound = require_attached(primary)
     head = current_sha(primary)
+    _RECOVERY_MEMO.clear()
+    _RECOVERY_MEMO[("head-sha", str(primary))] = head
+    try:
+        with worktree_paths.readonly_placement_cache():
+            return _recover_all(primary, tasks_dir, bound, head)
+    finally:
+        # HEAD resumes its moving-name meaning the moment the read-only run
+        # ends: landing flows in the same process must never resolve it to a
+        # stale recorded head.
+        _RECOVERY_MEMO.pop(("head-sha", str(primary)), None)
+        _RECOVERY_MEMO.pop(("head-tree", str(primary), head), None)
+
+
+def _recover_all(primary: Path, tasks_dir: Path, bound: str, head: str) -> Dict[str, object]:
     task_paths, inventory_error = _recovery_task_inventory(primary, tasks_dir, head)
     if inventory_error:
         return {
@@ -3867,10 +4377,11 @@ def recover(primary: Path, tasks_dir: Path) -> Dict[str, object]:
     branches = set(
         git_output(primary, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{TASK_BRANCH_PREFIX}*").splitlines()
     )
-    tasks = [
-        _recover_task(primary, path, history, branches, head, bound)
-        for path in task_paths
-    ]
+    tasks = []
+    for number, path in enumerate(task_paths, start=1):
+        if number % 20 == 0:
+            print(f"recover: {number}/{len(task_paths)} tasks", file=sys.stderr, flush=True)
+        tasks.append(_recover_task(primary, path, history, branches, head, bound))
     try:
         _validate_task_member_receipts(primary, task_paths)
     except IsolationError as error:
@@ -3909,7 +4420,6 @@ def verify_landed_task_files(
         raise IsolationError(f"primary is not its Git root: {primary}")
     bound = require_attached(primary)
     resolved_head = require_commit(primary, require_full_sha(head))
-    canonical_dir = relative_posix(canonical_tasks_dir)
     history = _first_parent_history(primary, resolved_head)
     branches = set(
         git_output(
@@ -3919,8 +4429,32 @@ def verify_landed_task_files(
             f"refs/heads/{TASK_BRANCH_PREFIX}*",
         ).splitlines()
     )
+    _RECOVERY_MEMO.clear()
+    _RECOVERY_MEMO[("head-sha", str(primary))] = resolved_head
+    try:
+        with worktree_paths.readonly_placement_cache():
+            return _verify_landed_all(
+                primary, list(task_paths), relative_posix(canonical_tasks_dir),
+                resolved_head, history, branches, bound,
+            )
+    finally:
+        _RECOVERY_MEMO.pop(("head-sha", str(primary)), None)
+        _RECOVERY_MEMO.pop(("head-tree", str(primary), resolved_head), None)
+
+
+def _verify_landed_all(
+    primary: Path,
+    task_paths: Sequence[Path],
+    canonical_dir: str,
+    resolved_head: str,
+    history: Dict[str, list[tuple[str, str]]],
+    branches: Set[str],
+    bound: str,
+) -> Dict[str, object]:
     tasks = []
-    for path in task_paths:
+    for number, path in enumerate(task_paths, start=1):
+        if number % 20 == 0:
+            print(f"recover: {number}/{len(task_paths)} tasks", file=sys.stderr, flush=True)
         resolved = path.resolve()
         if path.is_symlink() or not path.is_file():
             raise IsolationError(f"task artifact is missing or unsafe: {path}")
@@ -6482,10 +7016,18 @@ def checkpoint(
     )
     if unexpected:
         raise IsolationError("unexpected paths: " + ", ".join(unexpected))
+    # An unsupported entry violates only if it will exist after this
+    # checkpoint commits: _commit_pending stages exactly the pending paths
+    # from the worktree, so a staged or completed removal (git rm / git mv)
+    # passes and the removal lands here instead of forcing a plain commit
+    # (#466). A kept worktree file (rm --cached, untracked junk) would be
+    # re-staged and still blocks.
     unsupported = sorted({
         path.split("/")[1]
         for path in pending
-        if path.startswith(".project/") and path.split("/")[1] not in PROJECT_ENTRIES
+        if path.startswith(".project/")
+        and path.split("/")[1] not in PROJECT_ENTRIES
+        and ((repo / path).exists() or (repo / path).is_symlink())
     })
     if unsupported:
         raise IsolationError(
@@ -6817,9 +7359,16 @@ def parser() -> argparse.ArgumentParser:
     activate_member_parser.add_argument("--repo", type=Path, required=True, help="coordinator root")
     activate_member_parser.add_argument("--member", required=True)
     activate_member_parser.add_argument("--task-id", required=True)
-    activate_member_parser.add_argument("--agent", required=True)
-    activate_member_parser.add_argument("--task-file", required=True)
-    activate_member_parser.add_argument("--base", required=True)
+    activate_member_parser.add_argument("--agent")
+    activate_member_parser.add_argument("--task-file")
+    activate_member_parser.add_argument("--base")
+    activate_member_parser.add_argument(
+        "--reauthorize", action="store_true",
+        help="re-record the authorization a failed finish cleared, for the same "
+             "live copy at the same member base, without re-isolating (#461); "
+             "--task-file/--base come from the recorded activation, which the "
+             "live copy must match"
+    )
 
     retire_member_parser = subparsers.add_parser(
         "retire-member-task", help="remove a member task sidecar and branch before a retry"
@@ -6832,11 +7381,16 @@ def parser() -> argparse.ArgumentParser:
     retire_member_parser.add_argument("--task-file")
 
     deactivate_task_parser = subparsers.add_parser(
-        "deactivate-task", help="revoke one helper-owned task dispatch"
+        "deactivate-task",
+        help="revoke one helper-owned task dispatch (parallel tasks only: a serial "
+             "task has no task branch and no authorization to deactivate)",
     )
     deactivate_task_parser.add_argument("--repo", type=Path, required=True)
     deactivate_task_parser.add_argument("--task-id", required=True)
-    deactivate_task_parser.add_argument("--task-branch", required=True)
+    deactivate_task_parser.add_argument(
+        "--task-branch", required=True,
+        help="the parallel isolate's branch chore/task-<id>",
+    )
 
     isolate_verify_parser = subparsers.add_parser(
         "isolate-verify", help="create a named verify sidecar"
@@ -6959,8 +7513,18 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    arguments = parser().parse_args(argv)
+    argument_parser = parser()
+    arguments = argument_parser.parse_args(argv)
     try:
+        if arguments.command == "activate-member-task" and (
+            (arguments.reauthorize and (arguments.agent or arguments.task_file or arguments.base))
+            or (not arguments.reauthorize
+                and not (arguments.agent and arguments.task_file and arguments.base))
+        ):
+            argument_parser.error(
+                "activate-member-task requires --agent, --task-file, and --base, "
+                "or --reauthorize alone (which uses the recorded activation)"
+            )
         if arguments.command == "isolate-task":
             result = isolate_task(
                 arguments.repo,
@@ -6980,8 +7544,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif arguments.command == "isolate-member-task":
             result = isolate_member_task(arguments.repo, arguments.member, arguments.task_id)
         elif arguments.command == "activate-member-task":
-            result = activate_member_task(arguments.repo, arguments.member, arguments.task_id,
-                                          arguments.agent, arguments.task_file, arguments.base)
+            if arguments.reauthorize:
+                result = reauthorize_member_task(arguments.repo, arguments.member, arguments.task_id)
+            else:
+                result = activate_member_task(arguments.repo, arguments.member, arguments.task_id,
+                                              arguments.agent, arguments.task_file, arguments.base)
         elif arguments.command == "retire-member-task":
             copy_rejected = retire_member_task(arguments.repo, arguments.member, arguments.task_id,
                                                arguments.force, arguments.task_file)

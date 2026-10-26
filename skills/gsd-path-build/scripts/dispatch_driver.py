@@ -251,7 +251,8 @@ def open_native_shell(primary: Path, *, task_id: str, base: str, worktree: str, 
                       task_branch: Optional[str], mode: str, wave: Optional[int] = None,
                       title: Optional[str] = None, files: Optional[List[str]] = None,
                       sidecar: Optional[object] = None, member: Optional[str] = None,
-                      member_base: Optional[str] = None, contract_file: Optional[str] = None) -> None:
+                      member_base: Optional[str] = None, contract_file: Optional[str] = None,
+                      agent: Optional[str] = None) -> None:
     """Open a dispatch attempt record for a host-spawned coder before it runs."""
     root = records_root(primary)
     root.mkdir(parents=True, exist_ok=True)
@@ -281,6 +282,8 @@ def open_native_shell(primary: Path, *, task_id: str, base: str, worktree: str, 
         record["member_base"] = member_base
     if contract_file is not None:
         record["contract_file"] = contract_file
+    if agent is not None:
+        record["agent"] = agent
     task_dir = root / task_id
     if not should_open_native_shell(root, task_id, base):
         attempts = sorted(task_dir.glob("attempt-*/state.json"),
@@ -359,6 +362,7 @@ def record_native_member_activation(coordinator: Path, activation: Dict[str, obj
         member=str(activation["member"]),
         member_base=str(activation["member_base"]),
         contract_file=task_file,
+        agent=str(activation["agent"]),
     )
 
 
@@ -740,6 +744,19 @@ def state_from_task(primary: Path, task_id: str) -> Dict[str, object]:
             "sidecar": sidecar}
 
 
+def finish_receipt(receipt: Dict[str, object]) -> Dict[str, object]:
+    """The finish result: landed, question, or blocked — always with a visible cause (#469)."""
+    if receipt.get("landed"):
+        return {**receipt, "status": "landed"}
+    if receipt.get("questions"):
+        return {**receipt, "status": "question"}
+    result = {**receipt, "status": "blocked"}
+    if not receipt.get("blocked"):
+        result["reason"] = (
+            "task did not land and no blocked entry was recorded; inspect the task Log")
+    return result
+
+
 def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
     """Verify in the isolate, land, record the ledger, retire. Returns the landing receipt."""
     try:
@@ -801,15 +818,23 @@ def land_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
         except isolation.IsolationError as error:
             raise DriverStop(str(error), task=task_id) from error
         execution, reruns = landing_verify(command, regressions, sidecar_path)
+        # The serial Verify runs in the sidecar, not the task checkout; `cwd` names the
+        # directory the command saw, `worktree` the task checkout it will land on.
+        execution_dir = sidecar_path
+        execution_base = base
         location = f"sidecar {sidecar['branch']}"
         isolation.clean_verify(primary, sidecar_path, base, str(sidecar["branch"]))
         isolation.retire(primary, sidecar_path, str(sidecar["branch"]), False)
     else:
         execution, reruns = landing_verify(command, regressions, worktree)
+        execution_dir = worktree
+        # A member Verify starts from the member repository's base, not the coordinator's.
+        execution_base = str(state["member_base"]) if state["mode"] == "member" else base
         location = f"isolate {state['task_branch']}"
     passed = execution["exit_code"] == 0
     broken = [item for item in reruns if item["exit_code"]]
-    execution.update({"worktree": str(worktree), "location": location})
+    execution.update({"worktree": str(worktree), "cwd": str(execution_dir),
+                      "base": execution_base, "location": location})
     evidence_dir = (Path(str(state["_path"])).parent if state.get("_path")
                     else records_root(primary) / task_id / f"manual-{now().replace(':', '')}")
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -2704,7 +2729,7 @@ def main(argv=None) -> int:
             else:  # a coder dispatched by hand: derive the isolate from the task frontmatter
                 current.receipt["landed"].append(
                     finish_task(primary, native or state_from_task(primary, arguments.task_id)))
-            result = {**current.receipt, "status": "landed" if current.receipt["landed"] else "blocked"}
+            result = finish_receipt(current.receipt)
         elif arguments.action == "answer":
             result = answer(primary, arguments.task_id, arguments.answer)
         elif arguments.action == 'reassign-model':

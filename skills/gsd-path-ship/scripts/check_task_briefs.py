@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
 # gsd-path project runtime
-"""Lint build task briefs against the layer base before dispatch."""
+"""Lint build task briefs against the layer base before dispatch.
+
+The check is read-only and idempotent: git queries and file reads, no writes.
+Progress goes to stderr (one line every 20 tasks); stdout is exactly the final
+JSON. A host timeout with no output is not a contract verdict — rerun with a
+larger timeout; the checker never hangs on state it changed itself.
+"""
 
 import argparse
+import functools
 import json
 import re
 import sys
+import time
 
 # Runtime helpers must not modify their immutable installation.
 sys.dont_write_bytecode = True
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 if __package__:
     from . import _common
@@ -73,7 +81,57 @@ def _resolve_base(repo: Path, base: str) -> str:
 
 
 def _base_exists(repo: Path, base: str, path: str) -> bool:
-    return _run_git(repo, "cat-file", "-e", f"{base}:{path}").returncode == 0
+    files, directories = _base_listing(repo, base)
+    return path in files or path in directories
+
+
+@functools.lru_cache(maxsize=None)
+def _base_listing(repo: Path, base: str) -> Tuple[FrozenSet[str], FrozenSet[str]]:
+    """Every path an object occupies at the immutable `base` commit.
+
+    One `ls-tree` pair per (repository, base) replaces a `cat-file` subprocess
+    per queried path: a commit is fixed, so its listings never change mid-run.
+    The file set names blobs and symlinks, plus submodule gitlinks whose commit
+    exists in this repository; the directory set names trees.
+    `cat-file -e <base>:<path>` succeeded exactly when the path is in either
+    set, and the ancestor check treated a path as a non-directory ancestor
+    exactly when it is in the file set — a gitlink counted only while its
+    commit object was present, so that property is preserved per gitlink.
+    """
+    files: Set[str] = set()
+    gitlinks: List[Tuple[str, str]] = []
+    result = _run_git(repo, "-c", "core.quotepath=false", "ls-tree", "-r", "-z", base)
+    if result.returncode != 0:
+        raise BriefError(f"cannot list the layer base {base}: {result.stderr.strip()}")
+    for entry in result.stdout.split("\0"):
+        if not entry:
+            continue
+        meta, separator, path = entry.partition("\t")
+        if not separator:
+            continue
+        mode, kind, sha = meta.split()
+        if kind == "commit":
+            gitlinks.append((sha, path))
+        else:
+            files.add(path)
+    present: Dict[str, bool] = {}
+
+    def gitlink_present(sha: str) -> bool:
+        if sha not in present:
+            present[sha] = _run_git(repo, "cat-file", "-e", sha).returncode == 0
+        return present[sha]
+
+    files.update(path for sha, path in gitlinks if gitlink_present(sha))
+    directories_result = _run_git(
+        repo, "-c", "core.quotepath=false", "ls-tree", "-r", "-d", "-z", "--name-only", base)
+    if directories_result.returncode != 0:
+        raise BriefError(
+            f"cannot list the layer base {base}: {directories_result.stderr.strip()}")
+    # `ls-tree -d` also lists gitlinks; they are never directories.
+    directories = frozenset(
+        path for path in directories_result.stdout.split("\0") if path
+    ) - {path for _, path in gitlinks}
+    return frozenset(files), directories
 
 
 def _project_track(task: Path, repo: Path) -> Optional[str]:
@@ -326,6 +384,9 @@ def _lint_task(
     task_id = path.stem
     if fields and isinstance(fields.get("id"), str):
         task_id = fields["id"]  # type: ignore[assignment]
+    # The coordinator's own layer base, before any landed or member override: a
+    # member task's `coordinator:` reads resolve here (#471).
+    coordinator_base = base
     base = (landed_bases or {}).get(task_id, base)
     problems: List[str] = []
     checked = 0
@@ -370,17 +431,28 @@ def _lint_task(
             if ".." in candidate.parts:
                 problems.append(f"files entry must not contain '..': {entry}")
                 continue
+            if ": " in entry or ":" in entry.split("/", 1)[0]:
+                problems.append(
+                    f"files entries are repository-local write scope; a "
+                    f"repository-qualified reference is a read: {entry}")
+                continue
             normalized = str(candidate)
             declared.add(normalized)
             checked += 1
             if ".git" in candidate.parts:
                 problems.append(f"files entry must not enter .git: {normalized}")
                 continue
+            if candidate.parts[0] == ".project":
+                # Bookkeeping territory: a landed task file under .project/ is
+                # unsupported at ship and cannot be removed during it (#466).
+                problems.append(
+                    f"files entry must stay out of .project/: {normalized}")
+                continue
+            files_at_base, _ = _base_listing(git_root, base)
             for parent in candidate.parents:
                 if str(parent) == ".":
                     break
-                kind = _run_git(git_root, "cat-file", "-t", f"{base}:{parent}")
-                if kind.returncode == 0 and kind.stdout.strip() != "tree":
+                if str(parent) in files_at_base:
                     problems.append(
                         f"files entry {normalized} has non-directory ancestor "
                         f"{parent} at the layer base"
@@ -389,6 +461,53 @@ def _lint_task(
 
     # A landed brief is history that nobody can edit: only an unlanded brief must name present paths.
     landed = task_id in (landed_bases or {})
+    # Repository-qualified read-only inputs (#471): `reads:` holds `repo: path`
+    # entries resolved in that repository at the same base its own briefs use.
+    read_paths: Set[str] = set()
+    reads = None if landed else fields.get("reads")
+    if reads is not None and not isinstance(reads, list):
+        problems.append("frontmatter reads must be a list")
+        reads = None
+    for entry in reads or []:
+        checked += 1
+        if not isinstance(entry, str) or ": " not in entry:
+            problems.append(f"reads entry must be `repo: path`: {entry!r}")
+            continue
+        name, _, read_path = entry.partition(": ")
+        candidate = PurePosixPath(read_path)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            problems.append(f"reads entry is not repo-relative: {entry}")
+            continue
+        normalized = str(candidate)
+        read_paths.add(normalized)
+        if ".git" in candidate.parts:
+            problems.append(f"reads entry must not enter .git: {normalized}")
+            continue
+        if member is None:
+            # A coordinator task may read from any member of this project.
+            located = member_base(name) if member_base else None
+            if located is None:
+                problems.append(
+                    f"reads entry names no member in MEMBERS.md: {name}: {normalized}")
+                continue
+            read_root, read_base = located
+        elif name == "coordinator":
+            # A member task may read the coordinator at its own layer base.
+            read_root, read_base = repo, coordinator_base
+        else:
+            # Cross-repository reads are read-only (#471): any member of the
+            # project may be named, resolved at that member's own base.
+            located_other = member_base(name) if member_base else None
+            if located_other is None:
+                problems.append(
+                    f"reads entry names no member in MEMBERS.md: {name}: {normalized}")
+                continue
+            read_root, read_base = located_other
+        if not _base_exists(read_root, str(read_base), normalized):
+            problems.append(
+                f"reads entry {name}: {normalized} is missing at repository {name} "
+                f"base {read_base}")
+
     for name in () if landed else PROSE_SECTIONS:
         body = sections.get(name)
         if body is None or not _clean(body):
@@ -400,6 +519,7 @@ def _lint_task(
             if (
                 token not in declared
                 and token not in supplied
+                and token not in read_paths
                 and not _supplied_contract(repo, path, token)
                 and not _pipeline_workspace_file(repo, path, token)
                 and not _base_exists(git_root, base, token)
@@ -423,6 +543,7 @@ def _lint_task(
                 if (
                     token not in declared
                     and token not in supplied
+                    and token not in read_paths
                     and not _pipeline_workspace_file(repo, path, token)
                     and not _base_exists(git_root, base, token)
                 ):
@@ -467,16 +588,18 @@ def validate_task_briefs(
         raise BriefError(f"no task briefs found in {tasks_dir}")
     if member_base is None:
         member_base = _member_bases(root)
-    for path in task_files:
+    started = time.monotonic()
+    for number, path in enumerate(task_files, start=1):
+        if number % 20 == 0:
+            print(f"check_task_briefs: {number}/{len(task_files)} tasks",
+                  file=sys.stderr, flush=True)
         task_id, task_problems, contract, task_checked = _lint_task(
             root, resolved_base, path, dependency_files, landed_bases, member_base
         )
         problems.extend(f"{task_id}: {problem}" for problem in task_problems)
         if contract is not None:
-            for entry in re.split(r"(?m)^-[ \t]+", contract):
-                shape = " ".join(entry.split())
-                if shape:
-                    contracts.setdefault(shape, set()).add(task_id)
+            for shape in _common.contract_shapes(contract):
+                contracts.setdefault(shape, set()).add(task_id)
         checked += task_checked
 
     for shape, task_ids in contracts.items():
@@ -491,7 +614,8 @@ def validate_task_briefs(
 
     if problems:
         raise BriefError("\n".join(problems))
-    return {"base": resolved_base, "checked": checked, "tasks": len(task_files)}
+    return {"base": resolved_base, "checked": checked, "tasks": len(task_files),
+            "elapsed_seconds": round(time.monotonic() - started, 3)}
 
 
 def _resolve_landed_task_base(

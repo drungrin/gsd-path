@@ -1945,6 +1945,55 @@ class IsolationTests(unittest.TestCase):
                 )
             self.assertEqual(git(repo, "rev-parse", "HEAD"), base)
 
+    def test_checkpoint_commits_a_staged_removal_of_an_unsupported_entry(self) -> None:
+        # Issue #466: a tracked unsupported entry (cloud-bootstrap leftover)
+        # must be removable through the checkpoint itself, not a plain commit.
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            self.write(repo, ".project/STATE.md", "roadmap done\n")
+            (repo / ".project" / "handoff").mkdir()
+            self.write(repo, ".project/handoff/bundle.md", "bundle\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "bootstrap leftover")
+            base = git(repo, "rev-parse", "HEAD")
+            self.write(repo, ".project/STATE.md", "roadmap approved\n")
+            git(repo, "rm", "-rq", ".project/handoff")
+
+            commit = isolation.checkpoint(
+                repo, base, "roadmap: program roadmap approved",
+                "Why: approved roadmap checkpoint", [".project"],
+            )
+
+            self.assertEqual(git(repo, "rev-parse", "HEAD"), commit["commit"])
+            remaining = git(repo, "ls-tree", "--name-only", "HEAD", ".project/").split()
+            self.assertNotIn(".project/handoff", remaining)
+
+    def test_checkpoint_still_refuses_an_index_only_removal(self) -> None:
+        # rm --cached keeps the worktree file; the checkpoint would re-stage
+        # and commit it, so it still blocks (#466).
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            self.write(repo, ".project/STATE.md", "roadmap done\n")
+            (repo / ".project" / "handoff").mkdir()
+            self.write(repo, ".project/handoff/bundle.md", "bundle\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "bootstrap leftover")
+            base = git(repo, "rev-parse", "HEAD")
+            self.write(repo, ".project/STATE.md", "roadmap approved\n")
+            git(repo, "rm", "-rq", "--cached", ".project/handoff")
+
+            with self.assertRaisesRegex(
+                isolation.IsolationError, "unsupported .project artifacts: handoff"
+            ):
+                isolation.checkpoint(
+                    repo, base, "roadmap: program roadmap approved",
+                    "Why: approved roadmap checkpoint", [".project"],
+                )
+
     def test_checkpoint_retry_returns_the_exact_existing_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "repo"
@@ -2886,6 +2935,164 @@ class IsolationTests(unittest.TestCase):
                 "chore/verify-task-t001-verify",
                 git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/"),
             )
+
+    def test_retire_unlinks_a_directory_link_in_the_sidecar_without_touching_its_target(self) -> None:
+        # git worktree remove on Git for Windows older than 2.54 recurses
+        # through junctions; a gitignored link passes the cleanliness check
+        # (#462). Removal must unlink the link and never touch the target.
+        for ignored in (True, False):
+            with self.subTest(ignored=ignored), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                base = self.init_bound_repo(repo)
+                if ignored:
+                    (repo / ".gitignore").write_bytes(b"build/\n")
+                    git(repo, "add", ".gitignore")
+                    git(repo, "commit", "-q", "-m", "ignore build")
+                    base = git(repo, "rev-parse", "HEAD")
+                precious = Path(temporary) / "outside"
+                precious.mkdir()
+                (precious / "sdk.dll").write_bytes(b"\x00SDK")
+                created = isolation.isolate_verify(repo, base, "task-t001-verify")
+                sidecar = Path(created["worktree"])
+                (sidecar / "build").symlink_to(precious, target_is_directory=True)
+
+                result = isolation.retire(repo, sidecar, str(created["branch"]), True)
+
+                self.assertEqual(result["reason"], "removed")
+                self.assertFalse(sidecar.exists())
+                self.assertFalse((precious / "sdk.dll").is_symlink())
+                self.assertEqual((precious / "sdk.dll").read_bytes(), b"\x00SDK")
+                self.assertEqual(list(precious.iterdir()), [precious / "sdk.dll"])
+
+    def test_unlink_link_like_removes_links_and_spares_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target_dir = root / "target-dir"
+            target_dir.mkdir()
+            (target_dir / "keep.txt").write_text("keep\n")
+            target_file = root / "target.bin"
+            target_file.write_bytes(b"\x00BIN")
+            tree = root / "disposable"
+            tree.mkdir()
+            (tree / "regular.txt").write_text("x\n")
+            (tree / "build").symlink_to(target_dir, target_is_directory=True)
+            (tree / "tool.cfg").symlink_to(target_file)
+            nested = tree / "sub"
+            nested.mkdir()
+            (nested / "link").symlink_to(target_dir, target_is_directory=True)
+
+            isolation._unlink_link_like(tree)
+
+            for gone in (tree / "build", tree / "tool.cfg", nested / "link"):
+                self.assertFalse(gone.exists(), gone)
+            self.assertTrue((tree / "regular.txt").exists())
+            self.assertTrue(nested.is_dir())
+            self.assertEqual((target_dir / "keep.txt").read_text(), "keep\n")
+            self.assertEqual(target_file.read_bytes(), b"\x00BIN")
+
+    def test_unlink_link_like_spares_tracked_symlinks_so_a_clean_retire_succeeds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            self.init_bound_repo(repo)
+            (repo / "src-link").symlink_to("src", target_is_directory=True)
+            git(repo, "add", "src-link")
+            git(repo, "commit", "-q", "-m", "track a symlink")
+            base = git(repo, "rev-parse", "HEAD")
+            precious = Path(temporary) / "outside"
+            precious.mkdir()
+            (precious / "sdk.dll").write_bytes(b"\x00SDK")
+            created = isolation.isolate_verify(repo, base, "task-t001-verify")
+            sidecar = Path(created["worktree"])
+            (sidecar / "build").symlink_to(precious, target_is_directory=True)
+
+            isolation._unlink_link_like(sidecar)
+
+            self.assertTrue((sidecar / "src-link").is_symlink())
+            self.assertFalse((sidecar / "build").is_symlink())
+            self.assertEqual(git(sidecar, "status", "--porcelain", "--untracked-files=all"), "")
+
+            result = isolation.retire(repo, sidecar, str(created["branch"]), False)
+
+            self.assertEqual(result["reason"], "removed")
+            self.assertFalse(sidecar.exists())
+            self.assertEqual((precious / "sdk.dll").read_bytes(), b"\x00SDK")
+            self.assertEqual((repo / "src" / "app.py").read_text(), "print('base')\n")
+
+    def test_unlink_link_like_unlinks_a_symlink_replacing_a_tracked_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            precious = Path(temporary) / "outside"
+            precious.mkdir()
+            (precious / "sdk.dll").write_bytes(b"\x00SDK")
+            created = isolation.isolate_verify(repo, base, "task-t001-verify")
+            sidecar = Path(created["worktree"])
+            (sidecar / "src" / "app.py").unlink()
+            (sidecar / "src" / "app.py").symlink_to(precious, target_is_directory=True)
+
+            isolation._unlink_link_like(sidecar)
+
+            self.assertFalse(os.path.lexists(sidecar / "src" / "app.py"))
+            self.assertEqual(list(precious.iterdir()), [precious / "sdk.dll"])
+            self.assertEqual((precious / "sdk.dll").read_bytes(), b"\x00SDK")
+            self.assertEqual(
+                git(sidecar, "status", "--porcelain", "--untracked-files=all"), "D src/app.py")
+
+    def test_unlink_link_like_aborts_on_an_unscannable_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary) / "disposable"
+            locked = tree / "locked"
+            locked.mkdir(parents=True)
+            (locked / "hidden.txt").write_text("x\n")
+            locked.chmod(0)
+            try:
+                try:
+                    os.listdir(locked)
+                except PermissionError:
+                    pass
+                else:
+                    self.skipTest("platform grants access to a mode-000 directory")
+
+                with self.assertRaisesRegex(isolation.IsolationError, "could not scan"):
+                    isolation._unlink_link_like(tree)
+            finally:
+                locked.chmod(stat.S_IRWXU)
+
+    def test_unlink_link_like_fails_loud_when_a_link_cannot_be_unlinked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target_dir = root / "target-dir"
+            target_dir.mkdir()
+            sentinel = target_dir / "sentinel.txt"
+            sentinel.write_text("keep\n")
+            inner = target_dir / "inner"
+            inner.symlink_to(sentinel)
+            tree = root / "disposable"
+            tree.mkdir()
+            (tree / "regular.txt").write_text("x\n")
+            stuck = tree / "stuck"
+            stuck.symlink_to(target_dir, target_is_directory=True)
+            real_unlink = os.unlink
+
+            def unlink(path, *args, **kwargs):
+                if os.path.basename(os.fspath(path)) == "stuck":
+                    raise PermissionError("read-only link")
+                return real_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(isolation.os, "unlink", side_effect=unlink), \
+                    mock.patch.object(isolation.os, "rmdir", side_effect=OSError("not a dir")):
+                with self.assertRaisesRegex(
+                    isolation.IsolationError, "could not unlink link-like entries"
+                ):
+                    isolation._unlink_link_like(tree)
+
+            self.assertTrue(stuck.is_symlink())
+            self.assertTrue(inner.is_symlink())
+            self.assertEqual(sentinel.read_text(), "keep\n")
+            self.assertTrue((tree / "regular.txt").exists())
 
     # Above the process argument limit of every supported platform (#412):
     # Windows 32 KiB per command, Linux 128 KiB per argument, macOS 1 MiB in all.
@@ -4376,6 +4583,120 @@ class RecoverTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 payload = json.loads(result.stdout)
                 self.assertEqual(payload["tasks"][0]["verdict"], "none")
+
+
+if os.name == "nt":
+
+    def make_junction(target: Path, link: Path) -> None:
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+
+    class JunctionSafeRemovalTests(unittest.TestCase):
+        """NTFS junctions must never be traversed on isolate removal (#462)."""
+
+        def test_unlink_link_like_removes_junctions_and_spares_targets(self) -> None:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                precious = root / "outside"
+                precious.mkdir()
+                (precious / "sdk.dll").write_bytes(b"\x00SDK")
+                tree = root / "disposable"
+                tree.mkdir()
+                (tree / "regular.txt").write_text("x\n")
+                make_junction(precious, tree / "build")
+
+                isolation._unlink_link_like(tree)
+
+                self.assertFalse((tree / "build").exists())
+                self.assertTrue((tree / "regular.txt").exists())
+                self.assertEqual((precious / "sdk.dll").read_bytes(), b"\x00SDK")
+                self.assertEqual(list(precious.iterdir()), [precious / "sdk.dll"])
+
+        def test_retire_unlinks_an_ntfs_junction_without_touching_its_target(self) -> None:
+            with tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                IsolationTests().init_bound_repo(repo)
+                (repo / ".gitignore").write_bytes(b"build/\n")
+                git(repo, "add", ".gitignore")
+                git(repo, "commit", "-q", "-m", "ignore build")
+                base = git(repo, "rev-parse", "HEAD")
+                precious = Path(temporary) / "outside"
+                precious.mkdir()
+                (precious / "sdk.dll").write_bytes(b"\x00SDK")
+                created = isolation.isolate_verify(repo, base, "task-t001-verify")
+                sidecar = Path(created["worktree"])
+                make_junction(precious, sidecar / "build")
+
+                # The defuse must be provable independent of the installed
+                # git: when git removes the worktree, the junction is
+                # already gone (newer Git for Windows is itself safe).
+                run_git = isolation.run_git
+
+                def guard(repo_arg, *arguments, **kwargs):
+                    if arguments[:3] == ("worktree", "remove", str(sidecar)):
+                        self.assertFalse(
+                            (sidecar / "build").exists(),
+                            "junction still present when git removed the worktree",
+                        )
+                    return run_git(repo_arg, *arguments, **kwargs)
+
+                with mock.patch.object(isolation, "run_git", side_effect=guard):
+                    result = isolation.retire(repo, sidecar, str(created["branch"]), True)
+
+                self.assertEqual(result["reason"], "removed")
+                self.assertFalse(sidecar.exists())
+                self.assertEqual((precious / "sdk.dll").read_bytes(), b"\x00SDK")
+                self.assertEqual(list(precious.iterdir()), [precious / "sdk.dll"])
+
+
+class SidecarRootPinningTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = (Path(self.tmp.name) / "repo").resolve()
+        self.repo.mkdir()
+        git(self.repo, "init", "-b", "feature/milestone-001")
+        git(self.repo, "config", "user.email", "t@example.test")
+        git(self.repo, "config", "user.name", "T")
+        (self.repo / "src").mkdir()
+        (self.repo / "src/app.py").write_bytes("print('base')\n".encode("utf-8"))
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "base")
+
+    def tearDown(self) -> None:
+        isolation._RECOVERY_MEMO.clear()
+        self.tmp.cleanup()
+
+    def test_repinning_after_release_recreates_the_receipt(self) -> None:
+        # A read-only recovery run may memoize placement reads, but pinning
+        # writes the placement receipt: after release, a later pin in the
+        # same process must run for real and recreate it (#469).
+        first = isolation.sidecar_root(self.repo, "task", "T001", pin=True)
+        common = Path(git(self.repo, "rev-parse", "--git-common-dir"))
+        if not common.is_absolute():
+            common = self.repo / common
+        receipts = common / "gsd-path" / "workspaces"
+        self.assertTrue(any(receipts.glob("*.json")))
+        isolation.worktree_paths.release_workspace(self.repo)
+        self.assertFalse(any(receipts.glob("*.json")))
+
+        # Simulate a recovery run having memoized the non-pinning lookup.
+        isolation._RECOVERY_MEMO.clear()
+        isolation._RECOVERY_MEMO[("head-sha", str(self.repo))] = git(
+            self.repo, "rev-parse", "HEAD")
+        try:
+            self.assertEqual(
+                isolation.sidecar_root(self.repo, "task", "T001"),
+                first,
+            )
+            self.assertFalse(any(receipts.glob("*.json")))
+
+            again = isolation.sidecar_root(self.repo, "task", "T001", pin=True)
+            self.assertEqual(again, first)
+            self.assertTrue(any(receipts.glob("*.json")))
+        finally:
+            isolation._RECOVERY_MEMO.pop(("head-sha", str(self.repo)), None)
 
 
 if __name__ == "__main__":

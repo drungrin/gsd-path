@@ -14,7 +14,8 @@ from typing import List, Optional, Tuple
 from . import __version__
 from . import env_files, hosts, project_ops, settings_api, stats
 from .history import append_event, resolve_history_path
-from .model import aggregate
+from .model import PATH_FLAVOR, aggregate
+from .frameworks import Frameworks
 from .plugin import OP_LOCK, PluginManager
 from .path_settings import configure
 from .project_files import FileAccessError, request_files
@@ -33,6 +34,7 @@ _PLUGIN_ENDPOINTS = (
     "/api/plugin/uninstall",
     "/api/plugin/check",
     "/api/plugin/release",
+    "/api/frameworks/update",
 )
 TOKEN_HEADER = "X-GSD-Path-Token"
 
@@ -207,7 +209,7 @@ DASHBOARD_PAGE = r"""<!doctype html>
   .cols { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 32px; margin-top: 8px; }
   .page h2 { font-size: 12.5px; font-weight: 650; margin: 20px 0 8px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
   .page h2 span { color: var(--faint); font-weight: 400; }
-  .phases { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 3px; }
+  .phases { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; }
   .phases div { font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .phases i { display: block; height: 6px; border-radius: 2px; background: var(--seg); margin-bottom: 4px; }
   .phases .done { color: var(--dim); } .phases .done i { background: var(--done); }
@@ -360,7 +362,7 @@ async function saveConfig(key, reset=false) {
 function pathConfigPage() {
   const data = CFG.data, disabled = CFG.busy || data?.locked;
   const options = (values, current) => values.map(([value, label]) => `<option value="${esc(value)}" ${value === current ? 'selected' : ''}>${esc(label)}</option>`).join('');
-  const scope = `<label>Settings for<select data-config-scope ${CFG.busy ? 'disabled' : ''}>${options([['','User defaults'], ...(DATA.projects || []).map(p => [p.root, p.repository || p.project || p.root])], CFG.root)}</select></label>`;
+  const scope = `<label>Settings for<select data-config-scope ${CFG.busy ? 'disabled' : ''}>${options([['','User defaults'], ...(DATA.projects || []).filter(p => (p.flavor || 'gsd-path') === 'gsd-path').map(p => [p.root, p.repository || p.project || p.root])], CFG.root)}</select></label>`;
   const feedback = `<p role="${CFG.error ? 'alert' : 'status'}">${esc(CFG.error || CFG.message || (CFG.busy ? 'Saving…' : ''))}</p>`;
   if (!data) return scope + feedback + (CFG.error ? '' : '<p class="dim">Loading settings…</p>');
   const setting = (key, label, choices, note) => {
@@ -412,6 +414,8 @@ function setHash() {
   else if (CState.view === "board") history.replaceState(null, "", location.pathname);
   else history.replaceState(null, "", "#" + CState.view);
 }
+// Cards from gsd-pi and gsd-core name their framework; GSD Path cards stay as before.
+const flavorTag = p => p.flavor && p.flavor !== 'gsd-path' ? ` <small class="dim">${esc(p.flavor)}</small>` : '';
 function openProject(root) { CState.view = "project"; CState.root = root; setHash(); render(); window.scrollTo(0, 0); loadActivity().then(render); }
 function navigate(view) {
   CState.view = view;
@@ -613,7 +617,9 @@ const money = v => v == null ? "—" : "$" + Number(v).toLocaleString("en-US", {
 const DASH = '<span class="faint">—</span>';
 /* Same order as canonicalPhases in the tray's Models.swift. */
 const PHASES = ["inspect", "define", "research", "decide", "roadmap", "plan", "build", "ship"];
-const phaseIndex = p => stateOf(p) === "shipped" ? PHASES.length : PHASES.indexOf(p.phase);
+// A gsd-pi or gsd-core card sends its own phase list.
+const phasesOf = p => p.phases || PHASES;
+const phaseIndex = p => stateOf(p) === "shipped" ? phasesOf(p).length : phasesOf(p).indexOf(p.phase);
 const ago = iso => {
   const t = Date.parse(iso), now = Date.parse(DATA.generated_at) || Date.now();
   if (isNaN(t)) return "—";
@@ -633,14 +639,14 @@ function routeMarks(p) {
 }
 function phaseMeter(p) {
   const i = phaseIndex(p);
-  return `<span class="meter ${stateOf(p)}" role="img" aria-label="${esc(p.phase || "no phase")}">${PHASES.map((ph, k) => `<i class="${k < i ? "done" : k === i ? "now" : ""}" title="${ph}"></i>`).join("")}</span>`;
+  return `<span class="meter ${stateOf(p)}" role="img" aria-label="${esc(p.phase || "no phase")}">${phasesOf(p).map((ph, k) => `<i class="${k < i ? "done" : k === i ? "now" : ""}" title="${ph}"></i>`).join("")}</span>`;
 }
 function boardRow(p) {
   const st=stateOf(p), {cur}=milestoneStack(p), sp=p.spend||{};
   const folder=p.project_root||p.root;
   const location=`Project folder: ${folder}${p.worktree_root?' · Worktree: '+p.worktree_root:''}`;
   const reasons=(p.attention||[]).map(a=>a.label).filter(Boolean).join(' · ');
-  return `<tr class="prow ${st}" data-root="${esc(p.root)}"><td><button class="pname" data-root="${esc(p.root)}" aria-label="Open ${esc(p.repository||p.project||p.root)}"><span class="dot ${healthDot(p)}" title="health ${esc(healthReason(p))}"></span><span>${esc(p.repository||p.project||p.root)}</span></button><div class="ppath">${esc(location)}</div></td>
+  return `<tr class="prow ${st}" data-root="${esc(p.id||p.root)}"><td><button class="pname" data-root="${esc(p.id||p.root)}" aria-label="Open ${esc(p.repository||p.project||p.root)}"><span class="dot ${healthDot(p)}" title="health ${esc(healthReason(p))}"></span><span>${esc(p.repository||p.project||p.root)}</span>${flavorTag(p)}</button><div class="ppath">${esc(location)}</div></td>
     <td><div class="milestone-name"><span class="mono dim">${esc(cur.number)}</span> ${esc(cur.slug)}</div><div class="milestone-phase">${phaseMeter(p)}<span class="phlabel">${esc(p.phase||'No phase recorded')}</span></div></td>
     <td><span class="state ${st}">${esc(stateLabel(p))}</span>${reasons?`<p class="health-note">${esc(reasons)}</p>`:''}<div class="ago">${ago(p.last_activity_iso)}</div></td><td class="n">${p.tasks_total?`${p.tasks_done||0}/${p.tasks_total}`:DASH}</td><td class="n">${sp.turns&&sp.cost!=null?money(sp.cost):DASH}<div class="ago">${sp.turns?int(sp.turns)+' turns':'No matched sessions'}</div></td></tr>`;
 }
@@ -668,7 +674,7 @@ function verifyLine(p) {
 function phaseTrack(p) {
   const i = phaseIndex(p), log = p.phase_log || [];
   const dateOf = ph => ((ph === p.phase ? log.filter(e => e.phase === ph).slice(-1)[0] : log.find(e => e.phase === ph)) || {}).date;
-  return `<div class="phases ${stateOf(p)}">${PHASES.map((ph, k) => `<div class="${k < i ? "done" : k === i ? "now" : ""}" title="${ph}${dateOf(ph) ? " · " + esc(dateOf(ph)) : ""}"><i></i>${ph}<small>${esc(String(dateOf(ph) || "").slice(5)) || "&nbsp;"}</small></div>`).join("")}</div>`;
+  return `<div class="phases ${stateOf(p)}">${phasesOf(p).map((ph, k) => `<div class="${k < i ? "done" : k === i ? "now" : ""}" title="${ph}${dateOf(ph) ? " · " + esc(dateOf(ph)) : ""}"><i></i>${ph}<small>${esc(String(dateOf(ph) || "").slice(5)) || "&nbsp;"}</small></div>`).join("")}</div>`;
 }
 const spendText = slot => slot && slot.turns ? [slot.cost != null ? money(slot.cost) : null, `${int(slot.turns)} turns`].filter(Boolean).join(" · ") : "";
 const manifestMeta = m => {
@@ -737,7 +743,7 @@ function ledgerTable(p) {
     `<tr><td class="mono">${esc(String(e.recorded_at || "").slice(0, 16).replace("T", " "))}</td><td class="mono">${esc(e.command || "")}</td><td class="mono">${esc(String(e.commit || "").slice(0, 7))}</td><td class="st">${verdict(e.result)}</td></tr>`).join("")}</table></div>`;
 }
 function activityTable(p) {
-  const events = ACTIVITY.filter(e => e.root === p.root).slice(0, 30);
+  const events = ACTIVITY.filter(e => (e.id||e.root) === (p.id||p.root)).slice(0, 30);
   return `<h2>Activity <span>recorded changes</span></h2>${events.length
     ? `<div class="tablewrap"><table class="t activity"><tr><th>When</th><th>Change</th><th>Detail</th></tr>${events.map(e =>
       `<tr><td class="mono">${esc(String(e.at || "").slice(0, 16).replace("T", " "))}</td><td>${esc(e.type)}</td><td>${esc(e.detail || "")}</td></tr>`).join("")}</table></div>`
@@ -770,8 +776,8 @@ function projectPage(p) {
   const facts = [["State", stateLabel(p)], ["Health", healthReason(p)], ["Milestone", cur.number], ["Branch", git.branch || p.branch || "—"], ["Head", head],
                  ...(p.integration ? [["Integration", p.integration]] : []),
                  ["Updated", ago(p.last_activity_iso)], ["Cost", sp && sp.turns ? money(sp.cost) : "—"], ["Turns", sp && sp.turns ? int(sp.turns) : "—"]];
-  return `<article class="project" data-root="${esc(p.root)}">
-    <div class="project-tools">${sourceLink('.project/STATE.md','History & files')}</div><div class="phead"><h1><span class="dot ${healthDot(p)}" title="health ${esc(healthReason(p))}"></span> ${esc(p.repository || p.project || p.root)}</h1><span class="mono">Project folder: ${esc(p.project_root||p.root)}</span>${p.worktree_root?`<span class="mono">Worktree: ${esc(p.worktree_root)}</span>`:''}</div>
+  return `<article class="project" data-root="${esc(p.id||p.root)}">
+    <div class="project-tools">${sourceLink(stateFileOf(p),'History & files')}</div><div class="phead"><h1><span class="dot ${healthDot(p)}" title="health ${esc(healthReason(p))}"></span> ${esc(p.repository || p.project || p.root)}${flavorTag(p)}</h1><span class="mono">Project folder: ${esc(p.project_root||p.root)}</span>${p.worktree_root?`<span class="mono">Worktree: ${esc(p.worktree_root)}</span>`:''}</div>
     <dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
     ${p.handoff ? `<p class="runtime-handoff">${esc(p.handoff.outcome)} — ${esc(p.handoff.next)}</p>` : ""}
     ${p.vision ? `<p class="vision">${esc(p.vision)}</p>` : ""}
@@ -867,10 +873,10 @@ function render() {
   const connection = ONLINE === null ? "Connecting…" : ONLINE ? (DATA.generated_at ? "Updated " + esc(shortT(DATA.generated_at)) : "Connected") : "Offline · showing last update";
   const settings = `<details class="settings-menu"><summary aria-label="Settings" title="Settings">${ICON.settings}</summary><nav aria-label="Settings"><button class="btn" data-nav="config">Path settings</button><button class="btn" data-nav="plugin">Plugin</button><button class="btn" data-nav="folders">Watched folders</button><div class="appearance" role="group" aria-label="Appearance">Appearance<div class="segc">${THEMES.map(t => `<button data-theme-choice="${t}" aria-pressed="${THEME === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></div></nav></details>`;
   const status = `<button class="btn" data-action="refresh" aria-label="Refresh dashboard">Refresh</button><span class="connection" role="status"><span class="dot ${ONLINE === null ? "" : ONLINE ? "g" : "r"}"></span>${connection}</span>`;
-  const current = ["project","files"].includes(CState.view) ? projects.find(p => p.root === CState.root) : null;
+  const current = ["project","files"].includes(CState.view) ? projects.find(p => (p.id||p.root) === CState.root) : null;
   let header, body;
   if (current) {
-    header = `<header class="topbar"><button class="back" data-nav="board" aria-label="Back to projects">‹ Projects</button><select class="switcher" data-switch aria-label="Project">${projects.map(q => `<option value="${esc(q.root)}"${q.root === current.root ? " selected" : ""}>${esc(q.repository || q.project || q.root)}</option>`).join("")}</select><span class="spacer"></span>${status}${settings}</header>`;
+    header = `<header class="topbar"><button class="back" data-nav="board" aria-label="Back to projects">‹ Projects</button><select class="switcher" data-switch aria-label="Project">${projects.map(q => `<option value="${esc(q.id||q.root)}"${q === current ? " selected" : ""}>${esc(q.repository || q.project || q.root)}${q.flavor && q.flavor !== 'gsd-path' ? ' · ' + esc(q.flavor) : ''}</option>`).join("")}</select><span class="spacer"></span>${status}${settings}</header>`;
     body = `<main class="page">${CState.view==='files'?filesPage(current):projectPage(current)+projectRecords(current)}</main>`;
   } else {
     header = `<header class="topbar"><button class="brand" data-nav="board" aria-label="OpenGSD Path projects">${ICON.mark}OpenGSD Path</button><nav class="topnav" aria-label="Main"><button data-nav="board" aria-current="${CState.view==='board'?'page':'false'}">Projects</button><button data-nav="config" aria-current="${['config','folders','plugin'].includes(CState.view)?'page':'false'}">Settings</button></nav><span class="spacer"></span>${status}${settings}</header>`;
@@ -1037,12 +1043,19 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 payload["hosts"] = self.plugin.detect_global()
                 payload["releases"] = self.plugin.releases()
-                roots = sorted(str(status.root) for status in self.watcher.projects.values())
+                # Setup rows are for GSD Path installs; other frameworks have none.
+                roots = sorted(str(status.root) for status in self.watcher.projects.values()
+                               if status.flavor == PATH_FLAVOR)
                 payload["projects"] = [self.plugin.detect_project(root) for root in roots]
             except Exception as error:  # detection must never break the dashboard
                 payload["hosts"] = {}
                 payload["projects"] = []
                 payload["error"] = str(error)
+            try:
+                payload["frameworks"] = self.frameworks.status()
+            except Exception as error:
+                payload["frameworks"] = {}
+                payload["frameworks_error"] = str(error)
             self._respond(200, "application/json", json.dumps(payload, indent=2, sort_keys=True))
         elif path == "/activity":
             payload = {"generated_at": utc_now_iso(), "events": _read_activity()}
@@ -1290,7 +1303,15 @@ class _Handler(BaseHTTPRequestHandler):
             return 200, result
         if path == "/api/plugin/check":
             refresh = manager.refresh_source(ttl_hours=0)
-            return 200, {**manager.check_update(), "ok": refresh["refreshed"], "error": refresh["error"]}
+            # One check covers the GSD Path release and gsd-pi / gsd-core.
+            framework_errors = self.frameworks.check()
+            return 200, {**manager.check_update(), "ok": refresh["refreshed"], "error": refresh["error"],
+                         "frameworks": self.frameworks.status(), "framework_errors": framework_errors}
+        if path == "/api/frameworks/update":
+            try:
+                return 200, self.frameworks.update(body.get("name"), dry_run=dry_run)
+            except ValueError as error:
+                raise _BadRequest(str(error))
         if path == "/api/plugin/release":
             version = body.get("version", "")
             if version is not None and (not isinstance(version, str) or not version):
@@ -1336,7 +1357,7 @@ class _StopEvent(threading.Event):
 
 def serve(watcher: Watcher, port: int = DEFAULT_PORT,
           plugin: Optional[PluginManager] = None,
-          token: Optional[str] = None) -> ThreadingHTTPServer:
+          token: Optional[str] = None, frameworks: Optional[Frameworks] = None) -> ThreadingHTTPServer:
     # Bind before the first session scan: scanning every host session log on
     # the machine can take a while cold, and the dashboard must not wait on it.
     watcher.poll_once(scan_sessions=False)
@@ -1351,7 +1372,8 @@ def serve(watcher: Watcher, port: int = DEFAULT_PORT,
                     append_event(event)
 
     handler = type("Handler", (_Handler,),
-                   {"watcher": watcher, "plugin": plugin or PluginManager(), "scan": staticmethod(scan),
+                   {"watcher": watcher, "plugin": plugin or PluginManager(), "frameworks": frameworks or Frameworks(),
+                    "scan": staticmethod(scan),
                     "scan_lock": scan_lock, "wake": staticmethod(wake.set),
                     "token": token})
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
@@ -1373,13 +1395,14 @@ def serve(watcher: Watcher, port: int = DEFAULT_PORT,
 
 
 def serve_in_thread(
-    watcher: Watcher, port: int = DEFAULT_PORT, plugin: Optional[PluginManager] = None
+    watcher: Watcher, port: int = DEFAULT_PORT, plugin: Optional[PluginManager] = None,
+    frameworks: Optional[Frameworks] = None,
 ) -> Tuple[ThreadingHTTPServer, threading.Thread]:
     """Start the dashboard server on a daemon thread; returns (server, thread).
 
     Callers shut it down with server.shutdown() + server.server_close().
     """
-    server = serve(watcher, port, plugin=plugin)
+    server = serve(watcher, port, plugin=plugin, frameworks=frameworks)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread

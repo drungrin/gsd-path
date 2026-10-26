@@ -1275,8 +1275,9 @@ def render_manifest(repo: Path) -> dict:
     )
     listed_contents = "\n".join(f"- {path}" for path in archive_file_inventory(archive))
     cycle_text = "/".join(str(cycle) for cycle in cycles)
+    wave_numbers, _wave_depths = plan_wave_depths((archive / "plan" / "PLAN.md").read_text(encoding="utf-8"))
     count_text = (
-        f"{len(cycles)}  Tasks: {len(tasks)} done / {len(tasks)} total  "
+        f"{len(wave_numbers)}  Tasks: {len(tasks)} done / {len(tasks)} total  "
         f"Review cycles used: {cycle_text}"
         + (f"  Attested: {attested}" if attested else "")
     )
