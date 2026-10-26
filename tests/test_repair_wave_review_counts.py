@@ -21,7 +21,8 @@ class RepairWaveReviewCountsTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def write_plan(self, repair_heading: str = "## Wave 2 — fix wave 1 cycle 1 review findings") -> None:
+    def write_plan(self, repair_heading: str = "## Wave 2 — fix wave 1 cycle 1 review findings",
+                   extra_repair_row: str = "") -> None:
         (self.project / "plan" / "PLAN.md").write_text(
             f"""# Plan
 
@@ -38,7 +39,7 @@ Review depth: full
 | Task | Title | Deps | Files |
 |------|-------|------|-------|
 | T002 | repair demo | T001 | src/demo.py |
-
+{extra_repair_row}
 Review depth: full
 
 ## Intent coverage
@@ -155,6 +156,60 @@ Tasks reviewed: 1
         self.write_review(1, 2, "pass")
         self.write_receipt(1, 1, "T002")
         self.assertEqual([2, 0], self.counts())
+
+    def test_legacy_heading_names_its_source_with_one_wave_cycle_pair(self) -> None:
+        for heading in ("## Wave 2 — fix wave 1 cycle 1 panel finding",
+                        "## Wave 2 — fix wave 1 cycle 1 review finding",
+                        "## Wave 2 — redesign the demo check (wave 1 cycle 1 cap ruling)",
+                        "## Wave 2 — Fix Wave 1 Cycle 1 findings",
+                        "## Wave 2 — fix wave 1 cycle 1, again wave 1 cycle 1"):
+            with self.subTest(heading=heading):
+                self.write_plan(heading)
+                self.write_tasks()
+                self.write_review(1, 1, "blocked")
+                self.write_review(1, 2, "pass")
+                self.assertEqual([2, 0], self.counts())
+
+    def test_legacy_heading_without_exactly_one_earlier_pair_is_not_a_source(self) -> None:
+        for heading in ("## Wave 2 — fix wave 1 cycle 1 and wave 1 cycle 2 findings",
+                        "## Wave 2 — fix the review findings",
+                        "## Wave 2 — fix rewave 1 cycle 1 and wave 1 cycle 1x",
+                        "## Wave 2 — fix wave 2 cycle 1 panel finding"):
+            with self.subTest(heading=heading):
+                self.write_plan(heading)
+                self.write_tasks()
+                self.write_review(1, 1, "blocked")
+                self.write_review(1, 2, "pass")
+                with self.assertRaisesRegex(ArchiveError, "review cycle waves do not match PLAN.md"):
+                    self.counts()
+
+    def test_legacy_heading_source_still_needs_a_later_review(self) -> None:
+        self.write_plan("## Wave 2 — fix wave 1 cycle 1 panel finding")
+        self.write_tasks()
+        self.write_review(1, 1, "pass")
+        with self.assertRaisesRegex(ArchiveError, "repair wave 2 requires a review cycle of wave 1 after cycle 1"):
+            self.counts()
+
+    def test_receipts_outrank_the_heading_pair(self) -> None:
+        self.write_plan("## Wave 2 — fix wave 1 cycle 2 panel finding")
+        self.write_tasks()
+        self.write_review(1, 1, "blocked")
+        self.write_review(1, 2, "pass")
+        self.write_receipt(1, 1, "T002")
+        self.assertEqual([2, 0], self.counts())
+
+    def test_partial_receipts_do_not_fall_back_to_the_heading_pair(self) -> None:
+        self.write_plan("## Wave 2 — fix wave 1 cycle 1 panel findings",
+                        "| T003 | repair demo again | T001 | src/demo.py |\n")
+        self.write_tasks()
+        (self.project / "tasks" / "T003-repair-demo-again.md").write_text(
+            "---\nid: T003\ntitle: repair demo again\nwave: 2\n---\n\n## Review findings\n\n"
+            "### t001_ac1\n\nCriterion: demo works\n", encoding="utf-8")
+        self.write_review(1, 1, "blocked")
+        self.write_review(1, 2, "pass")
+        self.write_receipt(1, 1, "T002")
+        with self.assertRaisesRegex(ArchiveError, "review cycle waves do not match PLAN.md"):
+            self.counts()
 
     def test_manifest_counts_accept_a_judged_repair_wave(self) -> None:
         pattern = discussion_validate.MANIFEST_WAVES_PATTERN

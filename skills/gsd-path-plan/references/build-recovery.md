@@ -63,7 +63,11 @@ gates. Repair the remaining task inventory as needed, including split, rename,
 dependency, or wave changes. Keep IDs ordered and contiguous. Preserve every
 landed task file byte-for-byte, including its recorded base and proof. Any new
 work to satisfy a corrected criterion belongs in new pending tasks, not rewritten
-landed contracts. A plan-only recovery must not change approved intent.
+landed contracts. A wave appended for repair tasks, which carry
+`## Review findings`, uses the heading
+`## Wave <M> — fix wave <N> cycle <C> review findings`, naming the review cycle
+whose findings or cap ruling it repairs; a later review cycle of wave N judges
+it. A plan-only recovery must not change approved intent.
 
 ## Approve and return to Build
 

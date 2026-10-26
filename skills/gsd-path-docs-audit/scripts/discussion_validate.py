@@ -1014,6 +1014,8 @@ FIX_WAVE_HEADING = re.compile(
     r"^## Wave (?P<wave>[1-9]\d*) — fix wave (?P<source>[1-9]\d*) cycle (?P<cycle>[1-9]\d*) review findings[ \t]*$",
     re.MULTILINE,
 )
+PLAN_WAVE_TITLE = re.compile(r"^## Wave (?P<wave>[1-9]\d*)\b(?P<title>.*)$", re.MULTILINE)
+WAVE_CYCLE_PAIR = re.compile(r"\bwave ([1-9]\d*) cycle ([1-9]\d*)\b", re.IGNORECASE)
 REVIEW_FINDINGS_SECTION = re.compile(r"^## Review findings[ \t]*$", re.MULTILINE)
 MANIFEST_WAVES_PATTERN = re.compile(
     r"(\d+)\s+Tasks:\s+(\d+) done / (\d+) total\s+Review cycles used:\s+"
@@ -1033,12 +1035,19 @@ def repair_wave_sources(
 
     A repair wave has no review of its own: the next review cycle of its source wave
     judges it (build-native step 7). The source comes from the driver's fix-wave
-    heading, or else from repair receipts that all name one earlier source cycle.
+    heading, or else from repair receipts that all name one earlier source cycle, or
+    else, when no task of the wave has a receipt, from the single `wave N cycle C`
+    pair its heading names (headings written before the exact form, and plan repairs).
     """
     headings = {
         int(match["wave"]): (int(match["source"]), int(match["cycle"]))
         for match in FIX_WAVE_HEADING.finditer(plan_text)
     }
+    titled = {}
+    for match in PLAN_WAVE_TITLE.finditer(plan_text):
+        pairs = {(int(wave), int(cycle)) for wave, cycle in WAVE_CYCLE_PAIR.findall(match["title"])}
+        if len(pairs) == 1:
+            titled[int(match["wave"])] = next(iter(pairs))
     receipts: dict = {}
     for receipt in repair_receipts:
         receipts.setdefault(receipt.task, set()).add((receipt.wave, receipt.cycle))
@@ -1054,6 +1063,8 @@ def repair_wave_sources(
             named = set().union(*(receipts.get(task_id, set()) for task_id in tasks))
             if len(named) == 1 and all(receipts.get(task_id) == named for task_id in tasks):
                 source = next(iter(named))
+            elif not named:
+                source = titled.get(wave)
         if source is not None and source[0] in wave_numbers and source[0] < wave:
             sources[wave] = source
     return sources

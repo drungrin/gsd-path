@@ -704,8 +704,10 @@ dispatch contract and perform steps 1–5 by hand.
      dispatch. An appended heading names its source exactly as the driver
      does, `## Wave <M> — fix wave <N> cycle <C> review findings`: completion
      and archive accept a wave of repair tasks without a review of its own
-     only through that heading (or repair receipts naming one source cycle)
-     and a later review cycle of wave N. Its dependencies include every source task of
+     only through that heading, repair receipts naming one source cycle, or,
+     when no task of the wave has a receipt, a heading written before this
+     form that names exactly one earlier `wave <N> cycle <C>`, and always a
+     later review cycle of wave N. Its dependencies include every source task of
      the batch that is in the same repo, and every landed fix task of the
      same source wave and repo that carried one of its findings; its Verify
      runs the Verify of those source tasks; its files are the batch files or a subset of them, never
