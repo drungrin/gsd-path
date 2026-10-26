@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.28**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.29**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,132 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.29 — 2026-10-26
+
+Upstream package base remains `1.6.2`: upstream has not released a later
+version. The fork is now synchronized through upstream `main` commit
+[`f46c9b72`](https://github.com/open-gsd/gsd-path/commit/f46c9b7274b9173aeeb2487e214c54668242a933)
+(167 commits after tag `v1.6.2`, 119 of them without merges). The fork
+revision continues from 28 to 29.
+
+Implementation:
+[`0899c772 — synchronize upstream main`](https://github.com/drungrin/gsd-path/commit/0899c77293af567bffcaf3643ad700bfe5a2976d)
+— a merge commit. Its conflict resolutions and the fork adaptations listed
+below are fork only.
+
+### Upstream changes now included
+
+- Multi-repo members:
+  - a declared Prepare command provisions member isolates;
+  - a member landing that reached the default branch outside Path can be
+    adopted at close (`--adopt-landed-member`), on request;
+  - a member task can be reauthorized after a failed finish caused by its
+    environment;
+  - native member activations record the agent, pin sibling task files and
+    accept repository-qualified `reads:`;
+  - final-review sidecars resolve members through the primary;
+  - retirement handles bound checkouts with submodules.
+- Integration:
+  - `archive_milestone.py integrate --adopt-published-bound` adopts a
+    published bound-branch ancestor, on request;
+  - rebase-merged pull-request milestones validate and recover (#450).
+- Review:
+  - wave reviews account for every task claim, and a claim disposition must
+    cite a numbered INTENT Correction;
+  - pass lines may cite a criterion by id;
+  - SC headings must be in ascending order;
+  - the review set is diagnosed;
+  - new `evidence-manifest` and `effective-contract` views.
+- Verify:
+  - project Verify re-runs at the same head after a host-caused failure;
+  - receipts record the actual execution directory;
+  - long Windows Verify scripts run from a temporary file.
+- Guards:
+  - shell deletes are scoped to the repository and state roots;
+  - PowerShell assignments and static member calls are gated;
+  - the read-only fetch family is allowed on a closed milestone;
+  - disabled Git hooks stay disabled;
+  - the ship guard accepts a reviewed head behind runtime-pin commits;
+  - unsupported `.project` entries are detected early.
+- Runtime and routing:
+  - a publish-only runtime store CLI;
+  - recovery reads are cached within one ready run;
+  - brief-check lookups are batched;
+  - helper errors name causes and recovery hints;
+  - blocked plans no longer route back into planning;
+  - the patch hand-off check accepts a reopened patch plan.
+- Daemon and app: gsd-pi and gsd-core project cards, framework checks and
+  updates, Atlas probe data, a venv rebuild when another Python made it, and
+  table layout fixes.
+- Upstream `d1ba1d0d` was already ported in 1.6.2.27; the fork's text of its
+  cap paragraph is kept.
+
+### Fork rules kept over upstream
+
+- Repair waves keep the fork rule from 1.6.2.26 instead of upstream
+  `1e7ca2aa`:
+  - a repair wave needs a proven source cycle and a later review cycle of its
+    source wave;
+  - it counts 0 review cycles of its own;
+  - upstream's unused `repair_waves` set was dropped.
+- Superseded review cycles stay history (fork `c1b05c14`):
+  - only the last cycle must pass;
+  - upstream `d2884eb8` accepts a superseded pass cycle only when it could not
+    close the wave, which would refuse the fork's pass, panel repair and
+    re-review flow at completion and archive;
+  - that check merged without a textual conflict and was removed.
+- Fork branch names stay: `feature/milestone-NNN`,
+  `feature/<project>-milestone-NNN`, `chore/task-…` and `chore/verify-…`.
+  - Member task reauthorization, new upstream, built its branch without the
+    fork's slug (`chore/task-acme-T001` against the activation's
+    `chore/task-acme-t001`), so every reauthorization was refused. It now
+    uses `member_task_branch_name`.
+  - The `deactivate-task` help names `chore/task-<id>`.
+- Integration keeps:
+  - the fork's provider abstraction (Azure Repos, squash source retention,
+    external landing), with upstream's #450 rebase handling: the original
+    Ship finds the pull request and proves the landing;
+  - the `Source-Tag` metadata parser;
+  - the member close row's `usage_publication` and `work_items`, plus
+    upstream's `adopted`.
+- Contracts merge both sides:
+  - `reviewer-wave.md` adds upstream's inspection modes, criterion ids and
+    claim accounting to the fork's citation and class-wide repair rules;
+  - `task.md`, the ship skill and `docs/multi-repo-work.md` keep the fork's
+    branch names, Azure work items and no-attribution wording.
+- Imported upstream tests were adapted to these rules:
+  - fork branch names in 12 test modules (one rebind test only passed
+    because its upstream name was absent and now asserts the fork name is
+    present);
+  - repair-wave and superseded-cycle expectations;
+  - one CI shard balance slack for the 22 fork test modules without Windows
+    timings.
+
+Validation:
+- Two cross-model review panels reviewed the staged conflict resolutions.
+  - Both returned "commit after listed fixes".
+  - Fixed: the superseded-cycle regression, the reauthorization branch, the
+    stale help text and the imported fixtures with upstream branch names.
+  - Not changed, because the merged code behaves as upstream does:
+    - an id-only `❌` line passes the wave gate, but `review_findings`
+      reports it as an invalid artifact, so collection blocks;
+    - the read-only `effective-contract` view matches SC headings more
+      loosely than the gate.
+- The seven imported reauthorization tests fail without the branch fix and
+  pass with it.
+- After the fixes, the canonical Python suite passed (3,656 tests, 41
+  skipped), Node tests passed (118, one skipped), the daemon suite passed
+  (462 tests, 13 skipped), the lock usage check passed and resource
+  synchronization checked 616 resources.
+
+Limits:
+- Upstream's package version did not change, so the base stays `1.6.2`, and
+  CI timings for fork-only test modules are not measured on Windows.
+- Consumer projects receive the merged runtime through a runtime upgrade and
+  the merged skills only at their next milestone boundary.
+- No upstream submission has been made; none of the adaptations applies
+  upstream, because they serve fork naming and fork review rules.
 
 ## 1.6.2.28 — 2026-10-26
 
