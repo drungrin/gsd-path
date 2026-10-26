@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.25**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.26**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,57 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.26 — 2026-10-26
+
+Upstream package base remains `1.6.2`. The fork revision continues from 25 to 26.
+
+Fix:
+
+- [`8c97aa42 — accept repair wave headings that name one source cycle`](https://github.com/drungrin/gsd-path/commit/8c97aa42f7a185c1ef13381eb55e8fce4ca60447)
+  — fork only. Upstream `1e7ca2aa`, not synchronized, accepts any wave whose
+  tasks all carry `## Review findings` and checks neither a source nor a
+  later review. This fork keeps both checks.
+
+### Repair waves from earlier contracts and plan repairs
+
+- Since 1.6.2.21, build completion and archive accept a repair wave without a
+  review of its own only through the driver's exact heading
+  `## Wave M — fix wave N cycle C review findings` or repair receipts that
+  name its source, and only when a later review cycle of wave N exists.
+  Plans written under earlier contracts named repair waves differently, for
+  example `fix wave 1 cycle 3 panel finding` or `review finding`. A plan
+  repair after a cycle-cap ruling wrote `(wave 1 cycle 8 cap ruling)`.
+  Completion refused those waves with "review cycle waves do not match
+  PLAN.md", and only a build recovery that renamed the headings could clear
+  it.
+- When no task of a repair wave has a receipt, the validator now also takes
+  the source from the single `wave N cycle C` pair the heading names. It
+  still refuses a heading with no pair, with two distinct pairs, or with a
+  pair that does not name an earlier wave. Receipts keep precedence, and the
+  later-review check is unchanged. `build-native.md` documents the rule.
+  `build-recovery.md` gives a repair wave appended by a plan repair the
+  driver's heading.
+
+Validation: the canonical Python suite passed (3,440 tests, 39 skipped),
+Node tests passed (118, one skipped), the daemon suite passed (389 tests,
+12 skipped), the lock usage check passed and resource synchronization checked
+616 resources. The new heading cases fail without the change. A read-only
+replay used a consumer project's PLAN.md, tasks and reviews: the project was
+blocked at build completion with 13 repair waves, 10 of them under older
+headings. The 1.6.2.25 validator refused. The new one recognizes all 13 and
+reports review cycles 11, 2 and 3 for the reviewed waves and 0 for each
+repair wave. Before implementation, two cross-model review panels compared
+this option with keeping the rule, adopting the upstream rule, and falling
+back to it. Both chose this option.
+
+Limits: a heading whose only pair is incidental or mistyped still binds that
+source. The later-review check then proves that some later review cycle of
+that wave exists, not that the review inspected the repair commit. Consumer
+projects that track installed skills keep their previous `build-native.md`
+and `build-recovery.md` until the next milestone boundary. The runtime
+upgrade carries the validator. The `pipeline_diagnose` reporting from
+upstream `1e7ca2aa` was not imported. No upstream submission has been made.
 
 ## 1.6.2.25 — 2026-10-24
 
