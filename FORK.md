@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.27**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.28**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,77 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.28 — 2026-10-26
+
+Upstream package base remains `1.6.2`. The fork revision continues from 27 to 28.
+
+Feature:
+[`49435fd7 — count repairs of one criterion toward the redesign question`](https://github.com/drungrin/gsd-path/commit/49435fd758660257c9e902275b2f6cd7837b631e)
+— fork only. It extends the fork's redesign checkpoint (`22e6dde3`), which
+upstream does not have.
+
+### Repeated repairs of one criterion
+
+- The redesign question came only from `review_findings.py collect`, when a
+  criterion had blocked two earlier canonical cycles. When the canonical
+  review passed and the advisory panel reported actionable findings, the
+  panel question listed `Open fix tasks from panel findings` first, and
+  those repairs never counted. One consumer milestone spent 11 review
+  cycles and 10 repair tasks on one criterion, 4 of those cycles from such
+  panel findings.
+- Repairs are now counted per criterion: completed tasks whose
+  `## Review findings` carry it. The count uses the tasks as the review or
+  panel publication recorded them, and spans waves and build recoveries,
+  like the blocked cycles in `history`.
+- `collect` also sends a fix group to `redesign` at two repairs.
+- The new `review_findings.py panel-repairs` command resolves each
+  actionable panel finding's references (`T001 acceptance 2`, `t001_ac2`,
+  `SC3`) to the criterion text, then reports the same counts. The panel
+  question then recommends `Reconsider the component approach`. A reference
+  that resolves to nothing is listed and counts as unknown, never zero.
+- Both commands emit a `reconsidered` event. Recorded right after a
+  `Reconsider` ruling, it restarts the count for the criteria it names.
+- `dispatch_driver.py round` holds a repair whose criterion two completed
+  repairs already carried. It is released only by a committed redesign or
+  panel ruling that opens fix tasks, recorded after those repairs completed,
+  or by an approved plan that added the current copy of the task after
+  them. The later ruling kind decides. Other ready tasks keep dispatching,
+  and an older pinned runtime adds a receipt warning. A repair without a
+  wave, without a single source cycle, or with an unresolvable reference is
+  held. `build-native.md` documents these rules.
+
+Validation: the canonical Python suite passed (3,467 tests, 39 skipped),
+Node tests passed (118, one skipped), the daemon suite passed (389 tests,
+12 skipped), the lock usage check passed and resource synchronization checked
+616 resources. Each new test fails without the change. A read-only replay on
+the consumer milestone found that `panel-repairs` would have recommended
+reconsidering at wave 1 cycle 3, after two repairs, where the owner had been
+asked to open a third fix task. The gpt and muse review panels:
+- reviewed the design before implementation;
+- reviewed the code in three rounds, finding 18 issues in the first (some
+  overlapping) and 8 in the second, all fixed.
+
+The third round listed three last fixes, made afterwards with tests and not
+reviewed again:
+- completion read from the task frontmatter;
+- a leading reference on a mixed `Criterion:` line;
+- uppercase `T001_AC1`.
+
+Limits:
+- The criterion identity is its normalized text. A reworded criterion
+  starts a new count.
+- A count restarts only when the orchestrator records the `reconsidered`
+  event the helpers emit; without it, the count keeps running.
+- Refutations are not annotated on repair attempts. A refuted group never
+  enters `redesign`.
+- Dispatch outside `dispatch_driver.py` follows the rule only by contract.
+- For a consumer project, the runtime upgrade carries the `collect` change,
+  which can raise the redesign question earlier mid-milestone. The
+  `panel-repairs` step, the dispatch hold and the contract text arrive with
+  the skills at the next milestone boundary.
+- `.project/next` tracks are not covered by tests.
+- No upstream submission has been made.
 
 ## 1.6.2.27 — 2026-10-26
 
