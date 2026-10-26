@@ -6297,18 +6297,53 @@ def attest(
     }
 
 
+PATCH_REENTRY_SUBJECT = "build: start milestone"
+
+
+def _state_position(text: str) -> Tuple[Optional[str], Optional[str]]:
+    frontmatter = text.split("\n---", 1)[0]
+    fields = {
+        key: _unquote(value)
+        for key, value in re.findall(r"(?m)^(phase|status):(.*)$", frontmatter)
+    }
+    return fields.get("phase"), fields.get("status")
+
+
+def _state_log_lines(text: str) -> list[str]:
+    log = text.split("\n## Log\n", 1)
+    return [line for line in log[1].splitlines() if line.startswith("- ")] if len(log) == 2 else []
+
+
 def _committed_ship_active(repo: Path) -> bool:
     """True when the STATE.md committed at HEAD is ship/active."""
 
     result = run_git(repo, "show", "HEAD:.project/STATE.md")
     if result.returncode != 0:
         return False
-    frontmatter = result.stdout.split("\n---", 1)[0]
-    fields = {
-        key: _unquote(value)
-        for key, value in re.findall(r"(?m)^(phase|status):(.*)$", frontmatter)
-    }
-    return fields.get("phase") == "ship" and fields.get("status") == "active"
+    return _state_position(result.stdout) == ("ship", "active")
+
+
+def _patch_reentry(repo: Path) -> bool:
+    """True when the working STATE.md returned to build/active through an approved patch plan.
+
+    Its Log must extend the one committed at HEAD with `patch plan approved` and,
+    after it, `build started`: the build entry that commits the patch artifacts.
+    """
+
+    committed = run_git(repo, "show", "HEAD:.project/STATE.md")
+    try:
+        working = (repo / ".project" / "STATE.md").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if committed.returncode != 0 or _state_position(working) != ("build", "active"):
+        return False
+    before, after = _state_log_lines(committed.stdout), _state_log_lines(working)
+    if after[:len(before)] != before:
+        return False
+    events = [line.split(" — ", 2)[-1].strip() for line in after[len(before):]]
+    if "patch plan approved" not in events:
+        return False
+    return "build started" in events[events.index("patch plan approved") + 1:]
 
 
 # Build step 7 ruling checkpoints: subject kind -> (decision lens gate, STATE ruling event label).
@@ -6405,7 +6440,11 @@ def checkpoint(
                 "subject": subject.strip(),
             }
         raise IsolationError("primary HEAD differs from --expected-head")
-    if subject.strip().startswith("build:") and _committed_ship_active(repo):
+    if (
+        subject.strip().startswith("build:")
+        and _committed_ship_active(repo)
+        and not (subject.strip() == PATCH_REENTRY_SUBJECT and _patch_reentry(repo))
+    ):
         raise IsolationError(
             "STATE is ship/active: final review creates no pre-ship commit; leave its "
             "outputs uncommitted for archive_milestone.py, and send findings through "

@@ -302,7 +302,9 @@ as stated in Lookahead mode.
    the build transition commit owns the pending artifacts. Patch-mode
    approvals run `approve --repo <absolute root> --kind plan --patch`
    (event `patch plan approved`) without a plan checkpoint because build's
-   patch re-entry commits the artifacts with its `build/active` transition.
+   patch re-entry commits the artifacts with its `build/active` transition,
+   `build: start milestone`, the one `build:` checkpoint accepted while the
+   committed STATE is still `ship/active`.
    `pipeline_state.py transition` never approves a plan. Confirm approval,
    link PLAN.md again, and use the executable phase handoff in AGENTS.md.
    The plan approval also authorizes build; do not add another approval gate.

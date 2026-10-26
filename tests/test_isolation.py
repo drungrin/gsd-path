@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 from unittest import mock
 
 from scripts import _common, build_state, isolation, pipeline_git
@@ -2056,6 +2056,69 @@ class IsolationTests(unittest.TestCase):
 
                 self.assertEqual(result["status"], "committed")
                 self.assertEqual(git(repo, "rev-parse", "HEAD^"), head)
+
+    def patch_reentry_repo(self, repo: Path, events: Sequence[str], phase: str = "build",
+                           status: str = "active") -> str:
+        self.init_bound_repo(repo)
+        shipped = self.state_text("ship", "active") + "- 2026-01-02 — ship — build done; final review pending\n"
+        self.write(repo, ".project/STATE.md", shipped)
+        git(repo, "add", ".project/STATE.md")
+        git(repo, "commit", "-q", "-m", "build: complete milestone")
+        head = git(repo, "rev-parse", "HEAD")
+        lines = "".join(f"- 2026-01-03 — {event.split(' — ')[0]} — {event.split(' — ')[1]}\n" for event in events)
+        working = self.state_text(phase, status) + "- 2026-01-02 — ship — build done; final review pending\n" + lines
+        self.write(repo, ".project/STATE.md", working)
+        self.write(repo, ".project/review/PATCH-FINDINGS.md", "# Patch findings\n")
+        self.write(repo, ".project/tasks/T009-fix-final-review-p001.md", "---\nid: T009\n---\n")
+        return head
+
+    PATCH_EVENTS = ("plan — patch plan reopened", "plan — patch plan approved", "build — build started")
+
+    def test_patch_reentry_build_entry_commits_while_head_is_ship_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            head = self.patch_reentry_repo(repo, self.PATCH_EVENTS)
+
+            result = isolation.checkpoint(
+                repo, head, "build: start milestone",
+                "Why: enter build from plan/done with the initial .project artifacts", [".project"])
+
+            self.assertEqual(result["status"], "committed")
+            self.assertEqual(git(repo, "rev-parse", "HEAD^"), head)
+            self.assertIn(".project/review/PATCH-FINDINGS.md", result["paths"])
+
+    def test_patch_reentry_exception_is_narrow(self) -> None:
+        entry = ("build: start milestone", "Why: enter build from plan/done with the initial .project artifacts")
+        cases = {
+            "other build subject": (self.PATCH_EVENTS, "build", "active",
+                                    ("build: record patch findings", "Why: patch build")),
+            "no patch approval": (("plan — plan approved", "build — build started"), "build", "active", entry),
+            "build started first": (("build — build started", "plan — patch plan approved"), "build", "active", entry),
+            "still in plan": (self.PATCH_EVENTS[:2], "plan", "done", entry),
+        }
+        for name, (events, phase, status, (subject, body)) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                head = self.patch_reentry_repo(repo, events, phase, status)
+                with self.assertRaisesRegex(isolation.IsolationError, "no pre-ship commit"):
+                    isolation.checkpoint(repo, head, subject, body, [".project"])
+                self.assertEqual(git(repo, "rev-parse", "HEAD"), head)
+
+    def test_patch_reentry_requires_the_committed_log_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            head = self.patch_reentry_repo(repo, self.PATCH_EVENTS)
+            state = repo / ".project/STATE.md"
+            state.write_text(state.read_text(encoding="utf-8").replace(
+                "build done; final review pending", "final review skipped"), encoding="utf-8")
+            with self.assertRaisesRegex(isolation.IsolationError, "no pre-ship commit"):
+                isolation.checkpoint(repo, head, "build: start milestone",
+                                     "Why: enter build from plan/done with the initial .project artifacts",
+                                     [".project"])
+            self.assertEqual(git(repo, "rev-parse", "HEAD"), head)
 
     def test_checkpoint_rejects_unrelated_changes_without_moving_head(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
