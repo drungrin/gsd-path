@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.26**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.27**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,68 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.27 — 2026-10-26
+
+Upstream package base remains `1.6.2`. The fork revision continues from 26 to 27.
+
+Fixes:
+
+- [`8ee4fe7b — bound absence criteria at define`](https://github.com/drungrin/gsd-path/commit/8ee4fe7b3eb94d117ebf3ffe446563893df0abf2)
+  — port of upstream `d1ba1d0d` (open-gsd/gsd-path#452), upstream author
+  kept. The conflict in the cap paragraph was resolved by placing the define
+  recommendation after the fork's cap-lens sentence.
+- [`e3c09203 — accept the patch re-entry build checkpoint while HEAD is ship/active`](https://github.com/drungrin/gsd-path/commit/e3c0920349f1cf5c194d65dfe1cbf45e39a2b26e)
+  — applies upstream. Upstream `main` (ea9bb02d) has the same guard
+  (`1ee6170e`) and the same patch-mode contract. The patch applies there with
+  a three-way merge, and its tests pass.
+
+### Bounded absence criteria (upstream port)
+
+- An absence criterion must state its search space, its check and the
+  result that counts as absent. Define asks for that bounded form in the edge
+  round, and reviewers judge the criterion over that space only.
+- At a cap cycle later than 1, a blocking group whose criterion first blocked
+  in cycle 1 makes "send to define" the recommended option.
+- Why it is in the fork now: a consumer milestone spent 11 review cycles on
+  one criterion with an open domain. Two cross-model review panels traced the
+  loop to upstream review mechanics, and found that the fork's contribution
+  was missing this upstream fix.
+
+### Patch re-entry after final review
+
+- A final review with a failing gap opens plan patch mode. That approval
+  writes no checkpoint, because build's patch re-entry commits the patch
+  artifacts with its `build/active` transition (`build: start milestone`).
+  Since upstream `1ee6170e`, `isolation.py checkpoint` refuses every `build:`
+  subject while the STATE committed at HEAD is `ship/active`. The last commit
+  before final review is `build: complete milestone` with that STATE, so the
+  refusal also covered the patch re-entry, and a patch build could never
+  start.
+- `checkpoint` now accepts `build: start milestone` in that position, but
+  only when the working STATE is `build/active` and its Log extends the
+  committed Log with `patch plan approved` followed by `build started`. Every
+  other `build:` subject is still refused, and so is a working STATE that
+  rewrote the committed Log. The plan skill's patch-mode text names the
+  exception.
+
+Validation: the canonical Python suite passed (3,444 tests, 39 skipped),
+Node tests passed (118, one skipped), the daemon suite passed (389 tests,
+12 skipped), the lock usage check passed and resource synchronization checked
+616 resources. The new patch re-entry acceptance test fails without the
+change. Its narrowness tests (another `build:` subject, no patch approval,
+`build started` before the approval, plan still open, a rewritten committed
+Log) pass both before and after. A read-only replay on a consumer project
+stopped at patch entry: its committed STATE is `ship/active`, and the new
+check recognizes its patch re-entry. The ported cap test pins
+`first_seen_cycle` and `repeat`.
+
+Limits: the port adds contract text plus a test that pins fields `collect`
+already reported, and its define recommendation stays advisory. Consumer
+projects that track installed skills receive the port's define, cap and
+spec-probe text only when they reinstall skills at the next milestone
+boundary. A runtime upgrade carries the checkpoint fix. No upstream
+submission has been made.
 
 ## 1.6.2.26 — 2026-10-26
 
