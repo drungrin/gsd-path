@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.31**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.33**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -21,6 +21,82 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.33 — 2026-10-27
+
+Upstream package base remains `1.6.2`, synchronized through upstream main
+`f46c9b72`. The fork revision continues from 32 to 33. It contains 1.6.2.31
+plus the fix that 1.6.2.32 delivered on the maintenance branch.
+
+Fix:
+[`06034a54 — accept native hand-backs recorded before their stop reason`](https://github.com/drungrin/gsd-path/commit/06034a54db02f166068bc63afe4ce34641d3a331)
+— fork only, the same change as 1.6.2.32's `9a1eaee0`. See 1.6.2.32 for the
+behavior and limits. The maintenance branch is merged into main with the
+`ours` strategy again.
+
+Validation: on main, the publication, isolation and install modules
+passed (26, 191 and 160 tests), Node tests passed (118, one skipped) and
+resource synchronization checked 616 resources. The full suite ran on the
+maintenance branch only, because the change is limited to `_handback_reply`
+and its tests.
+
+Limits: the same as 1.6.2.32. No upstream submission.
+
+## 1.6.2.32 — 2026-10-27 (maintenance)
+
+A maintenance release on the branch `chore/runtime-1-6-2-27-maintenance`:
+1.6.2.30 plus one fix. It still excludes 1.6.2.28 and the upstream
+synchronization of 1.6.2.29. Upstream package base remains `1.6.2`,
+synchronized through tag `v1.6.2`. The fork revision continues from 31
+to 32.
+
+Release: [`3df1c6d6 — release 1.6.2.32`](https://github.com/drungrin/gsd-path/commit/3df1c6d6e22063a196c9c32cc91f716325c86c19)
+on that branch.
+
+Fix:
+[`9a1eaee0 — accept native hand-backs recorded before their stop reason`](https://github.com/drungrin/gsd-path/commit/9a1eaee080b16734f5ce7f863feae58ab3fdd058)
+— fork only, like the hand-back publication it corrects. The same change is
+on main as `06034a54`.
+
+### Native Claude hand-backs
+
+- 1.6.2.30 required `stop_reason: tool_use` on the hand-back call. That
+  held for the proxied reviewers it was validated against, not for native
+  Claude. Claude Code writes each content block of a message as its own
+  event, often before the stream's stop reason arrives. In one native wave
+  reviewer, all 55 assistant events recorded `stop_reason: null`, the
+  hand-back included, so `stage-review` refused a completed review and the
+  milestone stopped again.
+- The hand-back call may now record `tool_use` or no stop reason. Explicit
+  other reasons, such as `max_tokens` or `refusal`, are still refused.
+- A hand-back must also be the only call of its message: other events with
+  the same message id may hold only thinking. A report delivered beside
+  another tool call is refused even when the host recorded no result for
+  that call.
+
+Two cross-model review panels reviewed the change and agreed on it, on
+refusing mixed calls for reviews, and on how the blocked consumer publishes
+the affected review (see Limits).
+
+Validation: on this branch, the publication tests passed (26; the native
+case and the mixed-message case fail without the change), Node tests passed
+(118, one skipped) and resource synchronization checked 616 resources.
+The full Python suite passed (3,450 tests, 39 skipped) and the daemon
+suite passed (389 tests, 12 skipped). Against the blocked consumer's eight child transcripts, the
+parser recognizes all seven hand-backs, including the native reviewer's,
+and still refuses one coder that called `Bash` and the hand-back in the same
+message.
+
+Limits:
+- A review whose publication base moved, because the orchestrator
+  committed a block checkpoint or a runtime pin after the review, still
+  cannot be staged at its original base. For the blocked consumer, the
+  panels recommended a one-time owner ruling: restage the unchanged report
+  at the current HEAD after proving that the commits in between touch only
+  `.project/STATE.md` and `.gsd-path/runtime.json`. The report keeps its
+  original `Reviewed HEAD`. `stage-review` itself was not relaxed.
+- The 1.6.2.30 fix was validated only against proxied transcripts.
+- No upstream submission: upstream has no `stage-review`.
 
 ## 1.6.2.31 — 2026-10-26
 
