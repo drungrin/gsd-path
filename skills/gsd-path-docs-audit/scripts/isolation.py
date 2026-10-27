@@ -4040,12 +4040,62 @@ def _failed_task_branch_proof_error(
     return proof_error
 
 
+# Claude Code can end a child's turn through this tool instead of a final text message.
+HANDBACK_TOOL = "SubagentHandback"
+
+
+def _handback_reply(events: list, index: int) -> Optional[Tuple[int, str]]:
+    """The delivery index and report of a hand-back that ends the child's turn at ``index``, or None.
+
+    The assistant event must hold only the hand-back call with only a ``message``; the next
+    conversational event must be the host's successful delivery result for that call.
+    """
+    event = events[index]
+    blocks = event["message"].get("content")
+    if event["message"].get("stop_reason") != "tool_use" or not isinstance(blocks, list) or len(blocks) != 1:
+        return None
+    call = blocks[0]
+    if (not isinstance(call, dict) or call.get("type") != "tool_use" or call.get("name") != HANDBACK_TOOL
+            or not isinstance(call.get("id"), str) or not call["id"]
+            or not isinstance(call.get("input"), dict) or set(call["input"]) != {"message"}
+            or not isinstance(call["input"]["message"], str)):
+        return None
+    following = [position for position in range(index + 1, len(events))
+                 if events[position].get("type") in {"assistant", "user"}]
+    if not following:
+        return None
+    result = events[following[0]]
+    content = result.get("message", {}).get("content") if isinstance(result.get("message"), dict) else None
+    if (result.get("type") != "user" or result.get("toolEndsTurn") is not True
+            or not event.get("uuid") or result.get("parentUuid") != event["uuid"]
+            or result.get("sourceToolAssistantUUID") != event["uuid"]
+            or not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict)):
+        return None
+    block = content[0]
+    if block.get("type") != "tool_result" or block.get("tool_use_id") != call["id"] or block.get("is_error"):
+        return None
+    payload = block.get("content")
+    if isinstance(payload, list) and all(isinstance(part, dict) and part.get("type") == "text"
+                                         and isinstance(part.get("text"), str) for part in payload):
+        payload = "".join(part["text"] for part in payload)
+    try:
+        delivered = json.loads(payload) if isinstance(payload, str) else None
+    except ValueError:
+        return None
+    if not isinstance(delivered, dict) or delivered.get("success") is not True:
+        return None
+    return following[0], call["input"]["message"]
+
+
 def stage_review(
     primary: Path, source: Path, base: str, branch: str, source_path: str,
     transcript: Path, assignment: str, agent_id: str, model: str,
     message_id: Optional[str] = None, expected_source: Optional[str] = None,
 ) -> Dict[str, object]:
-    """Publish a completed native review message verbatim; validation still follows."""
+    """Publish a completed native review message verbatim; validation still follows.
+
+    The report is a final ``end_turn`` text message, or the message of a delivered host hand-back.
+    """
     primary = require_directory(primary, "primary worktree")
     source = require_directory(source, "source worktree")
     if (primary == source or worktree_root(primary) != primary
@@ -4085,30 +4135,39 @@ def stage_review(
         for event in events
     ):
         raise IsolationError("review transcript belongs to another child")
-    replies = [(index, event) for index, event in enumerate(events)
-               if event.get("type") == "assistant" and isinstance(event.get("message"), dict)
-               and event["message"].get("stop_reason") == "end_turn"]
+    # Each reply: (assistant index, index that ends the turn, event, hand-back delivery or None).
+    replies = []
+    for index, event in enumerate(events):
+        if event.get("type") != "assistant" or not isinstance(event.get("message"), dict):
+            continue
+        if event["message"].get("stop_reason") == "end_turn":
+            replies.append((index, index, event, None))
+        elif (handback := _handback_reply(events, index)) is not None:
+            replies.append((index, handback[0], event, handback))
     requests = [index for index, event in enumerate(events) if event.get("type") == "user"]
     assistants = [index for index, event in enumerate(events) if event.get("type") == "assistant"]
     if (not replies or assistants[-1] != replies[-1][0]
-            or (requests and requests[-1] > replies[-1][0])):
+            or (requests and requests[-1] > replies[-1][1])):
         raise IsolationError("review child has no completed final response")
-    selected_id = message_id or replies[-1][1].get("uuid")
-    selected = [event for _, event in replies if event.get("uuid") == selected_id]
+    selected_id = message_id or replies[-1][2].get("uuid")
+    selected = [reply for reply in replies if reply[2].get("uuid") == selected_id]
     if len(selected) != 1:
         raise IsolationError("review message id is missing or ambiguous")
-    event = selected[0]
+    _, _, event, handback = selected[0]
     message = event["message"]
     if message.get("role") != "assistant" or message.get("model") != model or not model:
         raise IsolationError("review final response has a different model identity")
-    blocks = message.get("content")
-    if not isinstance(blocks, list) or any(
-        not isinstance(block, dict) or block.get("type") not in {"text", "thinking", "redacted_thinking"}
-        or (block.get("type") == "text" and not isinstance(block.get("text"), str))
-        for block in blocks
-    ):
-        raise IsolationError("review final response is not report text")
-    text = "".join(block["text"] for block in blocks if block.get("type") == "text")
+    if handback is None:
+        blocks = message.get("content")
+        if not isinstance(blocks, list) or any(
+            not isinstance(block, dict) or block.get("type") not in {"text", "thinking", "redacted_thinking"}
+            or (block.get("type") == "text" and not isinstance(block.get("text"), str))
+            for block in blocks
+        ):
+            raise IsolationError("review final response is not report text")
+        text = "".join(block["text"] for block in blocks if block.get("type") == "text")
+    else:
+        text = handback[1]
     if not text.startswith("# ") or "\x00" in text:
         raise IsolationError("review final response must be the complete raw Markdown report")
     try:
@@ -4124,8 +4183,11 @@ def stage_review(
         raise IsolationError("review final response has no stable message id")
     key = _sha256(json.dumps(identity, sort_keys=True).encode("utf-8"))
     receipt = common_git_dir(primary) / "gsd-path" / "staged-review" / f"{key}.json"
-    payload = {**identity, "publisher": "parent", "transport": "final-message",
+    payload = {**identity, "publisher": "parent",
+               "transport": "final-message" if handback is None else "handback",
                "transcript": str(transcript.resolve()), "sha256": _sha256(data), "bytes": len(data)}
+    if handback is not None:
+        payload["handback_result_id"] = events[handback[0]].get("uuid")
     if receipt.is_symlink():
         raise IsolationError("review publication receipt is unsafe")
     if receipt.exists():

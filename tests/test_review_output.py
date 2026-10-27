@@ -46,6 +46,21 @@ class ReviewOutputTests(unittest.TestCase):
                 "message": {"role": "assistant", "model": self.model,
                             "stop_reason": stop_reason, "content": [{"type": "text", "text": text}]}}
 
+    def handback(self, text, uuid="handback-one", call_id="call-one"):
+        """A hand-back turn as Claude Code records it: call, hook attachment, delivery, attachment."""
+        call = {"type": "assistant", "agentId": self.agent, "uuid": uuid,
+                "message": {"role": "assistant", "model": self.model, "stop_reason": "tool_use",
+                            "content": [{"type": "tool_use", "id": call_id, "name": "SubagentHandback",
+                                         "input": {"message": text}}]}}
+        delivered = {"type": "user", "agentId": self.agent, "uuid": uuid + "-result", "parentUuid": uuid,
+                     "sourceToolAssistantUUID": uuid, "toolEndsTurn": True,
+                     "message": {"role": "user", "content": [{
+                         "type": "tool_result", "tool_use_id": call_id,
+                         "content": [{"type": "text",
+                                      "text": '{"success":true,"message":"Report delivered to your caller."}'}]}]}}
+        hook = {"type": "attachment", "agentId": self.agent, "attachment": {"type": "hook_non_blocking_error"}}
+        return [call, dict(hook), delivered, dict(hook)]
+
     def save(self):
         self.transcript.write_text("".join(json.dumps(event) + "\n" for event in self.events), encoding="utf-8")
 
@@ -98,6 +113,84 @@ class ReviewOutputTests(unittest.TestCase):
                 self.save()
                 self.stage()
         self.assertFalse((self.sidecar / self.relative).exists())
+
+    def test_host_handback_report_is_staged_like_a_final_message(self):
+        self.events[-1:] = self.handback(REPORT)
+        self.save()
+        result = self.stage()
+        staged = self.sidecar / self.relative
+        self.assertEqual(staged.read_bytes(), REPORT.encode("utf-8"))
+        self.assertEqual(result["message_id"], "handback-one")
+        self.assertEqual(result["transport"], "handback")
+        self.assertEqual(result["handback_result_id"], "handback-one-result")
+        self.assertFalse(result["validated"])
+        self.assertEqual(self.stage(), result)
+        review_panel.parse_family_artifact(staged, "plan")
+        collected = isolation.collect_artifact(self.repo, self.sidecar, self.base,
+                                             self.isolated["branch"], self.relative, self.relative,
+                                             expected_source=result["sha256"])
+        self.assertEqual(collected["sha256"], result["sha256"])
+
+    def test_handback_without_its_successful_delivery_is_not_published(self):
+        def result_content(turn, **changes):
+            turn[2]["message"]["content"][0].update(changes)
+
+        def answer(turn, text):
+            result_content(turn, content=[{"type": "text", "text": text}])
+
+        cases = {
+            "no delivery": lambda turn: turn.pop(2),
+            "delivery error": lambda turn: result_content(turn, is_error=True),
+            "delivery failed": lambda turn: answer(turn, '{"success":false}'),
+            "delivery not json": lambda turn: answer(turn, "Report delivered."),
+            "turn continues": lambda turn: turn[2].pop("toolEndsTurn"),
+            "other call id": lambda turn: result_content(turn, tool_use_id="call-two"),
+            "other source": lambda turn: turn[2].update(sourceToolAssistantUUID="reply-one"),
+            "other parent": lambda turn: turn[2].update(parentUuid="reply-one"),
+            "other tool": lambda turn: turn[0]["message"]["content"][0].update(name="SendMessage"),
+            "extra input": lambda turn: turn[0]["message"]["content"][0]["input"].update(path="r.md"),
+            "text beside the call": lambda turn: turn[0]["message"]["content"].insert(
+                0, {"type": "text", "text": REPORT}),
+            "follow-up after delivery": lambda turn: turn.append(
+                {"type": "user", "agentId": self.agent, "message": {"content": "Follow up."}}),
+            "child continues": lambda turn: turn.append(self.reply("# Later\n", uuid="reply-two",
+                                                                  stop_reason="tool_use")),
+        }
+        for name, change in cases.items():
+            with self.subTest(case=name):
+                turn = self.handback(REPORT)
+                change(turn)
+                self.events[-1:] = turn
+                self.save()
+                with self.assertRaises(isolation.IsolationError):
+                    self.stage()
+                self.events[-len(turn):] = [self.reply(REPORT)]
+        self.assertFalse((self.sidecar / self.relative).exists())
+
+    def test_handback_keeps_the_identity_and_report_checks(self):
+        self.events[-1:] = self.handback(REPORT)
+        self.save()
+        for override in ({"agent_id": "other"}, {"model": "other-model"}, {"message_id": "handback-one-result"}):
+            with self.subTest(override=override), self.assertRaises(isolation.IsolationError):
+                self.stage(**override)
+        for text in ("", "Done", "```markdown\n" + REPORT + "```"):
+            with self.subTest(text=text[:20]), self.assertRaises(isolation.IsolationError):
+                self.events[-4:] = self.handback(text)
+                self.save()
+                self.stage()
+        self.assertFalse((self.sidecar / self.relative).exists())
+
+    def test_earlier_handback_can_be_selected_after_a_later_non_report_reply(self):
+        self.events[-1:] = self.handback(REPORT) + [
+            {"type": "user", "agentId": self.agent, "message": {"content": "Save the report."}},
+            self.reply("Publication blocked by host instructions.", uuid="reply-two"),
+        ]
+        self.save()
+        with self.assertRaisesRegex(isolation.IsolationError, "raw Markdown"):
+            self.stage()
+        result = self.stage(message_id="handback-one")
+        self.assertEqual(result["transport"], "handback")
+        self.assertEqual((self.sidecar / self.relative).read_bytes(), REPORT.encode("utf-8"))
 
     def test_pending_followup_blocks_using_an_earlier_completed_message(self):
         self.events.append({"type": "user", "agentId": self.agent, "message": {"content": "Follow up."}})

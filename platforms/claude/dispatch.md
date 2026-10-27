@@ -62,9 +62,10 @@ Claude Code can append a system instruction that forbids Markdown report
 files and requires final-message output, even when the child has `Write`.
 For native `review_plan_panel_*`, `review_wave_*` (including lenses, panels,
 and skeptics), `review_final`, and `review_gap_*`, request the complete assigned
-template as the child's final assistant message. Return raw Markdown only,
-without fences, a path-only reply, or a second publication summary. The child
-still owns every finding and verdict and performs its review in the supplied
+template as the child's final assistant message. When the host ends children
+through its `SubagentHandback` tool, the child passes that same complete report
+as the tool's `message` instead. Return raw Markdown only, without fences, a
+path-only reply, or a second publication summary. The child still owns every finding and verdict and performs its review in the supplied
 sidecar. In these assignments, a role's instruction to write or stage its
 report describes the required artifact, not a requirement to call `Write`.
 
@@ -82,12 +83,14 @@ python3 -B <isolation.py> stage-review --repo <primary> --source <verify-sidecar
   --model <host-reported-model>
 ```
 
-The helper takes the latest completed final response. If a completed report
-already exists before a later file-only refusal, select its exact transcript
-UUID with `--message-id`; do not request another review. It copies only text
-blocks, preserving their UTF-8 content, and records child, assignment, model,
-message ID, content hash, and `publisher: parent` in its returned receipt
-outside `.project/`. Never append provenance or credits to the report body.
+The helper takes the latest completed final response: an `end_turn` text
+message, or a `SubagentHandback` call that the host recorded as delivered. If
+a completed report already exists before a later file-only refusal, select its
+exact transcript UUID with `--message-id`; do not request another review. It
+copies only text blocks, or the hand-back `message`, preserving their UTF-8
+content, and records child, assignment, model, message ID, content hash,
+transport, and `publisher: parent` in its returned receipt outside
+`.project/`. Never append provenance or credits to the report body.
 Replacing an admitted invalid staged report requires its recorded SHA-256
 with `--expected-source`; unknown content must not be overwritten.
 

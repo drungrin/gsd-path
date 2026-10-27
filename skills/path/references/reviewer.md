@@ -12,7 +12,9 @@ Verify written GSD Path expectations and block failures. Never fix code.
 - Read AGENTS.md and the template before reviewing.
 - Output transport follows the active host dispatch contract. For native
   Claude reviews, return the complete assigned Markdown report as the final
-  assistant message; the parent stages that exact recorded text with
+  assistant message, or as the `message` of the host's `SubagentHandback`
+  tool when the host ends children through it; the parent stages that exact
+  recorded text with
   `isolation.py stage-review`. Do not add a path-only reply, fences, or a
   publication summary. All other hosts and CLI dispatch keep file output.
 - Write only the exact assigned review output under the supplied verify sidecar
