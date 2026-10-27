@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.29**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.31**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -12,12 +12,115 @@ Versions use `X.Y.Z.N`. The first three components follow the upstream version
 most recently synchronized into this fork. The fourth component is a monotonically
 increasing fork revision. Local features and fixes increment only that revision;
 an upstream sync changes the first three components without resetting it.
+A maintenance release takes the next revision on a branch cut from an earlier
+release, for a consumer that cannot take main in the middle of a milestone.
+It contains only the changes its entry names, and main records it here.
 
 This is a fork version format, not npm SemVer. Install the fork from its source
 checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.31 — 2026-10-26
+
+Upstream package base remains `1.6.2`, synchronized through upstream main
+`f46c9b72` as in 1.6.2.29. The fork revision continues from 30 to 31. It
+contains 1.6.2.29 plus the hand-back fix that 1.6.2.30 delivered on its
+maintenance branch.
+
+Fix:
+[`00da3c45 — publish native reviews delivered through the host hand-back tool`](https://github.com/drungrin/gsd-path/commit/00da3c45abb9e76e0277fbbf59ac7f2c58af5d6d)
+— fork only, the same change as 1.6.2.30's `53efed8d`. See 1.6.2.30 for the
+behavior.
+
+The maintenance branch is merged into main with the `ours` strategy, which
+records its history without changing main's files.
+
+### Runtime upgrades in the middle of a milestone
+
+- A runtime from 1.6.2.29 on applies upstream's newer wave gate: numbered
+  INTENT Corrections (`f0fd14b9`) and accounting for every task claim,
+  including interface claims (`629dccae`). Reviews written under earlier
+  contracts fail that gate; a replay refused four already-passed reviews of
+  one consumer.
+- A consumer in the middle of a milestone whose installed skills predate
+  1.6.2.29 should not take a runtime from 1.6.2.29 on. Upgrade at a
+  milestone boundary, together with the skills, or use a maintenance
+  release. No historical review is rewritten and the gate is not relaxed.
+- Not done yet: a compatibility preflight in the runtime upgrade and
+  regression fixtures with earlier review contracts. The gpt panel
+  recommended both.
+
+Validation: on main with the fix, the full Python suite passed (3,660
+tests, 41 skipped), the daemon suite passed (462 tests, 13 skipped), Node
+tests passed (118, one skipped), the lock usage check passed and resource
+synchronization checked 616 resources. After 1.6.2.30 was
+installed in the blocked consumer, its runtime staged both real plan-panel
+reports from a disposable clone through the hand-back path, and both passed
+the plan-panel format check.
+
+Limits: the same as 1.6.2.30. No upstream submission.
+
+## 1.6.2.30 — 2026-10-26 (maintenance)
+
+A maintenance release built on the branch
+`chore/runtime-1-6-2-27-maintenance` from the 1.6.2.27 release
+(`69d84d31`). It does not contain 1.6.2.28 or the upstream synchronization of
+1.6.2.29. Upstream package base remains `1.6.2`, synchronized through tag
+`v1.6.2` as in 1.6.2.27. The fork revision continues from 29 to 30.
+
+Release: [`3090ca35 — release 1.6.2.30`](https://github.com/drungrin/gsd-path/commit/3090ca350a818500eb984e8d0f36dffbebaf2167)
+on that branch.
+
+Fix:
+[`53efed8d — publish native reviews delivered through the host hand-back tool`](https://github.com/drungrin/gsd-path/commit/53efed8d60317e32f72dcaee9c19f2599f0b6c9f)
+— fork only. `stage-review` is the fork's native review transport (1.6.0.6);
+upstream reviewers write their report files. The same change is on main as
+`00da3c45`.
+
+### Native review publication through the host hand-back tool
+
+- Claude Code 2.1.310 can end a child's turn with a `SubagentHandback` call
+  that carries the report, instead of a final `end_turn` text message. A
+  consumer running in a sandboxed host configuration got this for all six
+  children of one session. Another consumer on the same version, outside
+  that sandbox, still got `end_turn` for 68 of 68 children.
+- `stage-review` accepted only `end_turn`, so a completed plan-review panel
+  could not be published, and the milestone stopped. Here the fork's
+  transport made the outcome worse than upstream's file contract.
+- `stage-review` now also accepts a hand-back when:
+  - the assistant event holds only the hand-back call, whose input is only
+    `message`;
+  - the next conversational event is the host's delivery result for that
+    call: chained to it by `parentUuid` and `sourceToolAssistantUUID`, with
+    `toolEndsTurn` true, no error, and `success: true`;
+  - no user or assistant event follows.
+- Identity, model, report-text and publication checks are unchanged, and
+  staging still does not validate the report. The receipt records
+  `transport: handback` and the delivery event.
+- The Claude dispatch contract, the reviewer brief and `AGENTS.md` name the
+  hand-back message as the report.
+
+Why a maintenance release: two cross-model review panels recommended
+accepting the hand-back in `stage-review` and delivering it without the
+1.6.2.29 synchronization. A replay on a disposable clone of the blocked
+consumer showed that the 1.6.2.29 runtime's wave gate refuses its four
+already-passed wave reviews tested: first for unnumbered INTENT Corrections
+(upstream `f0fd14b9`), then for unaccounted interface claims (upstream
+`629dccae`). The 1.6.2.27 runtime accepts them.
+
+Validation: on this branch, the publication tests passed (24, including
+four new hand-back cases; the two positive cases fail without the fix), the
+isolation and install modules passed, Node tests passed (118, one skipped)
+and resource synchronization checked 616 resources. The full Python suite passed (3,448 tests, 39 skipped), the daemon suite
+passed (389 tests, 12 skipped) and the lock usage check passed. The parser
+recognized both reports of the blocked consumer's real transcripts.
+
+Limits: a hand-back delivered without its recorded result, or followed by
+more conversation, is still refused. The checks bind the report to the
+recorded transcript; they cannot detect a forged transcript. No upstream
+submission: upstream has no `stage-review`.
 
 ## 1.6.2.29 — 2026-10-26
 
