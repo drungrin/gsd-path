@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.27**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.30** (maintenance). Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,63 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.30 — 2026-10-26 (maintenance)
+
+A maintenance release built on the branch
+`chore/runtime-1-6-2-27-maintenance` from the 1.6.2.27 release
+(`69d84d31`). It does not contain 1.6.2.28 or the upstream synchronization of
+1.6.2.29. Upstream package base remains `1.6.2`, synchronized through tag
+`v1.6.2` as in 1.6.2.27. The fork revision continues from 29 to 30.
+
+Fix:
+[`53efed8d — publish native reviews delivered through the host hand-back tool`](https://github.com/drungrin/gsd-path/commit/53efed8d60317e32f72dcaee9c19f2599f0b6c9f)
+— fork only. `stage-review` is the fork's native review transport (1.6.0.6);
+upstream reviewers write their report files. The same change is on main as
+`00da3c45`.
+
+### Native review publication through the host hand-back tool
+
+- Claude Code 2.1.310 can end a child's turn with a `SubagentHandback` call
+  that carries the report, instead of a final `end_turn` text message. A
+  consumer running in a sandboxed host configuration got this for all six
+  children of one session. Another consumer on the same version, outside
+  that sandbox, still got `end_turn` for 68 of 68 children.
+- `stage-review` accepted only `end_turn`, so a completed plan-review panel
+  could not be published, and the milestone stopped. Here the fork's
+  transport made the outcome worse than upstream's file contract.
+- `stage-review` now also accepts a hand-back when:
+  - the assistant event holds only the hand-back call, whose input is only
+    `message`;
+  - the next conversational event is the host's delivery result for that
+    call: chained to it by `parentUuid` and `sourceToolAssistantUUID`, with
+    `toolEndsTurn` true, no error, and `success: true`;
+  - no user or assistant event follows.
+- Identity, model, report-text and publication checks are unchanged, and
+  staging still does not validate the report. The receipt records
+  `transport: handback` and the delivery event.
+- The Claude dispatch contract, the reviewer brief and `AGENTS.md` name the
+  hand-back message as the report.
+
+Why a maintenance release: two cross-model review panels recommended
+accepting the hand-back in `stage-review` and delivering it without the
+1.6.2.29 synchronization. A replay on a disposable clone of the blocked
+consumer showed that the 1.6.2.29 runtime's wave gate refuses its four
+already-passed wave reviews tested: first for unnumbered INTENT Corrections
+(upstream `f0fd14b9`), then for unaccounted interface claims (upstream
+`629dccae`). The 1.6.2.27 runtime accepts them.
+
+Validation: on this branch, the publication tests passed (24, including
+four new hand-back cases; the two positive cases fail without the fix), the
+isolation and install modules passed, Node tests passed (118, one skipped)
+and resource synchronization checked 616 resources. The full Python suite passed (3,448 tests, 39 skipped), the daemon suite
+passed (389 tests, 12 skipped) and the lock usage check passed. The parser
+recognized both reports of the blocked consumer's real transcripts.
+
+Limits: a hand-back delivered without its recorded result, or followed by
+more conversation, is still refused. The checks bind the report to the
+recorded transcript; they cannot detect a forged transcript. No upstream
+submission: upstream has no `stage-review`.
 
 ## 1.6.2.27 — 2026-10-26
 
