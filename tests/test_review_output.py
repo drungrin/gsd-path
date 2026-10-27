@@ -46,10 +46,11 @@ class ReviewOutputTests(unittest.TestCase):
                 "message": {"role": "assistant", "model": self.model,
                             "stop_reason": stop_reason, "content": [{"type": "text", "text": text}]}}
 
-    def handback(self, text, uuid="handback-one", call_id="call-one"):
+    def handback(self, text, uuid="handback-one", call_id="call-one", stop_reason="tool_use"):
         """A hand-back turn as Claude Code records it: call, hook attachment, delivery, attachment."""
         call = {"type": "assistant", "agentId": self.agent, "uuid": uuid,
-                "message": {"role": "assistant", "model": self.model, "stop_reason": "tool_use",
+                "message": {"id": "message-" + uuid, "role": "assistant", "model": self.model,
+                            "stop_reason": stop_reason,
                             "content": [{"type": "tool_use", "id": call_id, "name": "SubagentHandback",
                                          "input": {"message": text}}]}}
         delivered = {"type": "user", "agentId": self.agent, "uuid": uuid + "-result", "parentUuid": uuid,
@@ -131,6 +132,21 @@ class ReviewOutputTests(unittest.TestCase):
                                              expected_source=result["sha256"])
         self.assertEqual(collected["sha256"], result["sha256"])
 
+    def test_native_handback_recorded_before_its_stop_reason_is_staged(self):
+        # Native Claude events are written per content block, often before the
+        # stream's stop reason arrives: the thinking block and the call both
+        # record a null stop_reason.
+        thinking = {"type": "assistant", "agentId": self.agent, "uuid": "thinking-one",
+                    "message": {"id": "message-handback-one", "role": "assistant", "model": self.model,
+                                "stop_reason": None,
+                                "content": [{"type": "thinking", "thinking": "private reasoning"}]}}
+        self.events[-1:] = [thinking] + self.handback(REPORT, stop_reason=None)
+        self.save()
+        result = self.stage()
+        self.assertEqual(result["transport"], "handback")
+        self.assertEqual(result["message_id"], "handback-one")
+        self.assertEqual((self.sidecar / self.relative).read_bytes(), REPORT.encode("utf-8"))
+
     def test_handback_without_its_successful_delivery_is_not_published(self):
         def result_content(turn, **changes):
             turn[2]["message"]["content"][0].update(changes)
@@ -148,6 +164,8 @@ class ReviewOutputTests(unittest.TestCase):
             "other source": lambda turn: turn[2].update(sourceToolAssistantUUID="reply-one"),
             "other parent": lambda turn: turn[2].update(parentUuid="reply-one"),
             "other tool": lambda turn: turn[0]["message"]["content"][0].update(name="SendMessage"),
+            "truncated call": lambda turn: turn[0]["message"].update(stop_reason="max_tokens"),
+            "refused call": lambda turn: turn[0]["message"].update(stop_reason="refusal"),
             "extra input": lambda turn: turn[0]["message"]["content"][0]["input"].update(path="r.md"),
             "text beside the call": lambda turn: turn[0]["message"]["content"].insert(
                 0, {"type": "text", "text": REPORT}),
@@ -165,6 +183,20 @@ class ReviewOutputTests(unittest.TestCase):
                 with self.assertRaises(isolation.IsolationError):
                     self.stage()
                 self.events[-len(turn):] = [self.reply(REPORT)]
+        self.assertFalse((self.sidecar / self.relative).exists())
+
+    def test_handback_beside_another_call_of_the_same_message_is_not_published(self):
+        # A sibling call recorded as its own event, even one whose result the host
+        # never wrote, makes the hand-back part of a mixed message.
+        sibling = {"type": "assistant", "agentId": self.agent, "uuid": "bash-one",
+                   "message": {"id": "message-handback-one", "role": "assistant", "model": self.model,
+                               "stop_reason": None,
+                               "content": [{"type": "tool_use", "id": "call-bash", "name": "Bash",
+                                            "input": {"command": "true"}}]}}
+        self.events[-1:] = [sibling] + self.handback(REPORT, stop_reason=None)
+        self.save()
+        with self.assertRaisesRegex(isolation.IsolationError, "completed final"):
+            self.stage()
         self.assertFalse((self.sidecar / self.relative).exists())
 
     def test_handback_keeps_the_identity_and_report_checks(self):

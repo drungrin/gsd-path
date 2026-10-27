@@ -4047,12 +4047,27 @@ HANDBACK_TOOL = "SubagentHandback"
 def _handback_reply(events: list, index: int) -> Optional[Tuple[int, str]]:
     """The delivery index and report of a hand-back that ends the child's turn at ``index``, or None.
 
-    The assistant event must hold only the hand-back call with only a ``message``; the next
-    conversational event must be the host's successful delivery result for that call.
+    The hand-back call, with only a ``message``, must be the message's only block besides
+    thinking, and its stop reason ``tool_use`` or not yet recorded; the next conversational
+    event must be the host's successful delivery result for that call.
     """
     event = events[index]
     blocks = event["message"].get("content")
-    if event["message"].get("stop_reason") != "tool_use" or not isinstance(blocks, list) or len(blocks) != 1:
+    # Claude Code may record the call before the stream's stop reason arrives, leaving it null.
+    if (event["message"].get("stop_reason") not in {"tool_use", None}
+            or not isinstance(blocks, list) or len(blocks) != 1):
+        return None
+    # Claude Code records each block of a message as its own event; other blocks of
+    # this message may only be thinking, so a report never rides beside another call.
+    identifier = event["message"].get("id")
+    if identifier is not None and any(
+        other is not event and other.get("type") == "assistant" and isinstance(other.get("message"), dict)
+        and other["message"].get("id") == identifier
+        and (not isinstance(other["message"].get("content"), list) or any(
+            not isinstance(block, dict) or block.get("type") not in {"thinking", "redacted_thinking"}
+            for block in other["message"]["content"]))
+        for other in events
+    ):
         return None
     call = blocks[0]
     if (not isinstance(call, dict) or call.get("type") != "tool_use" or call.get("name") != HANDBACK_TOOL
