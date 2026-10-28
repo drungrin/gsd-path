@@ -34,11 +34,10 @@ Fix:
 behavior and limits. The maintenance branch is merged into main with the
 `ours` strategy again.
 
-Validation: on main, the publication, isolation and install modules
-passed (26, 191 and 160 tests), Node tests passed (118, one skipped) and
-resource synchronization checked 616 resources. The full suite ran on the
-maintenance branch only, because the change is limited to `_handback_reply`
-and its tests.
+Validation: on main, the full Python suite passed (3,662 tests, 41
+skipped), the daemon suite passed (462 tests, 13 skipped), Node tests passed
+(118, one skipped), the lock usage check passed and resource synchronization
+checked 616 resources. The full suites ran after the release commit.
 
 Limits: the same as 1.6.2.32. No upstream submission.
 
