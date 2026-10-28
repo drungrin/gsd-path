@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.33**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.34**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -21,6 +21,79 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.34 — 2026-10-28
+
+Upstream package base remains `1.6.2`, synchronized through upstream main
+`f46c9b72`. The fork revision continues from 33 to 34. All three changes are
+contract text, delivered to consumer projects with their skills at a
+milestone boundary.
+
+Changes:
+
+- [`f8222903 — list pinned tests read-only and stop before breaking one`](https://github.com/drungrin/gsd-path/commit/f8222903082e21b1d115389d4ab2ee8b978cc979)
+  — applies upstream: it cherry-picks cleanly onto upstream main `a8fd65c3`.
+- [`9d73756c — account for every test change in a task patch`](https://github.com/drungrin/gsd-path/commit/9d73756cbc7adadfb555b7115fdcea2990ed7b4d)
+  — applies upstream the same way.
+- [`90032fb1 — start a fresh Claude child for each published review`](https://github.com/drungrin/gsd-path/commit/90032fb15d183fe42c17eed35360926495560a65)
+  — fork only: it serves the fork's `stage-review` transport.
+
+### Pinned tests
+
+- In one consumer milestone, four of about eleven extra coder attempts came
+  from an existing test outside the task's `files` that pinned a shape the
+  task changed. The coder found it only when Verify failed, once after a
+  complete implementation.
+- The planner now searches existing tests for assertions, fixtures and
+  setup that pin each changed shape. It lists them in Approach as
+  `Pinned test (read-only)`, without adding them to `files`.
+- Before writing product code, the coder stops with `NEEDS-ORCHESTRATOR`
+  for a pinned test its contract will break. It edits that test only after
+  the orchestrator adds it to `files` and names the assertions the contract
+  forces.
+- Two cross-model review panels rejected listing such tests in `files`
+  up front: a coder allowed to edit them could loosen a test instead of
+  fixing the product. One panel recommended this detection; the other
+  recommended permission with a mandatory review of the test diff. The owner
+  chose detection plus that review.
+
+### Test-change accounting in wave review
+
+- A wave reviewer only warned on disabled tests or Verify commands that
+  cannot fail. A loosened assertion or narrowed setup could pass review
+  whenever the task's criteria still held, including after the orchestrator
+  added a test to `files` on a plan-defect repair.
+- The reviewer now accounts for every changed or deleted test file,
+  assertion, fixture and setup in each task patch. Each changed or removed
+  assertion, and each setup change that narrows what a test exercises, needs
+  the clause that forces it: an acceptance criterion, the Interface
+  contract, Approach or a recorded `Orchestrator answer`. A change without
+  one is a blocking contract violation. The template's warning line now
+  names disabled tests instead of weakened ones.
+
+### Fresh child per published review
+
+- The Claude adapter told the orchestrator to resume a child for a
+  post-patch review. `stage-review` binds a transcript to the assignment the
+  child started with, so a resumed cycle 1 panel child could not publish its
+  cycle 2 report, and the panel ran again.
+- Each review assignment published through `stage-review` now gets a fresh
+  child. A review child is resumed only for a correction of its own
+  assignment.
+
+Validation: the full Python suite passed in eight parallel shards (3,662
+tests, 41 skipped, 7 minutes 40 seconds), the daemon suite passed (462
+tests, 13 skipped), Node tests passed (118, one skipped), the lock usage
+check passed and resource synchronization checked 616 resources.
+
+Limits:
+- These are model instructions; no helper enforces them. The pinned-test
+  search can miss a test, which falls back to today's block-and-repair path.
+- The test-change accounting may add review findings and cycles where a
+  test change is legitimate but its clause is not written down.
+- Consumers on the maintenance line keep their current skills until their
+  next milestone boundary.
+- No upstream submission has been made.
 
 ## 1.6.2.33 — 2026-10-27
 
