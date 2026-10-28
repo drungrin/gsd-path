@@ -59,10 +59,11 @@ Tasks reviewed: <count>
           (T001/AC1, T001/AC2) when one observation covers them. -->
 
 Warnings (non-blocking):
-- <weakened test / unfailable verify / none>
+- <disabled test / unfailable verify / none>
 
 Contract violations (blocking):
 - ❌ <task changed path outside its files list> — <evidence and fix direction>
+- ❌ <test assertion or setup change with no clause that forces it> — <evidence and fix direction>
 
 <!-- Repeat per task. -->
 

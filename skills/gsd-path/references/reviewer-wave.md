@@ -85,7 +85,14 @@ in the task commit. `base` names the task's starting commit in the
 coordinator repository; `member_base` names the starting commit in the
 member repository from which the member task branch and isolate were
 created. Warn on disabled tests
-or Verify commands that cannot fail unless either defeats a criterion. Set the
+or Verify commands that cannot fail unless either defeats a criterion.
+Account for every test change in each task patch: changed or deleted test
+files, assertions, fixtures, and test setup. Each changed or removed
+assertion, and each setup change that narrows what a test exercises, needs
+the clause that forces it: an acceptance criterion, the Interface contract,
+Approach, or a recorded `Orchestrator answer`. Changed behavior needs a check
+that covers it, not only a passing Verify. Record each change without such a
+clause under `Contract violations (blocking)`. Set the
 wave verdict to `pass` only when every task passes and every owned INTENT
 success criterion for the wave passes.
 
