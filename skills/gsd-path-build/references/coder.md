@@ -40,6 +40,11 @@ reality:
   `.gsd-path-coordinator/.project/tasks/` beside your live task copy —
   read them there.
 - Confirm every path the Verify command references exists or is declared.
+- For each `Pinned test (read-only)` in Approach that your contract will
+  break, stop before writing product code with `NEEDS-ORCHESTRATOR` naming
+  the test, the assertion, and the contract clause that breaks it. Edit it
+  only after the orchestrator adds it to `files` and names the assertions
+  the contract forces, and change nothing else in it.
 
 Route any mismatch before writing a line of product code: a clear defect — a
 named path or symbol does not exist as described — follows `## Stop and

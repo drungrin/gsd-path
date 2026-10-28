@@ -86,6 +86,12 @@ plan order above, which still keeps plan-invalidating risk in wave 1.
 - Make `files` exhaustive, including imports, routes, generated artifacts,
   tests, and wiring. Require disjoint files for same-wave tasks that are not
   dependency-ordered. A declared directory overlaps every path below it.
+- For each shape or behavior the task changes (a signature, field, schema,
+  status, message, list, or count), search existing tests outside `files`
+  for assertions, fixtures, and setup that pin it. List each in Approach as
+  `Pinned test (read-only): <path> — <what it pins>`. Do not add a test to
+  `files` only because it pins a changed shape: changing it needs an
+  orchestrator answer that names the assertions the contract forces.
 - Write an Interface contract in every task: `None` for independent tasks;
   for any tasks that exchange a symbol, signature, schema, endpoint, file
   format, or path, the exact shapes both sides code against — identical text

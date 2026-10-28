@@ -33,7 +33,9 @@ files:              # every file this task may touch — dispatch checks overlap
 
 <!-- Constraints, applicable pitfalls from research, and pointers to real
      paths, symbols, and schemas. Not an edit script — the coder owns the
-     how within these constraints and the acceptance criteria. -->
+     how within these constraints and the acceptance criteria. List each
+     existing test outside files that pins a shape this task changes as
+     `Pinned test (read-only): <path> — <what it pins>`. -->
 - <constraint or pointer>
 
 ## Interface contract
