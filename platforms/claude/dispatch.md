@@ -22,7 +22,11 @@ Apply this contract whenever a GSD Path skill delegates work:
 - Keep the returned agent ID when the host advertises a resume facility. For a
   correction, retry, post-patch review, repeated audit, or later milestone,
   resume that child when supported; otherwise start a fresh `general-purpose`
-  child. Always send the entire new self-contained brief. If a child with the
+  child. A native review published through `stage-review` is the exception:
+  its transcript stays bound to the assignment it started with, so each
+  review assignment (every cycle, lens, panel family, final or gap review)
+  gets a fresh child, and a review child is resumed only for a correction of
+  its own assignment. Always send the entire new self-contained brief. If a child with the
   same logical task name is still running, wait for it rather than dispatching
   a colliding target.
 - Resolve the phase's linked role brief to an absolute path. Include that path
