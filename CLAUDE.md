@@ -41,6 +41,15 @@ for maintaining this fork live here instead.
   draft, or propose one. Integrate finished branches into `main` locally, and
   push only when asked. Consumer projects keep their `pull-request`
   integration mode.
+- Scale verification to the change. For a narrow change, run the affected
+  test modules, the Node tests (`npm test`) and `npm run test:sync`. Before a
+  release that a consumer will install, an upstream sync, or a broad change,
+  also run the full Python suite, the daemon suite (`npm run test:daemon`) and
+  `npm run check:locks`. Run the full Python suite in eight parallel shards
+  (about nine minutes instead of about forty serially), with standard input
+  closed, because some guard tests hang on an open standard input:
+  `for i in 0 1 2 3 4 5 6 7; do node scripts/dev/py.mjs -m tests.ci_shard $i 8 < /dev/null > /tmp/shard-$i.log 2>&1 & done; wait`.
+  Record what ran in the release's `FORK.md` validation.
 - Branch names, commits, and PR text follow the Git metadata rule in
   `skills/gsd-path/references/operating-rules.md`. The runtime enforces it for
   everything it generates or publishes; keep that enforcement and its tests in
