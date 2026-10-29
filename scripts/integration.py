@@ -65,13 +65,11 @@ if __package__:
     from . import archive_milestone
     from . import azure_repos
     from . import pr_editorial
-    from . import usage_publish
     from .archive_milestone import ArchiveError
 else:
     import archive_milestone
     import azure_repos
     import pr_editorial
-    import usage_publish
     from archive_milestone import ArchiveError
 
 
@@ -866,10 +864,7 @@ def publish_editorial(project: Path, repository: PullRequestRepository, pull: di
         for line in clean.splitlines())
     title = pull.get('title')
     rewrite_title = (not title and stub) or bool(title and title.startswith('integrate:'))
-    try:
-        body = usage_publish.description(desired if stub else clean, document, usage_publish.previous_summary(project, document))
-    except (ValueError, OSError) as error:
-        raise ArchiveError(str(error)) from error
+    body = desired if stub else clean
     if isinstance(repository, azure_repos.Repository) and len(body.encode('utf-16-le')) // 2 > 4000:
         raise ArchiveError('Azure PR description exceeds 4000 characters; compact the editorial copy before publishing')
     try:
@@ -899,9 +894,6 @@ def publish_editorial(project: Path, repository: PullRequestRepository, pull: di
         pr_editorial.link(document, repository, pull, azure_cli_json)
     except ValueError as error:
         raise ArchiveError(str(error)) from error
-    if document.get('usage'):
-        pull['usage_publication'] = usage_publish.publish(project, repository, pull, document,
-                                                         azure_cli_json, github_api_json)
     return pull
 
 
@@ -1276,7 +1268,6 @@ def integrate_pull_request(
             "archive": archive_path,
             "commit": ship_commit,
             "pull_request": pull["html_url"],
-            **({'usage_publication': pull['usage_publication']} if pull.get('usage_publication') else {}),
         }
 
     merge_commit = pull["merge_commit_sha"]
@@ -1329,11 +1320,6 @@ def integrate_pull_request(
         )
     proven = validate_integrated(project, archive_milestone.milestone_slug(state), check_work_items=False)
     path = pr_editorial.publication_path(project, archive_path, 'coordinator')
-    if path.exists():
-        document = publication(project, archive_path, 'coordinator')
-        if document.get('usage'):
-            proven['usage_publication'] = usage_publish.publish(project, repository, pull, document,
-                                                                azure_cli_json, github_api_json)
     if path.exists() and json.loads(path.read_text(encoding='utf-8')).get('work_items'):
         document = publication(project, archive_path, 'coordinator')
         synchronization = pr_editorial.synchronize(project, archive_path, 'coordinator', document['reviewed_head'],
@@ -2302,8 +2288,7 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
         pull = publish_editorial(coordinator, repository, pull, document, bound, reviewed_head, default)
         require_pull_request_merge_provenance(repository, pull["number"])
         return {"status": "awaiting-merge", "mode": "pull-request", "member": member,
-                "pull_request": pull["html_url"],
-                **({'usage_publication': pull['usage_publication']} if pull.get('usage_publication') else {})}
+                "pull_request": pull["html_url"]}
     merge = pull["merge_commit_sha"]
     if pull["state"] != "closed" or not isinstance(merge, str):
         raise ArchiveError(f"member {member} pull request merge metadata is invalid")
@@ -2322,12 +2307,6 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
             run_git(checkout, "update-ref", f"refs/remotes/origin/tags/{tag_name}", tag_object),
             "refresh member milestone-tag ref")
     proven = validate_member_integrated(coordinator, member, archive_path, reviewed_head, check_work_items=False)
-    path = pr_editorial.publication_path(coordinator, archive_path, member)
-    if path.exists():
-        document = publication(coordinator, archive_path, member, reviewed_head)
-        if document.get('usage'):
-            proven['usage_publication'] = usage_publish.publish(coordinator, repository, pull, document,
-                                                                azure_cli_json, github_api_json)
     synchronization = pr_editorial.synchronize(coordinator, archive_path, member, reviewed_head,
                                                repository, pull, merge, azure_cli_json)
     if synchronization['status'] == 'pending':
@@ -2639,8 +2618,7 @@ def close_members(repo: Path, adopt: Optional[Mapping[str, str]] = None) -> dict
         if result.get("status") == "awaiting-merge":
             row["pull_request"] = result["pull_request"]
             save()
-            return {"status": "awaiting-merge", "member": name, "pull_request": result["pull_request"],
-                    **({'usage_publication': result['usage_publication']} if result.get('usage_publication') else {})}
+            return {"status": "awaiting-merge", "member": name, "pull_request": result["pull_request"]}
         row.update(status="integrated", merge=result["merge"], tag=result["tag"],
                    **({"adopted": True} if result.get("adopted") else {}))
         if 'work_items' in result:
