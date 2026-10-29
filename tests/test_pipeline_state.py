@@ -1450,6 +1450,32 @@ class PipelineStateTests(unittest.TestCase):
         ):
             pipeline_state.route_state(repo)
 
+    def test_shipped_milestone_closed_recovery_survives_a_squashed_integration(self) -> None:
+        # After a squash or rebase integration, the next milestone's branch
+        # starts from a default branch that does not contain the recovery base.
+        repo = self._plan_intent_correction_repo()
+        pipeline_state.transition_state(
+            repo,
+            {"phase": "plan", "status": "active", "branch": "feature/milestone-001", "archive": None},
+            {"phase": "define", "status": "active"},
+            "plan intent corrections requested",
+        )
+        state = repo / ".project/STATE.md"
+        closed = state.read_text(encoding="utf-8") + "- 2026-08-24 — plan — plan approved\n"
+        run_git(repo, "commit", "-qam", "fixture: closed recovery")
+        recovery = pipeline_state._build_recovery().context(repo, closed)
+        run_git(repo, "checkout", "-q", "--orphan", "feature/milestone-002")
+        run_git(repo, "commit", "-q", "-m", "fixture: squashed integration")
+        shipped = re.sub(r"(?m)^status: \w+", "status: done", re.sub(r"(?m)^phase: \w+", "phase: shipped", closed, 1), 1)
+        shipped = re.sub(r"(?m)^archive: \S+", "archive: .project/archive/001-second", shipped, 1)
+        state.write_bytes(shipped.encode("utf-8"))
+        result = pipeline_state._build_recovery().context(repo, shipped)
+        self.assertEqual((result["source"], result["active"]), ("plan", False))
+        # Before shipment the same history still has to descend to HEAD.
+        state.write_bytes(closed.encode("utf-8"))
+        with self.assertRaisesRegex(pipeline_state.PipelineStateError, "not an ancestor of HEAD"):
+            pipeline_state._build_recovery().context(repo, closed)
+
     def test_transition_cannot_enter_build_on_lookahead_track(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

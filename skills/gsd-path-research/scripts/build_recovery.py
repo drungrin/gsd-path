@@ -105,7 +105,9 @@ def context(repo: Path, text: str | None = None) -> dict | None:
                 recovery["active"] = False
             elif source == "plan" and event == "plan approved":
                 recovery["active"] = False
-    if recovery:
+    # A shipped milestone's closed recovery is history: a squash or rebase
+    # integration leaves its base off the next milestone's HEAD.
+    if recovery and not (current.phase == "shipped" and not recovery["active"]):
         if not state._is_ancestor(repo, recovery["base"], "HEAD"):
             raise state.PipelineStateError("build recovery base is not an ancestor of HEAD")
         base_text = checkpoint_runtime()._git_text_at(repo, recovery["base"], ".project/STATE.md")
