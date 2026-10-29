@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.35**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.36**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -21,6 +21,41 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.36 — 2026-10-29
+
+Upstream package base remains `1.6.2`, synchronized through upstream main
+`f46c9b72`. The fork revision continues from 35 to 36.
+
+Fix:
+[`a3fa9a7d — keep a shipped milestone's closed build recovery as history`](https://github.com/drungrin/gsd-path/commit/a3fa9a7d4b5f958e88d7061831ff9a4a6f6a631c)
+— applies upstream: it cherry-picks cleanly onto upstream main `a8fd65c3`,
+which has the same check. Upstream reaches it through a rebase-merged pull
+request; the fork also reaches it through its squash integration.
+
+### Next-milestone handoff after a squash integration
+
+- The STATE Log keeps every milestone's history. A closed build recovery
+  record of the shipped milestone still matched while STATE was `shipped`
+  on the old bound branch, and its base had to be an ancestor of HEAD.
+- After a squash or rebase integration, `bind-next` starts the next
+  milestone's branch from a default branch that does not contain that base,
+  so every state transition failed with "build recovery base is not an
+  ancestor of HEAD" and the shipped milestone could not hand off.
+- A shipped milestone's closed recovery is now kept as history without the
+  ancestry check. Active recoveries and recoveries before shipment are still
+  checked.
+
+Validation: the new test fails without the change. Read-only against the
+blocked consumer, the fixed runtime returns the closed recovery and the
+pinned runtime raises the error. The full Python suite passed in eight
+parallel shards (3,628 tests, 7 minutes 48 seconds), the daemon suite
+passed (462 tests, 13 skipped), Node tests passed (118, one skipped), the
+lock usage check passed and resource synchronization checked 556 resources.
+
+Limits: the consumer that hit this is in the middle of its handoff, where
+the new branch must stay at the recorded base, so its pin cannot change
+until the next milestone's inspect. No upstream submission has been made.
 
 ## 1.6.2.35 — 2026-10-29
 
