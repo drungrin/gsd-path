@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.34**. Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.35**. Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -21,6 +21,49 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.35 — 2026-10-29
+
+Upstream package base remains `1.6.2`, synchronized through upstream main
+`f46c9b72`. The fork revision continues from 34 to 35.
+
+Removal:
+[`fdfa5424 — remove token usage collection and PR publication`](https://github.com/drungrin/gsd-path/commit/fdfa5424130929476579bcb00f6c0cf4a5398834)
+— fork only: upstream never had this feature.
+
+### Token usage in pull requests removed
+
+- The fork collected Claude Code token usage during each milestone and, at
+  ship, published a usage and cost summary in the PR description plus a
+  model table comment. The owner now gets milestone observability from a
+  separate observer, and nothing else read the collection.
+- Removed `usage_collect.py`, `usage_report.py`, `usage_publish.py`, the
+  offline price snapshot `usage_prices.py` and its generator `gen_prices.py`,
+  with their generated skill copies and the test module.
+- Removed the hooks that collected usage after `land`, `land-member`,
+  `stage-review` and `collect-artifact`, after each dispatch-driver child,
+  and in `pr_editorial.py prepare`, and the usage section and comment
+  published by `integration.py`.
+- Removed the collection instructions from the operating rules and the ship
+  skill, and the usage passages from the README and WORKFLOW.
+- Editorial documents prepared earlier that still carry `usage` or
+  `usage_thread` load and render without them.
+- The daemon's usage view reads host transcripts directly and is unchanged.
+
+Validation: the full Python suite passed in eight parallel shards (3,627
+tests, 35 fewer than before with the usage tests removed), the daemon
+suite passed (462 tests, 13 skipped), Node tests passed (118, one
+skipped), the lock usage check passed and resource synchronization checked
+556 resources.
+
+Limits:
+- Consumer projects on the maintenance line (1.6.2.32) keep the feature
+  until they move to this line at a milestone boundary; their current
+  milestones still publish usage at ship, by the owner's choice.
+- Local ledgers under `.git/gsd-path/usage/` and
+  `.git/gsd-path/usage-publication/` in consumer repositories are no longer
+  read and can be deleted.
+- No upstream submission applies.
 
 ## 1.6.2.34 — 2026-10-28
 
