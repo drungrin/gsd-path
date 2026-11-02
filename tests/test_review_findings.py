@@ -699,6 +699,56 @@ class RepairAttemptsTest(unittest.TestCase):
         self.assertEqual(len(review_findings.repair_attempts(
             fixture.root, fixture.project, ["Renders a table"])["Renders a table"]), 2)
 
+    def withdraw(self, fixture, task_id):
+        path = fixture.project / "tasks" / f"{task_id}-fix-wave-1-cycle-1.md"
+        write(path, path.read_text(encoding="utf-8").replace("status: done", "status: withdrawn")
+              + '\n## Log\n\n- Withdrawn — 2026-10-27: "owner ruling"\n')
+
+    def test_withdrawing_a_completed_repair_keeps_its_attempt(self):
+        # An owner may withdraw a landed task (#483); only `reconsidered` restarts a count.
+        fixture = self.fixture()
+        write(fixture.project / "review" / "wave-1.cycle3.panel.md",
+              PANEL.format(cycle=3, count=1, criterion="T001 acceptance 1 (t001_ac1)"))
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T004")
+        self.repair(fixture, "T005", status="pending")
+        self.commit(fixture, "build: record T003 and T004 landings")
+        self.withdraw(fixture, "T004")
+        self.repair(fixture, "T005", status="withdrawn", extra='\n## Log\n\n- Withdrawn — 2026-10-27: "owner ruling"\n')
+        self.commit(fixture, "build: record the owner withdrawals")
+        counts = review_findings.repair_attempts(fixture.root, fixture.project, ["Parses CSV rows"])
+        # T004 completed before its withdrawal and still counts; T005 never completed.
+        self.assertEqual(self.tasks(counts["Parses CSV rows"]), ["T003", "T004"])
+        self.assertEqual(review_findings.panel_repairs(fixture.root, ".project", 1, 3)["repeated"],
+                         ["T001 acceptance 1 (t001_ac1): quoted rows still fail"])
+        # A recorded snapshot holding the tombstone counts it the same way; a tombstone whose
+        # `status: done` was never committed does not count.
+        withdrawals = self.git(fixture, "rev-parse", "HEAD").strip()
+        self.repair(fixture, "T006")
+        self.withdraw(fixture, "T006")
+        self.commit(fixture, "build: record a withdrawal that never landed")
+        self.assertEqual(self.tasks(review_findings.repair_attempts(
+            fixture.root, fixture.project, ["Parses CSV rows"], commit=withdrawals)["Parses CSV rows"]),
+            ["T003", "T004"])
+        self.assertEqual(self.tasks(review_findings.repair_attempts(
+            fixture.root, fixture.project, ["Parses CSV rows"])["Parses CSV rows"]), ["T003", "T004"])
+
+    def test_reconsider_also_restarts_a_withdrawn_completed_repair(self):
+        fixture = self.fixture()
+        write(fixture.project / "review" / "wave-1.cycle2.panel.md",
+              PANEL.format(cycle=2, count=1, criterion="T001 acceptance 1"))
+        self.repair(fixture, "T003")
+        self.repair(fixture, "T004")
+        self.commit(fixture, "build: record T003 and T004 landings")
+        self.withdraw(fixture, "T004")
+        self.commit(fixture, "build: record the owner withdrawal")
+        event = review_findings.panel_repairs(fixture.root, ".project", 1, 2)["reconsider_event"]
+        self.assertEqual(event, 'wave 1 cycle 2 reconsidered: ["Parses CSV rows"]')
+        self.commit(fixture, "build: record wave 1 cycle 2 panel ruling",
+                    "wave 1 cycle 2 panel ruling: Reconsider the component approach", event)
+        self.assertEqual(review_findings.repair_attempts(
+            fixture.root, fixture.project, ["Parses CSV rows"])["Parses CSV rows"], [])
+
     def test_a_reused_review_name_reads_its_own_publication(self):
         fixture = self.fixture()
         fixture.lens("contract", t001_fails=[PARSES.format("no")])

@@ -621,7 +621,8 @@ dispatch contract and perform steps 1–5 by hand.
    wave, with those cycles, or that two completed repair tasks already
    carried. Every group reports those tasks as `repair_attempts`. They are
    counted per criterion, as the review recorded them, across waves and
-   build recoveries, like the blocked cycles in `history`. Reusing a set-aside
+   build recoveries, like the blocked cycles in `history`. A completed repair
+   that the owner later withdraws still counts. Reusing a set-aside
    review's fix tasks is a separate rule. The count restarts for the criteria
    that `reconsider_event` names once that event is committed after a
    `Reconsider the component approach` ruling.

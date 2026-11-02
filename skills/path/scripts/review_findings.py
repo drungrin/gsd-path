@@ -851,9 +851,29 @@ def _reconsider_resets(repo: Path, project: Path, commit: Optional[str]) -> List
             introduced = _introducing_commit(repo, state, lines[index], head, lines[:index + 1].count(lines[index]))
             if introduced is None:
                 continue
-            done = {repair["task"] for repair in repair_tasks(repo, project, introduced) if repair["status"] == "done"}
+            done = {repair["task"] for repair in repair_tasks(repo, project, introduced)
+                    if _repair_completed(repo, repair, introduced)}
             resets.append((criteria, done))
     return resets
+
+
+def _repair_completed(repo: Path, repair: dict, commit: Optional[str]) -> bool:
+    """Whether a repair counts as a completed attempt in the snapshot read at ``commit``.
+
+    An owner may withdraw a task after it landed (#483). Its tombstone keeps the attempt it made: only a
+    recorded `reconsidered` event restarts a criterion's count, so a withdrawal must not lower it. A
+    withdrawn task counts when its committed history recorded `status: done` at or before the snapshot.
+    """
+    if repair["status"] == "done":
+        return True
+    if repair["status"] != "withdrawn":
+        return False
+    try:
+        relative = Path(repair["path"]).relative_to(repo).as_posix()
+    except ValueError:
+        return False
+    completed = _completed_at(repo, relative)
+    return completed is not None and (commit is None or _descends(repo, completed, commit))
 
 
 def repair_attempts(repo: Path, project: Path, identities: Sequence[str], exclude: Sequence[str] = (),
@@ -865,7 +885,7 @@ def repair_attempts(repo: Path, project: Path, identities: Sequence[str], exclud
     """
     resets = _reconsider_resets(repo, project, commit)
     repairs = [repair for repair in repair_tasks(repo, project, commit)
-               if repair["status"] == "done" and repair["task"] not in exclude]
+               if _repair_completed(repo, repair, commit) and repair["task"] not in exclude]
     counts: Dict[str, List[dict]] = {}
     for identity in identities:
         reset = set().union(*(done for criteria, done in resets if identity in criteria))
