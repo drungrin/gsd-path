@@ -84,7 +84,7 @@ Without MEMBERS.md nothing changes.
 
 The router's verified new-GitHub-repository transaction is the sole greenfield
 exception: STATE.md already exists at `define/active`, `branch` is the approved
-`gsd-path/M001` branch, and `.project/REPOSITORY.md` contains the
+`feature/milestone-001` branch, and `.project/REPOSITORY.md` contains the
 fixed-format remote, remote-default SHA, clean default checkout, branch, and
 primary worktree. Verify that artifact and the current branch/worktree before
 interviewing. The required classifier returns `owned` before signal scanning,
