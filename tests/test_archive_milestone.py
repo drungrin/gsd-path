@@ -5774,6 +5774,39 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
                 self.assertNotEqual(forged.returncode, 0)
                 self.assertIn("integration is unverified", forged.stderr)
 
+    def test_installed_hooks_allow_a_commit_from_a_linked_worktree(self):
+        # git exports GIT_DIR to hooks; a linked worktree's commit must still
+        # pass the guard once integration is verified (#555).
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "primary"
+            repo.mkdir()
+            self.make_publishable_bound_repo(repo, root / "origin.git")
+            (repo / "src/demo.py").write_bytes("value = 'integration'\n".encode("utf-8"))
+            self.git(repo, "add", "src/demo.py")
+            changed = self.git(repo, "commit", "-qm", "fixture product change")
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            self.restamp_final_review(repo)
+            with mock.patch.dict(os.environ, {"HOME": str(root / "home"), "USERPROFILE": str(root / "home")}):
+                installed = self.run_command(
+                    sys.executable, "-B", str(GIT_GUARD_SCRIPT.with_name("install.py")),
+                    "--hooks-init", "--claude", "--project", str(repo), cwd=PROJECT_ROOT)
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+                self.git(repo, "add", "-A")
+                setup = self.git(repo, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture installed hooks")
+                self.assertEqual(setup.returncode, 0, setup.stderr)
+                self.restamp_final_review(repo)
+                archive_name, ship_sha = self.ship_canonical_bound(repo)
+                result = self.integrate(repo)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                merge = json.loads(result.stdout)["integrate"]
+                linked = root / "linked"
+                self.git(repo, "worktree", "add", "-q", "-b", "follow-up", str(linked), merge)
+                (linked / "src/demo.py").write_bytes("value = 'follow-up'\n".encode("utf-8"))
+                self.git(linked, "add", "src/demo.py")
+                commit = self.git(linked, "commit", "-qm", "follow-up fix")
+                self.assertEqual(commit.returncode, 0, commit.stderr)
+
     def test_integrate_publishes_and_completed_retry_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -6357,6 +6390,41 @@ Carried forward: 1 DOCS-AUDIT ruling(s)
             self.assertEqual(payload["commit"], ship_sha)
             self.assertEqual(payload["integrate"], merge_sha)
             self.assertEqual(payload["tag"], f"milestone/{archive_name}")
+
+    def test_status_reads_origin_refs_with_one_ls_remote(self):
+        # Six serial ls-remote round trips pushed the daemon's status past
+        # its budget; the whole live set is one batched query (#558).
+        from scripts import integration, pipeline_state
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "primary"
+            repo.mkdir()
+            self.make_publishable_bound_repo(repo, root / "origin.git")
+            (repo / "src/demo.py").write_bytes("value = 'integration'\n".encode("utf-8"))
+            self.git(repo, "add", "src/demo.py")
+            changed = self.git(repo, "commit", "-qm", "fixture product change")
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            self.restamp_final_review(repo)
+            archive_name, ship_sha = self.ship_canonical_bound(repo)
+            result = self.integrate(repo)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            remote_calls = []
+            real_run_git = integration.run_git
+
+            def counting_run_git(project, *arguments, **keywords):
+                if arguments and arguments[0] == "ls-remote":
+                    remote_calls.append(arguments)
+                return real_run_git(project, *arguments, **keywords)
+
+            with mock.patch.object(integration, "run_git", side_effect=counting_run_git):
+                status = pipeline_state.status_state(repo)
+            self.assertEqual(status["completion"]["status"], "verified", status["completion"])
+            self.assertEqual(remote_calls, [
+                ("ls-remote", "--refs", "origin",
+                 "refs/heads/main", f"refs/tags/milestone/{archive_name}",
+                 "refs/heads/feature/milestone-001"),
+            ], remote_calls)
 
     def test_completed_milestone_releases_ordinary_work_only_with_proof(self):
         from scripts import pipeline_state

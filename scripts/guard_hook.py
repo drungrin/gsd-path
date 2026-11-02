@@ -424,6 +424,10 @@ GIT_REASONS = {
         "(STATE.branch); create a new branch instead"
     ),
     "update-ref": "git update-ref deletion destroys refs the recovery protocol inspects",
+    "owned-refspec": (
+        "git commands naming refs/gsd-path/ or runtime-hotfix are denied: that "
+        "namespace holds orchestrator-owned authorizations an agent must not create or move"
+    ),
     "worktree": (
         "git worktree remove --force discards uncommitted task work the recovery "
         "protocol needs; commit or stash it, then remove without --force"
@@ -1462,6 +1466,172 @@ def _strictly_inside(candidate, root):
         return any(_same_existing_path(ancestor, root) for ancestor in candidate.parents)
 
 
+# Fork task branches are chore/task-<slug>, where the slug is the
+# lowercase Conventional Branch form of the task id or, for a member task,
+# of <project>-<task id> (isolation.task_branch_name and
+# member_task_branch_name). The task worktree directory uses the same slug.
+TASK_BRANCH_PREFIX = "chore/task-"
+TASK_AUTHORIZATION_PREFIX = "refs/gsd-path/task-authorizations/"
+TASK_SLUG_SHAPE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _task_branch_slug(value):
+    """isolation's branch slug: lowercase, every other run collapsed to one dash."""
+    return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+
+
+def _read_only_git(directory, *arguments):
+    """Read-only git lookup for guard decisions; callers handle failure."""
+    return subprocess.run(
+        ["git", "-c", "core.quotepath=false", "-C", str(directory), *arguments],
+        capture_output=True, encoding="utf-8", errors="replace", check=False,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+
+
+def _worktree_entries(checkout):
+    """(path, branch) for every worktree registered in checkout's repo."""
+    listing = _read_only_git(checkout, "worktree", "list", "--porcelain")
+    if listing.returncode != 0:
+        return None
+    entries = []
+    for block in listing.stdout.split("\n\n"):
+        path = None
+        branch = None
+        for line in block.splitlines():
+            if line.startswith("worktree "):
+                path = line[len("worktree "):]
+            elif line.startswith("branch "):
+                branch = line[len("branch "):]
+        if path is not None:
+            entries.append((Path(path).resolve(strict=False), branch))
+    return entries
+
+
+def _task_id_for(checkout, entries):
+    """The task branch slug when a registered worktree sits on chore/task-<slug>."""
+    for path, branch in entries:
+        if path != checkout:
+            continue
+        if branch is None or not branch.startswith("refs/heads/" + TASK_BRANCH_PREFIX):
+            return None
+        task_id = branch[len("refs/heads/" + TASK_BRANCH_PREFIX):]
+        return task_id if TASK_SLUG_SHAPE.fullmatch(task_id) else None
+    return None
+
+
+def _task_is_authorized(checkout, task_id):
+    """An active dispatch authorization exists for the task.
+
+    refs/gsd-path/task-authorizations/<id> is written only by activation
+    and removed by deactivation and retire; agent writes under
+    refs/gsd-path/ are denied (#480), so the ref is the one acceptance
+    input a session cannot forge. The ref keeps the task id (or
+    <project>-<task id>) as written, while the branch carries its slug, so
+    the authorization is the one ref whose name has the branch's slug. Two
+    such refs are ambiguous and refuse, as isolation's retirement does.
+    """
+    listing = _read_only_git(
+        checkout, "for-each-ref", "--format=%(refname)", TASK_AUTHORIZATION_PREFIX
+    )
+    if listing.returncode != 0:
+        return False
+    matches = [
+        ref for ref in listing.stdout.splitlines()
+        if ref.startswith(TASK_AUTHORIZATION_PREFIX)
+        and _task_branch_slug(ref[len(TASK_AUTHORIZATION_PREFIX):]) == task_id
+    ]
+    return len(matches) == 1
+
+
+def _task_placement_matches(checkout, common, task_id, entries, roots):
+    """The worktree occupies one of the pipeline's task/<id> slots.
+
+    Three legitimate layouts exist: the pinned workspace receipt's
+    root/task/<id>, the legacy <primary>.gsd-path/task/<id> beside a
+    registered worktree of the same repository (worktree_path prefers a
+    registered one), and the unpinned workspace shape
+    <root>/<id1>/<id2>/task/<id>.
+    """
+    receipts = common / "gsd-path" / "workspaces"
+    if os.path.lexists(receipts) and not is_link_like(receipts) and receipts.is_dir():
+        try:
+            with os.scandir(receipts) as items:
+                names = sorted(item.name for item in items if item.name.endswith(".json"))
+        except OSError:
+            names = None
+        if names is not None:
+            for name in names:
+                try:
+                    data = json.loads((receipts / name).read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(data, dict) or not isinstance(data.get("root"), str):
+                    continue
+                root = Path(data["root"])
+                if not root.is_absolute():
+                    continue
+                if checkout == (root / "task" / task_id).resolve(strict=False):
+                    return True
+    for path, _branch in entries:
+        legacy = path.parent / f"{path.name}.gsd-path" / "task" / task_id
+        if checkout == legacy.resolve(strict=False):
+            return True
+    if checkout.parent.name == "task" and any(
+        _strictly_inside(checkout.parent.parent, root) for root in roots
+    ):
+        return True
+    return False
+
+
+def _authorized_task_checkout(candidate, commons, roots):
+    """The actively-dispatched task worktree owning a candidate, or None.
+
+    A parallel isolate lives under a state root the hook's working
+    directories never name, so the checkout is resolved from the operand
+    itself (#546). Branch names and worktree registration are agent-
+    creatable, so they are necessary but not sufficient: acceptance also
+    requires the checkout to belong to one of the session's own
+    repositories — whose .git trees the guard protects from shell
+    writes, making the authorization ref and workspace receipts under
+    them unforgeable — plus a pipeline task placement and strict
+    containment. Symlinked path components refuse rather than resolve
+    through the link.
+    """
+    if _path_has_symlink_component(candidate):
+        return None
+    probe = candidate if os.path.isdir(candidate) else candidate.parent
+    while not os.path.lexists(probe) and probe.parent != probe:
+        probe = probe.parent
+    result = _read_only_git(probe, "rev-parse", "--show-toplevel", "--git-common-dir")
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != 2:
+        return None
+    checkout = Path(lines[0]).resolve(strict=False)
+    common = Path(lines[1])
+    if not common.is_absolute():
+        common = probe / common
+    common = common.resolve(strict=False)
+    if common not in commons:
+        # The session repositories' .git trees are what the guard protects
+        # from shell writes, so refs and receipts under them are the
+        # unforgeable anchor. Trust in `commons` is the working-directories
+        # trust every existing carve-out shares: a host that lets a session
+        # choose its tool working directory chooses this trust root too.
+        return None
+    entries = _worktree_entries(checkout)
+    if entries is None:
+        return None
+    task_id = _task_id_for(checkout, entries)
+    if task_id is None:
+        return None
+    if not _task_is_authorized(checkout, task_id):
+        return None
+    if not _task_placement_matches(checkout, common, task_id, entries, roots):
+        return None
+    return checkout
+
+
 def destructive_state_root_reason(operands, working_directories):
     """Why a destructive operand is pipeline state, or None when outside it.
 
@@ -1491,16 +1661,32 @@ def destructive_state_root_reason(operands, working_directories):
         roots = _workspace_roots_for_commons(commons)
     except ValueError as error:
         return f"pipeline workspace state cannot be resolved: {error}"
+    authorized = set()
     for operand in operands:
         for candidate in target_paths(operand, directories, Path(os.getcwd())):
             for root in roots:
                 # A managed worktree under a state root is the agent's own
                 # checkout; deletes inside it are ordinary product work.
-                if _deletion_overlaps(candidate, root) and not any(
+                # A cached acceptance never covers a lexical candidate with
+                # a symlinked component: each such candidate is re-judged.
+                covered = any(
                     _strictly_inside(candidate, checkout) and _strictly_inside(checkout, root)
                     for checkout in checkouts
-                ):
-                    return f"destructive target is pipeline state: {operand}"
+                ) or (
+                    not _path_has_symlink_component(candidate)
+                    and any(
+                        _strictly_inside(candidate, checkout)
+                        and _strictly_inside(checkout, root)
+                        for checkout in authorized
+                    )
+                )
+                if _deletion_overlaps(candidate, root) and not covered:
+                    owner = _authorized_task_checkout(candidate, commons, roots)
+                    if owner is None or not (
+                        _strictly_inside(candidate, owner) and _strictly_inside(owner, root)
+                    ):
+                        return f"destructive target is pipeline state: {operand}"
+                    authorized.add(owner)
     return None
 
 
@@ -1562,10 +1748,13 @@ def literal_path(operand):
     if len(operand) >= 2 and operand[0] in "\"'" and operand[-1] == operand[0]:
         operand = operand[1:-1]
     # A space is safe here: the operand is one shlex unit, so it cannot carry a
-    # second word; injection-relevant characters stay excluded.
-    pattern = r"[A-Za-z0-9._/ -]+"
+    # second word; injection-relevant characters stay excluded. \w keeps the
+    # class to Unicode letters, digits, and underscore — quotes, shell
+    # metacharacters, globs, and control characters stay refused, while a
+    # literal path with non-ASCII letters is usable (#546).
+    pattern = r"[\w./ -]+"
     if os.name == "nt":
-        pattern = r"(?:[A-Za-z]:(?=[/\\]))?[A-Za-z0-9._/\\ -]+"
+        pattern = r"(?:[A-Za-z]:(?=[/\\]))?[\w./\\ -]+"
     return operand if re.fullmatch(pattern, operand) is not None else None
 
 
@@ -4346,6 +4535,12 @@ def destructive_git_reason(
         if invocation is None:
             continue
         command, arguments, git_options = invocation
+        if any(
+            protected in word.casefold()
+            for word in words
+            for protected in ("refs/gsd-path/", "runtime-hotfix")
+        ):
+            return GIT_REASONS["owned-refspec"]
         # Git matches its own commands by exact case, but alias names in any case.
         built_in = (
             command_invocation(words)[1][-len(arguments) - 1] in GIT_BUILT_IN_COMMANDS
@@ -4568,20 +4763,48 @@ def bundled_helper_invocation(command, tokens, working_directories, helpers=PIPE
     runtime = here / "runtime"
     if (here / "runtime.json").exists():
         try:
-            from status_runtime import resolve_runtime
-            runtime = resolve_runtime(here.parent)
-        except (OSError, ValueError):
+            # Option (i) on #468: acceptance is the pinned runtime plus the
+            # validated successors its own hashed manifest names. The walk
+            # comes from the PINNED runtime's own bytes — never the project
+            # launcher's preloaded module, which may be stale or divergent —
+            # and exactly the bytes whose sha256 the pinned manifest names:
+            # read once, hash against the digest-proven manifest, execute
+            # the verified buffer, so no swap between check and exec can
+            # run unproven code.
+            import hashlib
+            import types
+
+            from status_runtime import (
+                declaration, manifest_digest, runtime_home, validate_runtime,
+            )
+            pin = declaration(here.parent)
+            validate_runtime(pin)
+            root = runtime_home() / pin["digest"]
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            if (not isinstance(manifest, dict)
+                    or manifest_digest(manifest) != pin["digest"]):
+                return False
+            expected = manifest.get("files", {}).get("status_runtime.py")
+            data = (root / "status_runtime.py").read_bytes()
+            if (not isinstance(expected, str)
+                    or hashlib.sha256(data).hexdigest() != expected):
+                return False
+            module = types.ModuleType("gsd_path_pinned_status_runtime")
+            exec(compile(data, str(root / "status_runtime.py"), "exec"), module.__dict__)
+            runtimes = module.accepted_runtime_dirs(here.parent)
+        except (OSError, ValueError, TypeError, ImportError, AttributeError):
             return False
-    elif not runtime.exists():
-        runtime = here
-    runtime = runtime.resolve()
+    else:
+        if not runtime.exists():
+            runtime = here
+        runtimes = {runtime.resolve()}
     for base in working_directories or [os.getcwd()]:
         try:
             # A Git Bash /c/... operand names the C: drive, not a folder named c.
             script = (Path(base) / native_path_text(operand)).resolve()
             if (
                 script.name in helpers
-                and (script.is_relative_to(runtime) or (
+                and (any(script.is_relative_to(runtime_dir) for runtime_dir in runtimes) or (
                     script.name == "status_runtime.py" and script == here / "status_runtime.py"
                 ))
                 and script.is_file()
@@ -4948,6 +5171,35 @@ def closed_shell_execution_reason(
     return None
 
 
+def runtime_hotfix_invocation(tokens):
+    """True when any simple command, prefixed or wrapped, names isolation.py then runtime-hotfix."""
+    for segment in command_segments(tokens):
+        for index, (token, following) in enumerate(zip(segment, [*segment[1:], ""])):
+            if following != "runtime-hotfix":
+                continue
+            clustered = re.fullmatch(r"-[A-Za-ln-z]*m(.+)", token)
+            if clustered:
+                module = clustered.group(1)
+            elif any(
+                earlier.startswith("-") and not earlier.startswith("--") and "m" in earlier
+                for earlier in segment[:index]
+            ):
+                module = token
+            else:
+                module = None
+            if token == "-" or token.replace("\\", "/").rsplit("/", 1)[-1] == "isolation.py" or (
+                module is not None and module.rsplit(".", 1)[-1] == "isolation"
+            ):
+                return True
+        try:
+            wrapped = wrapped_command_tokens(segment, expand_parameters=False)
+        except ValueError:  # the shape checks below refuse what cannot be unwrapped
+            continue
+        if wrapped is not None and runtime_hotfix_invocation(wrapped):
+            return True
+    return False
+
+
 def command_denial(command, working_directories, allow_destructive=True):
     """Return why a shell command is denied, or None when it may run."""
     working_directories = working_directories or [os.getcwd()]
@@ -4963,6 +5215,16 @@ def command_denial(command, working_directories, allow_destructive=True):
         bundled_helper = bundled_helper_invocation(
             command, tokens, working_directories, ARCHIVE_CONTEXT_HELPERS
         )
+        # runtime-hotfix is an operator-only recovery (#480): its receipt is
+        # the owner authorization a landing later trusts, so an agent running
+        # the command self-authorizes. Deny by subcommand name regardless of
+        # the script's path.
+        if runtime_hotfix_invocation(tokens):
+            return (
+                "isolation.py runtime-hotfix records the owner authorization a "
+                "landing trusts; it is operator-only — request the hotfix from "
+                "the orchestrator instead of running it"
+            )
         destructive = list(destructive_shell_invocations(tokens))
         if destructive and (
             not allow_destructive

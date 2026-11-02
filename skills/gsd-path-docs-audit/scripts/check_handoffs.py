@@ -740,7 +740,9 @@ def _coordinator_for_member_markers(root: Path, name: str) -> Path:
 
 
 def _strip_comments(text: str) -> str:
-    return COMMENT_PATTERN.sub("", text)
+    # Code-span-preserving: criteria and reviews may quote marker comments
+    # as inline code, and every comparison side must keep them (#548).
+    return _common.strip_html_comments(text)
 
 
 MEMBER_EVIDENCE_KINDS = ("codebase", "docs")
@@ -1005,7 +1007,11 @@ def _corrections(intent: str) -> Dict[str, str]:
             raise HandoffError(
                 f"INTENT.md Corrections entry is not numbered: {line.strip()!r}; "
                 "renumber entries as `- C1 <YYYY-MM-DD>: <ruling>` — a correction "
-                "needs citable identity (#477)"
+                "needs citable identity (#477). An INTENT approved before the "
+                "numbered form may take the migrate-corrections renumbering: "
+                "number `- <date>:` entries under ## Corrections as "
+                "`- C<n> <date>: <ruling>` in file order; recovery gates accept "
+                "the migrated form (#551)"
             )
         if match.group("id") in corrections:
             raise HandoffError(
@@ -1857,8 +1863,14 @@ def _validate_task_graph(
         effective = _common.effective_task_repo(repo, task_id, declared, project_dir) if repo is not None else declared
         task_repos[task_id] = str(effective or "")
         # Patch mode reopens planning beside landed tasks; only new tasks start clean.
-        landed = _task_scalar(text, task_id, "status") == "done"
-        _require_task_structure(task_id, text, initial=initial and not landed)
+        status = _task_scalar(text, task_id, "status")
+        settled = status in ("done", "withdrawn")
+        _require_task_structure(task_id, text, initial=initial and not settled)
+        if status == "withdrawn" and not _common.withdrawn_citations(text):
+            raise HandoffError(
+                f"{task_id} is withdrawn without an owner citation; append a "
+                "`- Withdrawn — <YYYY-MM-DD>: <owner ruling verbatim>` Log entry"
+            )
         wave = _task_wave(text, task_id)
         deps = _task_deps(text, task_id)
         files = _frontmatter_files(text)
@@ -1872,6 +1884,14 @@ def _validate_task_graph(
                 raise HandoffError(f"{task_id} names unknown dependency {dependency}")
             if _task_wave(tasks[dependency], dependency) > wave:
                 raise HandoffError(f"{task_id} depends on later-wave {dependency}")
+            if (
+                _task_scalar(tasks[dependency], dependency, "status") == "withdrawn"
+                and status not in ("done", "withdrawn")
+            ):
+                raise HandoffError(
+                    f"{task_id} depends on withdrawn {dependency}; "
+                    "re-point the dependency or withdraw this task too"
+                )
 
     # `supersedes` retires the regression Verify of an earlier task: the same overlap rule selects both.
     for task_id, text in tasks.items():
@@ -1959,7 +1979,10 @@ def _owned_by_wave(
 ) -> List[str]:
     owned: Set[str] = set()
     for task_id, text in tasks.items():
-        if _task_wave(text, task_id) == wave:
+        # A withdrawn tombstone owns no criteria to review (#483).
+        if _task_wave(text, task_id) == wave and (
+            _task_scalar(text, task_id, "status") != "withdrawn"
+        ):
             owned.update(assigned[task_id])
     return sorted(owned, key=lambda name: int(name[2:]))
 
@@ -2019,7 +2042,8 @@ def validate_decide_artifacts(
     planner = _section(text, "For the planner")
     for field in ("Wave-1 blockers", "Walking skeleton", "Pitfalls → tasks"):
         _named_field(planner, field, "SYNTHESIS.md For the planner")
-    if re.search(r"<[^>\n]+>", _strip_comments(text)):
+    # A backticked marker mention is text, not a placeholder (#548).
+    if re.search(r"<[^>\n]+>", _common.strip_code_spans(_strip_comments(text))):
         raise HandoffError("SYNTHESIS.md still contains a placeholder")
     return {"phase": "decide", "synthesis": relative, "decisions": decisions}
 
@@ -2132,7 +2156,8 @@ def validate_roadmap(
     text = _read(root, relative)
     if re.search(r"(?m)^## Wave |^\|\s*Task\s*\||^Files:\s*", text):
         raise HandoffError("ROADMAP.md must not contain waves, tasks, or file lists")
-    if re.search(r"<[^>\n]+>", _strip_comments(text)):
+    # A backticked marker mention is text, not a placeholder (#548).
+    if re.search(r"<[^>\n]+>", _common.strip_code_spans(_strip_comments(text))):
         raise HandoffError("ROADMAP.md still contains a placeholder")
 
     blocks = _milestone_blocks(text)
@@ -2250,7 +2275,10 @@ def validate_plan(
     integrated = _integrated_members(root, state)
     for task_id, text in tasks.items():
         repo = str(_common.effective_task_repo(root, task_id, _strict_frontmatter(text, task_id).get("repo"), project_dir) or "")
-        if repo in integrated and _task_scalar(text, task_id, "status") != "done":
+        if repo in integrated and _task_scalar(text, task_id, "status") not in (
+            "done",
+            "withdrawn",
+        ):
             raise HandoffError(
                 f"{task_id} changes member {repo}, which is already integrated in this milestone; "
                 "plan that change in a new milestone"
@@ -2262,6 +2290,12 @@ def validate_plan(
             raise HandoffError(f"Intent coverage names unknown {criterion}")
         if task_id not in tasks:
             raise HandoffError(f"Intent coverage names unknown {task_id}")
+        if _task_scalar(tasks[task_id], task_id, "status") == "withdrawn":
+            raise HandoffError(
+                f"{criterion} is still owned by withdrawn {task_id}; re-own it "
+                "from a remaining task or remove the criterion through a "
+                "define-phase INTENT Correction"
+            )
         items = _acceptance_items(tasks[task_id], task_id)
         number = int(acceptance[2:])
         if number not in items:
@@ -2457,6 +2491,24 @@ def validate_wave_evidence(
     ]
     if not expected_tasks:
         raise HandoffError(f"PLAN.md has no Wave {wave} tasks")
+    # A withdrawn tombstone produced no live work; the review covers the rest.
+    # But exclusion is earned: an uncited tombstone is a dropped obligation and
+    # fails this gate like every other one (#483).
+    live_tasks: List[str] = []
+    for task_id in expected_tasks:
+        if _task_scalar(tasks[task_id], task_id, "status") == "withdrawn":
+            if not _common.withdrawn_citations(tasks[task_id]):
+                raise HandoffError(
+                    f"{task_id} is withdrawn without an owner citation; append a "
+                    "`- Withdrawn — <YYYY-MM-DD>: <owner ruling verbatim>` Log entry"
+                )
+            continue
+        live_tasks.append(task_id)
+    expected_tasks = live_tasks
+    if not expected_tasks:
+        raise HandoffError(
+            f"Wave {wave} has only withdrawn tasks; it has no live work to review"
+        )
     if wave not in wave_depths:
         raise HandoffError(f"PLAN.md has no Wave {wave}")
     expected_depth = wave_depths[wave]

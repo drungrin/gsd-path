@@ -32,6 +32,9 @@ SECTION_RE_TEMPLATE = r"^##\s+{heading}\s*$\n(.*?)(?=^##\s|\Z)"
 TASK_FILE_RE = re.compile(r"^(T\d{3,})-[a-z0-9][a-z0-9-]*\.md$")
 BLOCK_LIST_ITEM_RE = re.compile(r"^\s*-\s+(\S.*?)\s*$")
 RUNTIME_STATUS_SCHEMA = "gsd-path/status/v1"
+# Same schemas as LOCK_SCHEMA and MEMBER_CLOSE_SCHEMA in scripts/members.py.
+MEMBER_LOCK_SCHEMA = "gsd-path/member-lock/v1"
+MEMBER_CLOSE_SCHEMA = "gsd-path/member-close/v1"
 
 REVIEW_VERDICT_RE = re.compile(r"^(?:Wave|Overall|Gap)\s+verdict:\s*([A-Za-z-]+)",
                                re.IGNORECASE | re.MULTILINE)
@@ -175,7 +178,37 @@ def parse_task_file(path: Union[str, Path]) -> Optional[TaskSummary]:
         wave=wave,
         status=fields.get("status") if isinstance(fields.get("status"), str) else None,
         files=[str(item) for item in files] if isinstance(files, list) else [],
+        repo=fields.get("repo") if isinstance(fields.get("repo"), str) else None,
     )
+
+
+def _members_json(path: Path, schema: str) -> Optional[List[dict]]:
+    """The `members` rows of a multi-repo JSON file with this schema, or None."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != schema or not isinstance(data.get("members"), list):
+        return None
+    return [row for row in data["members"] if isinstance(row, dict)]
+
+
+def member_progress(root: str, archive: Optional[str]) -> Tuple[Optional[List[dict]], List[dict], Optional[str]]:
+    """The milestone's member lock, member-close rows, and close journal path, read-only.
+
+    Build keeps the lock in .project/build; ship moves it into the archive. The
+    member-close journal sits in the Git common dir, named after the archive.
+    """
+    lock = _members_json(Path(root) / ".project" / "build" / "members.json", MEMBER_LOCK_SCHEMA)
+    if lock is None and archive:
+        lock = _members_json(Path(root) / archive / "build" / "members.json", MEMBER_LOCK_SCHEMA)
+    if not lock or not archive:
+        return lock, [], None
+    common = gitinfo._git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        return lock, [], None
+    journal = Path(common) / "gsd-path" / "member-close" / f"{Path(archive).name}.json"
+    return lock, _members_json(journal, MEMBER_CLOSE_SCHEMA) or [], str(journal)
 
 
 def parse_plan(path: Union[str, Path]) -> Dict[int, str]:
@@ -638,6 +671,9 @@ def tree_mtime(path: Union[str, Path], skip: Tuple[str, ...] = ()) -> Optional[f
     return latest
 
 
+STATUS_COMMAND_TIMEOUT = 10
+
+
 def _run_status_command(command: List[str]) -> Tuple[Optional[dict], str]:
     """The status payload, or None and the last line the command wrote to stderr."""
     try:
@@ -648,9 +684,13 @@ def _run_status_command(command: List[str]) -> Tuple[Optional[dict], str]:
             capture_output=True,
             encoding="utf-8",
             errors="replace",
-            timeout=10,
+            timeout=STATUS_COMMAND_TIMEOUT,
             check=False,
         )
+    except subprocess.TimeoutExpired:
+        # Name the timeout: a slow runtime is not an unavailable one, and a
+        # verified milestone must not read as a silent validation gap (#558).
+        return None, f"runtime status timed out after {STATUS_COMMAND_TIMEOUT} s"
     except (OSError, subprocess.SubprocessError):
         return None, ""
     if result.returncode != 0:
@@ -884,6 +924,7 @@ def probe_project(root: Union[str, Path], enrich: bool = True) -> ProjectStatus:
                     status.git["dirty"] = bool(status.git["dirty"])
             status.status_source = "runtime"
     status.answers = _collect_answers(project_dir / "discuss" / "ANSWERS.md", runtime_pending)
+    status.member_lock, status.member_close, status.member_close_journal = member_progress(root, status.archive)
     status.workflow = gap or workflow_projection(payload)
     status.attention = compute_attention(status)
     if status.workflow["state"] == "unverified":

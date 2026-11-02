@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -18,6 +19,94 @@ import status_runtime
 from tests._platform import posix_only, requires_symlink
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "guard_hook.py"
+
+# The stable launcher surface as it shipped before #468: no successor walk.
+PRE_SUCCESSOR_LAUNCHER = """\
+import hashlib
+import json
+import stat
+import sys
+from pathlib import Path
+
+RUNTIME_SCHEMA = "gsd-path/runtime/v1"
+
+
+def runtime_home():
+    return Path.home() / ".gsd-path" / "runtimes"
+
+
+def declaration(repo):
+    path = repo / ".gsd-path" / "runtime.json"
+    if path.is_symlink() or path.parent.is_symlink():
+        raise ValueError(f"unsafe runtime declaration: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(data, dict) or data.get("schema") != RUNTIME_SCHEMA
+            or not isinstance(data.get("version"), str)
+            or not isinstance(data.get("digest"), str)
+            or len(data["digest"]) != 64
+            or any(c not in "0123456789abcdef" for c in data["digest"])):
+        raise ValueError(f"invalid runtime declaration: {path}")
+    return data
+
+
+def manifest_digest(manifest):
+    return hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def validate_runtime(data):
+    root = runtime_home() / data["digest"]
+    try:
+        if any(p.is_symlink() for p in (root, root.parent, root.parent.parent)):
+            raise ValueError("symlinked runtime storage")
+        manifest_path = root / "manifest.json"
+        if manifest_path.is_symlink():
+            raise ValueError("symlinked manifest")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if (not isinstance(manifest, dict) or manifest_digest(manifest) != data["digest"]
+                or manifest.get("version") != data["version"]):
+            raise ValueError("manifest identity mismatch")
+        files = manifest.get("files")
+        if not isinstance(files, dict) or "pipeline_state.py" not in files:
+            raise ValueError("invalid runtime file inventory")
+        for name, expected in files.items():
+            if Path(name).name != name or not name.endswith(".py"):
+                raise ValueError("invalid runtime file name")
+            path = root / name
+            if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise ValueError(f"runtime file changed: {name}")
+        runtime_entries = set()
+        for path in root.iterdir():
+            if path.name == "__pycache__":
+                if not stat.S_ISDIR(path.lstat().st_mode):
+                    raise ValueError("unexpected runtime files")
+                for cached in path.iterdir():
+                    if cached.suffix != ".pyc" or not stat.S_ISREG(cached.lstat().st_mode):
+                        raise ValueError("unexpected runtime files")
+                continue
+            runtime_entries.add(path.name)
+        if runtime_entries != set(files) | {"manifest.json"}:
+            raise ValueError("unexpected runtime files")
+    except (OSError, ValueError, TypeError) as error:
+        raise ValueError(f"runtime {data['digest']} is unavailable or invalid ({error})") from error
+    return root
+
+
+def resolve_runtime(repo):
+    return validate_runtime(declaration(repo))
+
+
+def run_guard(repo, name):
+    root = resolve_runtime(repo)
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(root))
+    previous_pycache_prefix = sys.pycache_prefix
+    sys.pycache_prefix = str(root / "manifest.json")
+    try:
+        code = compile((root / name).read_bytes(), str(root / name), "exec")
+        exec(code, {"__name__": "__main__", "__file__": str(repo / ".gsd-path" / name)})
+    finally:
+        sys.pycache_prefix = previous_pycache_prefix
+"""
 
 
 def run_guard(payload):
@@ -4600,6 +4689,220 @@ class DestructiveScopeTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assert_denied(self.bash_in(worktree, command))
 
+    def make_task_isolate(self, task_id):
+        """A registered task worktree under a state root, with its dispatch
+        authorization ref and pinned workspace receipt, plus its primary."""
+        repo = self.scratch / f"primary-{task_id}"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com",
+             "commit", "-q", "--allow-empty", "-m", "init"], check=True,
+        )
+        base = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True, capture_output=True, encoding="utf-8",
+        ).stdout.strip()
+        root = self.home / ".gsd-path" / "projects" / "A" / "B"
+        # Fork names: branch chore/task-<slug>, directory task/<slug>; the
+        # authorization ref keeps the task id as written.
+        slug = re.sub(r"[^a-z0-9]+", "-", task_id.casefold()).strip("-")
+        worktree = root / "task" / slug
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-q",
+             "-b", f"chore/task-{slug}", str(worktree)],
+            check=True,
+        )
+        receipts = repo / ".git" / "gsd-path" / "workspaces"
+        receipts.mkdir(parents=True)
+        (receipts / "primary.json").write_text(
+            json.dumps({"primary": str(repo.resolve()), "root": str(root.resolve())}) + "\n",
+            encoding="utf-8",
+        )
+        self.authorize_task(worktree, task_id, base)
+        return repo, worktree
+
+    def authorize_task(self, worktree, task_id, sha):
+        subprocess.run(
+            ["git", "-C", str(worktree), "update-ref",
+             f"refs/gsd-path/task-authorizations/{task_id}", sha, "0" * len(sha)],
+            check=True,
+        )
+
+    def test_authorized_task_isolate_allows_its_own_deletes_from_the_primary(self) -> None:
+        repo, worktree = self.make_task_isolate("T002")
+        (worktree / "openwiki").mkdir()
+        # The hook's working directory is the primary; a parallel coder's
+        # isolate is never among them (#546).
+        self.assert_allowed(self.bash_in(repo, f"rm -rf {(worktree / 'openwiki').as_posix()}"))
+        # A commit inside the isolate must not end acceptance.
+        subprocess.run(
+            ["git", "-C", str(worktree), "-c", "user.name=t", "-c", "user.email=t@example.com",
+             "commit", "-q", "--allow-empty", "-m", "wip"], check=True,
+        )
+        (worktree / "build").mkdir()
+        self.assert_allowed(self.bash_in(repo, f"rm -rf {(worktree / 'build').as_posix()}"))
+        # The isolate root itself stays pipeline state.
+        self.assert_denied(self.bash_in(repo, f"rm -r {worktree.as_posix()}"))
+        # Without the authorization ref the same delete refuses again.
+        subprocess.run(
+            ["git", "-C", str(worktree), "update-ref", "-d",
+             "refs/gsd-path/task-authorizations/T002"], check=True,
+        )
+        (worktree / "docs").mkdir()
+        self.assert_denied(self.bash_in(repo, f"rm -rf {(worktree / 'docs').as_posix()}"))
+
+    @requires_symlink
+    def test_authorized_isolate_symlinked_operand_still_refused(self) -> None:
+        repo, worktree = self.make_task_isolate("T005")
+        (worktree / "safe").mkdir()
+        outside = self.home / ".gsd-path" / "runtimes" / "abc123"
+        outside.mkdir(parents=True)
+        link = worktree / "linked"
+        os.symlink(str(outside), str(link))
+        # An accepted first operand must not let a symlinked second operand
+        # through on the cached acceptance.
+        self.assert_denied(
+            self.bash_in(repo, f"rm -rf {(worktree / 'safe').as_posix()} {link.as_posix()}")
+        )
+        # The accepted operand alone still passes.
+        self.assert_allowed(self.bash_in(repo, f"rm -rf {(worktree / 'safe').as_posix()}"))
+
+    def test_rogue_task_worktree_without_authorization_stays_denied(self) -> None:
+        repo, worktree = self.make_task_isolate("T003")
+        rogue_root = worktree.parent
+        rogue = rogue_root / "task" / "rogue"
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-q",
+             "-b", "chore/task-rogue", str(rogue)],
+            check=True,
+        )
+        (rogue / "openwiki").mkdir()
+        # Branch name, registration, and placement all match a task isolate;
+        # only the unforgeable authorization ref is missing.
+        self.assert_denied(self.bash_in(repo, f"rm -rf {(rogue / 'openwiki').as_posix()}"))
+
+    def test_authorized_member_task_isolate_allows_its_own_deletes(self) -> None:
+        # A member task: branch chore/task-<project>-<id slug>, authorization
+        # ref <project>-<task id> as written by member activation.
+        repo, worktree = self.make_task_isolate("acme-T006")
+        self.assertEqual(worktree.name, "acme-t006")
+        (worktree / "openwiki").mkdir()
+        self.assert_allowed(self.bash_in(repo, f"rm -rf {(worktree / 'openwiki').as_posix()}"))
+
+    def test_ambiguous_task_authorization_slug_stays_denied(self) -> None:
+        # Two authorization refs whose names share the branch slug: retirement
+        # refuses that state, so the guard must not accept it either.
+        repo, worktree = self.make_task_isolate("acme-T009")
+        base = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True, capture_output=True, encoding="utf-8",
+        ).stdout.strip()
+        (worktree / "openwiki").mkdir()
+        self.assert_allowed(self.bash_in(repo, f"rm -rf {(worktree / 'openwiki').as_posix()}"))
+        self.authorize_task(worktree, "acme_T009", base)
+        (worktree / "docs").mkdir()
+        self.assert_denied(self.bash_in(repo, f"rm -rf {(worktree / 'docs').as_posix()}"))
+
+    def test_upstream_task_branch_name_is_not_a_fork_task_isolate(self) -> None:
+        repo, worktree = self.make_task_isolate("T007")
+        other = worktree.parent / "T008"
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-q",
+             "-b", "gsd-path-task/T008", str(other)],
+            check=True,
+        )
+        base = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True, capture_output=True, encoding="utf-8",
+        ).stdout.strip()
+        self.authorize_task(other, "T008", base)
+        (other / "openwiki").mkdir()
+        # Authorized and placed, but not on a fork task branch.
+        self.assert_denied(self.bash_in(repo, f"rm -rf {(other / 'openwiki').as_posix()}"))
+
+    def test_foreign_repository_task_worktree_stays_denied(self) -> None:
+        # A session repo to stand in for the pipeline primary.
+        repo, _worktree = self.make_task_isolate("T004")
+        # A second repository under the session's control forges the whole
+        # acceptance stack: task branch, registration, authorization ref,
+        # and workspace receipt all live under ITS .git, which the guard
+        # does not protect the way it protects the session repository's.
+        foreign = self.scratch / "foreign"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(foreign)], check=True)
+        subprocess.run(
+            ["git", "-C", str(foreign), "-c", "user.name=t", "-c", "user.email=t@example.com",
+             "commit", "-q", "--allow-empty", "-m", "init"], check=True,
+        )
+        base = subprocess.run(
+            ["git", "-C", str(foreign), "rev-parse", "HEAD"],
+            check=True, capture_output=True, encoding="utf-8",
+        ).stdout.strip()
+        root = self.home / ".gsd-path" / "projects" / "X" / "Y"
+        worktree = root / "task" / "frgn"
+        subprocess.run(
+            ["git", "-C", str(foreign), "worktree", "add", "-q",
+             "-b", "chore/task-frgn", str(worktree)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree), "update-ref",
+             "refs/gsd-path/task-authorizations/FRGN", base, "0" * len(base)],
+            check=True,
+        )
+        receipts = foreign / ".git" / "gsd-path" / "workspaces"
+        receipts.mkdir(parents=True)
+        (receipts / "primary.json").write_text(
+            json.dumps({"primary": str(foreign.resolve()), "root": str(root.resolve())}) + "\n",
+            encoding="utf-8",
+        )
+        (worktree / "openwiki").mkdir()
+        self.assert_denied(self.bash_in(repo, f"rm -rf {(worktree / 'openwiki').as_posix()}"))
+
+    def test_legacy_and_unpinned_isolates_allow_their_own_deletes(self) -> None:
+        configured = self.home / "worktrees"
+        with mock.patch.dict(os.environ, {"GSD_PATH_WORKTREE_ROOT": str(configured)}):
+            primary = configured / "proj"
+            subprocess.run(["git", "init", "-q", "-b", "main", str(primary)], check=True)
+            subprocess.run(
+                ["git", "-C", str(primary), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                 "commit", "-q", "--allow-empty", "-m", "init"], check=True,
+            )
+            base = subprocess.run(
+                ["git", "-C", str(primary), "rev-parse", "HEAD"],
+                check=True, capture_output=True, encoding="utf-8",
+            ).stdout.strip()
+            # Legacy layout beside the primary: <primary>.gsd-path/task/<id>,
+            # preferred by worktree_path when registered.
+            legacy = primary.parent / f"{primary.name}.gsd-path" / "task" / "t009"
+            subprocess.run(
+                ["git", "-C", str(primary), "worktree", "add", "-q",
+                 "-b", "chore/task-t009", str(legacy)],
+                check=True,
+            )
+            self.authorize_task(legacy, "T009", base)
+            (legacy / "build").mkdir()
+            self.assert_allowed(self.bash_in(primary, f"rm -rf {(legacy / 'build').as_posix()}"))
+            # Unpinned workspace shape: <root>/<id1>/<id2>/task/<id>, no receipt.
+            unpinned = configured / "aa" / "bb" / "task" / "t010"
+            subprocess.run(
+                ["git", "-C", str(primary), "worktree", "add", "-q",
+                 "-b", "chore/task-t010", str(unpinned)],
+                check=True,
+            )
+            self.authorize_task(unpinned, "T010", base)
+            (unpinned / "build").mkdir()
+            self.assert_allowed(self.bash_in(primary, f"rm -rf {(unpinned / 'build').as_posix()}"))
+
+    def test_destructive_literal_paths_accept_non_ascii_letters(self) -> None:
+        repo = self.scratch / "plain"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        (repo / "docs" / "7-计划与进展").mkdir(parents=True)
+        self.assert_allowed(self.bash_in(repo, "rm -rf docs/7-计划与进展"))
+        self.assert_allowed(self.bash_in(repo, f"rm -rf {(repo / 'docs/7-计划与进展').as_posix()}"))
+        # Injection-relevant shapes stay refused.
+        self.assert_denied(self.bash_in(repo, 'rm "scratch;other"'))
+        self.assert_denied(self.bash_in(repo, 'rm "$var/whatever"'))
+
     def test_closed_milestone_checks_operands_after_double_dash(self) -> None:
         repo = self.make_closed_milestone_repo()
         target = self.scratch / "file.txt"
@@ -4618,6 +4921,314 @@ class DestructiveScopeTests(unittest.TestCase):
         )
         self.assert_denied(self.inside_closed(repo, f"rm -r {member.parent.as_posix()}"))
         self.assert_allowed(self.inside_closed(repo, f"rm {(self.scratch / 'file.txt').as_posix()}"))
+
+
+class RuntimeHotfixRefGuardTests(unittest.TestCase):
+    """Agent writes under refs/gsd-path/ forge the trust those refs prove (#480)."""
+
+    def setUp(self) -> None:
+        import tempfile
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name) / "repo"
+        subprocess.run(("git", "init", "-q", "-b", "feature/milestone-001", str(self.repo)), check=True)
+        (self.repo / ".project").mkdir()
+        (self.repo / ".project" / "STATE.md").write_text(
+            "---\npipeline: gsd-path/v2\nproject: demo\nmilestone: demo\nphase: build\n"
+            "status: active\nbranch: feature/milestone-001\narchive: null\n---\n\n# Project State\n",
+            encoding="utf-8",
+        )
+        subprocess.run(("git", "add", ".project/STATE.md"), cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(
+            ("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"),
+            cwd=self.repo, check=True, capture_output=True)
+
+    def event(self, command: str):
+        return {"tool_name": "Bash", "tool_input": {"command": command, "cwd": str(self.repo)}}
+
+    def test_agent_cannot_create_a_runtime_hotfix_ref(self) -> None:
+        status, output, error = run_guard(self.event(
+            f"git update-ref refs/gsd-path/runtime-hotfix/T001-{'a' * 40} {'b' * 40}"))
+        self.assertEqual(status, 2, error)
+        self.assertIn("refs/gsd-path/", output)
+
+    def test_agent_cannot_run_runtime_hotfix_in_any_command_shape(self) -> None:
+        tail = f"runtime-hotfix --repo . --task-id T001 --runtime {'1' * 64} --authorized-by x"
+        for command in (
+            f"python3 scripts/isolation.py {tail}",
+            f"py -3 scripts/isolation.py {tail}",
+            f"python3 -I -B scripts/isolation.py {tail}",
+            f"cd scripts && python3 isolation.py {tail}",
+            f"true; python3 scripts/isolation.py {tail}",
+            f"env A=1 python3 scripts/isolation.py {tail}",
+            f"sh -c 'python3 scripts/isolation.py {tail}'",
+            f"py -3 -B scripts/isolation.py {tail}",
+            f"cd scripts && python3 -m isolation {tail}",
+            f"python3 -B -m scripts.isolation {tail}",
+            f"python3 - {tail} < scripts/isolation.py",
+            f"python3 -Bm isolation {tail}",
+            f"python3 -Im isolation {tail}",
+            f"python3 -misolation {tail}",
+            f"python3 --check-hash-based-pycs never scripts/isolation.py {tail}",
+        ):
+            with self.subTest(command=command):
+                status, output, error = run_guard(self.event(command))
+                self.assertEqual(status, 2, error + output)
+                self.assertIn("operator-only", output)
+
+    def test_read_only_mentions_of_runtime_hotfix_stay_allowed(self) -> None:
+        for command in (
+            "rg isolation.py -e runtime-hotfix",
+            "python3 scripts/isolation.py --help runtime-hotfix",
+            "python3 scripts/isolation.py preflight --task-id runtime-hotfix",
+        ):
+            with self.subTest(command=command):
+                status, output, error = run_guard(self.event(command))
+                self.assertEqual(status, 0, error + output)
+
+    def test_git_mentions_of_runtime_hotfix_are_deliberately_denied(self) -> None:
+        for command in (
+            "git log --grep isolation.py --grep runtime-hotfix",
+            'git commit -m "docs: explain runtime-hotfix"',
+        ):
+            with self.subTest(command=command):
+                status, output, error = run_guard(self.event(command))
+                self.assertEqual(status, 2, error + output)
+                self.assertIn("refs/gsd-path/", output)
+
+    def test_agent_cannot_push_or_fetch_into_path_owned_refs(self) -> None:
+        ref = f"refs/gsd-path/runtime-hotfix/T001-{'a' * 40}"
+        for command in (
+            f"git push . {'b' * 40}:{ref}",
+            f"git fetch . {'b' * 40}:{ref}",
+            f"git fetch origin +refs/gsd-path/*:refs/gsd-path/*",
+            f"git fetch --refmap=+refs/tags/*:refs/gsd-path/runtime-hotfix/* . refs/tags/T001",
+            f"git symbolic-ref {ref} refs/tags/fake",
+            f"git send-pack . {'b' * 40}:{ref}",
+            "git log refs/gsd-path/checkpoint",
+            f"git -c remote.self.url=. -c remote.self.push=refs/tags/fake:{ref} push self",
+            f"REF={ref} git push . HEAD:refs/heads/ordinary",
+            "git push . b:refs/{gsd-path,zz}/runtime-hotfix/T001-x",
+            "git update-ref r{e,}fs/gs{d,}-path/runtime-hotfix/T001-x b",
+            "git push . b:refs/gsd-pat[h]/runtime-hotfix/T001-x",
+        ):
+            with self.subTest(command=command):
+                status, output, error = run_guard(self.event(command))
+                self.assertEqual(status, 2, error + output)
+                self.assertIn("refs/gsd-path/", output)
+
+    def test_agent_can_still_push_ordinary_refspecs(self) -> None:
+        for command in (
+            "git push origin HEAD:refs/heads/ordinary-work",
+            "git log -1 HEAD@{1}",
+            "git push origin 'refs/heads/{a,b}'",
+            "git add src/{a,b}.py",
+            "git diff HEAD -- tests/test_{a,b}.py",
+            "git checkout -- {a,b}.py",
+            "git log HEAD~{1..3}",
+            "git commit -m fix,{a,b}",
+        ):
+            with self.subTest(command=command):
+                status, output, error = run_guard(self.event(command))
+                self.assertEqual(status, 0, error + output)
+
+    def test_agent_can_still_update_ordinary_refs(self) -> None:
+        status, output, error = run_guard(self.event(
+            "git update-ref refs/heads/ordinary-work " + "b" * 40))
+        self.assertEqual(status, 0, error + output)
+
+
+class SuccessorRuntimeAcceptanceTests(unittest.TestCase):
+    """#468 option (i): on a closed milestone, helper acceptance follows the
+    pinned runtime's hashed successors list — named runtimes run, everything
+    else stays refused with the closed-milestone reason."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        environment = mock.patch.dict(
+            os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home)}
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.source = Path(__file__).resolve().parents[1]
+        import runtime_store
+
+        self.runtime_store = runtime_store
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "feature/milestone-001", str(self.repo)], check=True)
+        subprocess.run(["git", "config", "user.name", "Guard test"], cwd=self.repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo, check=True)
+        state = self.repo / ".project" / "STATE.md"
+        state.parent.mkdir()
+        state.write_text(
+            "---\n"
+            "pipeline: gsd-path/v2\n"
+            "project: demo\n"
+            "milestone: demo\n"
+            "phase: shipped\n"
+            "status: done\n"
+            "branch: feature/milestone-001\n"
+            "archive: .project/archive/001-demo\n"
+            "---\n\n# Project State\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", ".project/STATE.md"], cwd=self.repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "ship: M001 — demo"], cwd=self.repo, check=True)
+
+    def package(self, name: str, version: str) -> Path:
+        """This package with its own version and a real byte difference."""
+        package = self.root / name
+        shutil.copytree(
+            self.source / "scripts", package / "scripts",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+        shutil.copy2(self.source / "package.json", package / "package.json")
+        data = json.loads((package / "package.json").read_text(encoding="utf-8"))
+        data["version"] = version
+        (package / "package.json").write_text(
+            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        helper = package / "scripts" / "pipeline_state.py"
+        helper.write_bytes(helper.read_bytes() + f"# {name}\n".encode("utf-8"))
+        return package
+
+    def publish(self, package: Path, successors=()):
+        return self.runtime_store.publish(package, successors=successors)
+
+    def pin_repo(self, pin) -> None:
+        guard_directory = self.repo / ".gsd-path"
+        guard_directory.mkdir(exist_ok=True)
+        (guard_directory / "runtime.json").write_text(
+            self.runtime_store.pin_text(pin), encoding="utf-8"
+        )
+        for name in self.runtime_store.GUARDS:
+            (guard_directory / name).write_text(
+                self.runtime_store.guard_launcher(name), encoding="utf-8"
+            )
+        shutil.copyfile(
+            self.source / "scripts" / "status_runtime.py",
+            guard_directory / "status_runtime.py",
+        )
+
+    def guard(self, helper: Path):
+        command = (
+            f"python3 -B {shlex.quote(helper.as_posix())} "
+            f"status --repo {shlex.quote(self.repo.as_posix())}"
+        )
+        payload = {"tool_name": "Bash", "tool_input": {"command": command, "cwd": str(self.repo)}}
+        return subprocess.run(
+            [sys.executable, "-B", str(self.repo / ".gsd-path" / "guard_hook.py")],
+            cwd=self.repo, input=json.dumps(payload),
+            encoding="utf-8", errors="replace", capture_output=True,
+        )
+
+    def helper(self, pin) -> Path:
+        return (
+            self.home / ".gsd-path" / "runtimes" / pin["digest"] / "pipeline_state.py"
+        )
+
+    def test_closed_milestone_accepts_only_hashed_successors(self) -> None:
+        successor = self.publish(self.package("newer", "2.0.0"))
+        unlisted = self.publish(self.package("unlisted", "3.0.0"))
+        pin = self.publish(self.source, successors=(successor["digest"],))
+        self.pin_repo(pin)
+
+        for name, expected in (
+            ("pinned", 0),
+            ("named successor", 0),
+            ("unlisted runtime", 2),
+        ):
+            with self.subTest(runtime=name):
+                helper = {
+                    "pinned": self.helper(pin),
+                    "named successor": self.helper(successor),
+                    "unlisted runtime": self.helper(unlisted),
+                }[name]
+                result = self.guard(helper)
+                self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
+
+        denial = self.guard(self.helper(unlisted))
+        self.assertIn("closed milestone", denial.stderr + denial.stdout)
+
+    def test_successor_chains_walk_only_while_blessed_bytes_name_them(self) -> None:
+        third = self.publish(self.package("third", "3.0.0"))
+        second = self.publish(
+            self.package("second", "2.0.0"), successors=(third["digest"],)
+        )
+        outsider = self.publish(self.package("outsider", "9.0.0"))
+        pin = self.publish(self.source, successors=(second["digest"],))
+        self.pin_repo(pin)
+
+        for name, expected in (
+            ("pinned", 0),
+            ("first successor", 0),
+            ("second successor", 0),
+            ("unblessed runtime", 2),
+        ):
+            with self.subTest(runtime=name):
+                helper = {
+                    "pinned": self.helper(pin),
+                    "first successor": self.helper(second),
+                    "second successor": self.helper(third),
+                    "unblessed runtime": self.helper(outsider),
+                }[name]
+                result = self.guard(helper)
+                self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
+
+    def test_a_broken_named_successor_never_widens_or_breaks_the_pin(self) -> None:
+        corrupt = self.publish(self.package("corrupt", "2.0.0"))
+        missing = "a" * 64
+        pin = self.publish(
+            self.source, successors=(corrupt["digest"], missing)
+        )
+        # Break the named successor's bytes after publication.
+        victim = self.home / ".gsd-path" / "runtimes" / corrupt["digest"] / "pipeline_state.py"
+        victim.write_bytes(victim.read_bytes() + b"# tampered\n")
+        self.pin_repo(pin)
+
+        self.assertEqual(self.guard(self.helper(pin)).returncode, 0)
+        self.assertEqual(self.guard(self.helper(corrupt)).returncode, 2)
+
+    def test_a_divergent_launcher_cannot_widen_acceptance(self) -> None:
+        successor = self.publish(self.package("divergent-newer", "2.0.0"))
+        unlisted = self.publish(self.package("divergent-outsider", "3.0.0"))
+        pin = self.publish(self.source, successors=(successor["digest"],))
+        self.pin_repo(pin)
+        # A drifted project launcher that accepts every store entry: the
+        # walk must come from the pinned runtime's own bytes, not the
+        # launcher's preloaded module (#468 review finding).
+        launcher = self.repo / ".gsd-path" / "status_runtime.py"
+        launcher.write_bytes(
+            launcher.read_bytes()
+            + b"\n\ndef accepted_runtime_dirs(repo):\n"
+            b"    from pathlib import Path\n"
+            b"    return {Path.home() / '.gsd-path' / 'runtimes'}\n"
+        )
+
+        self.assertEqual(self.guard(self.helper(pin)).returncode, 0)
+        self.assertEqual(self.guard(self.helper(successor)).returncode, 0)
+        denial = self.guard(self.helper(unlisted))
+        self.assertEqual(denial.returncode, 2, denial.stderr + denial.stdout)
+        self.assertIn("closed milestone", denial.stderr + denial.stdout)
+
+    def test_a_stale_launcher_still_accepts_the_pinned_successors(self) -> None:
+        successor = self.publish(self.package("stale-newer", "2.0.0"))
+        unlisted = self.publish(self.package("stale-outsider", "3.0.0"))
+        pin = self.publish(self.source, successors=(successor["digest"],))
+        self.pin_repo(pin)
+        # The project launcher predates successors: no walk of its own. The
+        # guard loads the walk from the pinned runtime's bytes regardless.
+        (self.repo / ".gsd-path" / "status_runtime.py").write_text(
+            PRE_SUCCESSOR_LAUNCHER, encoding="utf-8")
+
+        self.assertEqual(self.guard(self.helper(pin)).returncode, 0)
+        self.assertEqual(self.guard(self.helper(successor)).returncode, 0)
+        self.assertEqual(self.guard(self.helper(unlisted)).returncode, 2)
 
 
 if __name__ == "__main__":

@@ -373,6 +373,233 @@ class IsolationTests(unittest.TestCase):
             (repo / after).rmdir()
         self.write(repo, after, "the replacement holds other text\n")
 
+    def test_runtime_hotfix_records_and_lands_the_pin(self) -> None:
+        # Full recovery: a published replacement runtime, the command's
+        # re-verified receipt in both the guard-owned ref and the task Log,
+        # and a serial landing that includes the runtime pin (#480).
+        with tempfile.TemporaryDirectory() as temporary:
+            from unittest import mock as _mock
+            home = Path(temporary) / "home"
+            home.mkdir()
+            environment = _mock.patch.dict(
+                os.environ, {"HOME": str(home), "USERPROFILE": str(home)})
+            environment.start()
+            self.addCleanup(environment.stop)
+            source = Path(temporary) / "pkg"
+            (source / "scripts").mkdir(parents=True)
+            (source / "package.json").write_text(
+                '{"version": "9.9.9"}\n', encoding="utf-8")
+            import runtime_store
+            for name in (*runtime_store.RUNTIME_FILES, *runtime_store.GUARDS,
+                         "status_runtime.py"):
+                shutil.copyfile(
+                    PROJECT_ROOT / "scripts" / name, source / "scripts" / name)
+            pin = runtime_store.publish(source)
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            self.init_bound_repo(repo)
+            pinned = {"schema": "gsd-path/runtime/v1", "version": "1.0.0",
+                      "digest": "0" * 64}
+            (repo / ".gsd-path").mkdir()
+            (repo / ".gsd-path" / "runtime.json").write_text(
+                json.dumps(pinned) + "\n", encoding="utf-8")
+            git(repo, "add", ".gsd-path/runtime.json")
+            git(repo, "commit", "-q", "-m", "pin runtime")
+            base = git(repo, "rev-parse", "HEAD")
+            # Activation edits stay uncommitted: the recorded base is the
+            # committed layer, and the task file lands with the task.
+            task = TASK_FILE.replace("base: null", f"base: {base}").replace(
+                "worktree: active", f"worktree: {repo}") + (
+                "\n## Verify\n\n```bash\ntest -f src/app.py\n```\n")
+            self.write(repo, ".project/tasks/T001.md", task)
+            self.write(repo, "src/app.py", "print('done')\n")
+
+            result = isolation.runtime_hotfix(
+                repo, "T001", pin["digest"], "owner ruling 2026-10-26")
+
+            self.assertEqual(result["new_runtime"], pin["digest"])
+            recorded = git(repo, "cat-file", "blob", result["authorization_ref"])
+            self.assertIn("runtime-hotfix: task T001", recorded)
+            log = (repo / ".project/tasks/T001.md").read_text(encoding="utf-8")
+            self.assertIn(result["receipt"], log)
+            # The pin change lands with the task under the receipt.
+            self.write(repo, ".gsd-path/runtime.json",
+                       json.dumps({**pin, "provenance": {"source": "hotfix"}}) + "\n")
+            landed = isolation.land(
+                repo, repo, result["base"], "T001", "add greeting",
+                ".project/tasks/T001.md", ["src/app.py"],
+            )
+            changed = git(repo, "show", "--name-only", "--format=", landed["commit"]).split()
+            self.assertIn(".gsd-path/runtime.json", changed)
+
+    def test_runtime_hotfix_command_refusals(self) -> None:
+        # The command refuses an unknown task, a non-active task, a base-less
+        # task, a non-serial worktree, a malformed digest, an unpublished
+        # runtime, and the already-pinned digest — before any receipt is
+        # written (#480).
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            # A properly activated serial task: base set, primary worktree.
+            active = TASK_FILE.replace("base: null", f"base: {base}").replace(
+                "worktree: active", f"worktree: {repo}") + (
+                "\n## Verify\n\n```bash\ntest -f src/app.py\n```\n")
+            self.write(repo, ".project/tasks/T001.md", active)
+            hotfix = lambda *args: isolation.runtime_hotfix(repo, *args)
+            with self.assertRaisesRegex(isolation.IsolationError, "missing or ambiguous"):
+                hotfix("T999", "1" * 64, "owner ruling")
+            with self.assertRaisesRegex(
+                isolation.IsolationError, "64-hex digest"):
+                hotfix("T001", "not-a-digest", "owner ruling")
+            with self.assertRaisesRegex(
+                isolation.IsolationError, "not published in the store"):
+                hotfix("T001", "1" * 64, "owner ruling")
+            with self.assertRaisesRegex(isolation.IsolationError, "one line"):
+                hotfix("T001", "1" * 64, "owner\rruling")
+            from unittest import mock as _mock
+            home = Path(temporary) / "home"
+            tampered = home / ".gsd-path" / "runtimes" / ("1" * 64)
+            tampered.mkdir(parents=True)
+            (tampered / "manifest.json").write_text('{"version": "1"}\n', encoding="utf-8")
+            with _mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+                with self.assertRaisesRegex(
+                        isolation.IsolationError, "refused: .*manifest identity mismatch"):
+                    hotfix("T001", "1" * 64, "owner ruling")
+            pending = TASK_FILE.replace("status: in-progress", "status: pending").replace(
+                "T001", "T002").replace("worktree: active", f"worktree: {repo}")
+            self.write(repo, ".project/tasks/T002.md", pending)
+            with self.assertRaisesRegex(isolation.IsolationError, "T002 is pending"):
+                hotfix("T002", "1" * 64, "owner ruling")
+            self.write(repo, ".project/tasks/T001.md", TASK_FILE.replace(
+                "worktree: active", f"worktree: {repo}"))
+            with self.assertRaisesRegex(isolation.IsolationError, "records no full base"):
+                hotfix("T001", "1" * 64, "owner ruling")
+            self.write(repo, ".project/tasks/T001.md", TASK_FILE.replace(
+                "base: null", f"base: {base}"))
+            with self.assertRaisesRegex(
+                isolation.IsolationError, "working in the primary"):
+                hotfix("T001", "1" * 64, "owner ruling")
+
+    def test_serial_land_admits_runtime_pin_only_with_a_matching_receipt(self) -> None:
+        # A runtime-hotfix receipt for exactly this task and base admits the
+        # runtime pin path into the landing; anything else keeps the refusal.
+        import runtime_store
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            home.mkdir()
+            from unittest import mock as _mock
+            environment = _mock.patch.dict(
+                os.environ, {"HOME": str(home), "USERPROFILE": str(home)})
+            environment.start()
+            self.addCleanup(environment.stop)
+            source = Path(temporary) / "pkg"
+            (source / "scripts").mkdir(parents=True)
+            (source / "package.json").write_text(
+                '{"version": "9.9.9"}\n', encoding="utf-8")
+            for name in (*runtime_store.RUNTIME_FILES, *runtime_store.GUARDS,
+                         "status_runtime.py"):
+                shutil.copyfile(
+                    PROJECT_ROOT / "scripts" / name, source / "scripts" / name)
+            published = runtime_store.publish(source)
+            OLD_RUNTIME, NEW_RUNTIME = "0" * 64, published["digest"]
+            receipt = (
+                "- 2026-10-26 — runtime-hotfix: task T001 base {base} "
+                "runtime {old} -> {new} authorized by owner ruling 2026-26"
+            ).replace("2026-26", "2026-10-26")
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            isolation.isolate_task(repo, base, "T001", 1)
+            self.write(repo, "src/app.py", "print('done')\n")
+            hot_receipt = receipt.format(
+                base=base, old=OLD_RUNTIME, new=NEW_RUNTIME)
+            # The receipt rides uncommitted in the task Log, landing with the
+            # task — but only because the guard-owned ref holds the same line.
+            self.write(
+                repo, ".project/tasks/T001.md",
+                TASK_FILE + f"log\n\n{hot_receipt}\n")
+            blob = subprocess.run(
+                ("git", "-C", str(repo), "hash-object", "-w", "--stdin"),
+                input=hot_receipt[2:], encoding="utf-8", capture_output=True, check=True,
+            ).stdout.strip()
+            git(repo, "update-ref",
+                f"refs/gsd-path/runtime-hotfix/T001-{base}", blob)
+            # The landed pin must name the receipt's published runtime.
+            self.write(repo, ".gsd-path/runtime.json", json.dumps({
+                "schema": published["schema"], "version": published["version"],
+                "digest": NEW_RUNTIME}) + "\n")
+            result = isolation.land(
+                repo, repo, base, "T001", "add greeting",
+                ".project/tasks/T001.md", ["src/app.py"],
+            )
+            self.assertEqual(result["mode"], "serial")
+            changed = git(repo, "show", "--name-only", "--format=", result["commit"]).split()
+            self.assertIn(".gsd-path/runtime.json", changed)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            isolation.isolate_task(repo, base, "T001", 1)
+            self.write(repo, "src/app.py", "print('done')\n")
+            for bad in (
+                receipt.format(base="9" * 40, old=OLD_RUNTIME, new=NEW_RUNTIME),  # wrong base
+                receipt.format(base=base, old=OLD_RUNTIME, new=NEW_RUNTIME).replace(
+                    "task T001", "task T002"),  # wrong task
+                "- 2026-10-26 — runtime-hotfix mentioned for T001",  # bare mention
+                hot_receipt.replace("authorized by", "signed by"),  # no matching ref line
+            ):
+                with self.subTest(bad=bad[:40]):
+                    self.write(repo, ".project/tasks/T001.md",
+                               TASK_FILE + f"log\n\n{bad}\n")
+                    self.write(repo, ".gsd-path/runtime.json", json.dumps({
+                        "schema": published["schema"],
+                        "version": published["version"],
+                        "digest": NEW_RUNTIME}) + "\n")
+                    with self.assertRaisesRegex(
+                        isolation.IsolationError, "unexpected paths.*runtime.json"
+                    ):
+                        isolation.land(
+                            repo, repo, base, "T001", "add greeting",
+                            ".project/tasks/T001.md", ["src/app.py"],
+                        )
+            # A matching receipt+ref pair whose landed pin carries a different
+            # digest admits nothing.
+            self.write(repo, ".project/tasks/T001.md",
+                       TASK_FILE + f"log\n\n{hot_receipt}\n")
+            self.write(repo, ".gsd-path/runtime.json",
+                       '{"schema": "gsd-path/runtime/v1", "digest": "' + "2" * 64 + '"}\n')
+            with self.assertRaisesRegex(
+                isolation.IsolationError, "unexpected paths.*runtime.json"
+            ):
+                isolation.land(
+                    repo, repo, base, "T001", "add greeting",
+                    ".project/tasks/T001.md", ["src/app.py"],
+                )
+
+    def test_task_commit_deleting_the_runtime_pin_reports_an_undeclared_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            self.init_bound_repo(repo)
+            self.write(repo, ".gsd-path/runtime.json", '{"digest": "' + "0" * 64 + '"}\n')
+            git(repo, "add", ".gsd-path/runtime.json")
+            git(repo, "commit", "-q", "-m", "pin runtime")
+            base = git(repo, "rev-parse", "HEAD")
+            self.write(repo, ".project/tasks/T001.md",
+                       TASK_FILE.replace("base: null", f"base: {base}"))
+            git(repo, "add", ".project/tasks/T001.md")
+            git(repo, "rm", "-q", ".gsd-path/runtime.json")
+            git(repo, "commit", "-q", "-m", "add greeting")
+            sha = git(repo, "rev-parse", "HEAD")
+
+            proved, reason = isolation._prove_task_commit(
+                repo, sha, f"Base: {base}\n", ".project/tasks/T001.md", base, None)
+
+            self.assertIsNone(proved)
+            self.assertIn("undeclared paths: .gsd-path/runtime.json", reason)
+
     def test_serial_land_stages_a_file_and_directory_swap(self) -> None:
         # One `git add` for each path fails here: the first call drops the
         # other path from the index, and then its pathspec matches no file.
@@ -1300,6 +1527,33 @@ class IsolationTests(unittest.TestCase):
                 status_before,
             )
 
+    def test_land_accepts_declared_non_ascii_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            self.init_bound_repo(repo)
+            # The reporter's default config: git C-quotes non-ASCII paths in
+            # listings unless told otherwise (#545).
+            git(repo, "config", "core.quotepath", "true")
+            declared = "docs/4-决策/0007-notes.md"
+            task = TASK_FILE.replace("  - src/app.py\n", f"  - {declared}\n")
+            self.write(repo, ".project/tasks/T001.md", task)
+            git(repo, "commit", "-q", "-am", "declare non-ascii file")
+            base = git(repo, "rev-parse", "HEAD")
+            isolation.isolate_task(repo, base, "T001", 1)
+            self.write(repo, declared, "notes\n")
+            isolation.land(
+                repo,
+                repo,
+                base,
+                "T001",
+                "add greeting",
+                ".project/tasks/T001.md",
+                [declared],
+            )
+            self.assertIn(declared, git(repo, "log", "-1", "--format=%b"))
+            self.assertIn(declared, isolation.committed_paths_since(repo, base))
+
     def test_allowed_changes_accept_files_under_a_declared_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "repo"
@@ -2168,6 +2422,113 @@ class IsolationTests(unittest.TestCase):
                                      "Why: enter build from plan/done with the initial .project artifacts",
                                      [".project"])
             self.assertEqual(git(repo, "rev-parse", "HEAD"), head)
+
+    def patch_reentry_state(self, phase: str, status: str, log: str) -> str:
+        return f"---\npipeline: gsd-path/v2\nphase: {phase}\nstatus: {status}\n---\n\n## Log\n{log}"
+
+    PATCH_REENTRY_LOG = (
+        "- 2026-10-25 — ship — final review blocked; gap final-gap-1 verdict: blocked\n"
+        "- 2026-10-25 — plan — patch plan reopened\n"
+        "- 2026-10-25 — plan — patch plan approved\n"
+        "- 2026-10-25 — build — build started\n"
+    )
+
+    def test_build_checkpoint_accepts_patch_reentry_after_ship_active_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            self.init_bound_repo(repo)
+            # `build: complete milestone` left HEAD at ship/active; the blocked
+            # final review went through the patch plan uncommitted (#526).
+            head = self.committed_state(repo, "ship", "active")
+            self.write(
+                repo, ".project/STATE.md",
+                self.patch_reentry_state("build", "active", self.PATCH_REENTRY_LOG),
+            )
+            self.write(repo, ".project/review/PATCH-FINDINGS.md", "# Patch findings\n")
+            self.write(repo, ".project/review/final-gap-1.md", "# Gap\n")
+
+            result = isolation.checkpoint(
+                repo, head, "build: start milestone",
+                "Why: commit the final-review finding set with the approved patch plan",
+                [".project"],
+            )
+
+            self.assertEqual(result["status"], "committed")
+            self.assertEqual(git(repo, "rev-parse", "HEAD^"), head)
+            committed = git(repo, "show", "--stat", "--format=", "HEAD")
+            self.assertIn(".project/STATE.md", committed)
+            self.assertIn(".project/review/PATCH-FINDINGS.md", committed)
+
+    def test_build_checkpoint_accepts_resumed_patch_planner_reentry(self) -> None:
+        # A blocked patch planner resumed inside the plan stay: the extra
+        # `patch planning blocked` / `planning resumed` events stay between
+        # the reopen and the approval (#531).
+        log = (
+            "- 2026-10-25 — ship — final review blocked; gap final-gap-1 verdict: blocked\n"
+            "- 2026-10-25 — plan — patch plan reopened\n"
+            "- 2026-10-25 — plan — patch planning blocked: NEEDS-USER ruling pending\n"
+            "- 2026-10-25 — plan — planning resumed\n"
+            "- 2026-10-25 — plan — patch plan approved\n"
+            "- 2026-10-25 — build — build started\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            self.init_bound_repo(repo)
+            head = self.committed_state(repo, "ship", "active")
+            self.write(
+                repo, ".project/STATE.md",
+                self.patch_reentry_state("build", "active", log),
+            )
+            self.write(repo, ".project/review/PATCH-FINDINGS.md", "# Patch findings\n")
+            self.write(repo, ".project/review/final-gap-1.md", "# Gap\n")
+
+            result = isolation.checkpoint(
+                repo, head, "build: start milestone",
+                "Why: commit the final-review finding set with the approved patch plan",
+                [".project"],
+            )
+
+            self.assertEqual(result["status"], "committed")
+            self.assertEqual(git(repo, "rev-parse", "HEAD^"), head)
+
+    def test_build_checkpoint_still_refused_without_patch_reentry_log(self) -> None:
+        stale_logs = (
+            # A hand-flipped build/active during final review: no patch loop.
+            "- 2026-10-25 — ship — final review blocked; gap final-gap-1 verdict: blocked\n",
+            # The patch plan reopened but never approved; build never restarted.
+            "- 2026-10-25 — plan — patch plan reopened\n"
+            "- 2026-10-25 — plan — patch plan approved\n",
+            # The patch loop ran, but a later event moved on: not the re-entry tail.
+            self.PATCH_REENTRY_LOG + "- 2026-10-25 — build — build done; final review pending\n",
+            # Approved and started, but the plan stay never opened with a reopen.
+            "- 2026-10-25 — plan — patch plan approved\n"
+            "- 2026-10-25 — build — build started\n",
+            # A plan stay that opens with `planning resumed` alone never
+            # entered through the patch plan.
+            "- 2026-10-25 — plan — planning resumed\n"
+            "- 2026-10-25 — plan — patch plan approved\n"
+            "- 2026-10-25 — build — build started\n",
+        )
+        for log in stale_logs:
+            with tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary) / "repo"
+                repo.mkdir()
+                self.init_bound_repo(repo)
+                head = self.committed_state(repo, "ship", "active")
+                self.write(
+                    repo, ".project/STATE.md",
+                    self.patch_reentry_state("build", "active", log),
+                )
+                self.write(repo, ".project/review/FINAL.md", "# Final Review\n")
+
+                with self.assertRaisesRegex(isolation.IsolationError, "no pre-ship commit"):
+                    isolation.checkpoint(
+                        repo, head, "build: start milestone",
+                        "Why: Commit FINAL.md before archive.", [".project"],
+                    )
+                self.assertEqual(git(repo, "rev-parse", "HEAD"), head)
 
     def test_checkpoint_rejects_unrelated_changes_without_moving_head(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3663,6 +4024,73 @@ class RecoverTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "block")
         self.assertEqual(report["tasks"], [])
         self.assertIn("unexpected .project/tasks/T002.md", report["reason"])
+
+    def test_recovery_reports_a_cited_withdrawn_tombstone_as_none(self) -> None:
+        self.write_task(
+            "withdrawn", "null",
+            log='- Withdrawn — 2026-10-26: "owner rules this out of scope"\n',
+        )
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "withdraw T001")
+
+        report = self.recover()
+
+        self.assertEqual(report["verdict"], "none")
+        self.assertEqual(report["reason"], "withdrawn task is a tombstone")
+
+    def test_recovery_reports_a_member_tombstone_as_none(self) -> None:
+        self.write_task(
+            "withdrawn", "null",
+            log='- Withdrawn — 2026-10-26: "owner defers this member work"\n',
+        )
+        path = self.repo / ".project/tasks/T001.md"
+        path.write_bytes(
+            path.read_text(encoding="utf-8")
+            .replace("wave: 1\n", "wave: 1\nrepo: web\n")
+            .encode("utf-8")
+        )
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "withdraw member task")
+
+        report = self.recover()
+
+        self.assertEqual(report["verdict"], "none")
+        self.assertEqual(report["reason"], "withdrawn task is a tombstone")
+
+    def test_recovery_blocks_an_uncited_withdrawn_tombstone(self) -> None:
+        self.write_task("withdrawn", "null")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "withdraw T001")
+
+        report = self.recover()
+
+        self.assertEqual(report["verdict"], "block")
+        self.assertIn("Withdrawn", report["reason"])
+
+    def test_ship_verification_treats_a_cited_tombstone_as_inventory(self) -> None:
+        self.write_task(
+            "withdrawn", "null",
+            log='- Withdrawn — 2026-10-26: "owner rules this out of scope"\n',
+        )
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "withdraw T001")
+        head = git(self.repo, "rev-parse", "HEAD")
+
+        proven = isolation.verify_landed_task_files(
+            self.repo, [self.repo / ".project/tasks/T001.md"], ".project/tasks", head
+        )
+
+        self.assertEqual(proven["tasks"][0]["verdict"], "withdrawn")
+        self.assertEqual(proven["tasks"][0]["reason"], "withdrawn task is a tombstone")
+
+        self.write_task("withdrawn", "null")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "drop the citation")
+        head = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(isolation.IsolationError, "needs a"):
+            isolation.verify_landed_task_files(
+                self.repo, [self.repo / ".project/tasks/T001.md"], ".project/tasks", head
+            )
 
     def test_clean_filtered_crlf_task_lands_and_recovers(self) -> None:
         git(self.repo, "config", "core.autocrlf", "true")

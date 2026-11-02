@@ -548,14 +548,16 @@ class DispatchDriverTests(unittest.TestCase):
         ledger = (root / ".project/build/verify-ledger.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(ledger), 1)
         self.assertEqual([item["ledger"] for item in receipt["landed"]], [True, False])
-        # A parallel Verify runs inside its task isolate: cwd and worktree agree.
+        # A parallel Verify runs in a reproduced sidecar of the isolate, like
+        # the serial one: cwd names the sidecar, worktree the task checkout.
         for item in receipt["landed"]:
-            self.assertEqual(item["verify"]["cwd"], item["verify"]["worktree"])
+            self.assertNotEqual(item["verify"]["cwd"], item["verify"]["worktree"])
+            self.assertTrue(item["verify"]["location"].startswith("sidecar chore/verify-task-"))
             self.assertRegex(item["verify"]["base"], r"^[0-9a-f]{40}$")
         for task in ("T001", "T002"):
             text = (root / f".project/tasks/{task}-demo.md").read_text(encoding="utf-8")
             self.assertIn("status: done", text)
-            self.assertIn("orchestrator Verify (isolate chore/task-", text)
+            self.assertIn("orchestrator Verify (sidecar chore/verify-task-", text)
         dispatches = self.driver(root, "status")["dispatches"]
         self.assertEqual([d["outcome"] for d in dispatches], ["landed", "landed"])
 
@@ -1395,6 +1397,41 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(self.subjects(root)[:2], ["T002: Demo task T002", "T001: Demo task T001"])
         self.assertEqual(self.branches(root), ["feature/milestone-001"])
 
+    def test_parallel_landing_verify_sees_the_task_deletions(self) -> None:
+        # A Verify that reads git's index must give the same answer whatever
+        # the round size: coders never stage, so the isolate's real index
+        # stays at the base while the working tree carries the deletion (#547).
+        root = self.root
+        (root / "docs").mkdir()
+        (root / "docs/progress.md").write_bytes("progress\n".encode("utf-8"))
+        head = self.fixture(
+            root,
+            files_t002="docs/progress.md",
+            verify_t002='test -z "$(git ls-files docs/progress.md)" '
+                        '&& d="$(mktemp -d)" && git -C "$d" init -q '
+                        '&& git -C "$d" -c user.name=t -c user.email=t@example.test '
+                        'commit -q --allow-empty -m scratch && rm -rf "$d"',
+        )
+        prepared = subprocess.run(
+            [sys.executable, "-B", str(PROJECT_ROOT / "scripts/workflow_run.py"), "prepare-task",
+             "--repo", str(root), "--expected-head", head, "--task-id", "T002", "--round-size", "2"],
+            check=True, capture_output=True, encoding="utf-8", errors="replace")
+        worktree = Path(json.loads(prepared.stdout)["steps"][0]["result"]["worktree"])
+        task_file = ".project/tasks/T002-demo.md"
+        subprocess.run([sys.executable, "-B", str(PROJECT_ROOT / "scripts/isolation.py"),
+                        "activate-task", "--repo", str(worktree), "--base", head, "--task-id", "T002",
+                        "--agent", "build_t002", "--task-file", task_file,
+                        "--task-branch", json.loads(prepared.stdout)["steps"][0]["result"]["task_branch"]],
+                       check=True, capture_output=True)
+        (worktree / "docs/progress.md").unlink()
+        receipt = self.driver(root, "finish", "--task-id", "T002")
+        self.assertEqual(receipt["status"], "landed", receipt)
+        self.assertEqual(receipt["landed"][0]["mode"], "parallel", receipt)
+        self.assertIn(
+            "docs/progress.md",
+            run_git(root, "show", "--stat", "--format=", "HEAD").stdout,
+        )
+
     def hand_dispatch_parallel(self, root: Path) -> Path:
         """prepare-task and activate-task T001 by hand in a parallel isolate, then write its product file."""
         head = self.fixture(root)
@@ -1416,9 +1453,19 @@ class DispatchDriverTests(unittest.TestCase):
         root = self.root
         worktree = self.hand_dispatch_parallel(root)
         removal = dispatch_driver.isolation.IsolationError("fatal: Directory not empty")
-        output = io.StringIO()
 
-        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree", side_effect=removal), \
+        real_removal = dispatch_driver.isolation._remove_worktree
+
+        def isolate_removal_only(primary: Path, destination: Path, force: bool) -> None:
+            # The parallel Verify retires a sidecar before the landing; only
+            # the task isolate's own removal fails.
+            if destination == worktree:
+                raise removal
+            real_removal(primary, destination, force)
+
+        output = io.StringIO()
+        with mock.patch.object(dispatch_driver.isolation, "_remove_worktree",
+                               side_effect=isolate_removal_only), \
                 redirect_stdout(output):
             code = dispatch_driver.main(["finish", "--repo", str(root), "--task-id", "T001"])
 
@@ -1440,7 +1487,12 @@ class DispatchDriverTests(unittest.TestCase):
         root = self.root
         worktree = self.hand_dispatch_parallel(root)
 
+        real_removal = dispatch_driver.isolation._remove_worktree
+
         def partial_removal(primary: Path, destination: Path, force: bool) -> None:
+            if destination != worktree:
+                real_removal(primary, destination, force)  # the Verify sidecar retires normally
+                return
             (destination / "src/app.py").unlink()
             raise dispatch_driver.isolation.IsolationError(
                 f"could not delete {destination}: [WinError 145] The directory is not empty")
@@ -1878,6 +1930,25 @@ class DispatchDriverTests(unittest.TestCase):
         proof = json.loads(evidence.read_text(encoding="utf-8"))
         self.assertEqual(proof, receipt["steps"][0]["result"])
         self.assertEqual(sorted(entry["task"]["id"] for entry in proof["tasks"]), ["T001", "T002"])
+
+    def test_review_brief_scopes_acceptance_and_rechecks(self) -> None:
+        # The emitted brief is the public instruction interface delivered to the child.
+        options = argparse.Namespace(role_brief=Path("reviewer.md"),
+                                     template=Path("wave-review.md"), repair_evidence=None)
+        state = dict(wave=1, cycle=1, task_id="review_wave_1_cycle_1",
+                     worktree=str(self.root), branch="review", base="a" * 40,
+                     relative=".project/review/wave-1.cycle1.md")
+        for lens in (None, "contract", "adversarial"):
+            with self.subTest(lens=lens):
+                state["lens"] = lens
+                brief = dispatch_driver.review_brief(state, options, self.root, [], False, None)
+                self.assertIn("Block only on a named unmet requirement or missing required evidence.", brief)
+                self.assertIn("Do not search for improvements or expand the agreed contract.", brief)
+                self.assertNotIn("Re-check repaired failures and affected passes only.", brief)
+                retry = dispatch_driver.review_brief(
+                    state, options, self.root, [], False, self.root / "previous.md")
+                self.assertIn("Re-check repaired failures and affected passes only.", retry)
+                self.assertIn("Reuse settled evidence for unaffected criteria.", retry)
 
     def test_review_full_collects_validates_and_checkpoints_a_pass(self) -> None:
         root = self.root

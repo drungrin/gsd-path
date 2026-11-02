@@ -245,16 +245,25 @@ See [UPDATE.md](UPDATE.md).
 - deletion or move commands, in every phase, that target or contain a
   pipeline state root (`~/.gsd-path`, `GSD_PATH_WORKTREE_ROOT`, or a pinned
   workspace root). Deletes inside the agent's own managed worktree under such
-  a root stay allowed. Workspace receipts that cannot be read deny the command
+  a root stay allowed. Deletes inside a dispatched task worktree of one of the
+  session's repositories also stay allowed when the operand itself resolves
+  there, even if the hook's working directory is the primary checkout. Such a
+  worktree is on a `chore/task-<slug>` branch, carries its task authorization
+  ref, and sits at a pipeline placement; symlinked operands stay denied.
+  Workspace receipts that cannot be read deny the command
 - deletion or move commands outside a single simple segment, including command
   chains, pipes, newlines, grouping, directory changes, and command substitution
 - deletion or move commands with any argument outside the literal-path character
-  set: ASCII letters, digits, `.`, `_`, `-`, `/`, and ASCII spaces inside one
+  set: Unicode letters and digits, `.`, `_`, `-`, `/`, and ASCII spaces inside one
   shell unit (plus a drive prefix and backslashes on Windows). One matching
   pair of surrounding quotes is allowed; parameters, wildcards, braces, and
   tilde paths are denied even when quoted. This also applies to
   `find -delete` and supported destructive aliases
 - destructive Git commands nested in supported shell and command wrappers
+- the operator-only `isolation.py runtime-hotfix` recovery, and every Git
+  command with a word that contains `refs/gsd-path/` or `runtime-hotfix`;
+  see [runtime selection](skills/gsd-path/references/runtime-selection.md)
+  for the receipt, the covered spellings, and the limits
 - Git arguments that contain a shell parameter. Only plain `$name` and
   `${name}` expansions pass, and only inside plain double-quoted spans of
   read-only subcommands (`status`, `log`, `diff`, `show`, and the other
@@ -372,7 +381,11 @@ such as `rm -rf scratch` passes the archive check; other guard rules still apply
   proof exists; an ordinary commit with an integration subject is not exempt.
   After `bind-next` switches to the next bound branch, the uncommitted STATE
   that binds it governs instead of the previous shipped one, whose validators
-  cannot run once its branches are retired
+  cannot run once its branches are retired.
+  A landing commit may also stage `.gsd-path/runtime.json` only when a
+  runtime-hotfix receipt exists for that task and base and the staged pin
+  names exactly the receipt's runtime; see
+  [runtime selection](skills/gsd-path/references/runtime-selection.md)
 - deleting the recorded branch or switching to another branch while carrying
   unfinished state does not release product commit protection
 - pushes (to any remote) that move a `feature/milestone-###` ref anywhere but its

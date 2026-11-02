@@ -212,7 +212,15 @@ gsd-path-daemon plugin <status|install|update|uninstall>          # manage the s
   supported coding agent and whether its command is on this computer.
 - `POST /api/project/op` — `{root, op, dry_run?, member?, hosts?}` for a watched
   project. `op` is `hooks-init`, `hooks-refresh`, `hooks-refresh-full`,
-  `runtime-restore`, `doctor`, `members`, `member-hooks`, or `member-repair`.
+  `runtime-restore`, `doctor`, `members`, `member-add`, `member-remove`,
+  `member-integration`, `member-hooks`, or `member-repair`. `member-add` takes
+  `name`, `checkout`, `integration?`, and for a new GitHub repository `create`
+  (`owner/name`) and `visibility`; it runs `members.py add` with each value in
+  one `--flag=value` argument and has no preview. The daemon expands `~` in
+  `checkout` and refuses a relative path. `member-remove` takes `name` and runs
+  `members.py remove`; `member-integration` takes `name` and `integration` and
+  runs `members.py set-integration`. They pass values the same way and have no
+  preview.
   Each runs one helper from the plugin source (`install.py` or `members.py`)
   and returns its output. The daemon adds two rules of its own. `hooks-init`
   passes `hosts` (host ids) to the installer; with no `hosts`, it uses the
@@ -419,7 +427,12 @@ one global op-lock — a second concurrent operation gets
 - `GET /api/plugin/status` — full detection: global hosts plus
   `projects: [...]` for every watched root. Each project's `runtime_version`
   comes from its runtime declaration, falling back to legacy
-  `.gsd-path/runtime/VERSION`; unstamped runtimes report `null`.
+  `.gsd-path/runtime/VERSION`; unstamped runtimes report `null`. A
+  coordinator (a project with `.project/MEMBERS.md`) also has `members` (the
+  same rows as the `members` project operation) and `members_error` (`null`,
+  the `members.py` error text, or why the helper could not run). This read
+  never fetches the plugin source: when it is missing, `members` is `[]` and
+  `members_error` says so. Other projects have neither key.
 - `POST /api/plugin/install` — `{scope: "global"|"project", hosts?, root?,
   local_hosts?, hooks?, dry_run?}` → `{ok, argv, stdout_tail, error}`.
 - `POST /api/plugin/update` — `{scope, root?, dry_run?}`.
@@ -522,12 +535,18 @@ VERSION-stamp probes plus the update-check cache, never a source refresh; see
   checkout folder, or null for a main checkout), `milestone`, `phase`, `status`,
   `branch`, `archive`, `integration`, `status_source`, `state_mtime`,
   `last_activity_iso`.
-- Progress: `tasks` (`[{id, title, wave, status, files}]`), `tasks_done`,
+- Progress: `tasks` (`[{id, title, wave, status, files, repo}]`; `repo` is the
+  member repository a multi-repo task changes, or null), `tasks_done`,
   `tasks_total`, `current_wave`, `waves`, `roadmap_milestones`
   (`[{number, slug, status, archive, duration_s, tokens}]` — `duration_s`
   and `tokens` are null placeholders for now), `next_milestone`, `git`
   (`{branch, head, dirty}`). `dirty` is Boolean or null; runtime changed-file
   lists become `false` when empty and `true` when nonempty.
+- Multi-repo, read-only: `member_lock` (`[{name, branch, base}]` from
+  `.project/build/members.json`, or from the archive once ship moves it; null
+  when no member is locked) and `member_close` (the ship close rows
+  `[{name, status, merge, tag, ...}]` from the member-close journal in the Git
+  common dir, named after the archive; `[]` before ship).
 - Runtime enrichment: `pending_answers`, `next_skill`, `handoff`. The project
   detail page displays the runtime handoff outcome and next action.
 - `workflow`: `{state, label, reason?}` is the shared browser/tray presentation.
@@ -538,7 +557,8 @@ VERSION-stamp probes plus the update-check cache, never a source refresh; see
   project has no project install, and the reason names the install command),
   **Not started** (`idle`; the install is present and `.project/STATE.md` does
   not exist yet), or **Unverified** (the launcher failed; the reason carries
-  the last line of its error output).
+  the last line of its error output, or names the probe timeout when the
+  runtime status ran too long).
 - Dashboard detail:
   - `reviews` — `[{file, kind, verdict, cycle, depth, note}]` parsed from
     `.project/review/*.md` (`kind` is `wave`, `final`, `gap`,

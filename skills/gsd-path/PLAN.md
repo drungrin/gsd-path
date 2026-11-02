@@ -123,6 +123,11 @@ as stated in Lookahead mode.
      `worktree: null`, and `task_branch: null` values on every new task.
      In patch mode, tasks already `done` keep their landed metadata; only
      the appended patch tasks must start clean.
+   - A `status: withdrawn` task is an owner-ruled tombstone: its file and id
+     stay in place, it is never dispatched, and its Log must carry a
+     `Withdrawn — <date>: <owner ruling verbatim>` entry. Reject an uncited
+     tombstone, a dependent that is not `done` or withdrawn, and an SC it
+     still owns; re-own or remove that SC through a Define INTENT Correction.
    - Require every dependency id to exist, forbid later-wave dependencies,
      detect cycles, and forbid unordered file overlap between planned tasks
      in the same wave. Same-wave tasks may share files only when one
@@ -159,9 +164,9 @@ as stated in Lookahead mode.
    - Require a `Review depth` value (`full`, `deep`, or `verify-only`) on
      every wave. Wave 1 and any wave touching authentication, authorization,
      payments, data migration, or concurrency requires `full` or `deep`;
-     this includes quick-lane single waves. The planner assigns `deep`
-     sparingly to waves where a wrong merge is irreversible or
-     security-critical.
+     this includes quick-lane single waves. Use `full` unless INTENT.md
+     records an explicit user request for adversarial review; risk alone
+     does not authorize `deep`.
    - When INTENT.md `Surfaces:` is not `none`, require a PLAN.md
      `## Surface contract` block per named surface with its Criteria, Entry,
      States, Walkthrough, and the task that delivers it. Those criteria must be

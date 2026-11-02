@@ -12,11 +12,11 @@ milestone loop. While a milestone builds, the next one can be planned in
 parallel under `.project/next/` (lookahead); a building milestone can also be
 abandoned on an explicit ruling, archiving its partial work for a re-slice.
 
-**Hosts with a passing full live milestone for release 1.6.2:** Codex, Claude
+**Hosts with a passing full live milestone for release 1.7.1:** Codex, Claude
 Code, Grok, OpenCode, Antigravity CLI, Cursor, and Kimi Code.
 
 **Hosts with an installer and a dispatch contract, but no live milestone for
-release 1.6.2:** GitHub Copilot CLI (account quota exhausted), Qwen Code, Zed,
+release 1.7.1:** GitHub Copilot CLI (account quota exhausted), Qwen Code, Zed,
 and Kiro (API credits), and Muse Code (no live release evidence recorded yet).
 These hosts are excluded from the release evaluation. Exclusion is not a pass.
 
@@ -27,16 +27,16 @@ The [host trust matrix](https://github.com/open-gsd/gsd-path/blob/main/docs/trus
 is the source of truth for live milestone proof and each host's guard tier.
 
 <!-- release-docs -->
-## What's new in 1.6.2 — 2026-10-17
+## What's new in 1.7.1 — 2026-10-31
 
-**Latest npm release:** [@opengsd/gsd-path@1.6.2](https://www.npmjs.com/package/@opengsd/gsd-path/v/1.6.2) — [release notes](CHANGELOG.md#162---2026-10-17)
+**Latest npm release:** [@opengsd/gsd-path@1.7.1](https://www.npmjs.com/package/@opengsd/gsd-path/v/1.7.1) — [release notes](CHANGELOG.md#171---2026-10-31)
 
 **Recent highlights**
-- keep the README What's new section current from release notes
-- read quoted STATE values in the ship checkpoint guard
-- refuse a build checkpoint while STATE is ship/active
-- keep evidence-line citations when final review reuses a wave
-- record 1.6.2 live host release evidence
+- scope reviews to agreed acceptance criteria
+- accept a resumed patch planner's re-entry checkpoint
+- Point current-release docs at 1.7.1 evidence
+- complete 1.7.1 release trust evidence
+- record Cursor proof and pending 1.7.1 release checks
 
 <!-- /release-docs -->
 
@@ -201,7 +201,8 @@ What the app does:
 - **Project setup:** runtime version, guard hooks, health check, and, for a
   multi-repo coordinator, member hooks and marker repair.
 - **Settings:** updates, Path settings (shipping mode, models, review panel),
-  watched folders, model prices, launch at login, and appearance.
+  watched folders, model prices, launch at login, appearance, and language
+  (English or Simplified Chinese).
 - **Stats** and the per-project **Environment** editor.
 - **Tray:** a compact project list, items that need attention, and controls
   to start, restart, and quit.
@@ -474,6 +475,10 @@ offline submodule recipe.
   and a member Path cannot verify blocks with its reason. Define takes each
   member's rulings into that member's audit; the planner uses each map's
   conventions for that repo's tasks.
+- Also at a milestone boundary, `members.py set-integration` changes a
+  member's integration mode, and `members.py remove` takes a member out. Remove
+  deletes the member marker and member guard hooks and keeps Path branches,
+  tags, and archived milestones.
 - The planner gives each member task `repo: <member>`; one task changes one
   repo. Project Verify runs from the coordinator and reaches a member as
   `../<member>`.

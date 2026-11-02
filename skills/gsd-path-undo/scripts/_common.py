@@ -27,7 +27,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import BinaryIO, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import BinaryIO, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 
 # Chosen by what imports, not os.name, so tests can emulate Windows on POSIX.
@@ -94,6 +94,106 @@ VERIFY_LEDGER_PATH = ".project/build/verify-ledger.jsonl"
 VERIFY_RESULTS = ("pass", "fail")
 VERIFY_LEDGER_SCHEMA = "gsd-path/verify-ledger/v2"
 VERIFY_BLOCK_PATTERN = re.compile(r"```bash[ \t]*\n(?P<block>.*?)```", re.DOTALL)
+# The owner citation a withdrawn task tombstone must carry in its Log (#483).
+# One definition shared by every gate that reads the representation.
+WITHDRAWN_CITATION = re.compile(
+    r"^- Withdrawn — (?P<date>\d{4}-\d{2}-\d{2}): (?P<ruling>.+)$", re.MULTILINE)
+
+
+def withdrawn_citations(task_text: str) -> list[str]:
+    """The owner citations in a withdrawn task's Log, as `date: ruling`.
+
+    The Log is the append-only record of rulings; a Withdrawn line in any
+    other section is not the citation the gates accept (#483).
+    """
+    body = section_body(task_text, "Log")
+    if body is None:
+        return []
+    return [f"{m.group('date')}: {m.group('ruling')}"
+            for m in WITHDRAWN_CITATION.finditer(body)]
+
+
+# The pre-#518 Corrections form: `- <date>: <ruling>` under `## Corrections`.
+_LEGACY_CORRECTION_ENTRY = re.compile(r"^- (?P<date>\d{4}-\d{2}-\d{2}): (?P<text>\S.*)$")
+_NUMBERED_CORRECTION_ENTRY = re.compile(r"^- C(?P<id>[1-9]\d*) \d{4}-\d{2}-\d{2}: ")
+# A migrate-corrections record in the STATE Log: `- <date> — <phase> —
+# migrate-corrections: {"base": <approved commit sha>, "current": <migrated
+# intent sha256>}` (#551). Any gate recomputes the proof; nothing is
+# operator-only.
+MIGRATE_CORRECTIONS_MARKER = "migrate-corrections: "
+MIGRATE_CORRECTIONS_RECORD = re.compile(
+    r"^-.+? — .+? — " + re.escape(MIGRATE_CORRECTIONS_MARKER) + r"(?P<record>\{.*\})$"
+)
+
+
+def migrate_corrections(text: str) -> str:
+    """Number legacy Corrections entries; every other byte is unchanged.
+
+    A pure, total, idempotent transform (#551): only `- <date>:` lines
+    under `## Corrections` change — each becomes `- C<n> <date>: …`,
+    numbered in file order after the highest id already present above it,
+    so a mixed file numbers its legacy entries into the running sequence.
+    A native file (every entry numbered) is returned unchanged, which is
+    what gates re-run to prove an approved INTENT's migrated form.
+    """
+    lines = text.splitlines(keepends=True)
+    output = []
+    in_corrections = False
+    next_id = 1
+    for line in lines:
+        body = line.rstrip("\r\n")
+        ending = line[len(body):]
+        # Section headings anchor flush-left, exactly like the gate's parser;
+        # trailing spaces after the heading are tolerated, leading are not.
+        if body.startswith("## "):
+            in_corrections = body.rstrip() == "## Corrections"
+            output.append(line)
+            continue
+        entry = body.lstrip()
+        indent = body[: len(body) - len(entry)]
+        numbered = _NUMBERED_CORRECTION_ENTRY.match(entry)
+        if in_corrections and numbered:
+            next_id = max(next_id, int(numbered.group("id")) + 1)
+            output.append(line)
+            continue
+        if in_corrections and _LEGACY_CORRECTION_ENTRY.match(entry):
+            output.append(f"{indent}- C{next_id} {entry[2:]}{ending}")
+            next_id += 1
+            continue
+        output.append(line)
+    return "".join(output)
+
+
+def intent_unchanged(approved: str, current: str) -> bool:
+    """Whether `current` is the approved INTENT, or its migrated form (#551).
+
+    The check re-runs the migration rather than stripping ids: only the
+    one-way transform `migrate_corrections(approved) == current` proves the
+    difference is numbering alone.
+    """
+    return current == approved or migrate_corrections(approved) == current
+
+
+def migrate_corrections_records(state_text: str) -> list[tuple[str, str]]:
+    """(base commit sha, migrated-intent sha256) pairs from migrate-corrections Log lines."""
+    body = section_body(state_text, "Log")
+    if body is None:
+        return []
+    records = []
+    for line in body.splitlines():
+        match = MIGRATE_CORRECTIONS_RECORD.match(line.strip())
+        if match is None:
+            continue
+        try:
+            record = json.loads(match.group("record"))
+        except json.JSONDecodeError:
+            continue
+        base, current = record.get("base"), record.get("current")
+        if (isinstance(base, str) and isinstance(current, str)
+                and re.fullmatch(r"[0-9a-f]{40}", base)
+                and re.fullmatch(r"[0-9a-f]{64}", current)):
+            records.append((base, current))
+    return records
 
 REVIEW_BULLET_HEADING_PATTERN = re.compile(r"^#{2,3} ")
 REVIEW_BULLET_FIELD_LABEL_PATTERN = re.compile(r"^- \*\*[^*]+\*\*:")
@@ -383,6 +483,34 @@ def quotes_criterion(quote: str, criterion: str) -> bool:
     return " ".join(quote.split()) in {" ".join(form.split()) for form in forms}
 
 
+_COMMENT_OR_CODE_SPAN = re.compile(
+    r"(?<!`)(?<!\\)(`+)(?!`)(?:(?!\1)[^\n])*?\1|<!--.*?-->", re.DOTALL
+)
+
+
+def strip_html_comments(text: str) -> str:
+    """Remove HTML comments, keeping inline code spans verbatim.
+
+    A criterion may quote a Path marker comment as inline code; the naive
+    ``<!--.*?-->`` regex ate it on whichever side was stripped, so gates
+    that stripped one side and read the other raw compared different
+    texts (#548). One span-preserving stripper on every side keeps
+    verbatim quotes equal everywhere; a comment outside a code span
+    still strips. An opener never starts inside a longer backtick run or
+    behind an escaped backtick, matching CommonMark's span openers.
+    """
+    return _COMMENT_OR_CODE_SPAN.sub(
+        lambda match: match.group(0) if match.group(1) else "", text
+    )
+
+
+def strip_code_spans(text: str) -> str:
+    """Remove inline code spans, keeping HTML comments intact."""
+    return _COMMENT_OR_CODE_SPAN.sub(
+        lambda match: "" if match.group(1) else match.group(0), text
+    )
+
+
 def quoted_criterion(item: str, criteria: Sequence[str]) -> Optional[Tuple[int, int]]:
     """Index of the criterion quoted at the start of `item`, and where the quote ends.
 
@@ -486,16 +614,19 @@ def parse_verify_ledger(text: str) -> list:
 
 
 def _run_exact(
-    argv: Sequence[str], *, cwd: Optional[Path] = None, input: Optional[str] = None
+    argv: Sequence[str], *, cwd: Optional[Path] = None, input: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> subprocess.CompletedProcess[str]:
     """subprocess.run with UTF-8 text and no newline translation.
 
     Text-mode pipes on Windows turn "\\n" into "\\r\\n" on the way in, so text
     handed to git hash-object would no longer match the committed blob.
+    An explicit env replaces the inherited one (None inherits, as before).
     """
     completed = subprocess.run(
         argv,
         cwd=cwd,
+        env=env,
         input=None if input is None else input.encode("utf-8", "surrogateescape"),
         capture_output=True,
         check=False,
@@ -515,9 +646,43 @@ def run_command(
 
 
 def run_git(
-    repo: Path, *arguments: str, input: Optional[str] = None
+    repo: Path, *arguments: str, input: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> subprocess.CompletedProcess[str]:
-    return _run_exact(git_command(repo, *arguments), input=input)
+    # The default scrubs git's repository-discovery environment: run_git's
+    # contract is "this repo, on its own merits", and a hook-exported GIT_DIR
+    # overrides `-C` for discovery entirely (#555). No caller relies on the
+    # ambient variables; explicit env replaces the scrub when a caller
+    # genuinely needs one.
+    return _run_exact(
+        git_command(repo, *arguments), input=input,
+        env=git_environment() if env is None else env,
+    )
+
+
+# Git's repository-discovery environment. Git exports GIT_DIR (and
+# GIT_INDEX_FILE for pre-commit) to hooks; with GIT_DIR set, an explicit
+# `-C <dir>` loses discovery entirely, so a probe about another directory
+# answers for the hook's repository instead (#555). One definition shared
+# by every probe that must resolve a directory on its own merits.
+GIT_DISCOVERY_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+)
+
+
+def git_environment() -> dict:
+    """The inherited environment without git's repository-discovery vars (#555)."""
+    env = dict(os.environ)
+    for key in GIT_DISCOVERY_VARS:
+        env.pop(key, None)
+    return env
 
 
 def _patch_ids(repo: Path, commits: Sequence[str]) -> list[Optional[str]]:
@@ -637,8 +802,20 @@ def source_tag_problem(repo: Path, milestone_tag: str, source: str, landing: str
 
 
 def git_command(repo: Path, *arguments: str) -> tuple[str, ...]:
-    """Git argv for repo, including WSL drvfs workarounds when needed."""
-    return ("git", "-C", str(repo), *git_drvfs_config_flags(repo), *arguments)
+    """Git argv for repo, including WSL drvfs workarounds when needed.
+
+    core.quotepath=false keeps non-ASCII paths raw in path listings so
+    they compare equal to the UTF-8 paths tasks declare (#545).
+    """
+    return (
+        "git",
+        "-C",
+        str(repo),
+        "-c",
+        "core.quotepath=false",
+        *git_drvfs_config_flags(repo),
+        *arguments,
+    )
 
 
 def git_drvfs_config_flags(repo: Path) -> tuple[str, ...]:

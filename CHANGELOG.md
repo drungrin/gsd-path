@@ -11,6 +11,51 @@ app and the daemon have their own file,
 [daemon/app/CHANGELOG.md](daemon/app/CHANGELOG.md). Release bookkeeping and
 test-only changes are not listed; the Git history has them.
 
+## [Unreleased]
+
+### Added
+- Remove a member repository with `members.py remove`, and change a member's integration mode with `members.py set-integration`.
+
+### Fixed
+- Link the installed `WORKFLOW.md` to GitHub so its links resolve in consuming projects. Existing installs keep their copy; see [UPDATE.md](UPDATE.md) to adopt it.
+- Land and recover tasks that declare non-ASCII paths, such as `docs/4-决策/x.md`, without a `core.quotePath` workaround.
+- Let a parallel task coder delete files in a dispatched task worktree when the hook runs from the primary checkout, and accept non-ASCII literal paths in guarded delete and move commands.
+- Pass a task Verify that reads Git's index, such as `git ls-files` on deleted paths, in a parallel round the same as in a serial one.
+- Accept a success criterion that quotes a Path marker comment as inline code, such as `<!-- gsd-path:begin -->`, at build completion and archive the same as at the wave gate.
+- Let build recovery accept an approved INTENT whose legacy `## Corrections` entries were renumbered as `- C<n> <date>: <ruling>`, so a mid-milestone runtime upgrade no longer wedges the project, and warn during `--runtime-upgrade` and `--runtime-migrate` when the incoming runtime's handoff checks would fail on the open milestone.
+- Let the pre-commit guard accept commits from a linked worktree after a milestone ships and integrates, instead of refusing every commit with "managed worktree root must be outside this repository's worktrees".
+- Read every origin ref a status check needs with one batched `git ls-remote` instead of six serial round trips, keeping `status` inside the app's probe budget on wide-area origins.
+
+## [1.7.1] - 2026-10-31
+
+### Changed
+- Focus reviews on agreed requirements and required proof, without searching for unrelated improvements.
+- Require an explicit request for adversarial review, and limit repeat reviews to repaired failures and affected checks.
+
+### Fixed
+- Resume a patch planner after its re-entry checkpoint without rejecting its task log.
+
+## [1.7.0] - 2026-10-30
+
+### Added
+- Publish runtime-store entries without installing them, and adopt approved successor runtimes on closed milestones.
+- Prepare member task environments with a declared command and retry tasks after an environment failure.
+- Recover member work that already reached its default branch, including published ancestors and rebase-merged pull requests.
+- Trace accepted task evidence through a generated evidence manifest.
+
+### Changed
+- Check task brief paths in batches and report progress during larger plans.
+- Record the actual verification directory and native agent in member task receipts.
+
+### Fixed
+- Resume patch work after a ship-stage review without losing its checkpoint.
+- Keep blocked plans and repair waves on the correct recovery route.
+- Require wave reviews to account for every task claim and authorize claim dispositions through owner corrections.
+- Preserve disabled hooks, permit safe read-only fetches, and tighten PowerShell and repository deletion guards.
+- Remove isolated worktrees without traversing symlinks or Windows junctions.
+- Pin sibling task files during member activation and resolve member markers in final-review sidecars.
+- Retry project verification after a host failure and run long verification scripts correctly on Windows.
+
 ## [1.6.2] - 2026-10-17
 
 ### Changed

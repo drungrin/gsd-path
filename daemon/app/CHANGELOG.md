@@ -6,7 +6,35 @@ The app has its own version and `app-v<version>` tags, separate from the
 
 ## [Unreleased]
 
+### Fixed
+- Report a runtime status that exceeds the probe timeout as "runtime status timed out after 10 s" instead of the generic unavailable reason, so a verified shipped milestone is no longer indistinguishable from a broken runtime.
+
+## [0.1.3] - 2026-10-31
+
 ### Added
+- The Projects board shows multi-repo projects. A coordinator card shows how
+  many members it has and lists each member under it, with its marker and
+  member-hook state and a link to its own card when its folder is watched. A
+  watched member card shows which coordinator it belongs to. A members file
+  that does not validate shows "Coordinator · members invalid", with the
+  error on hover.
+- A multi-repo project page has a "Repositories" section for the current
+  milestone: tasks done per repository, each member's locked branch and
+  base, and during ship each member's close state (Closing, or Integrated
+  with its merge and tag). It is read-only.
+- "Add member" on the project page joins a repository to the project as a
+  multi-repo member: an existing checkout, or a new GitHub repository that
+  the app creates and clones (private by default). "Browse…" picks the
+  folder with the system dialog: the checkout itself, or for a new
+  repository the parent folder to clone into. The confirm step says
+  what is written, and for a new repository that the app cannot delete it.
+  `members.py add` checks every rule, for example that members change only
+  between milestones.
+- Each member row on the project page has an integration selector and a
+  Remove action. A mode change runs at once; Remove asks first and says
+  what it deletes (the member marker and member hooks) and what stays
+  (Path branches, tags, and finished milestones). `members.py` checks every
+  rule.
 - The Projects board lists gsd-pi (`.gsd/`) and gsd-core (`.planning/`)
   projects. A folder with more than one framework shows one card per
   framework, with a framework badge. These cards are read-only.
@@ -28,22 +56,26 @@ The app has its own version and `app-v<version>` tags, separate from the
   them too (a failed check shows its error next to the framework), the update
   banner names any that are behind, and **Update…** shows
   the commands and then runs each framework's own update.
+- Settings → App has a **Language** choice next to Appearance: System,
+  English, or Simplified Chinese. System follows the OS language (zh, zh-CN,
+  zh-SG, zh-MY, and zh-Hans pick Simplified Chinese; zh-TW and zh-HK stay
+  English). The tray popover follows the choice. Project content (artifact
+  text, phase names, file paths, command output), the native tray menu, and
+  the browser dashboard at :8765 stay in English.
 
 ### Fixed
 - When the installer refuses a request (exit 2), the failure card says
   "installer refused the request" and "Nothing was changed." It no longer says
   "partial install" and "Some folders were changed", because the installer
   refuses before it writes anything.
-
-### Fixed
 - On macOS and Linux, when the app or `gsd-path-daemon install` finds a
   `~/.gsd-path/venv` made by another Python, it rebuilds the venv for the
   current Python. Before, the venv mixed two Pythons: each launch reinstalled
   the daemon but still ran the old one.
-
-### Fixed
 - The Tasks table no longer squeezes short columns, such as task ID and
   wave, to one character per line. Task file paths wrap at `/`.
+- The app ships daemon 0.2.2, so it replaces an older running daemon
+  when it starts.
 
 ## [0.1.2] - 2026-10-03
 

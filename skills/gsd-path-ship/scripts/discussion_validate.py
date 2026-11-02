@@ -498,7 +498,7 @@ def archived_intent_criteria(archive: Path) -> dict[int, str]:
     intent = archive / "intent" / "INTENT.md"
     if not archive_milestone.is_real_file(intent):
         raise ArchiveError("archived intent must be a real INTENT.md file")
-    text = HTML_COMMENT_PATTERN.sub("", intent.read_text(encoding="utf-8"))
+    text = _common.strip_html_comments(intent.read_text(encoding="utf-8"))
     if __package__:
         from . import check_handoffs
     else:
@@ -1449,7 +1449,6 @@ if __package__:  # imported as scripts.discussion_validate
         FINAL_CRITERION_PATTERN,
         FINAL_GAP_FILE_PATTERN,
         FINAL_GAP_HEADING_PATTERN,
-        HTML_COMMENT_PATTERN,
         INTENT_CRITERION_PATTERN,
         MANIFEST_FIELDS,
         MANIFEST_HEADINGS,
@@ -1472,7 +1471,6 @@ else:  # standalone script or sibling import
         FINAL_CRITERION_PATTERN,
         FINAL_GAP_FILE_PATTERN,
         FINAL_GAP_HEADING_PATTERN,
-        HTML_COMMENT_PATTERN,
         INTENT_CRITERION_PATTERN,
         MANIFEST_FIELDS,
         MANIFEST_HEADINGS,

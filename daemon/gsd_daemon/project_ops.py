@@ -9,6 +9,7 @@ without hosts uses the agents installed on this computer.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import List
@@ -27,10 +28,11 @@ INSTALLER_OPS = {
 }
 # The installer refuses these on the old .gsd-path/runtime/ layout until it is migrated.
 HOOK_OPS = ("hooks-init", "hooks-refresh", "hooks-refresh-full")
-OPS = (*INSTALLER_OPS, "members", "member-hooks", "member-repair")
+OPS = (*INSTALLER_OPS, "members", "member-add", "member-remove", "member-integration", "member-hooks", "member-repair")
 # Same text as MEMBER_HOOK_MARKER in install.py, which writes these hooks.
 MEMBER_HOOK_MARKER = "gsd-path member guard"
 NO_AGENT_ERROR = "No agent has GSD Path skills installed on this computer. Install the skills for an agent first."
+NO_SOURCE_ERROR = "plugin source is not installed yet; install or update the skills first"
 
 
 class Busy(Exception):
@@ -38,7 +40,6 @@ class Busy(Exception):
 
 
 def _members_helper(plugin, *args: str):
-    plugin.ensure_source()
     return plugin.runner([sys.executable, str(plugin.src_dir / "scripts" / "members.py"), *args])
 
 
@@ -60,6 +61,62 @@ def _members(plugin, root: str) -> dict:
             plugin._marker_file(hooks_dir / name, MEMBER_HOOK_MARKER) for name in GIT_HOOK_NAMES
         )
     return result
+
+
+def board_members(plugin, root: str) -> dict:
+    """The members of a coordinator for the board, or {} when the project has no MEMBERS.md.
+
+    A failure returns no members and the error, so one bad coordinator never breaks the status read.
+    """
+    members_file = Path(root) / ".project" / "MEMBERS.md"
+    if not members_file.exists() and not members_file.is_symlink():
+        return {}
+    if not (plugin.src_dir / "scripts" / "members.py").is_file():
+        return {"members": [], "members_error": NO_SOURCE_ERROR}
+    try:
+        result = _members(plugin, root)
+    except Exception as error:  # a helper that cannot run or unexpected helper output
+        return {"members": [], "members_error": str(error)}
+    return {"members": result["members"], "members_error": result["error"]}
+
+
+def _member_add_args(root: str, body: dict) -> List[str]:
+    """`members.py add` arguments from the request. members.py checks every rule.
+
+    Each value goes in one `--flag=value` argument, so a value that starts with
+    "-" stays a value and cannot become another option.
+    """
+    fields = {key: body.get(key) for key in ("name", "checkout", "integration", "create", "visibility")}
+    for key, value in fields.items():
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{key} must be text")
+    for key in ("name", "checkout"):
+        if not (fields[key] or "").strip():
+            raise ValueError(f"{key} is required")
+    checkout = os.path.expanduser(fields["checkout"].strip())
+    if not os.path.isabs(checkout):
+        raise ValueError("checkout must be a full folder path; enter one or use Browse")
+    args = ["add", "--repo", root, f"--name={fields['name'].strip()}",
+            f"--checkout={checkout}",
+            f"--integration={fields['integration'] or 'default'}"]
+    # Greenfield: members.py creates the GitHub repository and clones it to the checkout.
+    if fields["create"]:
+        args.append(f"--create={fields['create'].strip()}")
+    if fields["visibility"]:
+        args.append(f"--visibility={fields['visibility']}")
+    return args
+
+
+def _member_change_args(root: str, op: str, body: dict) -> List[str]:
+    """`members.py remove` or `set-integration` arguments, each value in one `--flag=value` argument."""
+    keys = ("name", "integration") if op == "member-integration" else ("name",)
+    for key in keys:
+        if not isinstance(body.get(key), str) or not body[key].strip():
+            raise ValueError(f"{key} is required")
+    args = ["remove" if op == "member-remove" else "set-integration", "--repo", root, f"--name={body['name'].strip()}"]
+    if op == "member-integration":
+        args.append(f"--integration={body['integration'].strip()}")
+    return args
 
 
 def _dispatch(plugin, root: str, op: str, body: dict) -> dict:
@@ -84,8 +141,15 @@ def _dispatch(plugin, root: str, op: str, body: dict) -> dict:
         if migrated:
             result["stdout_tail"] = "\n".join(part for part in (migrated["stdout_tail"], result["stdout_tail"]) if part)
         return result
+    plugin.ensure_source()
     if op == "members":
         return _members(plugin, root)
+    if op in ("member-add", "member-remove", "member-integration"):
+        if preview:
+            raise ValueError(f"{op} has no preview; members.py checks every rule before it writes")
+        args = _member_add_args(root, body) if op == "member-add" else _member_change_args(root, op, body)
+        rc, stdout, stderr = _members_helper(plugin, *args)
+        return {"ok": rc == 0, "stdout_tail": _tail(stdout), "error": (_tail(stderr) or _tail(stdout)) if rc else None}
     if op == "member-repair":
         if preview:
             raise ValueError("member repair has no preview; it rewrites only missing or stale markers")
@@ -99,7 +163,9 @@ def _dispatch(plugin, root: str, op: str, body: dict) -> dict:
 
 
 def run(handler, body: dict) -> dict:
-    """POST /api/project/op ``{root, op, dry_run?, member?, hosts?}``."""
+    """POST /api/project/op ``{root, op, dry_run?, member?, hosts?, name?, checkout?, integration?, create?, visibility?}``.
+
+    ``member-remove`` takes ``name``; ``member-integration`` takes ``name`` and ``integration``."""
     root, op = body.get("root"), body.get("op")
     if not is_path_card(handler.watcher.projects, root):
         raise ValueError("root is not a watched project")

@@ -1459,6 +1459,116 @@ The task implements the demo.
                 check_handoffs.validate_plan(root)
             self.assertIn("omits SC2", str(failure.exception))
 
+    def withdraw_t001(self, root: Path, *, citation: bool = True,
+                      keep_owns: bool = True, section: str = "## Log") -> None:
+        task = root / ".project/tasks/T001-demo.md"
+        text = task.read_text(encoding="utf-8")
+        text = text.replace("status: pending", "status: withdrawn")
+        if not keep_owns:
+            text = text.replace(
+                "## Intent coverage\n\n- SC1", "## Intent coverage\n\n- None"
+            )
+        if citation:
+            text = text.replace(
+                section,
+                f'{section}\n\n- Withdrawn — 2026-10-26: "owner rules this out of scope"',
+            )
+        task.write_bytes(text.encode("utf-8"))
+
+    def test_plan_blocks_an_uncited_withdrawn_tombstone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            self.write_state(root, "build", "active")
+            self.withdraw_t001(root, citation=False)
+
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "withdrawn without an owner citation"
+            ):
+                check_handoffs.validate_plan(root)
+
+    def test_plan_rejects_a_criterion_still_owned_by_a_withdrawn_task(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            self.write_state(root, "build", "active")
+            self.withdraw_t001(root)
+
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "still owned by withdrawn T001"
+            ):
+                check_handoffs.validate_plan(root)
+
+    def test_plan_accepts_a_withdrawn_task_once_its_criterion_is_re_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            self.write_state(root, "build", "active")
+            self.withdraw_t001(root, keep_owns=False)
+            self.write_plan_coverage(
+                root, rows="| SC1 | T002 | AC1 |\n| SC2 | T002 | AC1 |\n"
+            )
+            self.write_coverage_task(root, "T002", "- SC1\n- SC2")
+
+            result = check_handoffs.validate_plan(root)
+
+            self.assertEqual(result["tasks"], 2)
+
+    def test_plan_phase_accepts_a_cited_withdrawn_tombstone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            self.write_state(root, "plan", "active")
+            self.withdraw_t001(root, keep_owns=False)
+            self.write_plan_coverage(
+                root, rows="| SC1 | T002 | AC1 |\n| SC2 | T002 | AC1 |\n"
+            )
+            self.write_coverage_task(root, "T002", "- SC1\n- SC2")
+
+            result = check_handoffs.validate_plan(root)
+
+            self.assertEqual(result["tasks"], 2)
+
+    def test_only_unlanded_tasks_may_not_depend_on_a_withdrawn_task(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            self.write_state(root, "build", "active")
+            self.withdraw_t001(root, keep_owns=False)
+            self.write_plan_coverage(
+                root, rows="| SC1 | T002 | AC1 |\n| SC2 | T002 | AC1 |\n"
+            )
+            self.write_coverage_task(root, "T002", "- SC1\n- SC2", deps="[T001]")
+
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "T002 depends on withdrawn T001"
+            ):
+                check_handoffs.validate_plan(root)
+
+            task = root / ".project/tasks/T002-demo.md"
+            task.write_bytes(
+                task.read_text(encoding="utf-8")
+                .replace("status: pending", "status: done")
+                .encode("utf-8")
+            )
+            self.assertEqual(check_handoffs.validate_plan(root)["tasks"], 2)
+
+    def test_withdrawn_citation_must_live_in_the_log(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            self.write_state(root, "build", "active")
+            self.withdraw_t001(root, keep_owns=False, section="## Context")
+            self.write_plan_coverage(
+                root, rows="| SC1 | T002 | AC1 |\n| SC2 | T002 | AC1 |\n"
+            )
+            self.write_coverage_task(root, "T002", "- SC1\n- SC2")
+
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "withdrawn without an owner citation"
+            ):
+                check_handoffs.validate_plan(root)
+
     def test_plan_rejects_a_noncanonical_task_filename(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2728,6 +2838,54 @@ Tasks reviewed: 2
             self.assertEqual(result["owned"], ["SC1", "SC2"])
             self.assertEqual(result["verdict"], "pass")
 
+    def test_wave_review_skips_a_withdrawn_tombstone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_plan_handoff(root)
+            self.withdraw_t001(root)
+            relative = self.write_wave_review(root)
+            review = root / relative
+            original = review.read_text(encoding="utf-8")
+            # Only the live task is reviewed; the withdrawn owner's criterion
+            # is no longer this wave's to judge (#483).
+            trimmed = original.replace(
+                "Tasks reviewed: 2", "Tasks reviewed: 1"
+            ).replace(
+                "## T001 — Demo task T001: pass\n\n"
+                "- ✅ The demo command prints hello. — ran hello.py\n\n",
+                "",
+            ).replace(
+                "### SC1 — The demo command prints hello.: pass\n"
+                "- ✅ hello.py output\n",
+                "",
+            )
+            review.write_bytes(trimmed.encode("utf-8"))
+
+            result = check_handoffs.validate_wave(root, review=relative)
+
+            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["owned"], ["SC2"])
+
+            # A review that still lists the tombstone no longer matches the wave.
+            review.write_bytes(original.encode("utf-8"))
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "Tasks reviewed does not match Wave 1"
+            ):
+                check_handoffs.validate_wave(root, review=relative)
+
+            # Exclusion is earned: dropping the citation fails the wave gate too.
+            task = root / ".project/tasks/T001-demo.md"
+            task.write_bytes(
+                task.read_text(encoding="utf-8").replace(
+                    '\n- Withdrawn — 2026-10-26: "owner rules this out of scope"', ""
+                ).encode("utf-8")
+            )
+            review.write_bytes(trimmed.encode("utf-8"))
+            with self.assertRaisesRegex(
+                check_handoffs.HandoffError, "withdrawn without an owner citation"
+            ):
+                check_handoffs.validate_wave(root, review=relative)
+
     def test_reviews_bind_the_full_wrapped_intent_criterion(self) -> None:
         for phase in ("wave", "final"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
@@ -2758,6 +2916,71 @@ Tasks reviewed: 2
                     check_handoffs.HandoffError, "SC1 heading text differs from INTENT.md"
                 ):
                     validate()
+
+    def test_reviews_bind_criterion_quoting_marker_comments_as_code(self) -> None:
+        # A criterion may quote a Path marker comment as inline code; the
+        # comment is text, not markup, so the verbatim quote binds (#548).
+        criterion = (
+            "`AGENTS.md` points outside `<!-- gsd-path:begin -->` to "
+            "`<!-- gsd-path:end -->`."
+        )
+        for phase in ("wave", "final"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_plan_handoff(root)
+                if phase == "wave":
+                    relative = self.write_wave_review(root)
+                    validate = lambda: check_handoffs.validate_wave(root, review=relative)
+                else:
+                    self.write_state(root, "ship", "active")
+                    self.write_final_review(root)
+                    relative = ".project/review/FINAL.md"
+                    validate = lambda: check_handoffs.validate_final(root)
+                intent = root / ".project/intent/INTENT.md"
+                intent.write_bytes(intent.read_text(encoding="utf-8").replace(
+                    "1. The demo command prints hello.",
+                    f"1. {criterion}",
+                ).encode("utf-8"))
+                review = root / relative
+                original = review.read_text(encoding="utf-8")
+                review.write_bytes(original.replace(
+                    "### SC1 — The demo command prints hello.",
+                    f"### SC1 — {criterion}",
+                ).encode("utf-8"))
+                self.assertEqual(validate()["verdict"], "pass")
+                # A heading that drops the marker comments quotes a different
+                # criterion and no longer binds.
+                stripped = criterion.replace("<!-- gsd-path:begin -->", "").replace(
+                    "<!-- gsd-path:end -->", ""
+                )
+                review.write_bytes(original.replace(
+                    "### SC1 — The demo command prints hello.",
+                    f"### SC1 — {stripped}",
+                ).encode("utf-8"))
+                with self.assertRaisesRegex(
+                    check_handoffs.HandoffError, "SC1 heading text differs from INTENT.md"
+                ):
+                    validate()
+
+    def test_comment_stripper_keeps_code_spans_within_one_line(self) -> None:
+        from scripts._common import strip_code_spans, strip_html_comments
+
+        # A stray backtick does not pair with one on a later line, so the
+        # comment between them still strips and a placeholder stays visible.
+        stray = "1. Don't use ` here.\n<!-- hint: write criteria -->\n2. Run `make`.\n"
+        self.assertEqual(
+            strip_html_comments(stray), "1. Don't use ` here.\n\n2. Run `make`.\n"
+        )
+        self.assertIn("<placeholder>", strip_code_spans("a ` b\n<placeholder>\n`c`"))
+        self.assertEqual(
+            strip_html_comments("text `<!-- x -->` more"), "text `<!-- x -->` more"
+        )
+        issue = (
+            "`AGENTS.md` outside `<!-- gsd-path:begin -->` to "
+            "`<!-- gsd-path:end -->`."
+        )
+        self.assertEqual(strip_html_comments(issue), issue)
+        self.assertEqual(strip_html_comments("a <!-- x --> b"), "a  b")
 
     def test_reviews_bind_intent_criterion_with_sub_bullet_continuations(self) -> None:
         joined = (

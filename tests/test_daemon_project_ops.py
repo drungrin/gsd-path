@@ -310,5 +310,147 @@ class MemberTests(Case):
         self.assertNotIn("--member-of", [arg for call in self.calls for arg in call])
 
 
+class BoardMemberTests(Case):
+    """The board reads each coordinator's members from the plugin status."""
+
+    def setUp(self):
+        super().setUp()
+        (self.plugin.src_dir / "scripts").mkdir(parents=True)
+        (self.plugin.src_dir / "scripts" / "members.py").write_text("", encoding="utf-8")
+
+    def write_members_file(self):
+        (Path(self.root) / ".project").mkdir(parents=True)
+        (Path(self.root) / ".project" / "MEMBERS.md").write_text("# Members\n", encoding="utf-8")
+
+    def test_a_project_without_a_members_file_is_not_a_coordinator_and_runs_no_helper(self):
+        self.assertEqual(project_ops.board_members(self.plugin, self.root), {})
+        self.assertEqual(self.calls, [])
+
+    def test_a_coordinator_lists_its_members_with_marker_and_hook_state(self):
+        self.write_members_file()
+        self.answers[("members.py", "validate")] = (0, json.dumps(self.members), "")
+        self.answers[("members.py", "detect")] = (0, json.dumps({"current": False, "reason": "marker names another coordinator"}), "")
+        result = project_ops.board_members(self.plugin, self.root)
+        self.assertIsNone(result["members_error"])
+        self.assertEqual([(row["name"], row["checkout"]) for row in result["members"]], [("api", self.member)])
+        self.assertEqual(result["members"][0]["marker"], {"current": False, "reason": "marker names another coordinator"})
+        self.assertIs(result["members"][0]["hooks"], False)
+
+    def test_a_members_file_that_does_not_validate_returns_the_helper_error(self):
+        self.write_members_file()
+        self.answers[("members.py", "validate")] = (1, "", "error: member api: marker is missing; run members.py repair\n")
+        result = project_ops.board_members(self.plugin, self.root)
+        self.assertEqual(result["members"], [])
+        self.assertIn("run members.py repair", result["members_error"])
+
+    def test_a_helper_that_cannot_run_returns_the_error_instead_of_raising(self):
+        self.write_members_file()
+        with mock.patch.object(self.plugin, "runner", side_effect=OSError("python not found")):
+            result = project_ops.board_members(self.plugin, self.root)
+        self.assertEqual(result, {"members": [], "members_error": "python not found"})
+
+    def test_a_coordinator_without_the_plugin_source_reports_it_and_fetches_nothing(self):
+        self.write_members_file()
+        (self.plugin.src_dir / "scripts" / "members.py").unlink()
+        git_calls = []
+        self.plugin.git_runner = lambda argv, cwd=None: git_calls.append(argv) or (0, "", "")
+        with mock.patch.object(self.plugin, "_fetch_release") as fetch:
+            result = project_ops.board_members(self.plugin, self.root)
+        self.assertEqual(result, {"members": [], "members_error": project_ops.NO_SOURCE_ERROR})
+        self.assertEqual(self.calls, [])
+        self.assertEqual(git_calls, [])
+        fetch.assert_not_called()
+
+
+class MemberAddTests(Case):
+    """Add member: the app sends the form, members.py add owns every rule."""
+
+    def test_add_runs_members_add_with_each_field(self):
+        self.answers[("members.py", "add")] = (0, json.dumps(self.members), "")
+        result = self.run_op(op="member-add", name=" api ", checkout=self.member, integration="pull-request")
+        self.assertEqual(result, {"ok": True, "stdout_tail": json.dumps(self.members), "error": None})
+        self.assertEqual(self.helper_args(), [["add", "--repo", self.root, "--name=api", f"--checkout={self.member}",
+                                               "--integration=pull-request"]])
+
+    def test_a_new_github_repository_passes_create_and_visibility(self):
+        self.run_op(op="member-add", name="web", checkout="~/work/web", create="acme/web", visibility="private")
+        self.assertEqual(self.helper_args(), [["add", "--repo", self.root, "--name=web",
+                                               f"--checkout={os.path.expanduser('~/work/web')}", "--integration=default",
+                                               "--create=acme/web", "--visibility=private"]])
+
+    def test_a_value_that_looks_like_an_option_stays_a_value(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import members
+        self.run_op(op="member-add", name="--create=evil/repo", checkout=self.member)
+        parsed = members.parser().parse_args(self.helper_args()[0])
+        self.assertEqual((parsed.name, str(parsed.checkout)), ("--create=evil/repo", self.member))
+        self.assertIsNone(parsed.create)
+        self.assertIsNone(parsed.visibility)
+
+    def test_a_missing_or_non_text_field_runs_nothing(self):
+        for body, text in (({"checkout": self.member}, "name is required"), ({"name": "api"}, "checkout is required"),
+                           ({"name": "  ", "checkout": self.member}, "name is required"),
+                           ({"name": "api", "checkout": self.member, "create": ["acme/web"]}, "create must be text")):
+            with self.subTest(body=body), self.assertRaisesRegex(ValueError, text):
+                self.run_op(op="member-add", **body)
+        self.assertEqual(self.calls, [])
+
+    def test_a_relative_checkout_runs_nothing(self):
+        for checkout in ("api", "work/api", "./api"):
+            with self.subTest(checkout=checkout), self.assertRaisesRegex(ValueError, "full folder path"):
+                self.run_op(op="member-add", name="api", checkout=checkout, create="acme/api")
+        self.assertEqual(self.calls, [])
+
+    def test_add_has_no_preview(self):
+        with self.assertRaisesRegex(ValueError, "no preview"):
+            self.run_op(op="member-add", name="api", checkout=self.member, dry_run=True)
+        self.assertEqual(self.calls, [])
+
+    def test_a_refused_add_returns_the_helper_text(self):
+        self.answers[("members.py", "add")] = (1, "", "error: members change only at a milestone boundary, not during build or ship\n")
+        result = self.run_op(op="member-add", name="api", checkout=self.member)
+        self.assertFalse(result["ok"])
+        self.assertIn("milestone boundary", result["error"])
+
+
+class MemberChangeTests(Case):
+    """Remove a member and change its integration: members.py owns every rule."""
+
+    def test_remove_runs_members_remove_with_the_name(self):
+        out = json.dumps({"members": [], "cleaned": [self.member + "/.git/gsd-path/member.json"]})
+        self.answers[("members.py", "remove")] = (0, out, "")
+        result = self.run_op(op="member-remove", name=" api ")
+        self.assertEqual(result, {"ok": True, "stdout_tail": out, "error": None})
+        self.assertEqual(self.helper_args(), [["remove", "--repo", self.root, "--name=api"]])
+
+    def test_integration_runs_set_integration_with_name_and_mode(self):
+        self.run_op(op="member-integration", name="api", integration="pull-request")
+        self.assertEqual(self.helper_args(), [["set-integration", "--repo", self.root, "--name=api",
+                                               "--integration=pull-request"]])
+
+    def test_a_name_that_looks_like_an_option_stays_a_value(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import members
+        self.run_op(op="member-remove", name="--repo=/elsewhere")
+        parsed = members.parser().parse_args(self.helper_args()[0])
+        self.assertEqual((parsed.name, str(parsed.repo)), ("--repo=/elsewhere", self.root))
+
+    def test_a_missing_field_or_a_preview_runs_nothing(self):
+        for body, text in (({"op": "member-remove"}, "name is required"),
+                           ({"op": "member-remove", "name": ["api"]}, "name is required"),
+                           ({"op": "member-integration", "name": "api"}, "integration is required"),
+                           ({"op": "member-remove", "name": "api", "dry_run": True}, "no preview"),
+                           ({"op": "member-integration", "name": "api", "integration": "direct", "dry_run": True}, "no preview")):
+            with self.subTest(body=body), self.assertRaisesRegex(ValueError, text):
+                self.run_op(**body)
+        self.assertEqual(self.calls, [])
+
+    def test_a_refused_change_returns_the_helper_text(self):
+        self.answers[("members.py", "remove")] = (1, "", "error: task briefs name member api; change those tasks before removing it\n")
+        result = self.run_op(op="member-remove", name="api")
+        self.assertFalse(result["ok"])
+        self.assertIn("task briefs name member api", result["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
