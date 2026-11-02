@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.36**. Upstream package base: **1.6.2**.
+Current fork version: **1.7.1.37**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,134 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.37 — 2026-11-02
+
+Upstream package base is now `1.7.1`. The fork is synchronized through
+upstream `main` commit
+[`040bfae2`](https://github.com/open-gsd/gsd-path/commit/040bfae246cf033466d492544421e0874739a775)
+(110 commits after the previous sync point `f46c9b72`, 86 of them without
+merges; 51 after tag `v1.7.1`). The fork revision continues from 36 to 37.
+
+Implementation:
+- [`1aa0351a — synchronize upstream main`](https://github.com/drungrin/gsd-path/commit/1aa0351aa1196941830730032002c6ad53bc78fb)
+  — a merge commit. Its conflict resolutions and the fork adaptations listed
+  below are fork only.
+- [`276f3b69 — keep a withdrawn completed repair in the repair count`](https://github.com/drungrin/gsd-path/commit/276f3b69da0508718f3649b7cedd839eb1f1412b)
+  — fork only: the repair count is a fork feature.
+- [`8f9737a6 — name the fork bound branch in the greenfield exception`](https://github.com/drungrin/gsd-path/commit/8f9737a605a989971b4b93373471156627a23bba)
+  — fork only: a define line still named the upstream bound branch.
+
+### Upstream changes now included
+
+- Review (1.7.1, #535):
+  - reviews validate the agreed acceptance contract and block only on a
+    named unmet requirement or missing required evidence;
+  - `deep` review needs an explicit user request for adversarial review
+    recorded in INTENT.md; risk alone no longer authorizes it;
+  - re-reviews check repaired failures and affected passes, reusing settled
+    evidence.
+- Patch work: the patch re-entry build checkpoint is accepted over a
+  ship/active HEAD (#526), also after a resumed patch planner (#531).
+- Tasks: a withdrawn task keeps a tombstone with an owner citation (#483).
+- Runtime:
+  - `isolation.py runtime-hotfix`, an operator-only, digest-recorded
+    recovery; the guard denies agent writes under `refs/gsd-path/` (#480);
+  - a runtime can name successors in its hashed manifest, and a closed
+    milestone accepts helpers only from named successors (#468);
+  - `--runtime-upgrade` and `--runtime-migrate` print `preflight:` warnings
+    when the incoming runtime's handoff checks fail on the open milestone, and
+    build recovery accepts renumbered legacy INTENT Corrections (#551).
+- Multi-repo members: `members.py remove` and `members.py set-integration`
+  at a milestone boundary.
+- Landing and Verify:
+  - non-ASCII task paths land and recover without a `core.quotePath`
+    workaround (#545);
+  - a parallel Verify runs in a verify sidecar reproduced from the isolate,
+    so index reads match a serial round (#547);
+  - a success criterion quoting a Path marker comment as inline code passes
+    completion and archive (#548).
+- Guards:
+  - deletes inside an authorized parallel task worktree are allowed when the
+    hook runs from the primary (#546);
+  - non-ASCII literal paths are accepted in guarded delete and move commands;
+  - the pre-commit guard accepts commits from a linked worktree after a
+    milestone ships and integrates (#555).
+- Status reads every origin ref with one batched `ls-remote` (#558).
+- Installed `WORKFLOW.md` links are absolute (#543).
+- Daemon app: language setting with Simplified Chinese, multi-repo board,
+  progress, add and remove member, app release 0.1.3.
+
+### Fork rules kept over upstream
+
+- Patch re-entry: the fork (`e3c09203`, 1.6.2.27) and upstream fixed the
+  same refusal. Both checks now apply together: the subject must be
+  `build: start milestone`, the working Log must keep the committed Log with
+  `patch plan approved` then `build started` (fork), and the Log must end
+  with that pair inside a plan stay opened by `patch plan reopened`
+  (upstream). Upstream's tests now use the real subject so their Log checks
+  run. The build skill names the subject.
+- Fork branch names stay. Upstream code and tests that merged without a
+  textual conflict assumed upstream names:
+  - the #546 guard recognized only `gsd-path-task/<id>` worktrees, so it
+    never applied to fork task worktrees. It now recognizes
+    `chore/task-<slug>` at `task/<slug>` and requires exactly one
+    authorization ref whose name has that slug (`T001`, or `<project>-T001`
+    for a member task); two such refs refuse, as task retirement does. Tests
+    cover a member task, an ambiguous slug and an upstream-named branch;
+  - the successor-runtime guard tests (#468) failed with the upstream bound
+    branch, because the fork guard did not see a closed milestone; they and
+    the runtime-hotfix, batched ls-remote, corrections-migration,
+    member-remove and parallel Verify tests now use fork names.
+- The member remove help names the fork's member branch prefixes.
+- Upstream lets the owner withdraw a task after it landed (#483). The fork's
+  repair count, which asks the redesign question after two completed
+  repairs of one criterion (1.6.2.28), counted only tasks with status
+  `done`, so a withdrawal lowered it without the `reconsidered:` event that
+  is the only allowed reset. A withdrawn repair now counts when its
+  committed history recorded `done` at or before the snapshot the count
+  reads, and a `reconsidered:` event restarts it like any other.
+- Installed `WORKFLOW.md` links point to this fork, not upstream, because
+  the fork's contracts differ (Azure, squash, branch names).
+- Merged both sides: the coordinator-migration task repo with the withdrawn
+  status exemption, the archive-context helper set with the runtime-hotfix
+  denial, the member `inspection` subcommand with `remove` and
+  `set-integration`, and the fork installer-commit rules with the upstream
+  preflight text.
+
+Validation:
+- Two cross-model review panels reviewed the staged merge.
+  - muse returned "commit as is" with two minor findings, both fixed: the
+    guard accepted any of several authorization refs sharing a slug, and the
+    define contract named `gsd-path/M001`.
+  - gpt returned "commit after listed fixes" with three findings on withdrawn
+    tasks. The repair-count finding is fork specific and is fixed in
+    `276f3b69`. The other two are upstream behavior and are listed under
+    Limits.
+- Each adapted or new guard, patch re-entry and repair-count test was checked
+  to fail without its change.
+- The full Python suite passed in eight parallel shards (3,735 tests, 41
+  skipped, 8 minutes 19 seconds), the daemon suite passed (487 tests, 13
+  skipped), Node tests passed (118, one skipped), the lock usage check passed
+  and resource synchronization checked 556 resources.
+
+Limits:
+- Two upstream gaps in the new withdrawn-task feature (#483) are not fixed,
+  because the code is the same upstream and they need an upstream design
+  decision:
+  - a wave holding a withdrawn task stops review dispatch (`wave_tasks`
+    requires a proven landing for every task in the wave), and build
+    completion expects withdrawn tasks in the review inventory that the wave
+    gate excludes;
+  - an unfinished withdrawn repair still counts as carrying its findings in
+    `fix-tasks`, so no replacement repair is created.
+  Both only arise when the owner withdraws a task in a wave that still needs
+  review.
+- Consumer projects receive the new runtime and skills at a milestone
+  boundary, with a commit holding only installation output before the first
+  plan approval.
+- No upstream submission has been made; none of the fork commits applies
+  upstream.
 
 ## 1.6.2.36 — 2026-10-29
 
