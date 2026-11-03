@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.37**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.38**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,48 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.38 — 2026-11-03
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 37 to 38.
+
+Fix:
+[`b33d0080 — split milestone usage at the ship commit time`](https://github.com/drungrin/gsd-path/commit/b33d00809d94a809b2a58cef331c5384eecaa753)
+— applies upstream: it cherry-picks cleanly onto upstream main `040bfae2`,
+whose daemon has the same day rule, and the daemon session and probe tests
+pass there.
+
+### Daemon usage per milestone split at the ship commit
+
+- The daemon split usage per milestone by day: every turn dated on or before
+  a milestone's `Shipped:` date counted toward it. The next milestone usually
+  starts the same day its predecessor ships, so its first day of work counted
+  toward the shipped milestone. In one coordinator project, about US$ 150 of
+  the second milestone's first day counted toward the first, and the third
+  milestone's first hours toward the second.
+- The probe now reads each archived milestone's ship time from the commit
+  that added its `MANIFEST.md`, using the author time that a rebase merge
+  keeps. Turns at or before that time count toward the milestone, later turns
+  toward the next. Without a committed manifest, or without Git, the whole
+  shipped day still counts.
+- `daemon/README.md` states the rule.
+
+Validation: the two new tests fail without the change. Read-only against
+that project, the probe returns both ship commit times and the split matches
+an independent recount by ship commit time. The daemon test modules passed
+(476 tests, 13 skipped), the daemon suite passed (489 tests, 13 skipped),
+Node tests passed (118, one skipped) and resource synchronization checked 556
+resources.
+
+Limits:
+- A squash integration leaves no ship commit in the default branch's
+  history, so the ship time is the squash commit's author time, normally the
+  merge time.
+- The daemon still reads only the host's session folders. Sessions that a
+  sandbox writes elsewhere are not counted until a `session_dirs` entry or
+  the sandbox integration supplies them.
+- No upstream submission has been made.
 
 ## 1.7.1.37 — 2026-11-02
 
