@@ -5,7 +5,7 @@ import json
 import sys
 
 from . import __version__
-from .config import Config
+from .config import Config, resolve_config_path
 from .discovery import scan_projects
 from .flavors import probe_foreign, project_id
 from .model import PATH_FLAVOR, aggregate
@@ -206,7 +206,7 @@ def main(argv=None) -> int:
         return 0
     if args.command == "serve":
         from . import serve as serve_module
-        serve_module.run(Watcher(config), port=args.port, require_token=args.require_token)
+        serve_module.run(Watcher(config, config_path=resolve_config_path(args.config)), port=args.port, require_token=args.require_token)
         return 0
     if args.command == "tray":
         try:
@@ -215,7 +215,7 @@ def main(argv=None) -> int:
             print(f"tray requires optional dependencies: pip install 'gsd-path-daemon[tray]' ({error})",
                   file=sys.stderr)
             return 1
-        tray.run(config, config_path=args.config,
+        tray.run(config, config_path=resolve_config_path(args.config),
                  serve_port=args.port if args.serve else None)
         return 0
     if args.command == "install":

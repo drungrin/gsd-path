@@ -326,7 +326,11 @@ cost. The project page also shows the runtime handoff described under
   tokens per model, e.g. `{"prices": {"gpt-6-astra": {"input": 1.25,
   "cached": 0.125, "output": 10}}}`. There are no built-in prices: a model
   without a price contributes tokens only and is listed as unpriced.
-  `session_dirs` overrides the scanned locations (glob patterns). The daemon
+  `session_dirs` overrides the scanned locations (glob patterns). `serve` and
+  `tray` re-read `session_dirs` and `prices` from the config file when it
+  changes, at the next session scan, so another program can register its
+  session folders without a restart; other settings change only through
+  `POST /api/config`, and an unreadable file keeps the settings in memory. The daemon
   atomically saves resolved file-to-working-directory matches in
   `~/.gsd-path/sessions-index.json`; an unreadable or corrupt cache is ignored.
   With `GSD_DAEMON_CONFIG`, the cache sits beside that config file; `--config`

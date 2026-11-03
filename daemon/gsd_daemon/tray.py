@@ -8,7 +8,7 @@ from typing import List
 
 from . import folders, history, notify
 from . import subprocess_platform
-from .config import Config
+from .config import Config, resolve_config_path
 from .serve import serve_in_thread
 from .watcher import Watcher
 
@@ -93,8 +93,10 @@ def run(config: Config = None, config_path=None, serve_port=None) -> None:
     import pystray
     from PIL import Image, ImageDraw
 
+    # A config handed in without its file is not re-read from disk.
+    watched = resolve_config_path(config_path) if config is None or config_path is not None else None
     config = config or Config.load(config_path)
-    watcher = Watcher(config)
+    watcher = Watcher(config, config_path=watched)
     paused = {"value": False}
     stop_event = threading.Event()
     server = None

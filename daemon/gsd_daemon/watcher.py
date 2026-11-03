@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
 from pathlib import Path
@@ -21,8 +22,13 @@ def _current_number(status: ProjectStatus) -> Optional[str]:
 
 
 class Watcher:
-    def __init__(self, config: Config, probe_hook: Optional[Callable[[str], None]] = None):
+    def __init__(self, config: Config, probe_hook: Optional[Callable[[str], None]] = None,
+                 config_path: Optional[Path] = None):
         self.config = config
+        # Given when the config came from a file: session folders and prices edited there by another
+        # program are picked up on the next session scan, without a restart.
+        self._config_path = config_path
+        self._config_mtime = self._read_mtime()
         self.projects: Dict[str, ProjectStatus] = {}
         self._mtimes: Dict[str, Tuple[Optional[float], ...]] = {}
         self._probe_hook = probe_hook
@@ -84,9 +90,40 @@ class Watcher:
                 probe.tree_mtime(Path(root) / ".gsd-path" / "runtime.json"),
                 probe.tree_mtime(Path(journal)) if journal else None)
 
+    def _read_mtime(self) -> Optional[int]:
+        if self._config_path is None:
+            return None
+        try:
+            return self._config_path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _reload_session_settings(self) -> None:
+        """Takes session_dirs and prices from the config file when it changed. Discovery settings
+        (parents, excludes, depth) still change only through the settings API, so a project scan never
+        sees them switch midway. An unreadable file keeps the settings in memory."""
+        mtime = self._read_mtime()
+        if mtime is None or mtime == self._config_mtime:
+            return
+        self._config_mtime = mtime
+        try:
+            data = json.loads(self._config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        loaded = Config.from_dict(data)
+        if loaded.session_dirs != self.config.session_dirs:
+            self.config.session_dirs = loaded.session_dirs
+            self.sessions.set_dirs(loaded.session_dirs)
+        if loaded.prices != self.config.prices:
+            self.config.prices = loaded.prices
+            self.sessions.prices = loaded.prices
+
     def _attach_spend(self, current: Dict[str, ProjectStatus]) -> None:
         """Usage from host session logs changes without touching .project, so
         it is refreshed on every poll, from the incremental session index."""
+        self._reload_session_settings()
         try:
             self.sessions.scan(sorted({status.root for status in current.values()}))
         except Exception:  # a broken session file must never stop the poll

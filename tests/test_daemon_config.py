@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "daemon"))
 
 from gsd_daemon import config as config_module
 from gsd_daemon.config import Config
+from gsd_daemon.watcher import Watcher
 
 
 class ConfigTests(unittest.TestCase):
@@ -112,3 +113,93 @@ class SessionConfigTests(unittest.TestCase):
         self.assertEqual(config.prices, {"gpt-6-astra": {"input": 1.25, "output": 10.0}})
         self.assertEqual(config.session_dirs, ["/tmp/sessions"])
         self.assertEqual(Config.from_dict(config.to_dict()).prices, config.prices)
+
+
+class ConfigFileReloadTests(unittest.TestCase):
+    """Another program may edit session_dirs and prices in daemon.json while the daemon runs."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        self.path = self.root / "daemon.json"
+        env = mock.patch.dict(os.environ, {"GSD_DAEMON_CONFIG": str(self.path)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.project = self.root / "proj"
+        self.project.mkdir()
+        self.stamp = 1_800_000_000
+        self.write({"parents": [], "history": False, "session_dirs": []})
+        self.watcher = Watcher(Config.load(self.path), config_path=self.path)
+
+    def write(self, data) -> None:
+        self.path.write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
+        # Two writes within one timestamp tick would look unchanged; give each its own time.
+        self.stamp += 10
+        os.utime(self.path, (self.stamp, self.stamp))
+
+    def session_folder(self, name: str) -> Path:
+        folder = self.root / name / "projects"
+        folder.mkdir(parents=True)
+        line = {"type": "assistant", "cwd": str(self.project), "timestamp": "2026-09-01T09:00:05.000Z", "uuid": "a1",
+                "message": {"model": "priced", "usage": {"input_tokens": 1_000_000, "output_tokens": 0}}}
+        (folder / "session.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
+        return folder
+
+    def records(self):
+        self.watcher.poll_once()
+        self.watcher.sessions.scan([str(self.project)])
+        return self.watcher.sessions.records_for(str(self.project))
+
+    def test_session_folders_added_to_the_file_count_on_the_next_scan(self):
+        folder = self.session_folder("sandbox")
+        self.assertEqual(self.records(), [])
+        self.write({"parents": [], "history": False, "session_dirs": [str(folder)]})
+        self.assertEqual(len(self.records()), 1)
+        self.assertEqual(self.watcher.config.session_dirs, [str(folder)])
+
+    def test_session_folders_removed_from_the_file_stop_counting(self):
+        kept, removed = self.session_folder("kept"), self.session_folder("removed")
+        self.write({"parents": [], "history": False, "session_dirs": [str(kept), str(removed)]})
+        self.assertEqual(len(self.records()), 2)
+        self.write({"parents": [], "history": False, "session_dirs": [str(kept)]})
+        self.assertEqual(len(self.records()), 1)
+
+    def test_prices_edited_in_the_file_change_the_cost(self):
+        self.write({"parents": [], "history": False, "session_dirs": [],
+                    "prices": {"priced": {"input": 3.0}}})
+        self.watcher.poll_once()
+        self.assertEqual(self.watcher.sessions.prices, {"priced": {"input": 3.0}})
+        self.assertEqual(self.watcher.config.prices, {"priced": {"input": 3.0}})
+
+    def test_discovery_settings_in_the_file_wait_for_the_settings_api(self):
+        self.write({"parents": [str(self.root)], "history": False, "session_dirs": [], "max_depth": 2})
+        self.watcher.poll_once()
+        self.assertEqual(self.watcher.config.parents, [])
+        self.assertEqual(self.watcher.config.max_depth, 6)
+
+    def test_an_unreadable_file_keeps_the_settings_in_memory(self):
+        folder = self.session_folder("sandbox")
+        self.write({"parents": [], "history": False, "session_dirs": [str(folder)]})
+        self.assertEqual(len(self.records()), 1)
+        for broken in ("{not json", "[]"):
+            self.write(broken)
+            self.assertEqual(len(self.records()), 1)
+            self.assertEqual(self.watcher.config.session_dirs, [str(folder)])
+
+    def test_a_file_with_the_same_settings_keeps_parsed_records(self):
+        folder = self.session_folder("sandbox")
+        self.write({"parents": [], "history": False, "session_dirs": [str(folder)]})
+        self.records()
+        with mock.patch.object(self.watcher.sessions, "set_dirs") as set_dirs:
+            self.write({"parents": [], "history": True, "session_dirs": [str(folder)]})
+            self.watcher.poll_once()
+        set_dirs.assert_not_called()
+
+    def test_a_config_handed_in_without_its_file_is_not_reread(self):
+        folder = self.session_folder("sandbox")
+        watcher = Watcher(Config(parents=[], history=False, session_dirs=[]))
+        self.write({"parents": [], "history": False, "session_dirs": [str(folder)]})
+        watcher.poll_once()
+        self.assertEqual(watcher.config.session_dirs, [])
+
