@@ -2126,8 +2126,8 @@ def isolate_member_inspect(coordinator: Path, member: str, base: str, pin: str, 
     return _member_inspect_record(artifact, name, member, pin, checkout, destination, branch)
 
 
-def check_member_inspect(coordinator: Path, member: str, base: str, pin: str, name: str) -> Dict[str, object]:
-    """Prove one assignment still holds its exact base, pin, branches, owner, and no unknown changes."""
+def _held_member_inspect(coordinator: Path, member: str, base: str, pin: str, name: str) -> Dict[str, object]:
+    """One assignment's exact base, pin, branches, and owner; the member sibling's tree is not judged."""
     coordinator = require_directory(coordinator, "coordinator")
     if worktree_root(coordinator) != coordinator:
         raise IsolationError(f"primary is not its Git root: {coordinator}")
@@ -2148,16 +2148,36 @@ def check_member_inspect(coordinator: Path, member: str, base: str, pin: str, na
         raise IsolationError(f"member {member} inspect sidecar is missing: {branch}")
     _require_member_inspect_owner(owner, member, branch, name, pin)
     destination = artifact.parent.resolve() / member
-    label = f"member {member} inspect sidecar"
-    _require_inspect_sidecar(checkout, destination, branch, pin, label)
-    dirt = uncommitted_paths(destination)
-    if dirt:
-        raise IsolationError(f"{label} has unknown changes: " + ", ".join(sorted(dirt)))
+    _require_inspect_sidecar(checkout, destination, branch, pin, f"member {member} inspect sidecar")
     artifact_record: Dict[str, object] = {
         "base": resolved_base, "bound_branch": bound, "branch": artifact_branch, "detached": False,
         "kind": "verify", "mode": "sidecar", "worktree": str(artifact),
     }
-    return _member_inspect_record(artifact_record, name, member, pin, checkout, destination, branch)
+    return {"coordinator": coordinator,
+            "record": _member_inspect_record(artifact_record, name, member, pin, checkout, destination, branch)}
+
+
+def check_member_inspect(coordinator: Path, member: str, base: str, pin: str, name: str) -> Dict[str, object]:
+    """Prove one assignment still holds its exact base, pin, branches, owner, and no unknown changes."""
+    record = _held_member_inspect(coordinator, member, base, pin, name)["record"]
+    dirt = uncommitted_paths(Path(record["member_sidecar"]["worktree"]))
+    if dirt:
+        raise IsolationError(f"member {member} inspect sidecar has unknown changes: " + ", ".join(sorted(dirt)))
+    return record
+
+
+def discard_member_inspect_output(
+    coordinator: Path, member: str, base: str, pin: str, name: str, paths: Sequence[str], reason: str
+) -> Dict[str, object]:
+    """Delete a reviewed, exact list of command output from one assignment's pinned member sibling.
+
+    The sibling holds no artifact, so every tracked, staged, or .project/ change is refused.
+    """
+    held = _held_member_inspect(coordinator, member, base, pin, name)
+    sibling = held["record"]["member_sidecar"]
+    result = _discard_untracked(held["coordinator"], Path(sibling["worktree"]), sibling["branch"],
+                                sibling["tip"], paths, reason, artifacts=False)
+    return {**result, "member": member, "name": name}
 
 
 def _retire_member_inspect_sidecar(
@@ -8050,6 +8070,8 @@ def parser() -> argparse.ArgumentParser:
         ("isolate-member-inspect", "create an inspection artifact sidecar and its pinned member sibling"),
         ("check-member-inspect", "prove an inspection assignment's sidecars, base, pin, and owner"),
         ("retire-member-inspect", "retire an inspection assignment's member sibling and artifact sidecar"),
+        ("discard-member-inspect-output",
+         "delete a reviewed, exact list of command output from an assignment's member sibling"),
     ):
         inspect_parser = subparsers.add_parser(command, help=summary)
         inspect_parser.add_argument("--repo", type=Path, required=True, help="coordinator root")
@@ -8061,6 +8083,11 @@ def parser() -> argparse.ArgumentParser:
         if retiring:
             inspect_parser.add_argument("--keep-artifact", action="store_true",
                                         help="retire only the member sibling; keep the artifact for collection")
+        if command == "discard-member-inspect-output":
+            inspect_parser.add_argument("--path", action="append", required=True, dest="paths",
+                                        help="one untracked file; repeat for each, the list must be exact")
+            inspect_parser.add_argument("--reason", required=True,
+                                        help="why these files cannot change the child's evidence")
 
     land_parser = subparsers.add_parser("land", help="commit a task onto the bound branch")
     land_parser.add_argument("--repo", type=Path, required=True)
@@ -8243,6 +8270,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif arguments.command == "check-member-inspect":
             result = check_member_inspect(arguments.repo, arguments.member, arguments.base,
                                           arguments.pin, arguments.name)
+        elif arguments.command == "discard-member-inspect-output":
+            result = discard_member_inspect_output(arguments.repo, arguments.member, arguments.base,
+                                                   arguments.pin, arguments.name, arguments.paths,
+                                                   arguments.reason)
         elif arguments.command == "retire-member-inspect":
             result = retire_member_inspect(arguments.repo, arguments.member, arguments.name, arguments.base,
                                            arguments.pin, arguments.keep_artifact)

@@ -361,6 +361,36 @@ class MemberInspectTests(unittest.TestCase):
         self.assertFalse(worktree.exists())
         self.assert_untouched()
 
+    def test_member_command_output_is_discarded_only_from_the_owned_pinned_sibling(self) -> None:
+        record = self.isolate()
+        worktree = Path(record["member_sidecar"]["worktree"])
+        (worktree / "bin").mkdir()
+        (worktree / "bin" / "web").write_bytes(b"\x7fELF build output\n")
+        (worktree / "run.log").write_bytes(b"ignored command output\n")
+
+        def discard(**changes) -> dict:
+            return isolation.discard_member_inspect_output(
+                self.coordinator, "web", changes.get("base", self.head), changes.get("pin", self.pins["web"]),
+                changes.get("name", record["name"]), changes.get("paths", ["bin/web"]), "go build executable")
+
+        other = self.isolate("api", "inspect-codebase-api")
+        for changes, message in (({"name": "inspect-docs-web"}, "inspect artifact sidecar inspect-docs-web"),
+                                 ({"pin": self.pins["api"]}, "not a commit"),
+                                 ({"base": self.pins["web"]}, "does not resolve to a commit"),
+                                 ({"paths": [".project/STATE.md"]}, "pipeline artifacts are never discarded")):
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(isolation.IsolationError, message):
+                    discard(**changes)
+                self.assertTrue((worktree / "bin" / "web").is_file())
+        result = discard()
+        self.assertEqual((result["member"], result["removed"]), ("web", ["bin/web"]))
+        self.assertEqual(result["base"], self.pins["web"])
+        self.assertTrue((worktree / "run.log").is_file())
+        isolation.check_member_inspect(self.coordinator, "web", self.head, self.pins["web"], record["name"])
+        self.retire(record)
+        self.retire(other)
+        self.assert_untouched()
+
     def test_failed_member_creation_rolls_back_the_artifact_sidecar(self) -> None:
         original = isolation.create_named_worktree
 

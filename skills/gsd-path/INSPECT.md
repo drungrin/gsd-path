@@ -238,12 +238,15 @@ to each in Lookahead mode. None of them dispatches agents or fetches.
    It gates every artifact before collecting any (coordinator audit as in
    step 3; member maps at their pins; member audits with
    `check_docs_audit.py --member` against the frozen inventory, prior, and
-   changed set), collects each with its expected destination hash, retires
+   changed set), checks that no artifact sidecar holds paths beyond its
+   artifact, collects each with its expected destination hash, retires
    every sidecar, runs `check_handoffs.py member-evidence` coverage, and
    records `inspect/done` with `inspection artifacts passed`. Do not repeat
    those operations.
 7. **Failures.** A blocked result names the failed step; its evidence is in
-   `steps`. Redispatch one complete corrected brief under the same logical
+   `steps`. Unknown changes in a member checkout and paths beyond an
+   artifact follow [Command output in a sidecar](#command-output-in-a-sidecar)
+   first. Otherwise redispatch one complete corrected brief under the same logical
    task name and rerun the same command; advance and finish resume from the
    receipt. If it still fails, apply step 3's blocked-transition and
    Outcome/Review/Next contract. To abandon a preparation, retire each
@@ -322,7 +325,13 @@ child's report:
   nested repository, or anything but a regular file. Ignored files are never
   listed or deleted. Record the discard with `pipeline_state.py transition`,
   expecting the current state, `--set-status <current status>`, and an event
-  naming the discarded paths, then rerun the refused command.
+  naming the discarded paths, then rerun the refused command. For a member
+  checkout `../<member>`, run `python3 <absolute isolation.py>
+  discard-member-inspect-output --repo <absolute root> --member <member>
+  --name <its assignment's sidecar name> --base <coordinator HEAD> --pin
+  <pin>` with the same `--path` and `--reason` arguments; it also proves the
+  assignment's owner and pin and refuses every tracked, staged, or
+  `.project/` change there.
 - Any path is tracked, or is a source, test, fixture, configuration, or
   generated input, or its effect on the evidence is uncertain. Do not
   discard: the evidence may describe a changed tree. Apply step 3's

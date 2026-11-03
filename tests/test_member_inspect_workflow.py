@@ -422,6 +422,58 @@ class MemberInspectWorkflowTests(MemberInspectFixture, unittest.TestCase):
         self.assertIn("logical task names collide: inspect_codebase_a_b, inspect_docs_a_b", reason)
         self.assert_no_sidecars()
 
+    def isolation_cli(self, *arguments: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "isolation.py"), *arguments],
+                              capture_output=True, encoding="utf-8", errors="replace")
+
+    def test_command_output_blocks_advance_and_finish_until_its_exact_list_is_discarded(self) -> None:
+        self.build(("web",))
+        prepared = self.complete("prepare-inspect")["inspection"]
+        mapper = self.assignment(prepared, "inspect_codebase_web")
+        sibling = Path(mapper["member_sidecar"]["worktree"])
+        self.write_map(prepared, "web")
+        # A mapper `go build` in a nested single-main module leaves its executable in the pinned checkout.
+        write(sibling / "tools" / "probe" / "probe", "\x7fELF build output\n")
+        payload = self.blocked("advance-inspect", receipt=prepared)
+        self.assertIn("unknown changes: tools/probe/probe", payload["steps"][-1]["stderr"])
+        member = ("--repo", str(self.coordinator), "--member", "web", "--name", mapper["name"],
+                  "--base", self.head, "--pin", self.pins["web"])
+        for paths, message in ((("app.py",), "listed but not untracked: app.py"),
+                               (("tools/probe/probe", "app.py"), "listed but not untracked: app.py")):
+            refused = self.isolation_cli("discard-member-inspect-output", *member,
+                                         *[part for path in paths for part in ("--path", path)], "--reason", "x")
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn(message, refused.stderr)
+        write(sibling / "app.py", "measured = False\n")
+        refused = self.isolation_cli("discard-member-inspect-output", *member, "--path", "tools/probe/probe",
+                                     "--reason", "build output")
+        self.assertIn("preserving them: app.py", refused.stderr)
+        git(sibling, "checkout", "--", "app.py")
+        discarded = self.isolation_cli("discard-member-inspect-output", *member, "--path", "tools/probe/probe",
+                                       "--reason", "go build executable; no measured command reads it")
+        self.assertEqual(discarded.returncode, 0, discarded.stderr)
+        self.assertEqual(json.loads(discarded.stdout)["removed"], ["tools/probe/probe"])
+        self.assertFalse((sibling / "tools").exists())
+
+        advanced = self.complete("advance-inspect", receipt=prepared)["inspection"]
+        auditor = self.assignment(advanced, "inspect_docs_web")
+        self.write_audit(advanced, "web")
+        write(Path(mapper["worktree"]) / "coverage.out", "mode: set\n")
+        payload = self.blocked("finish-inspect", receipt=advanced)
+        self.assertIn("paths beyond its artifact: coverage.out", payload["steps"][-1]["stderr"])
+        self.assertEqual(json.loads(Path(advanced["receipt_file"]).read_text(encoding="utf-8"))["collected"], {})
+        self.assertFalse((self.coordinator / ".project" / "research").exists())
+        discarded = self.isolation_cli("discard-inspect-output", "--repo", str(self.coordinator),
+                                       "--worktree", mapper["worktree"], "--branch", mapper["branch"],
+                                       "--base", self.head, "--path", "coverage.out",
+                                       "--reason", "coverage profile written by go test")
+        self.assertEqual(discarded.returncode, 0, discarded.stderr)
+        self.complete("finish-inspect", receipt=advanced)
+        self.assertEqual((self.state()["phase"], self.state()["status"]), ("inspect", "done"))
+        self.assertFalse(Path(auditor["worktree"]).exists())
+        self.assert_no_sidecars()
+        self.assert_untouched()
+
     def test_advance_before_mapper_output_and_finish_before_advance_block(self) -> None:
         self.build(("web",))
         prepared = self.complete("prepare-inspect")["inspection"]

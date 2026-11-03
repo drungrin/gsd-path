@@ -124,6 +124,8 @@ class _MemberInspection:
         probes = (("members.py inspection", ("members.py", "inspection", "--help"), "--project-dir"),
                   ("isolation.py retire-member-inspect", ("isolation.py", "retire-member-inspect", "--help"),
                    "--keep-artifact"),
+                  ("isolation.py check-inspect-output", ("isolation.py", "check-inspect-output", "--help"),
+                   "--artifact"),
                   ("check_handoffs.py member-evidence", ("check_handoffs.py", "member-evidence", "--help"),
                    "--member"),
                   ("check_docs_audit.py --member", ("check_docs_audit.py", "--help"), "--member"))
@@ -663,6 +665,9 @@ class _MemberInspection:
             elif member is not None:
                 self.check(assignment)
                 self.gate_member_audit(member, assignment)
+            self.step("isolation.py", "check-inspect-output", "--repo", str(self.repo),
+                      "--worktree", assignment["worktree"], "--branch", assignment["branch"],
+                      "--base", self.expected_head, "--artifact", assignment["output"])
             gated[task_name] = _sha256(source)
         for assignment in order:
             task_name = assignment["task_name"]
