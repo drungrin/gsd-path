@@ -1,9 +1,11 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests import test_handoffs
 from tests.test_pipeline_state import record_lens, run_git
@@ -62,6 +64,54 @@ class WorkflowRunTests(unittest.TestCase):
             state = json.loads(self.run_cli(root, "route").stdout)["steps"][0]["result"]["state"]
             self.assertEqual((state["phase"], state["status"]), ("inspect", "done"))
             self.assertEqual(head, run_git(root, "rev-parse", "HEAD").stdout.strip())
+
+    def test_inspection_command_output_blocks_before_any_collection_until_discarded(self):
+        from tests.test_check_docs_audit import AUDIT
+        from tests import test_isolation
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                os.environ, {"GSD_PATH_WORKTREE_ROOT": str(Path(tmp) / "ws")}):
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            test_isolation.IsolationTests().init_bound_repo(root)
+            test_handoffs.HandoffValidationTests().write_state(root, "inspect", "active")
+            for name in ("AGENTS.md", "README.md"):
+                (root / name).write_bytes("Documentation.\n".encode("utf-8"))
+            run_git(root, "add", ".")
+            run_git(root, "commit", "-m", "inspect fixture")
+            head = run_git(root, "rev-parse", "HEAD").stdout.strip()
+            prepared = json.loads(self.run_cli(root, "prepare-inspect", "--expected-head", head).stdout)["inspection"]
+            assignments = {a["task_name"]: a for a in prepared["assignments"]}
+            mapper, docs = assignments["inspect_codebase"], assignments["inspect_docs"]
+            mapping = Path(mapper["worktree"]) / mapper["output"]
+            mapping.parent.mkdir(parents=True, exist_ok=True)
+            mapping.write_bytes("# Codebase\n\n## Map\nPython CLI.\n\n## Findings\nNone: no surprises.\n".encode("utf-8"))
+            audit = Path(docs["worktree"]) / docs["output"]
+            audit.parent.mkdir(parents=True, exist_ok=True)
+            valid = (AUDIT.format(verified=1).replace("CONTRIBUTING.md", "AGENTS.md")
+                     .replace("Audited HEAD: none", f"Audited HEAD: {head}"))
+            audit.write_bytes(valid.replace("Repo root: /repo", f"Repo root: {root.resolve()}").encode("utf-8"))
+            # The auditor's test run left output; the mapper, collected first, is clean.
+            (Path(docs["worktree"]) / "cli").write_bytes(b"\x7fELF test binary\n")
+            args = ("finish-inspect", "--expected-head", head, "--inspection", prepared["receipt_file"],
+                    "--mapper-reviewed")
+            blocked = self.run_cli(root, *args)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("paths beyond its artifact: cli", blocked.stderr)
+            self.assertFalse((root / mapper["output"]).exists())
+            self.assertTrue(mapping.is_file())
+            discarded = subprocess.run(
+                [sys.executable, "-B", str(SCRIPT.parent / "isolation.py"), "discard-inspect-output",
+                 "--repo", str(root), "--worktree", docs["worktree"], "--branch", docs["branch"],
+                 "--base", head, "--path", "cli", "--reason", "test binary; the audit reads no file it wrote"],
+                capture_output=True, encoding="utf-8", errors="replace")
+            self.assertEqual(discarded.returncode, 0, discarded.stderr)
+            accepted = self.run_cli(root, *args)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr + accepted.stdout)
+            self.assertIn("Python CLI", (root / mapper["output"]).read_text(encoding="utf-8"))
+            self.assertFalse(Path(mapper["worktree"]).exists())
+            self.assertFalse(Path(docs["worktree"]).exists())
+            state = json.loads(self.run_cli(root, "route").stdout)["steps"][0]["result"]["state"]
+            self.assertEqual((state["phase"], state["status"]), ("inspect", "done"))
 
     def test_packaged_inspection_completion(self):
         self.test_inspection_finish_gates_before_collection_and_uses_canonical_transition(

@@ -81,6 +81,13 @@ actually does. Read-only: change nothing outside your single output file.
   Git revision. Do not create or remove Git worktrees yourself. Otherwise use
   static evidence or mark the claim `unverifiable`. Never deploy, publish,
   migrate, or mutate external state.
+- A command must leave no file in the sidecar tree. Send build output outside
+  it (for example `go build -o /dev/null`, or a build directory under the
+  system temporary folder) and record the command you actually ran, with any
+  difference from the documented command in the claim's evidence. Never add,
+  generate, or edit source, test, or configuration files to make a command
+  run. If a command leaves a file anyway, name each path in your returned
+  summary; the parent decides whether it can be discarded.
 - Contradictions between two docs are findings; report both sides.
 - Return the output path, verdict counts, and the worst drift found in at
   most three lines.

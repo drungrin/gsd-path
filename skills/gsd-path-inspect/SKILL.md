@@ -80,11 +80,13 @@ template as in step 3. After that review passes, run the bundled
 `python3 <absolute workflow_run.py> finish-inspect --repo <absolute root>
 --expected-head <recorded HEAD> --inspection <returned receipt_file>
 --mapper-reviewed`. This runs the docs gate, checks the audit baseline,
-collects and retires both sidecars, checks pending discussion, and records
+checks that neither sidecar holds paths beyond its artifact, collects and
+retires both sidecars, checks pending discussion, and records
 `inspect/done` through the canonical transition. Do not repeat those operations.
 Present step 4's ground truth and use step 5's caller handoff. A failure uses
 step 3's failure contract and the returned step evidence; do not blindly rerun
-the completion command or repeat already proven steps.
+the completion command or repeat already proven steps. A refusal naming paths
+beyond an artifact follows [Command output in a sidecar](#command-output-in-a-sidecar).
 Prior evidence, lookahead, or a dirty/non-Git product uses steps 1–2 below.
 Preparation never changes phase state; neither command dispatches agents.
 
@@ -139,7 +141,13 @@ Preparation never changes phase state; neither command dispatches agents.
    `--changed <temporary changed-set file>` when one was frozen
    (disjoint `## Doc:` sections and `## Descriptive docs` equal to the frozen
    inventory, every claim a valid verdict with evidence, Summary counts and
-   remediation queue consistent). After each artifact passes, collect it with
+   remediation queue consistent). Before collecting either artifact, run
+   `python3 <absolute isolation.py> check-inspect-output --repo <absolute
+   primary> --worktree <returned worktree> --branch <returned branch> --base
+   <recorded HEAD> --artifact <assigned track-relative path>` for both
+   sidecars; paths beyond an artifact follow
+   [Command output in a sidecar](#command-output-in-a-sidecar).
+   After each artifact passes, collect it with
    `python3 <absolute isolation.py> collect-artifact --repo <absolute primary>
    --source <returned worktree> --base <recorded HEAD> --branch <returned
    branch> --source-path <assigned track-relative path> --destination-path
@@ -292,3 +300,30 @@ Without MEMBERS.md, the workflow commands refuse lookahead; use steps 1–5.
 - Inspection evidence feeds the whole pipeline: researchers treat
   `evidence-codebase.md` as a fifth standard dimension when it exists, the
   planner must match its conventions, and reviewers may cite it.
+
+## Command output in a sidecar
+
+Children run project commands only in their sidecars, and some commands leave
+files there, such as the executable `go build` writes for a single main
+package. Collection and retirement refuse any path beyond the assigned
+artifact, and the guard denies deletes inside a sidecar. Decide only after
+the child has returned its final message, from the refused paths and the
+child's report:
+
+- Every path is untracked output of a command the child reports, such as an
+  executable, object file, archive, or log, and none was read by anything the
+  evidence measured. Run `python3 <absolute isolation.py>
+  discard-inspect-output --repo <absolute primary> --worktree <sidecar>
+  --branch <its branch> --base <recorded HEAD> --path <path> --reason "<why
+  these files cannot change the evidence>"`, with one `--path` for each
+  refused path. It deletes exactly that list and nothing else. It refuses a
+  list that differs from the sidecar's untracked files, any tracked or staged
+  change outside `.project/`, any path under `.project/`, a symlink, a
+  nested repository, or anything but a regular file. Ignored files are never
+  listed or deleted. Record the discard with `pipeline_state.py transition`,
+  expecting the current state, `--set-status <current status>`, and an event
+  naming the discarded paths, then rerun the refused command.
+- Any path is tracked, or is a source, test, fixture, configuration, or
+  generated input, or its effect on the evidence is uncertain. Do not
+  discard: the evidence may describe a changed tree. Apply step 3's
+  blocked-transition and Outcome/Review/Next contract and ask the user.

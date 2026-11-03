@@ -901,6 +901,12 @@ def run_workflow(repo: Path, action: str, project_dir: str, expected_head: str =
                  "--audit", docs["output"], "--inventory", str(inventory_file))
             if f"Audited HEAD: {expected_head}" not in (Path(docs["worktree"]) / docs["output"]).read_text(encoding="utf-8").splitlines():
                 raise StepFailed("audit does not name the supplied inspection baseline")
+            # Collection retires each sidecar, so command output in either one must
+            # stop the finish before the first collection, not between them.
+            for task_name, _, _, _ in INSPECTION_SPECS:
+                assignment = assignments[task_name]
+                step("isolation.py", "check-inspect-output", "--repo", str(repo), "--worktree", assignment["worktree"],
+                     "--branch", assignment["branch"], "--base", expected_head, "--artifact", assignment["output"])
             for task_name, _, _, _ in INSPECTION_SPECS:
                 assignment = assignments[task_name]
                 step("isolation.py", "collect-artifact", "--repo", str(repo),

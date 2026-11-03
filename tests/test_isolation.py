@@ -5127,5 +5127,186 @@ class SidecarRootPinningTests(unittest.TestCase):
             isolation._RECOVERY_MEMO.pop(("head-sha", str(self.repo)), None)
 
 
+class InspectOutputTests(unittest.TestCase):
+    """Command output an inspect child leaves in its sidecar: refused by default, discarded only by exact list."""
+
+    ARTIFACT = ".project/research/evidence-codebase.md"
+    OUTPUT = ("tools/probe/probe", "bin/app")
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        environment = mock.patch.dict(os.environ, {"GSD_PATH_WORKTREE_ROOT": str(Path(temporary.name) / "ws")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.repo = Path(temporary.name).resolve() / "repo"
+        self.repo.mkdir()
+        IsolationTests().init_bound_repo(self.repo)
+        IsolationTests().write(self.repo, ".gitignore", "*.log\n")
+        IsolationTests().write(self.repo, "tools/probe/main.go", "package main\n")
+        git(self.repo, "add", ".gitignore", "tools/probe/main.go")
+        git(self.repo, "commit", "-q", "-m", "probe tool")
+        self.base = git(self.repo, "rev-parse", "HEAD")
+        self.sidecar = isolation.isolate_verify(self.repo, self.base, "inspect-codebase")
+        self.worktree = Path(self.sidecar["worktree"])
+        self.branch = self.sidecar["branch"]
+        self.write(self.ARTIFACT, "# Evidence — codebase\n")
+        for path in self.OUTPUT:
+            (self.worktree / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.worktree / path).write_bytes(b"\x7fELF build output\n")
+
+    def write(self, relative: str, content: str) -> None:
+        IsolationTests().write(self.worktree, relative, content)
+
+    def check(self) -> dict:
+        return isolation.check_inspect_output(self.repo, self.worktree, self.branch, self.base, self.ARTIFACT)
+
+    def discard(self, paths=OUTPUT, reason: str = "go build executables; nothing measured reads them") -> dict:
+        return isolation.discard_inspect_output(self.repo, self.worktree, self.branch, self.base, list(paths), reason)
+
+    def assert_output_kept(self) -> None:
+        for path in self.OUTPUT:
+            self.assertTrue((self.worktree / path).is_file(), path)
+        self.assertEqual((self.worktree / self.ARTIFACT).read_bytes(), b"# Evidence \xe2\x80\x94 codebase\n")
+
+    def test_output_beyond_the_artifact_is_refused_before_collection(self) -> None:
+        with self.assertRaisesRegex(isolation.IsolationError,
+                                    "paths beyond its artifact: bin/app, tools/probe/probe; .*discard-inspect-output"):
+            self.check()
+        with self.assertRaisesRegex(isolation.IsolationError, "unexpected sidecar paths: bin/app, tools/probe/probe"):
+            isolation.collect_artifact(self.repo, self.worktree, self.base, self.branch, self.ARTIFACT, self.ARTIFACT)
+        with self.assertRaisesRegex(isolation.IsolationError, "worktree is dirty"):
+            isolation.retire(self.repo, self.worktree, self.branch, False)
+        self.assert_output_kept()
+
+    def test_exact_discard_keeps_the_artifact_and_unblocks_collection_and_retirement(self) -> None:
+        (self.worktree / "run.log").write_bytes(b"ignored command log\n")
+        result = self.discard()
+        self.assertEqual(result["removed"], sorted(self.OUTPUT))
+        self.assertEqual(result["deleted"], sorted(self.OUTPUT))
+        self.assertFalse((self.worktree / "bin").exists())  # emptied by this discard
+        self.assertTrue((self.worktree / "tools/probe/main.go").is_file())
+        self.assertTrue((self.worktree / "run.log").is_file())  # ignored files are never touched
+        journal = json.loads(Path(result["journal"]).read_text(encoding="utf-8"))
+        self.assertEqual((journal["stage"], journal["paths"], journal["reason"]),
+                         ("complete", sorted(self.OUTPUT), "go build executables; nothing measured reads them"))
+        self.assertEqual(self.check()["artifact"], self.ARTIFACT)
+        isolation.collect_artifact(self.repo, self.worktree, self.base, self.branch, self.ARTIFACT, self.ARTIFACT)
+        self.assertEqual((self.repo / self.ARTIFACT).read_bytes(), b"# Evidence \xe2\x80\x94 codebase\n")
+        self.assertEqual(isolation.retire(self.repo, self.worktree, self.branch, False)["reason"], "removed")
+
+    def test_a_list_that_differs_from_the_untracked_files_deletes_nothing(self) -> None:
+        for paths, message in (
+            (self.OUTPUT[:1], "untracked but not listed: bin/app"),
+            ((*self.OUTPUT, "tools/probe/other"), "listed but not untracked: tools/probe/other"),
+            ((*self.OUTPUT, "bin/app"), "names a path twice"),
+            ((), "at least one --path"),
+            (("bin/",), "must name a file"),
+            (("bin/../.project/research/evidence-codebase.md",), "without '..'"),
+            ((self.ARTIFACT,), "pipeline artifacts are never discarded"),
+        ):
+            with self.subTest(paths=paths):
+                with self.assertRaisesRegex(isolation.IsolationError, message):
+                    self.discard(paths)
+                self.assert_output_kept()
+        with self.assertRaisesRegex(isolation.IsolationError, "requires the reason"):
+            self.discard(reason="  ")
+        self.assert_output_kept()
+
+    def test_tracked_and_staged_changes_are_never_discarded(self) -> None:
+        for change in ("edit", "stage"):
+            with self.subTest(change=change):
+                if change == "edit":
+                    self.write("src/app.py", "print('measured a changed tree')\n")
+                    expected = "preserving them: src/app.py"
+                else:
+                    self.write("src/new.py", "staged\n")
+                    git(self.worktree, "add", "src/new.py")
+                    expected = "preserving them: src/new.py"
+                with self.assertRaisesRegex(isolation.IsolationError, expected):
+                    self.discard()
+                self.assert_output_kept()
+                git(self.worktree, "reset", "-q")
+                git(self.worktree, "checkout", "--", "src/app.py")
+                (self.worktree / "src/new.py").unlink(missing_ok=True)
+
+    @requires_symlink
+    def test_symlinks_nested_repositories_and_folders_are_refused(self) -> None:
+        (self.worktree / "tools/link").symlink_to(self.repo / "src/app.py")
+        with self.assertRaisesRegex(isolation.IsolationError, "not a regular file: tools/link"):
+            self.discard((*self.OUTPUT, "tools/link"))
+        (self.worktree / "tools/link").unlink()
+        (self.worktree / "out").symlink_to(self.worktree / "bin", target_is_directory=True)
+        with self.assertRaisesRegex(isolation.IsolationError, "untracked but not listed: out"):
+            self.discard()
+        # Git lists a symlinked folder as one entry; the parent check guards a swap after listing.
+        with self.assertRaisesRegex(isolation.IsolationError, "symlinked or missing parent: out/app"):
+            isolation._require_discardable_file(self.worktree, "out/app")
+        (self.worktree / "out").unlink()
+        nested = self.worktree / "vendor/dep"
+        nested.mkdir(parents=True)
+        git(nested, "init", "-q")
+        IsolationTests().write(nested, "f.txt", "x\n")
+        with self.assertRaisesRegex(isolation.IsolationError, "untracked but not listed: vendor/dep/"):
+            self.discard((*self.OUTPUT, "vendor/dep/f.txt"))
+        self.assertTrue((nested / "f.txt").is_file())
+        self.assert_output_kept()
+
+    def test_only_an_inspect_sidecar_at_its_recorded_base_is_accepted(self) -> None:
+        other = isolation.isolate_verify(self.repo, self.base, "review-final")
+        with self.assertRaisesRegex(isolation.IsolationError, "not an inspect sidecar branch"):
+            isolation.discard_inspect_output(self.repo, Path(other["worktree"]), other["branch"], self.base,
+                                             list(self.OUTPUT), "reason")
+        with self.assertRaisesRegex(isolation.IsolationError, "path differs from its branch"):
+            isolation.discard_inspect_output(self.repo, Path(other["worktree"]), self.branch, self.base,
+                                             list(self.OUTPUT), "reason")
+        IsolationTests().write(self.repo, "README.md", "moved\n")
+        git(self.repo, "add", "README.md")
+        git(self.repo, "commit", "-q", "-m", "moved")
+        with self.assertRaisesRegex(isolation.IsolationError, "primary worktree HEAD differs"):
+            self.discard()
+        with self.assertRaisesRegex(isolation.IsolationError, "full 40-character SHA"):
+            isolation.discard_inspect_output(self.repo, self.worktree, self.branch, self.base[:12],
+                                             list(self.OUTPUT), "reason")
+        self.assert_output_kept()
+
+    def test_an_interrupted_discard_resumes_only_its_recorded_request(self) -> None:
+        original = Path.unlink
+
+        def fail_second(path, *arguments, **options):
+            if path.name == "probe":
+                raise OSError("interrupted")
+            return original(path, *arguments, **options)
+
+        with mock.patch.object(Path, "unlink", fail_second):
+            with self.assertRaisesRegex(isolation.IsolationError, "could not delete tools/probe/probe"):
+                self.discard()
+        self.assertFalse((self.worktree / "bin/app").exists())
+        self.assertTrue((self.worktree / "tools/probe/probe").exists())
+        with self.assertRaisesRegex(isolation.IsolationError, "listed but not untracked: bin/app, x/y"):
+            self.discard((*self.OUTPUT, "x/y"))
+        (self.worktree / "late.bin").write_bytes(b"appeared after review\n")
+        with self.assertRaisesRegex(isolation.IsolationError, "untracked but not listed: late.bin"):
+            self.discard()
+        (self.worktree / "late.bin").unlink()
+        resumed = self.discard()
+        self.assertEqual((resumed["deleted"], resumed["removed"]), (["tools/probe/probe"], sorted(self.OUTPUT)))
+        self.assertEqual(self.check()["artifact"], self.ARTIFACT)
+        self.assertEqual(self.discard()["deleted"], [])
+
+    def test_cli_round_trip_and_error_convention(self) -> None:
+        common = ("--repo", str(self.repo), "--worktree", str(self.worktree), "--branch", self.branch,
+                  "--base", self.base)
+        refused = IsolationTests().run_cli("check-inspect-output", *common, "--artifact", self.ARTIFACT)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("paths beyond its artifact", refused.stderr)
+        paths = [part for path in self.OUTPUT for part in ("--path", path)]
+        discarded = IsolationTests().run_cli("discard-inspect-output", *common, *paths, "--reason", "build output")
+        self.assertEqual(discarded.returncode, 0, discarded.stderr)
+        self.assertEqual(json.loads(discarded.stdout)["removed"], sorted(self.OUTPUT))
+        accepted = IsolationTests().run_cli("check-inspect-output", *common, "--artifact", self.ARTIFACT)
+        self.assertEqual(json.loads(accepted.stdout)["artifact"], self.ARTIFACT)
+
+
 if __name__ == "__main__":
     unittest.main()

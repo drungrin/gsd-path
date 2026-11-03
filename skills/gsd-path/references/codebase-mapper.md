@@ -51,6 +51,12 @@ special weight to:
   Git revision. Do not create or remove Git worktrees yourself. If no faithful
   sidecar revision is supplied, use static evidence or record the check as
   `unverifiable`. Never run deploy, publish, or migration commands.
+- A command must leave no file in the sidecar tree. Send build output outside
+  it (for example `go build -o /dev/null`, or a build directory under the
+  system temporary folder) and record the command you actually ran. Never add,
+  generate, or edit source, test, or configuration files to make a command
+  run. If a command leaves a file anyway, name each path in your returned
+  summary; the parent decides whether it can be discarded.
 - Observations, not judgments: "3 of 40 tests fail (list)" — not "poor
   test hygiene". The user may know exactly why.
 - Unreadable or ambiguous areas are findings too — say what blocked you.

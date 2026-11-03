@@ -2257,6 +2257,186 @@ def clean_verify(primary: Path, worktree: Path, base: str, branch: str) -> Dict[
     return {"worktree": str(worktree), "branch": branch, "base": expected, "removed": removed}
 
 
+# Inspect children run project commands themselves, so their sidecars get no
+# clean_verify: an untracked file may be an input the child measured, not only
+# output. Extra paths are refused; an exact, reviewed list of command output may
+# be discarded. Paths under .project/ are pipeline artifacts and never discarded.
+INSPECT_BRANCH_PREFIX = VERIFY_BRANCH_PREFIX + "inspect-"
+INSPECT_DISCARD_SCHEMA = "gsd-path/inspect-discard/v1"
+PROJECT_PREFIX = ".project/"
+
+
+def _git_paths(repo: Path, *arguments: str) -> Set[str]:
+    """NUL-separated paths from git, unquoted and unstripped."""
+    result = run_git(repo, *arguments)
+    if result.returncode != 0:
+        raise IsolationError((result.stderr or result.stdout).strip() or "git command failed")
+    return {path for path in result.stdout.split("\0") if path}
+
+
+def _sidecar_changes(worktree: Path) -> Tuple[Set[str], Set[str]]:
+    """(tracked or staged changes, untracked files) of a worktree; ignored files never count."""
+    tracked = _git_paths(worktree, "diff", "-z", "--no-renames", "--name-only", "HEAD")
+    tracked |= _git_paths(worktree, "diff", "-z", "--no-renames", "--name-only", "--cached")
+    untracked = _git_paths(worktree, "ls-files", "-z", "--others", "--exclude-standard")
+    return tracked, untracked
+
+
+def _require_inspect_output_sidecar(primary: Path, worktree: Path, branch: str, base: str) -> Tuple[Path, Path, str]:
+    """The primary's own inspect sidecar for `branch`, attached at the recorded base."""
+    primary = require_directory(primary, "primary worktree")
+    if worktree_root(primary) != primary:
+        raise IsolationError(f"primary is not its Git root: {primary}")
+    if not branch.startswith(INSPECT_BRANCH_PREFIX):
+        raise IsolationError(f"not an inspect sidecar branch: {branch}")
+    expected = require_commit(primary, require_full_sha(base))
+    if current_sha(primary) != expected:
+        raise IsolationError("primary worktree HEAD differs from the recorded base")
+    if worktree.is_symlink() or not worktree.is_dir():
+        raise IsolationError(f"inspect sidecar is missing or not a real directory: {worktree}")
+    resolved = worktree.resolve()
+    if resolved != _sidecar_path_for_branch(primary, branch):
+        raise IsolationError("inspect sidecar path differs from its branch")
+    if worktree_root(resolved) != resolved or common_git_dir(resolved) != common_git_dir(primary):
+        raise IsolationError("inspect sidecar is not the primary repository's own worktree")
+    if _registered_worktrees(primary).get(resolved) != f"refs/heads/{branch}" or require_attached(resolved) != branch:
+        raise IsolationError("inspect sidecar branch changed")
+    if current_sha(resolved) != expected:
+        raise IsolationError("inspect sidecar HEAD differs from the recorded base")
+    return primary, resolved, expected
+
+
+def check_inspect_output(primary: Path, worktree: Path, branch: str, base: str, artifact: str) -> Dict[str, object]:
+    """Prove an inspect sidecar changed nothing but its assigned artifact, before any collection."""
+    primary, worktree, expected = _require_inspect_output_sidecar(primary, worktree, branch, base)
+    artifact = relative_posix(artifact)
+    if not artifact.startswith(PROJECT_PREFIX):
+        raise IsolationError(f"inspect artifact must be under {PROJECT_PREFIX}: {artifact}")
+    tracked, untracked = _sidecar_changes(worktree)
+    extra = sorted((tracked | untracked) - {artifact})
+    if extra:
+        raise IsolationError(
+            f"inspect sidecar {branch} has paths beyond its artifact: {', '.join(extra)}; review them, "
+            "and discard only pure command output with isolation.py discard-inspect-output"
+        )
+    return {"artifact": artifact, "base": expected, "branch": branch, "worktree": str(worktree)}
+
+
+def _discard_journal(path: Path, request: Dict[str, object]) -> Optional[Dict[str, object]]:
+    if not os.path.lexists(path):
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise IsolationError(f"inspect discard journal is not a real file: {path}")
+    try:
+        journal = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise IsolationError(f"inspect discard journal is unreadable: {path}") from error
+    if (not isinstance(journal, dict) or any(journal.get(key) != value for key, value in request.items())
+            or journal.get("stage") not in {"prepared", "complete"}):
+        raise IsolationError(f"inspect discard journal does not match its request: {path}")
+    return journal
+
+
+def _require_discardable_file(worktree: Path, relative: str) -> Path:
+    current = worktree
+    for part in PurePosixPath(relative).parts[:-1]:
+        current = current / part
+        if current.is_symlink() or not current.is_dir():
+            raise IsolationError(f"discard path has a symlinked or missing parent: {relative}")
+    path = worktree / relative
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError as error:
+        raise IsolationError(f"discard path cannot be read: {relative}: {error}") from error
+    if not stat.S_ISREG(mode):
+        raise IsolationError(f"discard path is not a regular file: {relative}")
+    return path
+
+
+def _discard_untracked(
+    record_repo: Path, worktree: Path, branch: str, head: str, paths: Sequence[str], reason: str,
+    *, artifacts: bool,
+) -> Dict[str, object]:
+    """Delete exactly `paths`, which must equal the worktree's untracked files outside .project/.
+
+    Tracked or staged changes are refused, outside .project/ when the worktree
+    holds pipeline `artifacts`, everywhere otherwise. A journal under
+    `record_repo`'s common Git directory records the request before the first
+    deletion, so only that exact request resumes an interrupted discard.
+    """
+    reason = reason.strip()
+    if not reason:
+        raise IsolationError("discard requires the reason these files cannot change the evidence")
+    requested: List[str] = []
+    for raw in paths:
+        normalized = relative_posix(raw)
+        if normalized in {"", "."} or raw.endswith("/"):
+            raise IsolationError(f"discard path must name a file: {raw}")
+        if normalized == ".project" or normalized.startswith(PROJECT_PREFIX):
+            raise IsolationError(f"pipeline artifacts are never discarded: {normalized}")
+        requested.append(normalized)
+    if not requested:
+        raise IsolationError("discard requires at least one --path")
+    if len(set(requested)) != len(requested):
+        raise IsolationError("discard names a path twice")
+    wanted = set(requested)
+    tracked, untracked = _sidecar_changes(worktree)
+    kept = sorted(path for path in tracked if not (artifacts and path.startswith(PROJECT_PREFIX)))
+    if kept:
+        raise IsolationError("tracked or staged changes are never discarded; preserving them: " + ", ".join(kept))
+    protected = sorted(path for path in untracked if path.startswith(PROJECT_PREFIX))
+    if protected and not artifacts:
+        raise IsolationError("untracked .project/ paths are never discarded; preserving them: " + ", ".join(protected))
+    present = untracked - set(protected)
+    request = {"schema": INSPECT_DISCARD_SCHEMA, "worktree": str(worktree), "branch": branch,
+               "head": head, "paths": sorted(wanted)}
+    key = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    journal_path = common_git_dir(record_repo) / "gsd-path" / "inspect-discard" / f"{key}.json"
+    journal = _discard_journal(journal_path, request)
+    unlisted = sorted(present - wanted)
+    if unlisted or (present != wanted and journal is None):
+        absent = sorted(wanted - present)
+        detail = "; ".join(part for part in (
+            "untracked but not listed: " + ", ".join(unlisted) if unlisted else "",
+            "listed but not untracked: " + ", ".join(absent) if absent else "",
+        ) if part)
+        raise IsolationError(f"discard list differs from the sidecar's untracked files ({detail}); nothing deleted")
+    targets = sorted(present)
+    files = [_require_discardable_file(worktree, target) for target in targets]
+    if journal is None:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        _common.atomic_write(journal_path, json.dumps(
+            {**request, "reason": reason, "stage": "prepared"}, sort_keys=True) + "\n")
+    for target, path in zip(targets, files):
+        try:
+            path.unlink()
+        except OSError as error:
+            raise IsolationError(f"could not delete {target}: {error}; rerun the same discard") from error
+        parent = path.parent
+        while parent != worktree:
+            try:
+                parent.rmdir()  # only a folder the command created and this discard emptied
+            except OSError:
+                break
+            parent = parent.parent
+    after_tracked, after_untracked = _sidecar_changes(worktree)
+    left = sorted(after_untracked - set(protected))
+    if after_tracked != tracked or left:
+        raise IsolationError("sidecar changed during discard: " + ", ".join(left or sorted(after_tracked ^ tracked)))
+    _common.atomic_write(journal_path, json.dumps(
+        {**request, "reason": reason, "stage": "complete"}, sort_keys=True) + "\n")
+    return {"base": head, "branch": branch, "deleted": targets, "journal": str(journal_path),
+            "reason": reason, "removed": sorted(wanted), "worktree": str(worktree)}
+
+
+def discard_inspect_output(
+    primary: Path, worktree: Path, branch: str, base: str, paths: Sequence[str], reason: str
+) -> Dict[str, object]:
+    """Delete a reviewed, exact list of command output from an inspect sidecar; its artifact stays."""
+    primary, worktree, expected = _require_inspect_output_sidecar(primary, worktree, branch, base)
+    return _discard_untracked(primary, worktree, branch, expected, paths, reason, artifacts=True)
+
+
 def ensure_verify_sidecar(primary: Path, base: str, branch: str) -> Dict[str, object]:
     """Return the named verify sidecar, recreating it when it is missing.
 
@@ -7927,6 +8107,27 @@ def parser() -> argparse.ArgumentParser:
     recover_parser.add_argument("--repo", type=Path, required=True)
     recover_parser.add_argument("--tasks-dir", type=Path, default=Path(".project/tasks"))
 
+    check_output_parser = subparsers.add_parser(
+        "check-inspect-output", help="prove an inspect sidecar changed nothing but its artifact"
+    )
+    check_output_parser.add_argument("--repo", type=Path, required=True)
+    check_output_parser.add_argument("--worktree", type=Path, required=True)
+    check_output_parser.add_argument("--branch", required=True)
+    check_output_parser.add_argument("--base", required=True)
+    check_output_parser.add_argument("--artifact", required=True, help="assigned track-relative artifact path")
+
+    discard_output_parser = subparsers.add_parser(
+        "discard-inspect-output", help="delete a reviewed, exact list of command output from an inspect sidecar"
+    )
+    discard_output_parser.add_argument("--repo", type=Path, required=True)
+    discard_output_parser.add_argument("--worktree", type=Path, required=True)
+    discard_output_parser.add_argument("--branch", required=True)
+    discard_output_parser.add_argument("--base", required=True)
+    discard_output_parser.add_argument("--path", action="append", required=True, dest="paths",
+                                       help="one untracked file; repeat for each, the list must be exact")
+    discard_output_parser.add_argument("--reason", required=True,
+                                       help="why these files cannot change the child's evidence")
+
     collect_parser = subparsers.add_parser(
         "collect-artifact", help="atomically collect one verified sidecar artifact"
     )
@@ -8074,6 +8275,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 result = adopt_member_rebase(arguments.repo, arguments.member, arguments.onto, arguments.ruling)
         elif arguments.command == "recover":
             result = recover(arguments.repo, arguments.tasks_dir)
+        elif arguments.command == "check-inspect-output":
+            result = check_inspect_output(arguments.repo, arguments.worktree, arguments.branch,
+                                          arguments.base, arguments.artifact)
+        elif arguments.command == "discard-inspect-output":
+            result = discard_inspect_output(arguments.repo, arguments.worktree, arguments.branch,
+                                            arguments.base, arguments.paths, arguments.reason)
         elif arguments.command == "collect-artifact":
             result = collect_artifact(
                 arguments.repo,
