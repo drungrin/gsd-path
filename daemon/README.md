@@ -319,6 +319,9 @@ cost. The project page also shows the runtime handoff described under
   response: a Claude response written as several content blocks, or repeated
   by forked subagent transcripts, counts once with its final usage. Turns dated on or before a milestone's ship date count toward that
   milestone; later turns toward the current one.
+  The ship date is the author time of the ship commit, the commit that
+  added the milestone's `MANIFEST.md`; without that commit, the whole
+  `Shipped:` day counts.
 - **Cost** is tokens × the `prices` table in `daemon.json`, USD per million
   tokens per model, e.g. `{"prices": {"gpt-6-astra": {"input": 1.25,
   "cached": 0.125, "output": 10}}}`. There are no built-in prices: a model

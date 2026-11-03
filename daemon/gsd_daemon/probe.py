@@ -867,7 +867,12 @@ def probe_project(root: Union[str, Path], enrich: bool = True) -> ProjectStatus:
     roadmap = parse_roadmap(project_dir / "ROADMAP.md")
     for milestone in roadmap:
         if milestone["archive"]:
-            milestone["manifest"] = parse_manifest(Path(root) / milestone["archive"] / "MANIFEST.md")
+            manifest_path = f"{milestone['archive']}/MANIFEST.md"
+            manifest = parse_manifest(Path(root) / manifest_path)
+            if manifest is not None:
+                # MANIFEST.md records only the ship date; its ship commit gives the time.
+                manifest["shipped_at"] = gitinfo.added_at(root, manifest_path) if manifest["shipped"] else None
+            milestone["manifest"] = manifest
 
     status = ProjectStatus(
         root=root,

@@ -74,6 +74,19 @@ def _text_of(content) -> str:
     return ""
 
 
+def _ship_boundary(manifest: dict) -> Optional[float]:
+    """The last moment that counts toward a shipped milestone, as an epoch.
+
+    The ship commit time when known; otherwise the end of the shipped day, so a
+    milestone without a committed archive keeps the date rule.
+    """
+    exact = _epoch(manifest.get("shipped_at"))
+    if exact is not None:
+        return exact
+    day = _epoch(f"{manifest.get('shipped')}T00:00:00+00:00") if manifest.get("shipped") else None
+    return day + 86400 - 0.001 if day is not None else None
+
+
 def cost_for(prices: dict, model: Optional[str], tokens_in: int, cached: int, tokens_out: int) -> Optional[float]:
     price = prices.get(model or "") if isinstance(prices, dict) else None
     if not isinstance(price, dict):
@@ -350,15 +363,18 @@ class SessionIndex:
         """Aggregate usage for a project.
 
         ``milestones`` are roadmap entries with ``number`` and optional
-        ``manifest.shipped`` dates; a record dated on or before a shipped date
-        belongs to the earliest such milestone, later records to ``current``.
+        ``manifest.shipped`` dates and ``manifest.shipped_at`` ship commit
+        times. A record at or before a milestone's ship time belongs to the
+        earliest such milestone, later records to ``current``. Without a ship
+        time, the whole shipped day belongs to the milestone.
         """
         records = self.records_for(root)
         if not records:
             return None
         boundaries = sorted(
-            ((m["manifest"]["shipped"], m["number"]) for m in milestones
-             if isinstance(m, dict) and isinstance(m.get("manifest"), dict) and m["manifest"].get("shipped")),
+            (boundary, m["number"]) for m in milestones
+            if isinstance(m, dict) and isinstance(m.get("manifest"), dict)
+            for boundary in [_ship_boundary(m["manifest"])] if boundary is not None
         )
         totals = {"turns": 0, "prompts": set(), "tokens_in": 0, "tokens_cached": 0, "tokens_out": 0, "cost": 0.0, "priced": 0,
                   "duration_s": 0.0, "timed": 0}
@@ -390,10 +406,10 @@ class SessionIndex:
             _add(agent_slot, tokens, cost, entry.get("duration_s"))
             if entry.get("model") and entry["model"] not in agent_slot["models"]:
                 agent_slot["models"].append(entry["model"])
-            day = (entry.get("at") or "")[:10]
+            at = _epoch(entry.get("at"))
             number = current
             for shipped, candidate in boundaries:
-                if day and day <= shipped:
+                if at is not None and at <= shipped:
                     number = candidate
                     break
             if number:

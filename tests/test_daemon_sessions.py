@@ -172,6 +172,25 @@ class SessionIndexTests(unittest.TestCase):
         self.assertEqual(spend["recent"][0]["at"], "2026-09-10T10:01:01.000Z")
         self.assertEqual(spend["recent"][0]["cost"], round((500 + 150 + 1000) / 1e6, 4))
 
+    def test_spend_splits_milestones_at_the_ship_time(self) -> None:
+        # M001 shipped on Sep 10 between the two Codex turns; the next milestone
+        # started the same day, so the date alone cannot split them.
+        self.index.scan([self.root])
+        for shipped_at in ("2026-09-10T10:00:45+00:00", "2026-09-10T07:00:45-03:00"):
+            with self.subTest(shipped_at=shipped_at):
+                milestones = [{"number": "M001", "manifest": {"shipped": "2026-09-10", "shipped_at": shipped_at}},
+                              {"number": "M002", "manifest": None}]
+                spend = self.index.spend_for(self.root, milestones, current="M002")
+                self.assertEqual(spend["milestones"]["M001"]["turns"], 3)
+                self.assertEqual(spend["milestones"]["M002"]["turns"], 1)
+                self.assertEqual(spend["milestones"]["M002"]["tokens"], 500 + 1500 + 100)
+        # A turn at the ship commit's exact time still belongs to the shipped milestone.
+        milestones = [{"number": "M001", "manifest": {"shipped": "2026-09-10", "shipped_at": "2026-09-10T10:01:01+00:00"}}]
+        self.assertNotIn("M002", self.index.spend_for(self.root, milestones, current="M002")["milestones"])
+        # Without a ship time the whole shipped day belongs to the milestone.
+        milestones = [{"number": "M001", "manifest": {"shipped": "2026-09-10", "shipped_at": None}}]
+        self.assertEqual(self.index.spend_for(self.root, milestones, current="M002")["milestones"]["M001"]["turns"], 4)
+
     def test_cwd_cache_persists_across_instances(self) -> None:
         cache = self.base / "state" / "sessions-index.json"
         first = sessions.SessionIndex([str(self.base / "codex"), str(self.base / "claude")], cache_path=cache)

@@ -455,6 +455,33 @@ class ProbeProjectTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name) / "demo"
 
+    def test_archived_milestone_ship_time_comes_from_its_ship_commit(self) -> None:
+        make_project(self.root)
+        archive = ".project/archive/001-demo-ms"
+        (self.root / ".project" / "ROADMAP.md").write_bytes(
+            f"# Roadmap — demo\n\n## Milestones\n\n### M001 — demo-ms\n\nGoal: first\nStatus: shipped\n"
+            f"Archive: {archive}\n\n### M002 — next-ms\n\nGoal: second\nStatus: active\nArchive: null\n".encode("utf-8"))
+        manifest = self.root / archive / "MANIFEST.md"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_bytes("# Archive — 001-demo-ms\n\nMilestone: demo-ms\nShipped: 2026-09-10\n".encode("utf-8"))
+        # Not committed yet: no ship time, and the ship date stays.
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        first = probe.probe_project(self.root, enrich=False).roadmap_milestones[0]["manifest"]
+        self.assertEqual((first["shipped"], first["shipped_at"]), ("2026-09-10", None))
+        # A rebase merge keeps the author time and rewrites the committer time.
+        environment = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
+                           GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com",
+                           GIT_AUTHOR_DATE="2026-09-10T10:00:45+00:00",
+                           GIT_COMMITTER_DATE="2026-09-12T08:00:00+00:00")
+        subprocess.run(["git", "-C", str(self.root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-q", "-m", "ship: M001 — demo-ms"],
+                       check=True, env=environment)
+        milestones = probe.probe_project(self.root, enrich=False).roadmap_milestones
+        shipped_at = milestones[0]["manifest"]["shipped_at"]
+        self.assertEqual(datetime.fromisoformat(shipped_at.replace("Z", "+00:00")),
+                         datetime(2026, 9, 10, 10, 0, 45, tzinfo=timezone.utc))
+        self.assertIsNone(milestones[1]["manifest"])
+
     def test_full_probe(self) -> None:
         make_project(self.root)
         status = probe.probe_project(self.root)
