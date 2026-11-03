@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.38**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.39**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,39 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.39 — 2026-11-03
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 38 to 39.
+
+Fix:
+[`afba9861 — re-read session folders and prices from the config file`](https://github.com/drungrin/gsd-path/commit/afba98612a1aef27d926e73d497c6bf197574f46)
+— applies upstream: it cherry-picks cleanly onto upstream main `040bfae2`,
+and the daemon config and watcher tests pass there.
+
+### Daemon session folders and prices follow the config file
+
+- The daemon read `session_dirs` and `prices` from `daemon.json` only at
+  start. Another program that registers its own session folders, such as a
+  sandbox integration writing transcripts outside the default locations,
+  needed a daemon restart before those sessions counted.
+- `serve` and `tray` now take both settings from the config file at the next
+  session scan when the file's modification time changes. A folder added to
+  the file starts counting and a removed one stops.
+- Discovery settings (`parents`, `excludes`, depth) still change only through
+  the settings API, so a project scan never sees them switch midway. An
+  unreadable or invalid file keeps the settings in memory.
+- `daemon/README.md` states the rule.
+
+Validation: the seven new config tests fail without the change. The daemon
+test modules passed (483 tests, 13 skipped), the daemon suite passed (496
+tests, 13 skipped), Node tests passed (118, one skipped) and resource
+synchronization checked 556 resources.
+
+Limits:
+- A config passed to `tray` without its file path is not re-read.
+- No upstream submission has been made.
 
 ## 1.7.1.38 — 2026-11-03
 
