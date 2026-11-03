@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.39**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.40**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,74 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.40 — 2026-11-03
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 39 to 40.
+
+Fixes:
+- [`d9502ca6 — stop on command output in a sidecar and discard an exact reviewed list`](https://github.com/drungrin/gsd-path/commit/d9502ca6f64cbce773b6aa94655e85e3b42c479c)
+  — applies upstream: its canonical files apply cleanly onto upstream main
+  `040bfae2`, and the isolation, workflow, router-contract, and resource sync
+  tests pass there (230 tests).
+- [`6117fdb4 — discard reviewed command output from a member checkout`](https://github.com/drungrin/gsd-path/commit/6117fdb4e0cce265bc096686816e5730b8b3bc88)
+  — fork-only: member inspection does not exist upstream.
+
+### Command output left in an inspect sidecar
+
+- The mapper and docs-auditor roles allow build and test commands in their
+  sidecars, but collection, retirement, and the member checks refuse any
+  path beyond the assigned artifact, and the guard denies deletes there. In
+  one coordinator project, a member mapper ran `go build ./...` in five
+  nested modules that each hold a single main package. Go wrote five
+  executables into the pinned member checkout, and `advance-inspect` stopped
+  with no recovery short of the owner deleting them on the host. The same
+  block reproduces on upstream code for the coordinator pair: an extra file
+  in either sidecar stops `finish-inspect`. A file in the docs sidecar
+  stopped it after the mapper was already collected and retired, so a rerun
+  could not complete.
+- `check-inspect-output` proves an inspect sidecar changed nothing but its
+  artifact. Single-repo and member `finish-inspect` run it for every sidecar
+  before collecting any.
+- `discard-inspect-output` (coordinator sidecars) and
+  `discard-member-inspect-output` (member checkouts) delete an exact list of
+  untracked files. The list must equal the untracked set outside `.project/`.
+  Both refuse tracked or staged changes, paths under `.project/`, symlinks,
+  nested repositories, and non-regular files, and never touch ignored files.
+  A journal in the coordinator's Git directory records the request and
+  reason before the first deletion, so only that request resumes an
+  interrupted discard.
+- The roles tell children to leave no file in the tree and to name any file a
+  command left. The inspect skill discards only output the parent reviewed,
+  records it in the STATE Log, and blocks for the user when a path could have
+  changed what the child measured.
+- Member inspection's runtime capability probe requires
+  `check-inspect-output`, so an older selected runtime blocks with the upgrade
+  message.
+- Two advisory review panels (GPT and Muse) chose this design. They
+  rejected automatic cleanup, which would erase the trace of a file that
+  changed a measurement, and reverting member inspection. Member inspection
+  added this stop compared with upstream, which does not map members; the
+  panels judged the coverage worth keeping.
+
+Validation: before the fix, an extra file in the mapper sidecar stopped
+upstream `finish-inspect` with `unexpected sidecar paths`. With the fix
+applied to upstream code, the same reproduction stops at
+`check-inspect-output` and names the discard command. The new tests cover the
+coordinator and member discards, refused lists, tracked and staged changes,
+symlinks, nested repositories, interrupted discards, the CLI, and the
+single-repo and member workflows. The full Python suite passed in eight
+parallel shards (3,750 tests, 41 skipped). The daemon suite passed (496 tests,
+13 skipped), Node tests passed (118, one skipped), resource synchronization
+checked 556 resources, and the lock check passed.
+
+Limits:
+- The discard trusts the parent's judgment that the files are pure output; it
+  cannot prove a file was never read.
+- Deletion validates each path's parents before it starts, but a parent folder
+  swapped for a symlink during the discard is not detected.
+- No upstream submission has been made.
 
 ## 1.7.1.39 — 2026-11-03
 
