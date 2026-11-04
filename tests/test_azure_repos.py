@@ -148,8 +148,6 @@ class AzurePullMetadataTests(unittest.TestCase):
         azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)
         valid = copy.deepcopy(self.pull)
         for change in (
-            lambda pull: pull.update(autoCompleteSetBy={'id': 'user-id'}),
-            lambda pull: pull['completionOptions'].update(triggeredByAutoComplete=True),
             lambda pull: pull['completionOptions'].update(bypassPolicy=True),
             lambda pull: pull['completionOptions'].update(mergeStrategy='squash'),
             lambda pull: pull['completionOptions'].update(mergeStrategy='rebase'),
@@ -161,6 +159,41 @@ class AzurePullMetadataTests(unittest.TestCase):
             change(self.pull)
             with self.subTest(pull=self.pull), self.assertRaises(azure_repos.AzureError):
                 azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)
+
+    def test_completed_auto_complete_needs_a_user_closer_and_open_auto_complete_refuses(self):
+        user = {'id': 'user-id', 'uniqueName': 'owner@example.com', 'isContainer': False}
+        self.pull['autoCompleteSetBy'] = user
+        with self.assertRaisesRegex(azure_repos.AzureError, 'auto-complete'):
+            azure_repos.require_merge_provenance(REPOSITORY, 7, None, self.call)
+        self.pull['autoCompleteSetBy'] = None
+        self.pull['completionOptions'] = {'squashMerge': False, 'triggeredByAutoComplete': True}
+        with self.assertRaisesRegex(azure_repos.AzureError, 'auto-complete'):
+            azure_repos.require_merge_provenance(REPOSITORY, 7, None, self.call)
+        self.complete()
+        # Azure clears the setter once auto-complete has completed the PR.
+        self.pull['completionOptions']['triggeredByAutoComplete'] = True
+        result = azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)
+        self.assertEqual(result['merge_commit_sha'], MERGE)
+        self.pull['autoCompleteSetBy'] = user
+        azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)
+        valid = copy.deepcopy(self.pull)
+        for change in (
+            lambda pull: pull.update(autoCompleteSetBy={'id': 'service', 'uniqueName': 'Build Service'}),
+            lambda pull: pull.update(autoCompleteSetBy=dict(user, isContainer=True)),
+            lambda pull: pull['completionOptions'].update(bypassPolicy=True),
+            lambda pull: pull.update(closedBy={'id': 'service', 'uniqueName': 'Build Service'}),
+            lambda pull: pull.update(autoCompleteSetBy=None,
+                                     closedBy={'id': 'service', 'uniqueName': 'Build Service'}),
+            lambda pull: pull.update(autoCompleteSetBy=None, closedBy=dict(user, isContainer=True)),
+            lambda pull: pull.update(lastMergeCommit={'commitId': 'f' * 40}),
+        ):
+            self.pull = copy.deepcopy(valid)
+            change(self.pull)
+            with self.subTest(pull=self.pull), self.assertRaises(azure_repos.AzureError):
+                azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)
+        self.pull = copy.deepcopy(valid)
+        self.pull['completionOptions']['triggeredByAutoComplete'] = False
+        azure_repos.require_merge_provenance(REPOSITORY, 7, MERGE, self.call)
 
     def test_squash_requires_the_recorded_target_and_retains_full_metadata(self):
         self.complete()

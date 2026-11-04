@@ -208,14 +208,25 @@ def require_merge_provenance(repository: Repository, number: int, merge: Optiona
         options = {}
     if not isinstance(options, dict):
         raise AzureError("Azure pull request completion options are invalid")
-    if raw.get("autoCompleteSetBy") is not None or options.get("triggeredByAutoComplete"):
-        raise AzureError("pull-request integration cannot use Azure auto-complete")
+    auto_complete = raw.get("autoCompleteSetBy") is not None or bool(options.get("triggeredByAutoComplete"))
     if options.get("bypassPolicy"):
         raise AzureError("pull-request integration cannot bypass Azure policies")
     if merge is None:
+        # An armed auto-complete on an open PR could land a source Path pushes
+        # later before anyone looks at it, so an open PR must not carry one.
+        if auto_complete:
+            raise AzureError("pull-request integration cannot use Azure auto-complete")
         if pull["state"] != "open" or pull["merged_at"] is not None:
             raise AzureError("open Azure pull request has invalid merge provenance")
         return pull
+    # A completed landing may come from auto-complete when a user armed it:
+    # the Git proofs still bind the reviewed source and the landed content.
+    # Azure clears autoCompleteSetBy once the PR completes, so closedBy (a
+    # user, checked below) is the completion's identity; a setter that Azure
+    # still reports must be a user too.
+    setter = raw.get("autoCompleteSetBy")
+    if setter is not None and not _user_identity(setter):
+        raise AzureError("Azure auto-complete must be set by a user")
     if pull["merged_at"] is None or pull["merge_commit_sha"] != merge:
         raise AzureError("Azure pull-request merge action does not match landing")
     strategy = options.get("mergeStrategy")
@@ -224,9 +235,12 @@ def require_merge_provenance(repository: Repository, number: int, merge: Optiona
     if strategy == "squash":
         target = raw.get("lastMergeTargetCommit")
         _sha(target.get("commitId") if isinstance(target, dict) else None, "target commit")
-    actor = raw.get("closedBy")
-    if (not isinstance(actor, dict) or not isinstance(actor.get("id"), str) or not actor["id"]
-            or actor.get("isContainer")
-            or not isinstance(actor.get("uniqueName"), str) or "@" not in actor["uniqueName"]):
+    if not _user_identity(raw.get("closedBy")):
         raise AzureError("Azure pull request must be completed by a user")
     return pull
+
+
+def _user_identity(actor: object) -> bool:
+    return (isinstance(actor, dict) and isinstance(actor.get("id"), str) and bool(actor["id"])
+            and not actor.get("isContainer")
+            and isinstance(actor.get("uniqueName"), str) and "@" in actor["uniqueName"])

@@ -206,7 +206,9 @@ bundles this file; spawned agents follow their role brief instead.
   to complete it. GitHub uses `gh`; Azure uses `az` with the `azure-devops`
   extension. Merge or proven squash follows branch policy; Azure rebase is
   refused. Path never auto-merges, enables auto-complete, queues a merge,
-  bypasses policy, or completes the PR. Both modes create one annotated
+  bypasses policy, or completes the PR. An open PR must not carry Azure
+  auto-complete; a completed Azure landing that auto-complete triggered is
+  accepted when a user closed it and the provider and Git proofs pass. Both modes create one annotated
   `milestone/<NNN>-<slug>` tag after merge validation.
   The roadmap and
   plan phases each make exactly one approval checkpoint commit

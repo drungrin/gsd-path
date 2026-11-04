@@ -83,3 +83,15 @@ stay in their source audit, keyed by (audit, Queue #); every pending audit
 carries forward at ship and abandon, and a removed member's queue is kept,
 never retargeted. Standalone docs audit stays coordinator-only. Inspection
 adds no STATE field and creates no member lock, bound branch, or push.
+
+**Update 2026-11-04 (Azure auto-complete):** a required build-validation
+policy makes Azure auto-complete the ordinary way for a user to complete a PR
+after checks pass. A completed Azure landing that auto-complete triggered is
+accepted when the PR was closed by a user, no policy was bypassed, and the
+existing reviewed-source, landing, and squash proofs pass. Azure clears
+`autoCompleteSetBy` once the PR completes, so `closedBy` is the identity
+evidence; a setter Azure still reports must also be a user.
+An open PR with auto-complete armed still blocks, including before Path pushes
+a new source to it, because the provider could land that source before anyone
+looks at it. Path still never enables auto-complete. GitHub auto-merge and
+merge queues remain blocked.

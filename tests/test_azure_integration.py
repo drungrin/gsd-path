@@ -134,6 +134,31 @@ class AzureIntegrationTests(unittest.TestCase):
         self.assertEqual(self.remote_ref('refs/tags/' + source + '^{}'), self.member_tip)
         self.assertEqual(self.integrate()['merge'], merge)
 
+    def test_auto_complete_member_close_proves_only_after_it_lands(self):
+        self.integrate()
+        setter = {'id': 'user', 'uniqueName': 'owner@example.com', 'isContainer': False}
+        self.pulls[0]['autoCompleteSetBy'] = setter
+        with self.assertRaisesRegex(ArchiveError, 'auto-complete'):
+            self.integrate()
+        merge = self.complete(squash=True)
+        # Azure clears the setter once auto-complete has completed the PR.
+        self.pulls[0]['autoCompleteSetBy'] = None
+        self.pulls[0]['completionOptions']['triggeredByAutoComplete'] = True
+        result = self.integrate()
+        self.assertEqual(result['merge'], merge)
+        self.assertEqual(self.remote_ref('refs/tags/' + TAG + '^{}'), merge)
+        with mock.patch.object(integration, 'run_command', side_effect=self.az):
+            self.assertEqual(integration.validate_member_integrated(
+                self.root, 'web', ARCHIVE, self.member_tip)['merge'], merge)
+        self.pulls[0]['autoCompleteSetBy'] = {'id': 'svc', 'uniqueName': 'Build Service', 'isContainer': True}
+        with mock.patch.object(integration, 'run_command', side_effect=self.az):
+            with self.assertRaisesRegex(ArchiveError, 'set by a user'):
+                integration.validate_member_integrated(self.root, 'web', ARCHIVE, self.member_tip)
+        self.pulls[0].update(autoCompleteSetBy=None, closedBy={'id': 'svc', 'uniqueName': 'Build Service'})
+        with mock.patch.object(integration, 'run_command', side_effect=self.az):
+            with self.assertRaisesRegex(ArchiveError, 'completed by a user'):
+                integration.validate_member_integrated(self.root, 'web', ARCHIVE, self.member_tip)
+
     def test_azure_direct_integration_needs_no_az_or_gh(self):
         with mock.patch.object(integration, 'run_command', side_effect=AssertionError('forge CLI used')):
             result = integration.integrate_member(self.root, 'web', ARCHIVE, self.member_tip)
