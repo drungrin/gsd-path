@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.40**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.41**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,68 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.41 — 2026-11-04
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 40 to 41.
+
+Fixes:
+- [`daf04d2e — accept a completed Azure landing that auto-complete triggered`](https://github.com/drungrin/gsd-path/commit/daf04d2ee31d9e4f6883dbbae2ed55d787634459)
+  — fork-only: Azure Repos support does not exist upstream.
+
+### Azure auto-complete blocks a completed member close
+
+- The fork refused Azure auto-complete in every provenance check, copying
+  upstream's GitHub auto-merge rule. In one coordinator project, the previous
+  milestone added a required build-validation policy to the member's target
+  branch. The owner then armed auto-complete on the member PR, and Azure
+  completed it as a squash once the build passed. The squash tree equals the
+  merge of the reviewed HEAD on the landing parent, the PR was closed by the
+  owner, and no policy was bypassed. `close-members` still refused it. No
+  recovery existed for a pull-request member, and validation queries the
+  provider again on every run, so the ship stayed blocked with valid reviewed
+  content already on the member's default branch. That block came from this
+  fork's rule.
+- A completed Azure landing now passes provenance when auto-complete
+  triggered it, `closedBy` is a user (non-container, with an e-mail unique
+  name), and no policy was bypassed. The reviewed-source, landing,
+  first-parent, and squash proofs are unchanged. The completed incident PR
+  reported `autoCompleteSetBy: null`: Azure documents the field as set while
+  auto-complete is enabled, and clears it once the PR completes. `closedBy`
+  is therefore the identity evidence. A setter that Azure still reports must
+  also be a user.
+- An open PR with auto-complete armed still refuses. This covers the
+  awaiting-merge checks, the push of a new source to an existing member PR,
+  and the member rebase adoption proof: the provider could land a newly
+  pushed source before anyone looks at it. A rerun while an armed PR is still
+  open therefore stops until the PR completes. Path still never enables
+  auto-complete. GitHub auto-merge and merge queues are unchanged.
+- Two review panels (gpt and muse) agreed that rejecting an already-completed
+  landing protects no content beyond the Git proofs, and that the open-PR and
+  source-advance refusals must stay. muse preferred an owner ruling per PR;
+  the maintainer chose automatic acceptance because the required build policy
+  makes auto-complete the ordinary path for every later milestone. The panels
+  assumed the setter field survives completion; gpt warned against inferring
+  a missing setter. The maintainer accepted `closedBy` as the evidence after
+  the incident PR showed the field cleared.
+
+Validation: The new tests fail on the previous provenance code (three failures) and pass
+with the fix. They cover a completed landing that auto-complete triggered
+with the setter cleared or recorded as a user, a service or group setter or
+closer, policy bypass, a wrong landing, an open armed PR, and member close plus
+revalidation. The full Python suite passed in eight parallel shards (3,753
+tests, 41 skipped). The daemon suite passed (496 tests, 13 skipped), Node
+tests passed (118, one skipped), resource synchronization checked 556
+resources, and the lock check passed.
+
+Limits:
+- Acceptance trusts Azure's `closedBy` identity field. Azure documents it as
+  the user who closed the PR, not explicitly as the user who armed
+  auto-complete; in the incident they were the same person. A non-container
+  identity with an e-mail unique name is evidence of a user account, not of
+  who reviewed the final checks.
+- No upstream submission applies.
 
 ## 1.7.1.40 — 2026-11-03
 
