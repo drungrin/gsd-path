@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.41**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.42**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,68 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.42 — 2026-11-04
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 41 to 42.
+
+Fix:
+- [`fa51a970 — publish a finished child's final text recorded without a stop reason`](https://github.com/drungrin/gsd-path/commit/fa51a970f7e7c80079787742b6a0557e92a8d7d6)
+  — fork-only: `stage-review` does not exist upstream.
+
+### Proxied panel reports refused for a missing stop reason
+
+- 1.6.2.30 through 1.6.2.33 accepted reports delivered through the host's
+  `SubagentHandback` tool, including a call recorded with no stop reason. A
+  final text message still had to record `stop_reason: end_turn`. Through a
+  model proxy, Claude Code sometimes records the final text block and never
+  records the stream's stop reason. A survey of 899 child transcripts in
+  five consumer projects found 18 such finals: 17 from a proxied muse panel
+  model and one from a proxied gpt panel model, none from a native Claude
+  model, all with `finished: true` in the child's metadata. Fifteen were
+  complete panel reports. `stage-review` refused them as having no completed
+  final response. Parents then copied the text by their own scripts under a
+  standing user ruling, which wrote no publication receipt. This block came
+  from this fork's publication rule.
+- A text-only reply with no stop reason is now accepted when it is the
+  transcript's last conversational event, the metadata records `finished`
+  as exactly `true`, it has a message id, every other event of that API
+  message holds only thinking, and neither the reply nor those events carry
+  an API error marker. An earlier message of that kind cannot be selected
+  explicitly. The receipt records the transport as
+  `final-message-unstopped`. Other stop reasons and every identity, report,
+  and collection check are unchanged. Replayed over the survey, the rule
+  matches the 18 finals; the 14 that start with a Markdown heading would
+  publish and the other four still fail the report check.
+- Two review panels (gpt and muse) chose this option over no change and over
+  requiring the parent to pass the host notification's text. They found that
+  equality with text the parent can read from the same transcript proves
+  little. gpt added the strict `finished` value, the message id, the
+  sibling API-error check, and the rule that an earlier message cannot be
+  selected. muse asked whether one report can span several text events; no
+  message among the 899 transcripts had more than one text event.
+
+Validation: five of the new tests fail on the previous code and all pass
+with the fix. They cover accepted finals with thinking, redacted thinking,
+or no sibling and a trailing attachment; refusals for absent or non-boolean
+`finished`, a missing message id, API errors, sibling calls or text,
+mixed or unknown blocks, later events, explicit selection of an earlier
+message, other stop reasons, and identity and report-text checks; and a
+structurally valid partial report that still parses. The full Python suite
+passed in eight parallel shards (3,763 tests, 41 skipped). The daemon suite
+passed (496 tests, 13 skipped), Node tests passed (118, one skipped),
+resource synchronization checked 556 resources, and the lock check passed.
+
+Limits:
+- The host's `finished` flag is the completion evidence. A child cut short
+  after a whole text block that the host still marks finished would publish
+  a partial report; the panel parser does not prove completeness. No such
+  case appears in the survey.
+- The cause inside Claude Code or the proxy is unconfirmed.
+- Consumers receive the fix with a runtime update; a consumer in the middle
+  of a milestone still needs a compatible runtime or a maintenance release.
+- No upstream submission has been made.
 
 ## 1.7.1.41 — 2026-11-04
 
