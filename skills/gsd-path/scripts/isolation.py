@@ -5159,6 +5159,41 @@ def _handback_reply(events: list, index: int) -> Optional[Tuple[int, str]]:
     return following[0], call["input"]["message"]
 
 
+def _unstopped_reply(events: list, index: int, meta: dict) -> bool:
+    """Whether the text-only event at ``index`` is a finished child's last reply recorded without a stop reason.
+
+    Through a model proxy, Claude Code can record the final text block and never record the
+    stream's stop reason. That is accepted only for the transcript's last conversational event
+    of a child the host marks ``finished``, when every other event of the same API message is
+    thinking and neither carries an API error marker.
+    """
+    event = events[index]
+    message = event["message"]
+    blocks = message.get("content")
+    identifier = message.get("id")
+    if (message.get("stop_reason") is not None or meta.get("finished") is not True
+            or event.get("isApiErrorMessage")
+            or not isinstance(identifier, str) or not identifier
+            or not isinstance(blocks, list) or not blocks
+            or any(not isinstance(block, dict) or block.get("type") != "text"
+                   or not isinstance(block.get("text"), str) for block in blocks)):
+        return False
+    conversational = [position for position, other in enumerate(events)
+                      if other.get("type") in {"assistant", "user"}]
+    if conversational[-1] != index:
+        return False
+    for other in events:
+        if (other is event or other.get("type") != "assistant" or not isinstance(other.get("message"), dict)
+                or other["message"].get("id") != identifier):
+            continue
+        content = other["message"].get("content")
+        if other.get("isApiErrorMessage") or not isinstance(content, list) or any(
+                not isinstance(block, dict) or block.get("type") not in {"thinking", "redacted_thinking"}
+                for block in content):
+            return False
+    return True
+
+
 def stage_review(
     primary: Path, source: Path, base: str, branch: str, source_path: str,
     transcript: Path, assignment: str, agent_id: str, model: str,
@@ -5166,7 +5201,8 @@ def stage_review(
 ) -> Dict[str, object]:
     """Publish a completed native review message verbatim; validation still follows.
 
-    The report is a final ``end_turn`` text message, or the message of a delivered host hand-back.
+    The report is a final ``end_turn`` text message, a finished child's last text message that the
+    host recorded without a stop reason, or the message of a delivered host hand-back.
     """
     primary = require_directory(primary, "primary worktree")
     source = require_directory(source, "source worktree")
@@ -5209,6 +5245,7 @@ def stage_review(
         raise IsolationError("review transcript belongs to another child")
     # Each reply: (assistant index, index that ends the turn, event, hand-back delivery or None).
     replies = []
+    unstopped = set()
     for index, event in enumerate(events):
         if event.get("type") != "assistant" or not isinstance(event.get("message"), dict):
             continue
@@ -5216,6 +5253,9 @@ def stage_review(
             replies.append((index, index, event, None))
         elif (handback := _handback_reply(events, index)) is not None:
             replies.append((index, handback[0], event, handback))
+        elif _unstopped_reply(events, index, meta):
+            replies.append((index, index, event, None))
+            unstopped.add(index)
     requests = [index for index, event in enumerate(events) if event.get("type") == "user"]
     assistants = [index for index, event in enumerate(events) if event.get("type") == "assistant"]
     if (not replies or assistants[-1] != replies[-1][0]
@@ -5225,7 +5265,7 @@ def stage_review(
     selected = [reply for reply in replies if reply[2].get("uuid") == selected_id]
     if len(selected) != 1:
         raise IsolationError("review message id is missing or ambiguous")
-    _, _, event, handback = selected[0]
+    selected_index, _, event, handback = selected[0]
     message = event["message"]
     if message.get("role") != "assistant" or message.get("model") != model or not model:
         raise IsolationError("review final response has a different model identity")
@@ -5256,7 +5296,9 @@ def stage_review(
     key = _sha256(json.dumps(identity, sort_keys=True).encode("utf-8"))
     receipt = common_git_dir(primary) / "gsd-path" / "staged-review" / f"{key}.json"
     payload = {**identity, "publisher": "parent",
-               "transport": "final-message" if handback is None else "handback",
+               "transport": ("handback" if handback is not None
+                             else "final-message-unstopped" if selected_index in unstopped
+                             else "final-message"),
                "transcript": str(transcript.resolve()), "sha256": _sha256(data), "bytes": len(data)}
     if handback is not None:
         payload["handback_result_id"] = events[handback[0]].get("uuid")

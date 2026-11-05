@@ -147,6 +147,128 @@ class ReviewOutputTests(unittest.TestCase):
         self.assertEqual(result["message_id"], "handback-one")
         self.assertEqual((self.sidecar / self.relative).read_bytes(), REPORT.encode("utf-8"))
 
+    def unstopped(self, text, uuid="reply-unstopped", finished=True):
+        """A proxied final turn as Claude Code can record it: per-block events, no stop reason."""
+        meta = {"description": self.assignment}
+        if finished is not None:
+            meta["finished"] = finished
+        self.metadata.write_text(json.dumps(meta), encoding="utf-8")
+        message_id = "message-" + uuid
+        thinking = {"type": "assistant", "agentId": self.agent, "uuid": uuid + "-thinking",
+                    "message": {"id": message_id, "role": "assistant", "model": self.model,
+                                "stop_reason": None,
+                                "content": [{"type": "thinking", "thinking": "private reasoning"}]}}
+        reply = self.reply(text, uuid=uuid, stop_reason=None)
+        reply["message"]["id"] = message_id
+        return [thinking, reply]
+
+    def test_finished_child_final_text_without_stop_reason_is_staged(self):
+        for sibling in ("thinking", "redacted_thinking", None):
+            with self.subTest(sibling=sibling):
+                turn = self.unstopped(REPORT)
+                if sibling is None:
+                    turn.pop(0)
+                elif sibling == "redacted_thinking":
+                    turn[0]["message"]["content"] = [{"type": "redacted_thinking", "data": "opaque"}]
+                self.events[-1:] = turn + [{"type": "attachment", "agentId": self.agent,
+                                            "attachment": {"type": "hook_non_blocking_error"}}]
+                self.save()
+                result = self.stage()
+                staged = self.sidecar / self.relative
+                self.assertEqual(staged.read_bytes(), REPORT.encode("utf-8"))
+                self.assertEqual(result["transport"], "final-message-unstopped")
+                self.assertEqual(result["message_id"], "reply-unstopped")
+                self.assertEqual(self.stage(), result)
+                review_panel.parse_family_artifact(staged, "plan")
+                self.events[-len(turn) - 1:] = [self.reply(REPORT)]
+        collected = isolation.collect_artifact(self.repo, self.sidecar, self.base,
+                                             self.isolated["branch"], self.relative, self.relative,
+                                             expected_source=result["sha256"])
+        self.assertEqual(collected["sha256"], result["sha256"])
+
+    def test_unstopped_final_text_needs_completion_and_a_text_only_message(self):
+        def finished(value):
+            return lambda turn: self.unstopped(REPORT, finished=value)
+
+        def sibling(content, **extra):
+            return lambda turn: turn.insert(1, {
+                "type": "assistant", "agentId": self.agent, "uuid": "sibling-one", **extra,
+                "message": {"id": "message-reply-unstopped", "role": "assistant", "model": self.model,
+                            "stop_reason": None, "content": content}})
+
+        cases = {
+            "finished absent": finished(None),
+            "finished false": finished(False),
+            "finished string": finished("true"),
+            "finished number": finished(1),
+            "no message id": lambda turn: turn[1]["message"].pop("id"),
+            "empty message id": lambda turn: turn[1]["message"].update(id=""),
+            "api error": lambda turn: turn[1].update(isApiErrorMessage=True),
+            "api error sibling": sibling([{"type": "thinking", "thinking": "x"}], isApiErrorMessage=True),
+            "sibling call without result": sibling([{"type": "tool_use", "id": "call-bash", "name": "Bash",
+                                                     "input": {"command": "true"}}]),
+            "sibling text": sibling([{"type": "text", "text": "# More\n"}]),
+            "sibling malformed": sibling("text"),
+            "call beside the text": lambda turn: turn[1]["message"]["content"].append(
+                {"type": "tool_use", "id": "call-two", "name": "Bash", "input": {}}),
+            "unknown block": lambda turn: turn[1]["message"]["content"].append({"type": "image"}),
+            "later user": lambda turn: turn.append(
+                {"type": "user", "agentId": self.agent, "message": {"content": "Follow up."}}),
+            "later thinking": lambda turn: turn.append(dict(turn[0], uuid="thinking-two")),
+            "later assistant": lambda turn: turn.append(self.reply("# Later\n", uuid="reply-two",
+                                                                  stop_reason="tool_use")),
+        }
+        for stop in ("max_tokens", "refusal", "stop_sequence", "tool_use"):
+            cases["stop " + stop] = lambda turn, stop=stop: turn[1]["message"].update(stop_reason=stop)
+        for name, change in cases.items():
+            with self.subTest(case=name):
+                turn = self.unstopped(REPORT)
+                replaced = change(turn)
+                if isinstance(replaced, list):
+                    turn = replaced
+                self.events[-1:] = turn
+                self.save()
+                with self.assertRaises(isolation.IsolationError):
+                    self.stage()
+                self.events[-len(turn):] = [self.reply(REPORT)]
+        self.assertFalse((self.sidecar / self.relative).exists())
+        self.assertFalse((isolation.common_git_dir(self.repo) / "gsd-path" / "staged-review").exists())
+
+    def test_unstopped_final_text_keeps_the_identity_and_report_checks(self):
+        self.events[-1:] = self.unstopped(REPORT)
+        self.save()
+        for override in ({"agent_id": "other"}, {"model": "other-model"},
+                         {"assignment": "review_other"}, {"message_id": "reply-unstopped-thinking"}):
+            with self.subTest(override=override), self.assertRaises(isolation.IsolationError):
+                self.stage(**override)
+        for text in ("", "written", "```markdown\n" + REPORT + "```"):
+            with self.subTest(text=text[:20]), self.assertRaises(isolation.IsolationError):
+                self.events[-2:] = self.unstopped(text)
+                self.save()
+                self.stage()
+        self.assertFalse((self.sidecar / self.relative).exists())
+
+    def test_earlier_unstopped_text_cannot_be_selected_after_a_later_reply(self):
+        # Child-level completion says nothing about an earlier message without a stop reason.
+        self.events[-1:] = self.unstopped(REPORT) + [
+            {"type": "user", "agentId": self.agent, "message": {"content": "Save the report."}},
+            self.reply("Publication blocked by host instructions.", uuid="reply-two"),
+        ]
+        self.save()
+        with self.assertRaisesRegex(isolation.IsolationError, "missing or ambiguous"):
+            self.stage(message_id="reply-unstopped")
+        self.assertFalse((self.sidecar / self.relative).exists())
+
+    def test_structurally_valid_unstopped_report_is_not_completion_evidence(self):
+        # Documents the limit: a well-formed report cut short still parses; the host's
+        # finished flag, not the artifact gates, is the completion evidence.
+        partial = REPORT.split("## Summary")[0]
+        self.events[-1:] = self.unstopped(partial)
+        self.save()
+        result = self.stage()
+        self.assertEqual(result["transport"], "final-message-unstopped")
+        review_panel.parse_family_artifact(self.sidecar / self.relative, "plan")
+
     def test_handback_without_its_successful_delivery_is_not_published(self):
         def result_content(turn, **changes):
             turn[2]["message"]["content"][0].update(changes)
