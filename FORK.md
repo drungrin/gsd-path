@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.42**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.43**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,64 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.43 — 2026-11-07
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 42 to 43.
+
+Fix:
+- [`cdeeea2d — accept repair waves without a later-numbered source review`](https://github.com/drungrin/gsd-path/commit/cdeeea2d629b8e35e03258c65960c36a4128aac7)
+  — fork-only: it removes a fork rule and returns to upstream `1e7ca2aa`
+  behavior.
+
+### Repair-wave source proof removed
+
+- 1.6.2.21 (`e3d3a796`) closed an upstream gap: completion required a review
+  file for every PLAN wave, although upstream `ddc998bd` had made a repair
+  wave need no review of its own. The fork also required each repair wave to
+  name a source cycle and its source wave to have a review with a higher
+  cycle number; 1.6.2.26 (`8c97aa42`) added a title-pair fallback. Upstream
+  fixed the same gap a day later in `1e7ca2aa`, without the source proof, and
+  the 1.7.1 sync kept the fork's stricter version.
+- A build recovery restarts review numbering when it makes a wave's reviews
+  stale. The proof then demanded reviews numbered past the pre-recovery cycle
+  on an unchanged product. It blocked build completion four times in two
+  consumer projects, each time after a recovery and with a post-recovery
+  review that already judged the repairs. The latest case required 9
+  canonical and 18 panel reviews. No case was found in which it caught a
+  repair that no review had judged. This block came from the fork's rule.
+- Completion and archive now accept a wave whose tasks all carry
+  `## Review findings` without a review of its own, as upstream does. Repair
+  receipts must still match an archived cycle and, for a task of the receipt's
+  wave, a later one. The source wave's latest cycle must still pass, and
+  `build_state` still holds the build while a blocked review has unfinished
+  repairs. Judged repair waves keep reporting 0 review cycles, so manifests
+  written by earlier fork releases stay valid. The fix-wave heading stays the
+  documented form; completion no longer reads it.
+- Two review panels (gpt and muse) preferred an epoch-aware version of the
+  proof over removing it, because removal drops the mechanical check for
+  repairs opened from a passing cycle on panel findings. The maintainer chose
+  removal: the gap the rule was written for is closed upstream, and the rule
+  had produced only false blocks.
+
+Validation: the new tests fail on the previous code (six errors, one
+failure) and pass with the change. Replayed read-only at the two blocked
+commits, the previous validator refused and the new one accepted. Twelve
+existing archives in four consumer projects give the same review counts
+under both versions. The full Python suite passed in eight parallel shards
+(3,758 tests, 41 skipped; five tests of the removed rule were deleted). The
+daemon suite passed (496 tests, 13 skipped), Node tests passed (118, one
+skipped), resource synchronization checked 556 resources, and the lock check
+passed.
+
+Limits:
+- A wave of repair tasks opened from a passing cycle on panel findings is no
+  longer mechanically held for a later review of its source wave. The build
+  contract and final review cover it.
+- Consumers get the change at their next milestone boundary; a milestone in
+  build still runs its confirmation reviews.
+- No upstream submission has been made.
 
 ## 1.7.1.42 — 2026-11-04
 
