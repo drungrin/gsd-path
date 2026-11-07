@@ -530,8 +530,7 @@ Tasks reviewed: 1
     def test_template_comment_does_not_make_a_wave_a_repair_wave(self) -> None:
         # The stock task template mentions "## Review findings" inside a comment;
         # only a parsed section marks a repair wave (parity with build_state's
-        # _sections rule), or every ordinary wave would waive its review. The
-        # fork also requires the repair wave's source cycle, so wave 2 names it.
+        # _sections rule), or every ordinary wave would waive its review.
         comment = (
             "<!-- Fix tasks only: add ## Review findings before Log, with one\n"
             "     ### <canonical locator> block per group. -->\n"

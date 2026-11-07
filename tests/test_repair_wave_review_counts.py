@@ -99,12 +99,17 @@ Tasks reviewed: 1
         self.write_review(1, 2, "pass")
         self.assertEqual([2, 0], self.counts())
 
-    def test_source_wave_must_be_reviewed_after_the_findings_cycle(self) -> None:
-        self.write_plan()
-        self.write_tasks()
-        self.write_review(1, 1, "pass")
-        with self.assertRaisesRegex(ArchiveError, "repair wave 2 requires a review cycle of wave 1 after cycle 1"):
-            self.counts()
+    def test_repair_wave_needs_no_later_numbered_source_cycle(self) -> None:
+        # Upstream rule: a repair wave needs no review of its own and no proof that
+        # its source wave was reviewed after a named cycle. A build recovery restarts
+        # review numbering, so a heading can name a cycle the current reviews never reach.
+        for heading in ("## Wave 2 — fix wave 1 cycle 1 review findings",
+                        "## Wave 2 — fix wave 1 cycle 6 review findings"):
+            with self.subTest(heading=heading):
+                self.write_plan(heading)
+                self.write_tasks()
+                self.write_review(1, 1, "pass")
+                self.assertEqual([1, 0], self.counts())
 
     def test_source_wave_last_cycle_must_still_pass(self) -> None:
         self.write_plan()
@@ -122,24 +127,18 @@ Tasks reviewed: 1
         with self.assertRaisesRegex(ArchiveError, "review cycle waves do not match PLAN.md"):
             self.counts()
 
-    def test_ordinary_wave_without_review_still_fails(self) -> None:
-        self.write_plan("## Wave 2 — more features")
-        self.write_tasks()
-        self.write_review(1, 1, "blocked")
-        self.write_review(1, 2, "pass")
-        with self.assertRaisesRegex(ArchiveError, "review cycle waves do not match PLAN.md"):
-            self.counts()
-
-    def test_heading_naming_a_later_or_same_wave_is_not_a_source(self) -> None:
+    def test_any_heading_of_a_wave_of_repair_tasks_is_accepted(self) -> None:
         for heading in ("## Wave 2 — fix wave 2 cycle 1 review findings",
-                        "## Wave 2 — fix wave 3 cycle 1 review findings"):
+                        "## Wave 2 — fix wave 3 cycle 1 review findings",
+                        "## Wave 2 — repairs",
+                        "## Wave 2 — fix wave 1 cycle 1 and wave 1 cycle 2 findings",
+                        "## Wave 2 — redesign the demo check (wave 1 cycle 1 cap ruling)"):
             with self.subTest(heading=heading):
                 self.write_plan(heading)
                 self.write_tasks()
                 self.write_review(1, 1, "blocked")
                 self.write_review(1, 2, "pass")
-                with self.assertRaisesRegex(ArchiveError, "review cycle waves do not match PLAN.md"):
-                    self.counts()
+                self.assertEqual([2, 0], self.counts())
 
     def test_repair_wave_with_its_own_review_is_validated_as_before(self) -> None:
         self.write_plan()
@@ -157,58 +156,13 @@ Tasks reviewed: 1
         self.write_receipt(1, 1, "T002")
         self.assertEqual([2, 0], self.counts())
 
-    def test_legacy_heading_names_its_source_with_one_wave_cycle_pair(self) -> None:
-        for heading in ("## Wave 2 — fix wave 1 cycle 1 panel finding",
-                        "## Wave 2 — fix wave 1 cycle 1 review finding",
-                        "## Wave 2 — redesign the demo check (wave 1 cycle 1 cap ruling)",
-                        "## Wave 2 — Fix Wave 1 Cycle 1 findings",
-                        "## Wave 2 — fix wave 1 cycle 1, again wave 1 cycle 1"):
-            with self.subTest(heading=heading):
-                self.write_plan(heading)
-                self.write_tasks()
-                self.write_review(1, 1, "blocked")
-                self.write_review(1, 2, "pass")
-                self.assertEqual([2, 0], self.counts())
-
-    def test_legacy_heading_without_exactly_one_earlier_pair_is_not_a_source(self) -> None:
-        for heading in ("## Wave 2 — fix wave 1 cycle 1 and wave 1 cycle 2 findings",
-                        "## Wave 2 — fix the review findings",
-                        "## Wave 2 — fix rewave 1 cycle 1 and wave 1 cycle 1x",
-                        "## Wave 2 — fix wave 2 cycle 1 panel finding"):
-            with self.subTest(heading=heading):
-                self.write_plan(heading)
-                self.write_tasks()
-                self.write_review(1, 1, "blocked")
-                self.write_review(1, 2, "pass")
-                with self.assertRaisesRegex(ArchiveError, "review cycle waves do not match PLAN.md"):
-                    self.counts()
-
-    def test_legacy_heading_source_still_needs_a_later_review(self) -> None:
-        self.write_plan("## Wave 2 — fix wave 1 cycle 1 panel finding")
-        self.write_tasks()
-        self.write_review(1, 1, "pass")
-        with self.assertRaisesRegex(ArchiveError, "repair wave 2 requires a review cycle of wave 1 after cycle 1"):
-            self.counts()
-
-    def test_receipts_outrank_the_heading_pair(self) -> None:
-        self.write_plan("## Wave 2 — fix wave 1 cycle 2 panel finding")
+    def test_repair_receipts_still_need_their_review_cycle(self) -> None:
+        self.write_plan("## Wave 2 — repairs")
         self.write_tasks()
         self.write_review(1, 1, "blocked")
         self.write_review(1, 2, "pass")
-        self.write_receipt(1, 1, "T002")
-        self.assertEqual([2, 0], self.counts())
-
-    def test_partial_receipts_do_not_fall_back_to_the_heading_pair(self) -> None:
-        self.write_plan("## Wave 2 — fix wave 1 cycle 1 panel findings",
-                        "| T003 | repair demo again | T001 | src/demo.py |\n")
-        self.write_tasks()
-        (self.project / "tasks" / "T003-repair-demo-again.md").write_text(
-            "---\nid: T003\ntitle: repair demo again\nwave: 2\n---\n\n## Review findings\n\n"
-            "### t001_ac1\n\nCriterion: demo works\n", encoding="utf-8")
-        self.write_review(1, 1, "blocked")
-        self.write_review(1, 2, "pass")
-        self.write_receipt(1, 1, "T002")
-        with self.assertRaisesRegex(ArchiveError, "review cycle waves do not match PLAN.md"):
+        self.write_receipt(1, 3, "T002")
+        with self.assertRaisesRegex(ArchiveError, "does not match an archived review cycle"):
             self.counts()
 
     def test_manifest_counts_accept_a_judged_repair_wave(self) -> None:
