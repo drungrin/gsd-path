@@ -618,7 +618,9 @@ def _final_review(archive: Path) -> tuple:
         )
         if evidence_field is None:
             raise ArchiveError(f"FINAL.md criterion lacks passing evidence: {criterion}")
-        criteria.append((criterion, "met", values[evidence_field]))
+        # A manifest row is one table line: store multiline evidence, such as
+        # indented sub-bullets, joined by spaces as criterion headings are.
+        criteria.append((criterion, "met", " ".join(values[evidence_field].splitlines())))
         raw_evidence.append(raw_values[evidence_field])
     return reviewed_head.lower(), criteria, raw_evidence
 

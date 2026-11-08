@@ -3259,6 +3259,40 @@ Waves checked: 1
             self.assertIn("Both deactivations notified.", observed)
             self.assertIn("In the DB, rows stayed listed.", observed)
 
+    def test_render_manifest_keeps_multiline_final_evidence_on_one_row(self) -> None:
+        # The final gate accepts a Reference written as indented sub-bullets;
+        # the manifest row must hold it on one table line so the archive
+        # validator reads back the same evidence.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo = Path(temporary_directory)
+            self.make_repo(repo)
+            archive = self.prepare_archive(repo)
+            final = archive / "review" / "FINAL.md"
+            text = final.read_text(encoding="utf-8")
+            self.assertIn("- **Reference**: tests\n", text)
+            final.write_text(
+                text.replace(
+                    "- **Reference**: tests\n",
+                    "- **Reference**:\n"
+                    "  - Clone files at member abc1234: `test/demo.test.ts`.\n"
+                    "  - The T001 ledger row (exit 0) in `build/verify-ledger.jsonl`.\n",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            rendered = self.render_manifest(repo)
+
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            manifest_text = (archive / "MANIFEST.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "| demo works | met | - Clone files at member abc1234: `test/demo.test.ts`. "
+                "- The T001 ledger row (exit 0) in `build/verify-ledger.jsonl`. |\n",
+                manifest_text,
+            )
+            checked = self.preflight(repo)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_preflight_rejects_a_gap_heading_risk_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo = Path(temporary_directory)
