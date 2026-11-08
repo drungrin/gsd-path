@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.43**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.44**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,45 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.44 — 2026-11-08
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 43 to 44.
+
+Fix:
+- [`516fe2f0 — keep multiline final evidence on one manifest row`](https://github.com/drungrin/gsd-path/commit/516fe2f057dd632342a8e100587626eafd5fdde6)
+  — applies upstream: it cherry-picks cleanly onto upstream main `d5a30f5f`,
+  where the same code fails the same way, and its test passes there.
+
+### Multiline final evidence blocked the archive
+
+- Upstream `c16a7206` (#294) taught the final gate and the archive to read a
+  FINAL.md field written as indented sub-bullets. The archive kept that value
+  with its line breaks, and `render-manifest` wrote it into one table row. The
+  row spanned several lines, the manifest validator reads only lines that
+  start with a pipe, and every such archive failed with "manifest success
+  criteria do not match FINAL.md evidence in order".
+- A consumer's ship stopped there after the final gate had passed: the
+  Reference fields of three criteria were sub-bullet lists. The only recovery
+  the runtime offered was to undo the archive and have the final reviewer
+  rewrite an accepted report.
+- The archive now stores the evidence joined by spaces, as it already stores
+  sub-bullet criterion headings. The placeholder scan still reads the evidence
+  as written. Single-line evidence is unchanged, so existing manifests stay
+  valid.
+
+Validation: the new test fails on the previous code with the consumer's
+error and passes with the change. Against the consumer's prepared archive,
+read-only, the previous code fails the row comparison and the new one matches
+all four criteria. The full Python suite passed in eight parallel shards,
+with `npm test`, `npm run test:sync`, `npm run test:daemon`, and
+`npm run check:locks`.
+
+Limits:
+- The manifest shows multiline evidence as one line, with the sub-bullet
+  markers inline.
+- No upstream submission has been made.
 
 ## 1.7.1.43 — 2026-11-07
 
