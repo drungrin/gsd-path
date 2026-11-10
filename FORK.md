@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.46**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.47**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,64 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.47 — 2026-11-10
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 46 to 47.
+
+Fix:
+- [`dd2aa85f — validate collect expectations and settle a retired native record`](https://github.com/drungrin/gsd-path/commit/dd2aa85f8b00b0603dea57163da6af19176ab61c)
+  — applies upstream: upstream main has the same unvalidated
+  `--expected-destination` input, the same strict journal reader, and the
+  same `finish` call outside the failure-recording block. The patch needs a
+  small port, because the context in `isolation.py` and
+  `tests/test_isolation.py` differs from upstream main.
+
+### A commit SHA as the expected destination broke every status read
+
+- In a coordinator build, the orchestrator collected six wave-1 review and
+  panel reports with `--expected-destination <review base commit>`.
+  `collect-artifact` accepted the value and, because each destination did
+  not exist yet, completed the collection. Its journal reader accepts only
+  the literal `base` or a SHA-256, so afterwards status, diagnose and build
+  recovery all failed with "artifact collection journal has invalid
+  expected destination".
+- `collect-artifact` now refuses such a value before writing a journal, and
+  its help text names the literal `base`. A complete journal already written
+  with such a value is read as inert history, so the affected repository
+  recovers without editing `.git`. An incomplete journal with an invalid
+  value still refuses, since its retry would use the value.
+
+### A retired native member sidecar left its dispatch record unsettled
+
+- The owner ruled a repair task while a native member task (an operator
+  pause) was halted. Its member sidecar was retired and the task reset to
+  pending without `finish`. Build recovery then refused with "settle
+  dispatch records before recovery", and `finish` stopped with "has no
+  activated live copy" before it reached the block that records a failure,
+  so the record kept a null outcome. Only `round` could settle it, and
+  `round` would have resumed the build and redispatched the task.
+- `finish` now records that stop as `blocked`, which recovery accepts. A
+  retry at a new base opens a new attempt; a retry at the same base still
+  reopens the blocked native record.
+
+Validation: the three new tests fail on the previous code and pass with the
+fix. They cover a commit, `BASE`, and an empty string refused as the
+expected destination with no journal written, a complete journal with a
+commit expectation read as inert while an incomplete one still refuses,
+and a member sidecar retired before `finish`: recovery refuses, `finish`
+records `blocked`, recovery then accepts, and a new attempt lands. The full
+Python suite passed in eight parallel shards (3,775 tests, 41 skipped). The
+daemon suite passed (496 tests, 13 skipped), Node tests passed (118, one
+skipped), resource synchronization checked 556 resources, and the lock
+check passed.
+
+Limits:
+- The consumer still has to rerun the refused recovery after installing
+  this runtime; `finish` must run once for the halted task to settle its
+  record.
+- No upstream submission has been made.
 
 ## 1.7.1.46 — 2026-11-10
 
