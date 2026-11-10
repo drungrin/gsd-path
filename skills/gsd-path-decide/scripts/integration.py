@@ -2385,7 +2385,67 @@ def _advance_pending_member_source(
     _push_member_ref(checkout, project, reviewed_head, f"refs/heads/{bound}", reviewed_head, previous)
 
 
-def integrate_member_pull_request(coordinator: Path, member: str, archive_path: str, reviewed_head: str) -> dict:
+def _adopt_pull_request_member_landing(
+    coordinator: Path, checkout: Path, project: str, member: str, archive_path: str,
+    bound: str, tag_name: str, reviewed_head: str, default: str,
+    repository: PullRequestRepository, adopt: Optional[str],
+) -> Optional[dict]:
+    """Close a pull-request member whose reviewed HEAD already reached its default branch.
+
+    Returns None when the ordinary pull-request path applies: the reviewed HEAD
+    is not on the default branch, the milestone tag exists, or the bound
+    branch's own PR made the landing. Otherwise only a user-approved
+    --adopt-landed-member naming the live default tip closes it (#458): Path
+    publishes the bound branch and an adopted-landing tag, and opens no PR,
+    since a PR with no difference cannot exist.
+    """
+    origin_default = f"origin/{default}"
+    tip = archive_milestone.require_git_success(
+        run_git(checkout, "rev-parse", origin_default), f"resolve member {origin_default}")
+    ancestry = run_git(checkout, "merge-base", "--is-ancestor", reviewed_head, tip)
+    if ancestry.returncode == 1:
+        if adopt is not None:
+            raise ArchiveError(
+                f"member {member} --adopt-landed-member was given, but its reviewed HEAD "
+                f"has not reached {origin_default}")
+        return None
+    archive_milestone.require_git_success(ancestry, "inspect member reviewed HEAD ancestry")
+    if live_remote_ref(checkout, f"refs/tags/{tag_name}") is not None:
+        try:
+            proven = validate_member_integrated(coordinator, member, archive_path, reviewed_head)
+        except ArchiveError:
+            return None  # not an adopted landing; the pull-request path proves or refuses it
+        return proven if proven.get("adopted") else None
+    try:
+        pull = find_pull_request(repository, bound, reviewed_head, default)
+    except ArchiveError:
+        pull = None  # a PR from another branch carries this head; it is not the milestone's PR
+    if pull is not None and pull["merged_at"] is not None:
+        return None
+    if pull is not None:
+        raise ArchiveError(
+            f"member {member} reviewed HEAD reached {origin_default} while its pull request "
+            f"{pull['html_url']} is still open; close or merge it before adopting the landing")
+    if adopt is None:
+        raise ArchiveError(
+            f"member reviewed HEAD reached {origin_default} outside Path; user-approved recovery "
+            f"required: rerun close-members with --adopt-landed-member {member}={tip}")
+    if adopt != tip:
+        raise ArchiveError(
+            f"member {member} --adopt-landed-member names {adopt}, but {origin_default} is {tip}")
+    _publish_member_bound(checkout, project, member, bound, reviewed_head)
+    tag_object, tag_published = ensure_integration_tag(
+        checkout, tag_name, tip, member_adopted_tag_message(tag_name, reviewed_head, tip))
+    if not tag_published:
+        _push_member_ref(checkout, project, f"refs/tags/{tag_name}", f"refs/tags/{tag_name}", tag_object, None)
+        archive_milestone.require_git_success(
+            run_git(checkout, "update-ref", f"refs/remotes/origin/tags/{tag_name}", tag_object),
+            "refresh member milestone-tag ref")
+    return validate_member_integrated(coordinator, member, archive_path, reviewed_head)
+
+
+def integrate_member_pull_request(coordinator: Path, member: str, archive_path: str, reviewed_head: str,
+                                  adopt: Optional[str] = None) -> dict:
     """Pull-request member close: open one PR for the bound branch; after a human merge, tag it."""
     checkout, project, bound, subject, tag_name, default = _member_names(coordinator, member, archive_path)
     body = _member_merge_body(archive_path, member, reviewed_head)
@@ -2395,6 +2455,11 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
                                    checkout, project, bound, default, repository)
     _advance_pending_member_source(coordinator, member, archive_path, reviewed_head,
                                    checkout, project, bound, default, repository)
+    adopted = _adopt_pull_request_member_landing(
+        coordinator, checkout, project, member, archive_path, bound, tag_name,
+        reviewed_head, default, repository, adopt)
+    if adopted is not None:
+        return adopted
     pull = find_pull_request(repository, bound, reviewed_head, default)
     try:
         prior = member_rebase_prior_close(coordinator, archive_path, member)
@@ -2476,9 +2541,9 @@ def validate_member_integrated(
     if "Mode: adopted-landing" in contents.splitlines():
         # A user-approved adoption: the reviewed HEAD reached the member default
         # branch through earlier publications, so the tag proves the landing in
-        # place of the canonical merge Path never made (#458). Only a
-        # direct-mode member may carry one; a pull-request member validates
-        # through its merged PR instead.
+        # place of the canonical merge Path never made (#458). A direct-mode
+        # member or a pull-request member whose landing no milestone PR made
+        # may carry one.
         try:
             import members as members_module
         except ImportError:  # pragma: no cover - package import used by tests
@@ -2499,9 +2564,9 @@ def validate_member_integrated(
             raise ArchiveError(str(error)) from error
         if effective_mode == "default":
             effective_mode = archive_milestone.strict_state(coordinator)[0].integration
-        if effective_mode != "direct":
+        if effective_mode not in {"direct", "pull-request"}:
             raise ArchiveError(
-                f"member {member} is not direct-mode; an adopted-landing tag cannot close it")
+                f"member {member} has integration {effective_mode}; an adopted-landing tag cannot close it")
         metadata = member_adopted_tag_metadata(contents)
         if metadata["Reviewed-HEAD"] != reviewed_head:
             raise ArchiveError(f"member {member} tag {tag_name} names a different reviewed HEAD")
@@ -2688,9 +2753,9 @@ def close_members(repo: Path, adopt: Optional[Mapping[str, str]] = None) -> dict
             mode = modes.get(adopted_name, "default")
             if mode == "default":
                 mode = state.integration
-            if mode != "direct":
+            if mode not in {"direct", "pull-request"}:
                 raise ArchiveError(
-                    f"--adopt-landed-member names {adopted_name}, which is not a direct-mode member")
+                    f"--adopt-landed-member names {adopted_name}, whose integration is {mode}")
     def save() -> None:
         members.write_member_close(common, archive_name, [rows[item["name"]] for item in locked if item["name"] in rows])
 
@@ -2728,7 +2793,7 @@ def close_members(repo: Path, adopt: Optional[Mapping[str, str]] = None) -> dict
             result = validate_member_integrated(project, name, state.archive, heads[name], check_work_items=False)
             if (result["merge"], result["tag"]) != (row["merge"], row["tag"]):
                 raise ArchiveError(f"member {name} integration differs from its member-close journal")
-            if mode != 'direct':
+            if mode != 'direct' and not result.get("adopted"):
                 result = integrate_member_pull_request(project, name, state.archive, heads[name])
                 row['work_items'] = result.get('work_items')
                 save()
@@ -2743,7 +2808,8 @@ def close_members(repo: Path, adopt: Optional[Mapping[str, str]] = None) -> dict
             result = integrate_member(project, name, state.archive, heads[name],
                                       adopt=(adopt or {}).get(name))
         else:
-            result = integrate_member_pull_request(project, name, state.archive, heads[name])
+            result = integrate_member_pull_request(project, name, state.archive, heads[name],
+                                                   adopt=(adopt or {}).get(name))
         if result.get("status") == "awaiting-merge":
             row["pull_request"] = result["pull_request"]
             save()

@@ -386,7 +386,11 @@ The persisted `STATE.archive` field is the transaction identity.
    `--adopt-landed-member <member>=<live tip SHA>`; the helper then publishes
    the bound branch and an `adopted-landing` milestone tag at that tip and
    makes no merge. A mismatched or stale SHA is refused, and a later rerun
-   validates the adoption without the flag.
+   validates the adoption without the flag. A pull-request member gets the
+   same refusal when its reviewed HEAD reached the default branch through a
+   pull request from another branch (for example an owner-approved smoke PR);
+   the approved adoption opens no PR, since a PR with no difference cannot
+   exist. An open PR from the member's bound branch blocks the adoption.
 5. Only after preflight passes, record shipment through the journaled helper;
    for a program it atomically replaces both ROADMAP.md and STATE.md, setting
    the current entry to `Status: shipped` with the exact `Archive:` pointer:

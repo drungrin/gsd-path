@@ -133,12 +133,12 @@ class MemberIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ArchiveError, "names a different reviewed HEAD"):
             integration.validate_member_integrated(self.root, "web", ARCHIVE, self.main)
 
-        # An adopted-landing tag never closes a pull-request member.
+        # A pull-request member whose landing no milestone PR made closes the same way.
         listed = self.root / ".project/MEMBERS.md"
         listed.write_bytes(re.sub(r"(?m)^Integration: .*$", "Integration: pull-request",
                                   listed.read_text(encoding="utf-8")).encode("utf-8"))
-        with self.assertRaisesRegex(ArchiveError, "not direct-mode"):
-            integration.validate_member_integrated(self.root, "web", ARCHIVE, self.member_tip)
+        self.assertIs(integration.validate_member_integrated(self.root, "web", ARCHIVE, self.member_tip)["adopted"],
+                      True)
 
     def test_merge_success_without_two_parents_cannot_publish(self) -> None:
         run_git = integration.run_git

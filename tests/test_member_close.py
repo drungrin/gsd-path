@@ -156,18 +156,34 @@ class MemberCloseTests(unittest.TestCase):
         journal = json.loads(self.journal.read_text(encoding="utf-8"))
         journal["members"][0]["mode"] = "pull-request"
         self.journal.write_bytes(json.dumps(journal).encode("utf-8"))
-        with self.assertRaisesRegex(ArchiveError, "not direct-mode"):
+        self.assertIs(integration.validate_member_integrated(self.root, "web", ARCHIVE, self.member_tip)["adopted"],
+                      True)
+        journal["members"][0]["mode"] = "external-landing"
+        self.journal.write_bytes(json.dumps(journal).encode("utf-8"))
+        with self.assertRaisesRegex(ArchiveError, "integration external-landing"):
             integration.validate_member_integrated(self.root, "web", ARCHIVE, self.member_tip)
 
-    def test_adoption_flag_names_only_locked_direct_members(self) -> None:
+    def test_adoption_flag_names_only_locked_members(self) -> None:
         with self.assertRaisesRegex(ArchiveError, "not locked in this milestone"):
             integration.close_members(self.root, adopt={"other": "a" * 40})
-        self.set_integration("pull-request")
-        # Refused up front, before any member ref has moved.
-        with self.assertRaisesRegex(ArchiveError, "not a direct-mode member"):
-            integration.close_members(self.root, adopt={"web": self.member_tip})
         self.assertEqual(self.remote_ref("refs/heads/feature/demo-milestone-001"), "")
         self.assertEqual(self.remote_ref(f"refs/tags/{TAG}"), "")
+
+    def test_pull_request_member_receives_its_adoption_and_is_not_reopened(self) -> None:
+        self.set_integration("pull-request")
+        adopted = {"member": "web", "merge": self.member_tip, "tag": TAG, "tag_object": "b" * 40,
+                   "adopted": True}
+        with mock.patch.object(integration, "integrate_member_pull_request", return_value=adopted) as close:
+            result = integration.close_members(self.root, adopt={"web": self.member_tip})
+        close.assert_called_once_with(self.root.resolve(), "web", ARCHIVE, self.member_tip,
+                                      adopt=self.member_tip)
+        row = json.loads(self.journal.read_text(encoding="utf-8"))["members"][0]
+        self.assertEqual((row["status"], row["mode"], row["adopted"]), ("integrated", "pull-request", True))
+        self.assertEqual(result["status"], "integrated")
+        with mock.patch.object(integration, "validate_member_integrated", return_value=adopted), \
+                mock.patch.object(integration, "integrate_member_pull_request",
+                                  side_effect=AssertionError("adopted member reopened")):
+            self.assertEqual(integration.close_members(self.root)["status"], "integrated")
 
     def test_adoption_cli_rejects_a_malformed_member_sha_pair(self) -> None:
         from scripts import archive_milestone
@@ -198,7 +214,7 @@ class MemberCloseTests(unittest.TestCase):
         waiting = {"status": "awaiting-merge", "pull_request": "https://github.com/acme/web/pull/7"}
         with mock.patch.object(integration, "integrate_member_pull_request", return_value=waiting) as opened:
             result = integration.close_members(self.root)
-        opened.assert_called_once_with(self.root.resolve(), "web", ARCHIVE, self.member_tip)
+        opened.assert_called_once_with(self.root.resolve(), "web", ARCHIVE, self.member_tip, adopt=None)
         self.assertEqual((result["status"], result["member"]), ("awaiting-merge", "web"))
         row = json.loads(self.journal.read_text(encoding="utf-8"))["members"][0]
         self.assertEqual((row["status"], row["mode"], row["pull_request"]),

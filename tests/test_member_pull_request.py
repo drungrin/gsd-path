@@ -70,10 +70,11 @@ class MemberPullRequestTests(unittest.TestCase):
         # GitHub lists only the pull requests that target the requested base.
         return reply([[pull for pull in self.pulls if pull["base"]["ref"] == base]])
 
-    def integrate(self) -> dict:
+    def integrate(self, adopt=None) -> dict:
         with mock.patch.object(integration, "github_repository", return_value="acme/web"), \
                 mock.patch.object(integration, "run_command", side_effect=self.gh):
-            return integration.integrate_member_pull_request(self.root, "web", ARCHIVE, self.member_tip)
+            return integration.integrate_member_pull_request(self.root, "web", ARCHIVE, self.member_tip,
+                                                             adopt=adopt)
 
     def github_merge(self, *extra: str) -> str:
         """Merge the pull request on the remote the way GitHub's merge button does."""
@@ -314,6 +315,54 @@ class MemberPullRequestTests(unittest.TestCase):
         with self.assertRaisesRegex(ArchiveError, "closed without merging"):
             self.integrate()
 
+
+    def landed_by_another_pull_request(self) -> str:
+        """The reviewed HEAD reached main through a merged PR from another branch (a smoke PR)."""
+        git(self.remote, "fetch", "-q", str(self.member), self.member_tip)
+        git(self.remote, "update-ref", "refs/heads/main", self.member_tip)
+        self.pulls.append({"number": 5, "state": "closed", "html_url": "https://github.com/acme/web/pull/5",
+                           "merged_at": "2026-11-09T00:00:00Z", "merge_commit_sha": self.member_tip,
+                           "title": "ci: smoke", "body": "smoke",
+                           "base": {"ref": "main", "sha": self.main},
+                           "head": {"ref": "smoke/m001", "sha": self.member_tip,
+                                    "repo": {"full_name": "acme/web"}}})
+        return self.member_tip
+
+    def test_head_landed_by_another_pull_request_requires_adoption(self) -> None:
+        tip = self.landed_by_another_pull_request()
+        with self.assertRaisesRegex(ArchiveError, f"outside Path.*--adopt-landed-member web={tip}"):
+            self.integrate()
+        self.assertEqual(self.posts, [])
+        self.assertEqual(self.remote_ref("refs/heads/feature/demo-milestone-001"), "")
+        self.assertEqual(self.remote_ref(f"refs/tags/{TAG}"), "")
+
+    def test_adoption_tags_the_landing_without_opening_a_pull_request(self) -> None:
+        tip = self.landed_by_another_pull_request()
+        result = self.integrate(adopt=tip)
+        self.assertEqual((result["merge"], result["tag"], result["adopted"]), (tip, TAG, True))
+        self.assertEqual(self.posts, [])
+        self.assertEqual(self.remote_ref("refs/heads/feature/demo-milestone-001"), self.member_tip)
+        self.assertEqual(self.remote_ref(f"refs/tags/{TAG}^{{commit}}"), tip)
+        message = git(self.remote, "for-each-ref", "--format=%(contents)", f"refs/tags/{TAG}")
+        self.assertIn("Mode: adopted-landing", message)
+        self.assertEqual(integration.validate_member_integrated(self.root, "web", ARCHIVE, self.member_tip), result)
+        self.assertEqual(self.integrate(adopt=tip)["merge"], tip)
+        self.assertEqual(self.posts, [])
+
+    def test_adoption_refuses_a_wrong_tip_an_unlanded_head_and_an_open_milestone_pr(self) -> None:
+        with self.assertRaisesRegex(ArchiveError, "has not reached origin/main"):
+            self.integrate(adopt=self.main)
+        self.assertEqual(self.remote_ref(f"refs/tags/{TAG}"), "")
+        self.integrate()  # the milestone's own PR is now open
+        self.landed_by_another_pull_request()
+        self.pulls.pop()
+        with self.assertRaisesRegex(ArchiveError, "is still open"):
+            self.integrate(adopt=self.member_tip)
+        self.pulls[0].update(state="closed")
+        self.pulls.clear()
+        with self.assertRaisesRegex(ArchiveError, "names " + self.main):
+            self.integrate(adopt=self.main)
+        self.assertEqual(self.remote_ref(f"refs/tags/{TAG}"), "")
 
 class MasterMemberPullRequestTests(unittest.TestCase):
     """Pull-request member close on a member whose recorded default branch is master."""
