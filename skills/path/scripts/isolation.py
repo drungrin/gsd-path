@@ -397,6 +397,13 @@ def _read_collect_journal(path: Path) -> Dict[str, object]:
     return payload
 
 
+def _valid_expected_destination(value: object) -> bool:
+    """None, the literal ``base``, or the SHA-256 of an existing destination."""
+    return value is None or value == "base" or bool(
+        isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+    )
+
+
 def _validated_collect_journal(
     primary: Path,
     path: Path,
@@ -456,10 +463,10 @@ def _validated_collect_journal(
     previous = journal.get("previous_sha256")
     if previous is not None and not re.fullmatch(r"[0-9a-f]{64}", str(previous)):
         raise IsolationError("artifact collection journal has invalid previous hash")
-    expected = journal.get("expected_destination")
-    if expected is not None and expected != "base" and not re.fullmatch(
-        r"[0-9a-f]{64}", str(expected)
-    ):
+    # A finished record written before the request was validated is inert history.
+    if not _valid_expected_destination(journal.get("expected_destination")) and journal.get(
+        "stage"
+    ) != "complete":
         raise IsolationError("artifact collection journal has invalid expected destination")
     if journal.get("primary_worktree") != str(primary) and not (
         allow_complete_from_other_worktree and journal["stage"] == "complete"
@@ -5337,6 +5344,11 @@ def collect_artifact(
 
     if expected_source is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_source):
         raise IsolationError("expected artifact source must be a SHA-256")
+    if not _valid_expected_destination(expected_destination):
+        raise IsolationError(
+            "expected artifact destination must be the literal base or the SHA-256 "
+            "of the existing destination file, not a commit"
+        )
 
     primary = require_directory(primary, "primary worktree")
     source = require_directory(source, "source worktree")
@@ -8208,7 +8220,8 @@ def parser() -> argparse.ArgumentParser:
     collect_parser.add_argument("--destination-path", required=True)
     collect_parser.add_argument(
         "--expected-destination",
-        help="base or the recorded SHA-256 of an existing destination",
+        help="the literal base, or the recorded SHA-256 of the existing destination file "
+        "(never a commit SHA)",
     )
     collect_parser.add_argument("--expected-source", help="SHA-256 recorded when the report was staged")
 

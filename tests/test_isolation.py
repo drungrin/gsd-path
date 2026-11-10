@@ -1964,6 +1964,54 @@ class IsolationTests(unittest.TestCase):
             with self.assertRaisesRegex(isolation.IsolationError, "invalid verify branch"):
                 isolation.collect_artifact_recoveries(repo)
 
+    def test_collect_artifact_refuses_a_commit_as_expected_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            isolated = isolation.isolate_verify(repo, base, "review-final")
+            source = Path(isolated["worktree"])
+            self.write(source, ".project/review/FINAL.md", "reviewed\n")
+            journals = (Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+                        / "gsd-path" / "collect-artifact")
+            for value in (base, "BASE", ""):
+                with self.subTest(value=value), self.assertRaisesRegex(
+                        isolation.IsolationError, "expected artifact destination must be"):
+                    isolation.collect_artifact(
+                        repo, source, base, isolated["branch"],
+                        ".project/review/FINAL.md", ".project/review/FINAL.md", value,
+                    )
+            self.assertFalse(journals.exists() and any(journals.iterdir()))
+            self.assertFalse((repo / ".project/review/FINAL.md").exists())
+
+    def test_complete_collect_journal_with_a_commit_expectation_is_inert_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            base = self.init_bound_repo(repo)
+            isolated = isolation.isolate_verify(repo, base, "review-final")
+            source = Path(isolated["worktree"])
+            self.write(source, ".project/review/FINAL.md", "reviewed\n")
+            isolation.collect_artifact(
+                repo, source, base, isolated["branch"],
+                ".project/review/FINAL.md", ".project/review/FINAL.md",
+            )
+            journals = sorted(
+                (Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+                 / "gsd-path" / "collect-artifact").glob("*.json")
+            )
+            journal = json.loads(journals[0].read_text(encoding="utf-8"))
+            self.assertEqual(journal["stage"], "complete")
+            journal["expected_destination"] = base  # written by a runtime that did not validate it
+            journals[0].write_text(json.dumps(journal), encoding="utf-8")
+
+            self.assertEqual(isolation.collect_artifact_recoveries(repo), [])
+
+            journal["stage"] = "collected"
+            journals[0].write_text(json.dumps(journal), encoding="utf-8")
+            with self.assertRaisesRegex(isolation.IsolationError, "invalid expected destination"):
+                isolation.collect_artifact_recoveries(repo)
+
     def test_collect_artifact_rejects_extra_sidecar_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "repo"

@@ -2731,10 +2731,11 @@ def main(argv=None) -> int:
                         raise DriverStop(f"task {arguments.task_id} still has a running child")
                     if record.get("command"):
                         raise DriverStop(f"task {arguments.task_id} still has a running child")
-                    live = state_from_task(primary, arguments.task_id)
-                    merged = dict(record, **live)
-                    merged["_path"] = record["_path"]
                     try:
+                        # A retired or reset isolate still settles its record, so recovery can enter.
+                        live = state_from_task(primary, arguments.task_id)
+                        merged = dict(record, **live)
+                        merged["_path"] = record["_path"]
                         landing = finish_task(primary, merged)
                     except STOP_ERRORS as error:
                         update_state(record, outcome="blocked", reason=str(error))

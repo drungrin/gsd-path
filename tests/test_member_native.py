@@ -203,6 +203,30 @@ class NativeMemberDispatchTests(unittest.TestCase):
         self.assertIn("coder: wrote wrong", record)
         self.assertIn("orchestrator Verify (isolate chore/task-acme-t001): fail", record)
 
+    def test_finish_settles_the_record_of_a_member_sidecar_retired_before_finish(self) -> None:
+        from scripts import build_recovery
+
+        first = self.attempt("wrong\n")
+        self.record_rejection(first)
+        retired = self.retire("--force")
+        self.assertEqual(retired.returncode, 0, retired.stderr)
+        records = build_recovery.records_root(self.coordinator)
+        with self.assertRaisesRegex(Exception, "settle dispatch records before recovery"):
+            build_recovery._settle_build_dispatch(self.coordinator)
+
+        refused = call(*self.finish_command())
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("has no activated live copy", refused.stdout + refused.stderr)
+        record = json.loads(next(records.rglob("attempt-*/state.json")).read_text(encoding="utf-8"))
+        self.assertEqual(record["outcome"], "blocked")
+        self.assertIn("has no activated live copy", record["reason"])
+        build_recovery._settle_build_dispatch(self.coordinator)
+
+        second = self.attempt("v2\n")
+        self.assertTrue(Path(second["worktree"]).is_dir())
+        finished = run(*self.finish_command())
+        self.assertEqual(finished["status"], "landed", finished)
+
     AUTH_REF = "refs/gsd-path/task-authorizations/acme-T001"
 
     def finish_command(self) -> tuple:
