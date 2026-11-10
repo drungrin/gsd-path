@@ -35,7 +35,10 @@ a commit that is an ancestor of `origin/main`.
    moved: rerun preview, do not invent a SHA.
 5. **Report.** **Outcome** is `status: applied` plus the new STATE phase/status.
    **Review** links STATE.md. **Next** names `$gsd-path status` to inspect
-   without advancing.
+   without advancing. An uncommitted ship archive undo also restores the
+   lessons that ship appended to `.project/LESSONS.md` (each line begins
+   `- <archive name> — `); the result's `dropped_lessons` lists them for the
+   next ship to append again. Any other LESSONS.md change blocks.
 
 ## Rules
 
