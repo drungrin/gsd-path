@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.45**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.46**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,59 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.46 — 2026-11-10
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 45 to 46.
+
+Fix:
+- [`570523ec — adopt a pull-request member landing made by another PR`](https://github.com/drungrin/gsd-path/commit/570523ec0cd7ebdda2e247501f68998f388c2b12)
+  — applies upstream: upstream allows `--adopt-landed-member` only for
+  direct-mode members and matches the other PR by head SHA the same way. The
+  commit does not apply to upstream main as is, because this fork's
+  `integrate_member_pull_request` also carries Azure Repos, editorial
+  publication and the pending-PR advance; an upstream submission needs a
+  port onto upstream's GitHub-only function.
+
+### A member landing made by an owner-approved PR from another branch
+
+- In a coordinator milestone, the owner ruled that five members merge a smoke
+  PR (`smoke/<milestone>`) during build, so the OIDC checks could run from the
+  default branch. In four members that PR carried the reviewed HEAD itself,
+  or a merge commit on top of it. At ship, `close-members` looked up the
+  member PR by the reviewed HEAD's SHA, found the merged smoke PR, and
+  refused with "GitHub pull request head is not the bound branch". A PR from
+  the bound branch could not exist, because it would have no difference.
+  `--adopt-landed-member`, which handles a reviewed HEAD that reached the
+  default branch outside Path (#458), refused every pull-request member.
+- A pull-request member whose reviewed HEAD is on the default branch, with no
+  milestone tag and no merged PR from its bound branch, now gets the
+  direct-mode refusal that names `--adopt-landed-member <member>=<live tip>`.
+  With that user-approved flag, close-members publishes the bound branch and
+  an `adopted-landing` tag at the tip and opens no PR. Validation accepts the
+  tag for pull-request members, and a rerun does not reopen the member. An
+  open PR from the bound branch, a wrong tip, or an unlanded head still
+  refuses. A merged PR from the bound branch keeps the ordinary path.
+
+Validation: the new tests fail on the previous code (21 failures and errors
+across three modules) and pass with the fix. They cover the refusal that
+names the adoption, an adoption that opens no PR and revalidates, a wrong
+tip, an unlanded head, an open milestone PR, the flag reaching a
+pull-request member, and an adopted row that is not reopened. Two existing
+tests that asserted the direct-only rule now assert the new behavior. The
+full Python suite passed in eight parallel shards (3,772 tests, 41
+skipped). The daemon suite passed (496 tests, 13 skipped), Node tests passed
+(118, one skipped), resource synchronization checked 556 resources, and the
+lock check passed.
+
+Limits:
+- An adopted pull-request member records no milestone PR. Human review of
+  that code happened in the other PR, which the owner approved.
+- A member whose other PR was a squash merge does not qualify, because its
+  reviewed HEAD is not on the default branch; it closes through an ordinary
+  PR that may repeat the squashed commits.
+- No upstream submission has been made.
 
 ## 1.7.1.45 — 2026-11-10
 
