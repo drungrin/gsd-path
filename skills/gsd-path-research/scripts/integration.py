@@ -2308,6 +2308,83 @@ def _advance_adopted_member_source(
         raise ArchiveError(f"member rebase publication proof failed: {error}") from error
 
 
+def _pending_close_row(coordinator: Path, archive_path: str, member: str) -> Optional[dict]:
+    """This member's row in the archive's member-close journal, if any."""
+    try:
+        import members
+    except ImportError:  # pragma: no cover - package import used by tests
+        from scripts import members
+    common = Path(archive_milestone.require_git_success(
+        run_git(coordinator, "rev-parse", "--path-format=absolute", "--git-common-dir"), "resolve Git common dir"))
+    try:
+        rows = members.read_member_close(common, PurePosixPath(archive_path).name)
+    except members.MembersError as error:
+        raise ArchiveError(str(error)) from error
+    return next((row for row in rows if row.get("name") == member), None)
+
+
+def pending_close_can_advance(checkout: Path, row: dict, new_head: str) -> bool:
+    """A pending pull-request close whose source can move to a descendant of its reviewed HEAD.
+
+    It covers a re-ship after an undone uncommitted archive: the open PR keeps its
+    source until fresh final review names a later member head on the same lineage.
+    """
+    return (
+        row.get("mode") == "pull-request" and row.get("status") == "pending"
+        and row.get("merge") is None and row.get("tag") is None
+        and isinstance(row.get("pull_request"), str) and bool(row["pull_request"])
+        and isinstance(row.get("reviewed_head"), str) and row["reviewed_head"] != new_head
+        and run_git(checkout, "merge-base", "--is-ancestor", row["reviewed_head"], new_head).returncode == 0
+    )
+
+
+def _advance_pending_member_source(
+    coordinator: Path, member: str, archive_path: str, reviewed_head: str,
+    checkout: Path, project: str, bound: str, default: str, repository: Optional[PullRequestRepository],
+) -> None:
+    """Lease-publish proven repair landings onto the open PR of a rebound pending close.
+
+    close-members records `previous_reviewed_head` when it rebinds the row. The
+    published source must still be that head, the PR must be the recorded one,
+    open and unmerged, and every new commit must be a canonical task landing.
+    """
+    if __package__:
+        from . import isolation
+    else:
+        import isolation
+    row = _pending_close_row(coordinator, archive_path, member)
+    previous = row.get("previous_reviewed_head") if row else None
+    if not previous or row.get("reviewed_head") != reviewed_head or row.get("status") != "pending":
+        return
+    remote = live_remote_ref(checkout, f"refs/heads/{bound}")
+    if remote == reviewed_head:
+        return
+    if remote != previous:
+        raise ArchiveError(f"member {member} origin/{bound} moved: {remote}")
+    if repository is None:
+        raise ArchiveError("a pending member PR cannot switch to direct integration")
+    try:
+        commits = isolation._linear_member_range(checkout, previous, reviewed_head)
+        paths = sorted((coordinator / archive_path / "tasks").glob("*.md"))
+        if not paths:
+            raise ArchiveError("pending member source advance requires its archived task landing proofs")
+        proof = isolation.verify_landed_task_files(coordinator, paths, ".project/tasks",
+                                                    isolation.current_sha(coordinator))
+    except isolation.IsolationError as error:
+        raise ArchiveError(f"pending member source advance proof failed: {error}") from error
+    landings = {row_["landing"] for row_ in proof["tasks"] if row_.get("member") == member and row_.get("landing")}
+    if not commits or any(commit not in landings for commit in commits):
+        raise ArchiveError("member PR source advance contains an unproven repair commit")
+    publication(coordinator, archive_path, member, reviewed_head)
+    pull = find_pull_request(repository, bound, previous, default)
+    if pull is None or pull["html_url"] != row["pull_request"]:
+        raise ArchiveError("the pending member close's original PR is missing or changed")
+    if pull["state"] != "open" or pull["merged_at"] is not None:
+        raise ArchiveError("cannot advance the source of a completed or abandoned member PR")
+    require_pull_request_merge_provenance(repository, pull["number"])
+    _push_member_ref(checkout, project, reviewed_head, f"refs/heads/{bound}", reviewed_head, previous)
+
+
 def integrate_member_pull_request(coordinator: Path, member: str, archive_path: str, reviewed_head: str) -> dict:
     """Pull-request member close: open one PR for the bound branch; after a human merge, tag it."""
     checkout, project, bound, subject, tag_name, default = _member_names(coordinator, member, archive_path)
@@ -2315,6 +2392,8 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
     _require_member_close(checkout, member, bound, reviewed_head, default)
     repository = pull_request_repository(checkout)
     _advance_adopted_member_source(coordinator, member, archive_path, reviewed_head,
+                                   checkout, project, bound, default, repository)
+    _advance_pending_member_source(coordinator, member, archive_path, reviewed_head,
                                    checkout, project, bound, default, repository)
     pull = find_pull_request(repository, bound, reviewed_head, default)
     try:
@@ -2638,6 +2717,10 @@ def close_members(repo: Path, adopt: Optional[Mapping[str, str]] = None) -> dict
                     valid = not run_git(checkout, "merge-base", "--is-ancestor", row["reviewed_head"], heads[name]).returncode
                 except isolation.IsolationError:
                     valid = False
+            if not valid and not prior and mode != "direct":
+                # A re-ship after an undone uncommitted archive keeps the open PR.
+                checkout, _ = isolation.member_checkout(project, name)
+                valid = pending_close_can_advance(checkout, row, heads[name])
             if not valid:
                 raise ArchiveError(f"member-close journal for {name} differs from FINAL.md; no adoption proves a pending-PR rebind")
             row = dict(row, previous_reviewed_head=row["reviewed_head"], reviewed_head=heads[name])

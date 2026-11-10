@@ -84,6 +84,13 @@ so the position is unchanged. Then:
    only proven repair landings beyond the adopted tip. It must reuse the same
    PR; a completed, abandoned, missing, or changed PR blocks recovery rather
    than creating another one or treating its old source as newly verified.
+   Without an adoption, an archive undone while a member PR is still open
+   (for example a red required check fixed through plan patch mode) keeps
+   that pending close too. When fresh FINAL names a member reviewed HEAD that
+   descends from the pending row's head, `close-members` rebinds the row,
+   records `previous_reviewed_head`, and lease-publishes the new head onto
+   the same open, unmerged PR only when the published source is still the
+   previous head and every new commit is a proven task landing.
    Keep bookkeeping in STATE.md
    and assigned artifacts; never create extra `.project/` execution reports. Reuse an output only when its
    `Reviewed HEAD` equals that SHA and the complete numbered gap-risk mapping

@@ -786,6 +786,68 @@ class PendingOpenMemberCloseTests(MemberRebaseFixture):
         with mock.patch.object(integration.archive_milestone, "strict_state", return_value=(state, None, None)):
             return integration.close_members(self.coordinator)
 
+    def test_undone_archive_repair_lease_advances_the_same_pr_without_adoption(self) -> None:
+        from tests._editorial_fixtures import publication_fixture
+        archive, repaired = self.repaired_archive()
+        with self.assertRaises(integration.ArchiveError):
+            self.close(archive)  # no fresh editorial publication for the repaired head yet
+        self.assertEqual(self.remote_ref("refs/heads/" + BOUND), self.old_tip)
+        publication_fixture(self.coordinator, archive, "web", repaired, self.azure_url)
+        with mock.patch.object(integration, "_push_member_ref", wraps=integration._push_member_ref) as publish:
+            waiting = self.close(archive)
+            self.assertEqual((waiting["status"], waiting["pull_request"]), ("awaiting-merge", self.pr_url))
+            self.assertEqual(self.close(archive)["pull_request"], self.pr_url)
+            self.assertEqual(publish.call_count, 1)
+            self.assertEqual(publish.call_args.args[-1], self.old_tip)
+        self.assertEqual(self.remote_ref("refs/heads/" + BOUND), repaired)
+        closed = members.read_member_close(isolation.common_git_dir(self.coordinator), "001-demo")[0]
+        self.assertEqual((closed["reviewed_head"], closed["previous_reviewed_head"], closed["status"],
+                          closed["pull_request"]), (repaired, self.old_tip, "pending", self.pr_url))
+        self.assertFalse(any(call[:3] == ("repos", "pr", "create") for call in self.calls))
+
+    def test_unadopted_advance_refuses_an_unproven_tail(self) -> None:
+        from tests._editorial_fixtures import publication_fixture
+        archive, _ = self.repaired_archive()
+        (self.bound / "unowned.py").write_text("not a task landing\n", encoding="utf-8")
+        git(self.bound, "add", "-A")
+        git(self.bound, "commit", "-q", "-m", "chore: unowned change")
+        tip = self.bound_tip()
+        (self.coordinator / archive / "review/FINAL.md").write_text(
+            f"Reviewed HEAD: {git(self.coordinator, 'rev-parse', 'HEAD')}\n"
+            f"Member reviewed HEAD: web {tip}\n", encoding="utf-8")
+        publication_fixture(self.coordinator, archive, "web", tip, self.azure_url)
+        with self.assertRaisesRegex(integration.ArchiveError, "unproven repair commit"):
+            self.close(archive)
+        self.assertEqual(self.remote_ref("refs/heads/" + BOUND), self.old_tip)
+
+    def test_unadopted_advance_refuses_a_moved_source_or_a_closed_pr(self) -> None:
+        from tests._editorial_fixtures import publication_fixture
+        archive, repaired = self.repaired_archive()
+        publication_fixture(self.coordinator, archive, "web", repaired, self.azure_url)
+        original = json.loads(json.dumps(self.pr))
+        for status in ("abandoned", "completed"):
+            with self.subTest(status=status):
+                self.pr.update(status=status, closedDate="2026-10-19T00:00:00Z", mergeStatus="succeeded",
+                               lastMergeCommit={"commitId": "a" * 40})
+                with self.assertRaisesRegex(integration.ArchiveError, "completed or abandoned"):
+                    self.close(archive)
+                self.assertEqual(self.remote_ref("refs/heads/" + BOUND), self.old_tip)
+        self.pr.clear()
+        self.pr.update(original)
+        git(self.member, "push", "-q", "-f", "origin", f"{self.onto}:refs/heads/{BOUND}")
+        with self.assertRaisesRegex(integration.ArchiveError, "moved"):
+            self.close(archive)
+        self.assertEqual(self.remote_ref("refs/heads/" + BOUND), self.onto)
+
+    def test_a_head_off_the_pending_lineage_is_not_rebound(self) -> None:
+        archive, _ = self.repaired_archive()
+        (self.coordinator / archive / "review/FINAL.md").write_text(
+            f"Reviewed HEAD: {git(self.coordinator, 'rev-parse', 'HEAD')}\n"
+            f"Member reviewed HEAD: web {self.onto}\n", encoding="utf-8")
+        with self.assertRaisesRegex(integration.ArchiveError, "no adoption proves a pending-PR rebind"):
+            self.close(archive)
+        self.assertEqual(self.close_path.read_bytes(), self.close_before)
+
     def test_define_refuses_without_clearing_the_pending_live_close(self) -> None:
         before = self.snapshot()
         with self.assertRaises(isolation.MemberRebaseError) as error:

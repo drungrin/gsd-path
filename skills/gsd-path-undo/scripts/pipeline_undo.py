@@ -553,6 +553,30 @@ def _ship_lessons(repo: Path, archive: str) -> Optional[list[str]]:
     return [line.rstrip("\n") for line in lines]
 
 
+def _publication_directory(archive: str) -> str:
+    """Untracked editorial copy `pr_editorial.py prepare` wrote for this archive."""
+    return f".project/publications/{PurePosixPath(_normalize_archive(archive)).name}"
+
+
+def _owned_publications(repo: Path, archive: str, dirty: Sequence[str]) -> Optional[set[str]]:
+    """Dirty paths of this archive's uncommitted publication copies, or None when unproven."""
+    directory = _publication_directory(archive)
+    paths = {path for path in dirty if path == directory or path.startswith(f"{directory}/")}
+    if not paths:
+        return set()
+    if _archive_in_head(repo, directory):
+        return None
+    root = repo / directory
+    if root.is_symlink() or not root.is_dir():
+        return None
+    for path in root.rglob("*"):
+        relative = path.relative_to(root)
+        if (path.is_symlink() or len(relative.parts) != 1 or not path.is_file()
+                or path.suffix != ".json"):
+            return None
+    return paths
+
+
 def _archive_metadata_error(
     repo: Path,
     state_fields: dict[str, object],
@@ -581,6 +605,9 @@ def _archive_metadata_error(
         allowed.add(".project/ROADMAP.md")
     if ".project/LESSONS.md" in dirty and _ship_lessons(repo, configured) is not None:
         allowed.add(".project/LESSONS.md")
+    publications = _owned_publications(repo, configured, dirty)
+    if publications:
+        allowed.update(publications)
     unowned = sorted(
         path
         for path in dirty
@@ -827,6 +854,9 @@ def _post_reset_recovery_error(
                 for path in archive_path.rglob("*")
                 if path.is_file()
             )
+        publications = _owned_publications(repo, archive, sorted(dirty))
+        if publications:
+            allowed.update(publications)
         if ".project/LESSONS.md" in dirty and _ship_lessons(repo, archive) is not None:
             allowed.add(".project/LESSONS.md")
     unexpected = sorted(dirty - allowed)
@@ -933,6 +963,9 @@ def _finish_transaction_locked(repo: Path, transaction: dict[str, object]) -> No
                 and not _archive_in_head(repo, ".project/LESSONS.md")
                 and _ship_lessons(repo, archive) is not None):
             lessons.unlink()
+        publications = _publication_directory(archive)
+        if (repo / publications).exists() and not _archive_in_head(repo, publications):
+            _remove_untracked_tree(repo, publications)
     path = _git_path(repo, UNDO_TRANSACTION_NAME)
     path.unlink()
     pipeline_state._common.fsync_directory(path.parent)
@@ -1002,6 +1035,11 @@ def classify_undo(repo: Path) -> dict[str, object]:
                         [f"restore .project/LESSONS.md to HEAD, dropping {len(lessons)} lesson(s) "
                          "this ship appended; ship appends them again"]
                         if (lessons := _ship_lessons(resolved, archive_path)) and ".project/LESSONS.md" in dirty
+                        else []
+                    ),
+                    *(
+                        [f"delete untracked {_publication_directory(archive_path)}"]
+                        if (repo_publications := _owned_publications(resolved, archive_path, dirty))
                         else []
                     ),
                 ],
