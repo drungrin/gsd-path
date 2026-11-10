@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.44**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.45**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,71 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.45 — 2026-11-10
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 44 to 45.
+
+Fixes:
+- [`c26bbc9c — undo the lessons a ship appended with its uncommitted archive`](https://github.com/drungrin/gsd-path/commit/c26bbc9ce93ffc2576ad3359a373e5640bdf7fcf)
+  — applies upstream: upstream `pipeline_undo.py` refuses the same
+  LESSONS.md change. The code and docs apply to upstream main cleanly; the
+  test class conflicts only on the fork's neighbouring tests at the end of
+  the file and passes on upstream code once appended there.
+- [`c9eac8b6 — reship onto the same open member PR after an undone archive`](https://github.com/drungrin/gsd-path/commit/c9eac8b6289415f77c0f768eac805287cff3d9b4)
+  — fork-only: the editorial publications and the pending-PR rebind exist
+  only in the fork.
+
+### A red member PR check cannot go back to patch
+
+- In a coordinator project, `close-members` opened the member PR before the
+  ship commit, and its required CI check failed on a timing test the
+  milestone had added. The owner chose to fix the test through the pipeline
+  and keep the same PR. Undo of the uncommitted archive refused:
+  `archive undo found unowned .project changes: .project/LESSONS.md,
+  .project/publications/<archive>/<member>.json`. Ship step 3 writes the
+  lessons, and `pr_editorial.py prepare` writes the publication, both before
+  close-members. Upstream's undo refuses the lessons the same way.
+- Even with undo unblocked, the re-ship would stop at close-members: the
+  pending journal row names the old member head, and only a member rebase
+  adoption could rebind it to the fresh FINAL head.
+- Upstream #574 (`abandon-integration`, not in this fork) covers a different
+  case: the coordinator's own PR after the ship commit. It closes that PR,
+  and the re-ship opens a new one.
+- Archive undo now owns LESSONS.md when the only change since HEAD is
+  appended lines that start with `- <archive name> — `. It restores the
+  file, removes it when the ship created it, and returns the dropped lines
+  as `dropped_lessons`. It also deletes the archive's untracked
+  `.project/publications/<archive name>/*.json`. Any other change to either
+  path still blocks without mutation.
+- close-members rebinds a pending pull-request row when fresh FINAL names a
+  member head that descends from the row's head. It records
+  `previous_reviewed_head` and lease-publishes the new head onto the same
+  open, unmerged PR only when the published source is still the previous
+  head, the PR is the recorded one without auto-complete, and every new
+  commit is a proven task landing. A moved source, a closed or completed
+  PR, an unproven commit, or a head off that lineage refuses.
+
+Validation: the new tests fail on the previous code (seven failures and
+errors across the three test groups) and pass with the fixes. They cover
+appended lessons with and without a LESSONS.md at HEAD, five other
+LESSONS.md edits that block, the archive's publication copy, three
+publication changes that block and an edited committed publication, the
+same-PR advance, an unproven tail, abandoned and completed PRs, a moved
+source, and a head off the pending lineage. A read-only undo preview against
+the blocked consumer state now returns the archive undo with both effects.
+The full Python suite passed in eight parallel shards (3,768 tests, 41
+skipped). The daemon suite passed (496 tests, 13 skipped), Node tests passed
+(118, one skipped), resource synchronization checked 556 resources, and the
+lock check passed.
+
+Limits:
+- Azure may report the old PR source commit for a moment after the push;
+  rerun close-members if its identity check refuses right after publishing.
+- The dropped lessons must be appended again at re-ship; the runtime does
+  not keep them.
+- No upstream submission has been made.
 
 ## 1.7.1.44 — 2026-11-08
 
