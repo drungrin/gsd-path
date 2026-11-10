@@ -1132,5 +1132,71 @@ class ApprovalLensUndoTests(unittest.TestCase):
             self.assertEqual(pipeline_undo.preview(repo)["target"]["kind"], "checkpoint")
 
 
+
+class ShipLessonsUndoTests(unittest.TestCase):
+    """Ship step 3 appends lessons before the archive commits; undo owns exactly those lines."""
+
+    ARCHIVE = ".project/archive/001-first"
+
+    def prepared(self, root: Path, head_lessons: str | None) -> Path:
+        repo = init_repo(root)
+        project = repo / ".project"
+        intent = project / "intent"
+        intent.mkdir(parents=True)
+        (project / "STATE.md").write_bytes(state_text(phase="ship", status="active").encode("utf-8"))
+        (intent / "INTENT.md").write_bytes("# Intent — first\n".encode("utf-8"))
+        if head_lessons is not None:
+            (project / "LESSONS.md").write_bytes(head_lessons.encode("utf-8"))
+        run_git(repo, "add", ".project")
+        run_git(repo, "commit", "-m", "fixture: ship active")
+        archived_intent = repo / self.ARCHIVE / "intent"
+        archived_intent.mkdir(parents=True)
+        (intent / "INTENT.md").replace(archived_intent / "INTENT.md")
+        intent.rmdir()
+        (project / "STATE.md").write_bytes(
+            state_text(phase="ship", status="active", archive=f"{self.ARCHIVE}/").encode("utf-8"))
+        return repo
+
+    def test_appended_lessons_are_undone_with_the_archive_and_returned(self) -> None:
+        for head_lessons in ("# Lessons\n\n- 000-zero — an older lesson\n", None):
+            with self.subTest(head_lessons=head_lessons), tempfile.TemporaryDirectory() as tmp:
+                repo = self.prepared(Path(tmp), head_lessons)
+                lessons = repo / ".project" / "LESSONS.md"
+                added = ["- 001-first — Repeat offender T001 AC1: café", "- 001-first — Escalation (ship): x"]
+                lessons.write_bytes(((head_lessons or "") + "".join(f"{line}\n" for line in added)).encode("utf-8"))
+
+                previewed = pipeline_undo.preview(repo)
+                self.assertEqual(previewed["target"]["kind"], "uncommitted-archive")
+                self.assertTrue(any("LESSONS.md" in effect and "2 lesson" in effect
+                                    for effect in previewed["target"]["effects"]))
+                result = pipeline_undo.apply_undo(repo, "uncommitted-archive", previewed["target"]["head"])
+                self.assertEqual(result["dropped_lessons"], added)
+                if head_lessons is None:
+                    self.assertFalse(lessons.exists())
+                else:
+                    self.assertEqual(lessons.read_text(encoding="utf-8"), head_lessons)
+                self.assertFalse((repo / self.ARCHIVE).exists())
+                self.assertIsNone(pipeline_state.load_state(repo)[0].archive)
+
+    def test_other_lessons_changes_block_without_mutation(self) -> None:
+        head = "- 000-zero — an older lesson\n"
+        for current in (
+            "- 000-zero — an edited lesson\n",
+            head + "- 002-other — another milestone\n",
+            head + "free text\n",
+            head + "- 001-first — \n",
+            head + "- 001-first — no final newline",
+        ):
+            with self.subTest(current=current), tempfile.TemporaryDirectory() as tmp:
+                repo = self.prepared(Path(tmp), head)
+                lessons = repo / ".project" / "LESSONS.md"
+                lessons.write_bytes(current.encode("utf-8"))
+                previewed = pipeline_undo.preview(repo)
+                self.assertIsNone(previewed["target"]["kind"])
+                self.assertIn(".project/LESSONS.md", previewed["target"]["blocked"][0])
+                self.assertEqual(lessons.read_text(encoding="utf-8"), current)
+                self.assertTrue((repo / self.ARCHIVE).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

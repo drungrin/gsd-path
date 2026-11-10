@@ -522,6 +522,37 @@ def _owned_ship_log_events(
     return separator + "".join(ship_events) if ship_events else ""
 
 
+def _ship_lessons(repo: Path, archive: str) -> Optional[list[str]]:
+    """Lessons this ship appended to LESSONS.md, or None when the file holds other changes.
+
+    Ship step 3 appends `- <archive name> — <lesson>` lines to the active LESSONS.md
+    before the archive commits; everything before them must equal HEAD byte for byte.
+    """
+    path = repo / ".project" / "LESSONS.md"
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        head_text = _git_text(repo, "HEAD", ".project/LESSONS.md")
+    except UndoError:
+        head_text = ""
+    current = path.read_bytes().decode("utf-8")
+    if not current.startswith(head_text):
+        return None
+    suffix = current[len(head_text):]
+    if head_text and not head_text.endswith("\n"):
+        if not suffix.startswith("\n"):
+            return None
+        suffix = suffix[1:]
+    lines = suffix.splitlines(keepends=True)
+    prefix = f"- {PurePosixPath(_normalize_archive(archive)).name} — "
+    if not lines or "".join(lines) != suffix or any(
+        not line.startswith(prefix) or not line.endswith("\n") or not line[len(prefix):].strip()
+        for line in lines
+    ):
+        return None
+    return [line.rstrip("\n") for line in lines]
+
+
 def _archive_metadata_error(
     repo: Path,
     state_fields: dict[str, object],
@@ -548,6 +579,8 @@ def _archive_metadata_error(
     }
     if state_fields.get("phase") == "shipped":
         allowed.add(".project/ROADMAP.md")
+    if ".project/LESSONS.md" in dirty and _ship_lessons(repo, configured) is not None:
+        allowed.add(".project/LESSONS.md")
     unowned = sorted(
         path
         for path in dirty
@@ -794,6 +827,8 @@ def _post_reset_recovery_error(
                 for path in archive_path.rglob("*")
                 if path.is_file()
             )
+        if ".project/LESSONS.md" in dirty and _ship_lessons(repo, archive) is not None:
+            allowed.add(".project/LESSONS.md")
     unexpected = sorted(dirty - allowed)
     if unexpected:
         return "undo recovery found unowned worktree changes: " + ", ".join(unexpected)
@@ -892,6 +927,12 @@ def _finish_transaction_locked(repo: Path, transaction: dict[str, object]) -> No
     archive = transaction.get("archive")
     if isinstance(archive, str) and not _archive_in_head(repo, archive):
         _remove_untracked_tree(repo, archive)
+    if isinstance(archive, str):
+        lessons = repo / ".project" / "LESSONS.md"
+        if (lessons.is_file() and not lessons.is_symlink()
+                and not _archive_in_head(repo, ".project/LESSONS.md")
+                and _ship_lessons(repo, archive) is not None):
+            lessons.unlink()
     path = _git_path(repo, UNDO_TRANSACTION_NAME)
     path.unlink()
     pipeline_state._common.fsync_directory(path.parent)
@@ -957,6 +998,12 @@ def classify_undo(repo: Path) -> dict[str, object]:
                 "effects": [
                     "restore tracked .project/ files to HEAD",
                     f"delete untracked {archive_path}",
+                    *(
+                        [f"restore .project/LESSONS.md to HEAD, dropping {len(lessons)} lesson(s) "
+                         "this ship appended; ship appends them again"]
+                        if (lessons := _ship_lessons(resolved, archive_path)) and ".project/LESSONS.md" in dirty
+                        else []
+                    ),
                 ],
                 "blocked": [],
             }
@@ -1242,6 +1289,7 @@ def apply_undo(repo: Path, kind: str, expected_head: str) -> dict[str, object]:
         _reset_to(resolved, str(parent))
     elif kind == "uncommitted-archive":
         archive = str(target["archive"])
+        dropped_lessons = _ship_lessons(resolved, archive) or []
         discussion = _discussion_extension(resolved, archive)
         transaction = _prepare_transaction(
             resolved,
@@ -1257,7 +1305,7 @@ def apply_undo(repo: Path, kind: str, expected_head: str) -> dict[str, object]:
         _remove_untracked_tree(resolved, ".project/next")
 
     after = preview(resolved)
-    return {
+    result = {
         "schema": UNDO_SCHEMA,
         "status": "applied",
         "kind": kind,
@@ -1266,6 +1314,9 @@ def apply_undo(repo: Path, kind: str, expected_head: str) -> dict[str, object]:
         "state": after["state"],
         "remaining": after["target"],
     }
+    if kind == "uncommitted-archive" and dropped_lessons:
+        result["dropped_lessons"] = dropped_lessons
+    return result
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
