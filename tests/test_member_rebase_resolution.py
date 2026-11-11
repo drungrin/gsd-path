@@ -294,8 +294,27 @@ class MemberRebaseResolutionTests(MemberRebaseResolutionFixture):
         self.journal().write_text(json.dumps(journal), encoding="utf-8")
         with self.assertRaises(isolation.MemberRebaseError) as error:
             self.adopt(resolution_ruling=RESOLUTION_RULING)
-        self.assertEqual(error.exception.code, "journal-invalid")
+        self.assertEqual(error.exception.code, "review-mismatch")
         self.assertEqual(self.remote_ref(f"refs/heads/{BOUND}"), "")
+        # Nothing was published, so an edited review never strands the adoption.
+        self.assertEqual(isolation.abort_member_rebase(self.coordinator, "web")["verdict"], "aborted")
+        self.assertEqual(self.bound_tip(), self.old_tip)
+
+    def test_a_review_committed_after_publication_is_refused_at_the_record(self) -> None:
+        self.resolve()
+        real = isolation._advance_member_bound
+
+        def commit_review_then_advance(journal):
+            git(self.coordinator, "add", "-A", "--", ".project/build/member-rebase-resolution")
+            git(self.coordinator, "commit", "-q", "-m", "chore: commit the review early")
+            return real(journal)
+
+        with mock.patch.object(isolation, "_advance_member_bound", side_effect=commit_review_then_advance):
+            with self.assertRaises(isolation.MemberRebaseError) as error:
+                self.adopt(resolution_ruling=RESOLUTION_RULING)
+        self.assertEqual(error.exception.code, "review-committed")
+        self.assertTrue(self.journal().exists())
+        self.assertEqual(git(self.coordinator, "log", "-1", "--format=%s"), "chore: commit the review early")
 
     def test_tampered_resolution_evidence_is_rejected(self) -> None:
         self.resolve()
