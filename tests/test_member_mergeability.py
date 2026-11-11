@@ -133,6 +133,17 @@ class MemberMergeabilityTests(unittest.TestCase):
         (self.coordinator / members.LOCK_PATH).unlink()
         self.assertEqual(isolation.member_mergeability(self.coordinator), {"verdict": "none", "members": []})
 
+    def test_an_unreadable_member_does_not_hide_another_conflict(self) -> None:
+        self.commit_member("app.py", "v2\n")
+        self.advance_main("app.py", "team edit\n")
+        lock = self.coordinator / members.LOCK_PATH
+        value = json.loads(lock.read_text(encoding="utf-8"))
+        value["members"].insert(0, {"name": "ghost", "branch": BOUND, "base": value["members"][0]["base"]})
+        lock.write_text(json.dumps(value), encoding="utf-8")
+        result = isolation.member_mergeability(self.coordinator)
+        self.assertEqual(result["verdict"], "conflict")
+        self.assertEqual([row["status"] for row in result["members"]], ["unavailable", "conflict"])
+
     def test_prepare_final_blocks_a_conflict_before_landing_proof_or_verify(self) -> None:
         self.commit_member("app.py", "v2\n")
         self.advance_main("app.py", "team edit\n")

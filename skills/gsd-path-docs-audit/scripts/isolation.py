@@ -6737,7 +6737,7 @@ def _member_mergeability_row(checkout: Path, member: str, branch: str, default: 
         elif git("merge-base", "--is-ancestor", tip, live[0]).returncode == 0:
             row["status"] = "integrated"
         else:
-            merged = git("merge-tree", "--write-tree", "--name-only", tip, live[0])
+            merged = git("-c", "core.quotePath=false", "merge-tree", "--write-tree", "--name-only", tip, live[0])
             if merged.returncode == 0:
                 row["status"] = "behind"
             elif merged.returncode == 1:
@@ -6769,9 +6769,15 @@ def member_mergeability(coordinator: Path) -> Dict[str, object]:
         raise IsolationError(f"unreadable member lock: {error}") from error
     rows = []
     for entry in entries:
-        checkout, _ = member_checkout(coordinator, entry["name"])
-        rows.append(_member_mergeability_row(checkout, entry["name"], entry["branch"],
-                                             member_default_branch(coordinator, entry["name"])))
+        try:
+            checkout, _ = member_checkout(coordinator, entry["name"])
+            default = member_default_branch(coordinator, entry["name"])
+        except IsolationError as error:
+            # One unreadable member must not hide another member's proven conflict.
+            rows.append({"member": entry["name"], "branch": entry["branch"], "status": "unavailable",
+                         "detail": str(error)})
+            continue
+        rows.append(_member_mergeability_row(checkout, entry["name"], entry["branch"], default))
     statuses = {row["status"] for row in rows}
     verdict = "conflict" if "conflict" in statuses else "unavailable" if "unavailable" in statuses else "clean"
     return {"verdict": verdict, "members": rows}
