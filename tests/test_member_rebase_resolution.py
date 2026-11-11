@@ -7,6 +7,7 @@ the replay worktree, and one reviewed, owner-ruled resolution commit limited to
 the conflicting paths restores what the default branch needs there.
 """
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -248,6 +249,53 @@ class MemberRebaseResolutionTests(MemberRebaseResolutionFixture):
         self.assertEqual(git(self.member, "branch", "--list", REPLAY), "")
         self.assertFalse(self.journal().exists())
         self.assertEqual(self.bound_tip(), self.old_tip)
+
+    def test_a_sibling_tip_cannot_stand_in_for_the_reviewed_resolution(self) -> None:
+        self.resolve()
+        self.adopt(resolution_ruling=RESOLUTION_RULING)
+        adoption = json.loads(self.receipt_path().read_text(encoding="utf-8"))["adoptions"][0]
+        resolution = adoption["resolution"]
+        last_replay = adoption["commits"][-1]["rebased"]
+        scratch = self.root / "scratch"
+        git(self.member, "worktree", "add", "-q", "--detach", str(scratch), last_replay)
+        (scratch / "evil.py").write_text("unreviewed\n", encoding="utf-8")
+        git(scratch, "add", "-A")
+        git(scratch, "commit", "-q", "-m", "fix: resolve integration conflicts with origin/main")
+        sibling = git(scratch, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(isolation.IsolationError, "not the reviewed resolution commit"):
+            isolation._member_adoption_commits(self.member, adoption["old_base"], adoption["old_tip"],
+                                               adoption["new_base"], sibling, resolution)
+
+    def test_a_committed_review_is_refused_before_publication(self) -> None:
+        self.resolve()
+        git(self.coordinator, "add", "-A", "--", ".project/build/member-rebase-resolution")
+        git(self.coordinator, "commit", "-q", "-m", "chore: commit the review early")
+        with self.assertRaises(isolation.MemberRebaseError) as error:
+            self.adopt(resolution_ruling=RESOLUTION_RULING)
+        self.assertEqual(error.exception.code, "review-committed")
+        self.assertEqual(self.remote_ref(f"refs/heads/{BOUND}"), "")
+        self.assertEqual(json.loads(self.journal().read_text())["stage"], "awaiting-resolution")
+
+    def test_recorded_review_content_is_rechecked(self) -> None:
+        candidate = self.resolve()
+        review = self.review_path()
+        self.assertIsNone(isolation._member_review_problem(review, candidate["tree"]))
+        self.assertIn("Resolution-Tree", isolation._member_review_problem(review, "0" * 40))
+        def stop(coordinator, path, journal):
+            raise KeyboardInterrupt
+
+        with mock.patch.object(isolation, "_finish_member_rebase", side_effect=stop):
+            with self.assertRaises(KeyboardInterrupt):
+                self.adopt(resolution_ruling=RESOLUTION_RULING)
+        # A journal edited to a failing review with a matching digest still refuses.
+        review.write_text(f"Resolution-Tree: {candidate['tree']}\nVerdict: fail\n", encoding="utf-8")
+        journal = json.loads(self.journal().read_text())
+        journal["resolution"]["review"]["sha256"] = hashlib.sha256(review.read_bytes()).hexdigest()
+        self.journal().write_text(json.dumps(journal), encoding="utf-8")
+        with self.assertRaises(isolation.MemberRebaseError) as error:
+            self.adopt(resolution_ruling=RESOLUTION_RULING)
+        self.assertEqual(error.exception.code, "journal-invalid")
+        self.assertEqual(self.remote_ref(f"refs/heads/{BOUND}"), "")
 
     def test_tampered_resolution_evidence_is_rejected(self) -> None:
         self.resolve()
