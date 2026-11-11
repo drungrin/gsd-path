@@ -38,7 +38,9 @@ a commit that is an ancestor of `origin/main`.
    without advancing. An uncommitted ship archive undo also restores the
    lessons that ship appended to `.project/LESSONS.md` (each line begins
    `- <archive name> — `); the result's `dropped_lessons` lists them for the
-   next ship to append again. Any other LESSONS.md change blocks.
+   next ship to append again. Any other LESSONS.md change blocks. It also
+   deletes that archive's uncommitted `.project/publications/<archive name>/`
+   editorial copies, which ship prepares again.
 
 ## Rules
 
