@@ -16,6 +16,12 @@ for maintaining this fork live here instead.
   versioned desktop app or rewrite historical upstream release evidence.
   Update fork revision metadata directly: upstream `npm version` and
   `release:bump` assume three-component SemVer and must not decide fork bumps.
+- After each fork release commit (`chore(fork): release X.Y.Z.N`), run
+  `python3 scripts/dev/consumer_upgrade.py announce`. It records the release in
+  `~/.gsd-path/fork-release.json`. A consumer router then stops right after its
+  next milestone boundary transition and prints the
+  `consumer_upgrade.py apply --project <root>` command to run on the host.
+  Never announce from any other commit.
 - Maintain `FORK.md` as the history of differences from upstream. Every fork
   delivery records its fork version, upstream base, behavior changes, relevant
   implementation commit links, validation, and known limits. Record upstream
