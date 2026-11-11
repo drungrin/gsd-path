@@ -633,6 +633,17 @@ Log, then:
   Record the returned base and integration SHA in its event.
   The project is now brownfield, so inspect rescans current code and docs.
 
+Upgrade window: after that transition or `promote-next` returns, and before
+routing the returned phase, run the bundled
+`python3 <skill-dir>/scripts/upgrade_window.py --repo <absolute-primary-root>`
+once. It is read-only and always exits 0. When it returns `status: available`,
+do not route. Stop with **Outcome** — fork release `release.version` is
+available and the project has the returned `installed` versions; **Review** —
+link STATE.md; **Next** — the returned `command` in its own fenced block, to run
+on the host, then restart the session and invoke `$gsd-path`. Say that invoking
+`$gsd-path` without running it skips this release, because ordinary routing
+never runs this check. Any other status routes as usual without a report.
+
 `promote-next` returns `drift.class: clean` for a promoted `plan/done` only
 when no existing declared task path changed after the matching exact plan
 approval checkpoint. `changed` and `unverifiable` reopen the promoted state as
