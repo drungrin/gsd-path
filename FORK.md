@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.49**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.50**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,71 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.50 — 2026-11-11
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 49 to 50.
+
+Fork only, because it depends on a local release announcement that upstream
+does not have. Upstream main `d5a30f5f` has no equivalent step:
+- [`a83dae38 — pause at a milestone boundary when a newer fork release exists`](https://github.com/drungrin/gsd-path/commit/a83dae38908906fc2137b8621379e1a7779cbb37)
+- [`bd2c3681 — announce each fork release for consumer upgrades`](https://github.com/drungrin/gsd-path/commit/bd2c368116d100c1adced7e898f460622a81fcdd)
+  — the maintenance rule in `CLAUDE.md`.
+
+### Consumer upgrade at the milestone boundary
+
+- A consumer can take a new release at only one clean point: right after the
+  router's transition into the next milestone's `inspect/active`, before
+  inspect dispatches its sidecars. Reaching it took a hand-written stop
+  prompt, then a manual backup, runtime upgrade with provenance, skills
+  update, and an installation-only commit.
+- `scripts/dev/consumer_upgrade.py announce`, run on the release commit,
+  records the version, commit, and checkout in
+  `~/.gsd-path/fork-release.json`. Paseo sandboxes mount `~/.gsd-path`, so
+  sandboxed routers read it.
+- After the boundary transition or `promote-next`, the router runs the
+  bundled read-only `upgrade_window.py` once. When the announced release is
+  newer than the skill VERSION stamp or the runtime pin, STATE is
+  `inspect|define|research|decide|roadmap` with status `active`, and no
+  linked worktree exists, the router stops and prints the host command.
+  Invoking the router again skips the release, because ordinary routing never
+  runs the check. Without an announcement the router behaves as upstream.
+- `consumer_upgrade.py apply --project <root>` refuses before any change
+  outside that window, with staged changes, or with dirty paths outside
+  `.project/`. It backs up the installation paths under
+  `~/.gsd-path/preserved/<project>/`, installs from a `git archive` of the
+  announced commit rather than the working checkout, records the runtime
+  provenance, moves `disabled-gsd-skills` into the backup, checks both
+  VERSION stamps and the pin, and commits installation paths only.
+  `--dry-run` runs the checks only.
+
+Validation: 14 new tests in `tests/test_upgrade_window.py`. Nine cover the
+helper: no announcement, current, available with the command, a stale runtime
+alone, an upstream three-part version below a fork revision, phases outside the
+window, a linked worktree, a malformed announcement, and a CLI that exits 0 on
+error. Five run the real installers against a synthetic consumer from a clone
+of this checkout: announce records the release commit and refuses a dirty
+checkout; apply refuses `build/active` and a dirty `AGENTS.md` with no backup
+and no commit; apply upgrades, leaves an uncommitted `SKILL.md` edit in the
+checkout out of the consumer, commits installation paths only, and reports
+`current` on a rerun. The full Python suite passed in eight parallel shards
+(3,815 tests, 41 skipped). The daemon suite passed (496 tests, 13 skipped),
+Node tests passed (118, one skipped), resource synchronization checked 558
+resources, and `check:locks` passed. The release commit changes only version
+metadata and this entry.
+
+Limits:
+- `apply` handles Claude project installs only and refuses when another
+  host's skill root holds GSD Path skills.
+- Consumers on 1.7.1.49 or earlier do not run the check yet. Their first
+  upgrade to this release still needs the stop prompt; `apply` replaces the
+  manual commands from that point.
+- The upstream `check_update.py` notice still reads npm. Once upstream
+  publishes a version above the fork's, a consumer would print an
+  `npx @opengsd/gsd-path@latest --update` hint that replaces the fork with
+  upstream. Not changed here.
+- No upstream submission.
 
 ## 1.7.1.49 — 2026-11-11
 
