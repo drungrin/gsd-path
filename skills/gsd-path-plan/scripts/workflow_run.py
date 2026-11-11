@@ -947,6 +947,24 @@ def run_workflow(repo: Path, action: str, project_dir: str, expected_head: str =
             pending = step("discussion_records.py", "pending", "--repo", str(repo))
             if pending["pending"]:
                 raise StepFailed("pending discussion requires its owner disposition")
+            if (repo / project_dir / "build" / "members.json").is_file():
+                # Before any review or project Verify: a member that no longer
+                # merges into its live default branch needs an owner-ruled,
+                # reviewed resolution first. Only a proven conflict blocks.
+                try:
+                    merge = step("isolation.py", "member-mergeability", "--repo", str(repo))
+                except StepFailed:
+                    steps[-1]["advisory"] = True
+                    outputs["member_mergeability"] = {"verdict": "unchecked"}
+                else:
+                    outputs["member_mergeability"] = merge
+                    conflicting = [row for row in merge.get("members", []) if row.get("status") == "conflict"]
+                    if conflicting:
+                        next_step = ("ship/blocked; ask the owner how the member work reaches its default "
+                                     "branch with a reviewed resolution before final review")
+                        raise StepFailed("member branch conflicts with its default branch: " + "; ".join(
+                            f"{row['member']} vs origin/{row['default_branch']} in {', '.join(row['conflicts'])}"
+                            for row in conflicting))
             step("build_state.py", "verify-landed", *common, "--head", expected_head)
             step("lean_verification.py", "--repo", str(repo), "--expected-head", expected_head)
         elif action == "preauthorize":
