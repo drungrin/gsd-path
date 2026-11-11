@@ -119,10 +119,10 @@ so the position is unchanged. Then:
    which fetches each member's default branch into a disposable store and
    merges it with the bound branch there. A `conflict` blocks before any
    landing proof, project Verify, or reviewer. Record `ship/blocked` with
-   the members and paths, then ask the owner how the member work reaches
-   its default branch. A final review of a branch that cannot merge proves
-   nothing about the integrated result, and a resolution made on the forge
-   was never reviewed. `behind` and `current` continue, and an
+   the members and paths. Then route to the owner-ruled member rebase
+   adoption with `--resolve-conflicts` in `/gsd-path-build` step 1, which
+   is legal here because STATE.archive is still null. Never ask the owner
+   to resolve on the forge. `behind` and `current` continue, and an
    unreachable remote is reported as `unchecked`.
    For a single-repo milestone, exact stdout/stderr live once in
    `.project/build/verify-ledger.jsonl`; `final-gap-1.md` is the generated view
