@@ -7355,6 +7355,93 @@ def abort_member_rebase(coordinator: Path, member: str) -> Dict[str, object]:
         return {"verdict": "aborted", "member": member, "old_tip": journal["old_tip"], "onto": journal["onto"]}
 
 
+def _mergeability_paths(output: str) -> list[str]:
+    """Conflicted paths from `git merge-tree --write-tree --name-only` output."""
+    paths = []
+    for line in output.split("\n")[1:]:
+        if not line:
+            break
+        paths.append(line)
+    return sorted(set(paths))
+
+
+def _member_mergeability_row(checkout: Path, member: str, branch: str, default: str) -> Dict[str, object]:
+    row: Dict[str, object] = {"member": member, "branch": branch, "default_branch": default}
+    tip = run_git(checkout, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}").stdout.strip()
+    listed = run_git(checkout, "ls-remote", "origin", f"refs/heads/{default}")
+    live = [line.split("\t")[0] for line in listed.stdout.splitlines()
+            if line.split("\t")[-1] == f"refs/heads/{default}"]
+    row.update({"tip": tip or None, "default": live[0] if len(live) == 1 else None})
+    if not tip or listed.returncode != 0 or len(live) != 1:
+        row["status"] = "unavailable"
+        row["detail"] = (f"missing local {branch}" if not tip
+                         else (listed.stderr or "").strip() or f"origin has no single {default}")
+        return row
+    objects = run_git(checkout, "rev-parse", "--path-format=absolute", "--git-path", "objects").stdout.strip()
+    environment = os.environ.copy()
+    environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = os.pathsep.join(
+        [objects] + ([environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"]]
+                     if environment.get("GIT_ALTERNATE_OBJECT_DIRECTORIES") else []))
+    with tempfile.TemporaryDirectory(prefix="member-mergeability-") as temporary:
+        # Objects only: no ref, FETCH_HEAD, index, or worktree of the member changes.
+        environment["GIT_OBJECT_DIRECTORY"] = temporary
+
+        def git(*arguments: str) -> subprocess.CompletedProcess:
+            return subprocess.run(_common.git_command(checkout, *arguments), capture_output=True,
+                                  encoding="utf-8", errors="replace", env=environment, check=False)
+
+        if git("cat-file", "-e", live[0] + "^{commit}").returncode != 0:
+            git("-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "fetch.writeCommitGraph=false",
+                "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
+                "--no-prune", "--refmap=", "origin", f"refs/heads/{default}")
+            if git("cat-file", "-e", live[0] + "^{commit}").returncode != 0:
+                row.update({"status": "unavailable", "detail": f"cannot fetch origin/{default}"})
+                return row
+        if git("merge-base", "--is-ancestor", live[0], tip).returncode == 0:
+            row["status"] = "current"
+        elif git("merge-base", "--is-ancestor", tip, live[0]).returncode == 0:
+            row["status"] = "integrated"
+        else:
+            merged = git("merge-tree", "--write-tree", "--name-only", tip, live[0])
+            if merged.returncode == 0:
+                row["status"] = "behind"
+            elif merged.returncode == 1:
+                row["status"], row["conflicts"] = "conflict", _mergeability_paths(merged.stdout)
+            else:
+                row.update({"status": "unavailable", "detail": "cannot compute the merge (Git 2.38+ is "
+                            "required): " + (merged.stderr or merged.stdout).strip()})
+    return row
+
+
+def member_mergeability(coordinator: Path) -> Dict[str, object]:
+    """Whether each locked member bound branch merges cleanly into its live default branch.
+
+    Read-only for every repository: the default branch is fetched into a
+    disposable object store. A conflict means the member's pull request or
+    merge would need a resolution that no review has seen.
+    """
+    coordinator = require_directory(coordinator, "coordinator")
+    lock_path = coordinator / ".project" / "build" / "members.json"
+    if lock_path.is_symlink() or not lock_path.is_file():
+        return {"verdict": "none", "members": []}
+    try:
+        entries = json.loads(lock_path.read_text(encoding="utf-8"))["members"]
+        if not isinstance(entries, list) or any(
+                not isinstance(entry, dict) or not all(isinstance(entry.get(key), str) for key in ("name", "branch"))
+                for entry in entries):
+            raise ValueError("invalid member lock entries")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise IsolationError(f"unreadable member lock: {error}") from error
+    rows = []
+    for entry in entries:
+        checkout, _ = member_checkout(coordinator, entry["name"])
+        rows.append(_member_mergeability_row(checkout, entry["name"], entry["branch"],
+                                             member_default_branch(coordinator, entry["name"])))
+    statuses = {row["status"] for row in rows}
+    verdict = "conflict" if "conflict" in statuses else "unavailable" if "unavailable" in statuses else "clean"
+    return {"verdict": verdict, "members": rows}
+
+
 def attest(
     primary: Path, task_file: str, ruling: str, base: Optional[str] = None
 ) -> Dict[str, object]:
@@ -8182,6 +8269,12 @@ def parser() -> argparse.ArgumentParser:
     member_rebase_mode.add_argument("--abort", action="store_true",
                                     help="roll back an interrupted adoption that is not yet published")
 
+    mergeability_parser = subparsers.add_parser(
+        "member-mergeability",
+        help="whether each locked member bound branch still merges cleanly into its live default branch",
+    )
+    mergeability_parser.add_argument("--repo", type=Path, required=True, help="coordinator root")
+
     recover_parser = subparsers.add_parser(
         "recover", help="prove landed task commits from git; read-only"
     )
@@ -8359,6 +8452,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 result = preview_member_rebase(arguments.repo, arguments.member, arguments.onto, arguments.ruling)
             else:
                 result = adopt_member_rebase(arguments.repo, arguments.member, arguments.onto, arguments.ruling)
+        elif arguments.command == "member-mergeability":
+            result = member_mergeability(arguments.repo)
         elif arguments.command == "recover":
             result = recover(arguments.repo, arguments.tasks_dir)
         elif arguments.command == "check-inspect-output":
@@ -8406,7 +8501,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               file=sys.stderr)
         return 1
     except (IsolationError, OSError, ValueError) as error:
-        if arguments.command == "adopt-member-rebase":
+        if arguments.command in {"adopt-member-rebase", "member-mergeability"}:
             print(json.dumps({"code": "invalid-input", "error": str(error), "verdict": "refused"}, sort_keys=True),
                   file=sys.stderr)
         elif isinstance(error, IsolationError):

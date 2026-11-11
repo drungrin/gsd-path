@@ -115,6 +115,15 @@ so the position is unchanged. Then:
    This owns pending-discussion and landing checks, project Verify isolation,
    execution, output recording, collection, cleanup, and final-review reuse.
    Keep its JSON receipt; do not reconstruct those operations in shell calls.
+   For a member milestone it first runs `isolation.py member-mergeability`,
+   which fetches each member's default branch into a disposable store and
+   merges it with the bound branch there. A `conflict` blocks before any
+   landing proof, project Verify, or reviewer. Record `ship/blocked` with
+   the members and paths, then ask the owner how the member work reaches
+   its default branch. A final review of a branch that cannot merge proves
+   nothing about the integrated result, and a resolution made on the forge
+   was never reviewed. `behind` and `current` continue, and an
+   unreachable remote is reported as `unchecked`.
    For a single-repo milestone, exact stdout/stderr live once in
    `.project/build/verify-ledger.jsonl`; `final-gap-1.md` is the generated view
    referencing that entry. For a member milestone, the gap records each member
@@ -244,7 +253,11 @@ The persisted `STATE.archive` field is the transaction identity.
 1. Normally require STATE `ship/active`, the bound build branch, and no
    non-`.project` change. The sole crash-recovery exception is
    `shipped/done` with a concrete target that is absent from HEAD; this is an
-   uncommitted transaction and resumes without rewinding STATE. On every
+   uncommitted transaction and resumes without rewinding STATE. On a fresh
+   member transaction (STATE.archive still null), first rerun
+   `python3 <absolute isolation.py> member-mergeability --repo <root>`. A
+   default branch that moved into a `conflict` after final review blocks
+   here the same way, before STATE.archive exists. On every
    initial run or retry, run:
    `python3 <absolute archive_milestone.py> prepare --repo <root> --slug <STATE.milestone>`.
    On a fresh transaction, `prepare` refuses a `review/FINAL.md` whose
