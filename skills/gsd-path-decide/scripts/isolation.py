@@ -7198,11 +7198,8 @@ def _validate_member_rebase_journal(
                     _require_member_resolution_shape(resolution, member)
                     if resolution["review"]["path"] != member_rebase_review_path(member, str(journal["old_tip"])):
                         raise MemberRebaseError("journal-invalid", "resolution review is not at its canonical path")
-                    if journal["stage"] in {"replayed", "publishing", "published", "advanced"}:
-                        problem = _member_review_problem(coordinator / ".project" / resolution["review"]["path"],
-                                                         str(resolution["tree"]), str(resolution["review"]["sha256"]))
-                        if problem:
-                            raise MemberRebaseError("journal-invalid", f"resolution review {problem}")
+                    # The review's content is checked before publication and before the
+                    # record, not here: abort must stay possible after an edited review.
             actual = _member_adoption_commits(checkout, journal["old_base"], journal["old_tip"],
                                               journal["onto"], journal["new_tip"], resolution)
             if actual != journal["commits"]:
@@ -7505,6 +7502,9 @@ def _record_member_rebase(coordinator: Path, journal: Dict[str, object]) -> str:
         rows = members.read_member_close(common, str(close["archive"]))
         if [row for row in rows if row.get("name") == member] != [close["row"]]:
             raise MemberRebaseError("close-journal", "member-close row changed during adoption; preserve and inspect it")
+    if resolution and run_git(coordinator, "diff", "--quiet", "HEAD", "--", *paths).returncode != 0:
+        # Not yet recorded: the adoption commit itself must add the review.
+        _require_member_review_uncommitted(coordinator, str(resolution["review"]["path"]))
     git_output(coordinator, "add", "--", *paths)
     if run_git(coordinator, "diff", "--cached", "--quiet", "HEAD", "--", *paths).returncode == 0:
         # Resumed after the commit: the adoption commit is the last one that wrote the receipt.
@@ -7553,7 +7553,13 @@ def _finish_member_rebase(coordinator: Path, path: Path, journal: Dict[str, obje
         if _optional_ref(checkout, f"refs/heads/{journal['replay_branch']}") != journal["new_tip"]:
             raise MemberRebaseError("replay-lost", "the replay branch moved; journal retained, refusing publication or deletion")
         if journal.get("resolution") and journal["stage"] == "replayed":
-            _require_member_review_uncommitted(coordinator, str(journal["resolution"]["review"]["path"]))
+            resolution = journal["resolution"]
+            _require_member_review_uncommitted(coordinator, str(resolution["review"]["path"]))
+            problem = _member_review_problem(coordinator / ".project" / str(resolution["review"]["path"]),
+                                             str(resolution["tree"]), str(resolution["review"]["sha256"]))
+            if problem:
+                raise MemberRebaseError("review-mismatch", f"resolution review {problem}; nothing was published, "
+                                        "restore the reviewed file or --abort")
         leftover = Path(str(journal["replay_worktree"]))
         if journal.get("resolution") and leftover.is_dir() and not leftover.is_symlink():
             # Interrupted after recording the resolution, before its worktree was removed.
