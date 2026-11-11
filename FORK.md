@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.6.2.32** (maintenance). Upstream package base: **1.6.2**.
+Current fork version: **1.6.2.48** (maintenance). Upstream package base: **1.6.2**.
 
 ## Version policy
 
@@ -18,6 +18,115 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.6.2.48 — 2026-11-11 (maintenance)
+
+A maintenance release on the branch `chore/runtime-1-6-2-27-maintenance`:
+1.6.2.32 plus a reviewed path for a member pull request that conflicts with
+its default branch, and the two archive-undo fixes that path needs. It still
+excludes 1.6.2.28, the upstream synchronization of 1.6.2.29, and the 1.7.1
+line. Upstream package base remains `1.6.2`, synchronized through tag
+`v1.6.2`. The fork revision continues from 47 to 48.
+
+Changes that apply upstream (upstream has member pull requests and
+`prepare-final`, but no member rebase adoption):
+- [`ba807c6b — block final review when a member branch conflicts with its default`](https://github.com/drungrin/gsd-path/commit/ba807c6bed8664521c3ef9dc82937e4103492e60)
+- [`e009a47f — keep one unreadable member from hiding another member's conflict`](https://github.com/drungrin/gsd-path/commit/e009a47fe7a5cdc7cf2323564caf365ee0ac5c73)
+
+Fork only (member rebase adoption exists only in this fork):
+- [`2feac105 — adopt a conflicting member rebase through a reviewed resolution`](https://github.com/drungrin/gsd-path/commit/2feac105a1b8db7229f2f5855ae508634573643b)
+- [`0c363b83 — bind every resolved adoption proof to its reviewed tip and review`](https://github.com/drungrin/gsd-path/commit/0c363b8313cd7d1f726596942c6096c7fd02813f)
+- [`becdf62c — keep an edited resolution review abortable`](https://github.com/drungrin/gsd-path/commit/becdf62c0bff8363241bdd7b7695d5c59c007fd2)
+
+Ported from main for this line:
+- [`001463aa — undo the lessons a ship appended with its uncommitted archive`](https://github.com/drungrin/gsd-path/commit/001463aa11795fe46f7e64316a60894be53095b8)
+  — the same change as main's `c26bbc9c`, which applies upstream.
+- [`a07e2a55 — delete an uncommitted archive's own publication copies`](https://github.com/drungrin/gsd-path/commit/a07e2a55a76a6e5f74ef76169d7caad94bc5fb31)
+  — the undo part of main's fork-only `c9eac8b6`. Its close-members rebind
+  is not ported: on this line, the adoption rebinds the preserved close.
+
+### Member mergeability before final review
+
+- In a consumer milestone, a member pull request was found to conflict
+  with its default branch only when ship published it. By then final review
+  had already passed, and seven pull requests from other people had reached
+  the default branch.
+- `isolation.py member-mergeability` fetches each locked member's default
+  branch into a disposable object store and merges it with the bound branch
+  there. It changes no ref, FETCH_HEAD, index, or worktree.
+- `prepare-final` runs it first. A `conflict` blocks before the landing
+  proof, project Verify, or any reviewer. An unreachable remote, an
+  unreadable member, or an older runtime is recorded only as advisory.
+  Ship reruns the probe before archive preparation.
+
+### Conflicting member rebase adoption
+
+- Before this release, adoption refused any replay conflict. A member
+  branch whose default branch had moved into the same lines therefore had
+  no legal path: the bound branch never takes a merge, and the squash proof
+  refuses unreviewed resolutions.
+- With `--resolve-conflicts`, each conflicting commit is replayed favoring
+  the member side of its conflicting hunks. This is Git's deterministic
+  merge, and every validator recomputes it. Every other replay stays exact.
+  The helper stops at `awaiting-resolution` with the replay worktree and
+  publishes nothing.
+- `member-rebase-resolution` reports the conflicts, their three sides, the
+  allowed paths, and the candidate tree.
+- A coder restores only the conflicting paths. A review at
+  `.project/build/member-rebase-resolution/<member>-<old tip>.md` binds the
+  exact tree with `Verdict: pass`. Then `--resolution-ruling` commits the
+  resolution without member hooks, proves it, and publishes it.
+- Scope, conflict markers, a stale or failing review, a committed review,
+  and non-content conflicts refuse. Abort still rolls back an unpublished
+  adoption.
+- The receipt becomes `member-rebase-adoption/v2` only when an adoption
+  records a resolution: its conflicts, commit, tree, review digest, and
+  ruling. The adoption commit also adds the review. v1 receipts validate
+  unchanged.
+
+### Archive undo for a reopened ship
+
+- Undo of an uncommitted ship archive refused the lessons that ship had
+  appended and the archive's editorial publication copy. The blocked
+  consumer is in exactly that state: archive prepared, member PR open.
+- Undo now restores those lessons and returns them for the next ship. It
+  also deletes the archive's own untracked publication copies, as on main.
+
+An independent code review of the adoption found two critical gaps and one
+important gap, all fixed before release:
+- a sibling commit could stand in for the reviewed resolution tip;
+- a review committed early made a published adoption unprovable;
+- the review's content was not rechecked after apply.
+
+A re-review found that the content recheck could block abort, which was
+also fixed. The probe's per-member masking and the quoting of non-ASCII
+paths were fixed as well.
+
+Validation: on this branch at the final tree, the full Python suite passed
+(3,481 tests, 39 skipped, eight shards), the daemon suite passed (389
+tests, 12 skipped), Node tests passed (118, one skipped), resource
+synchronization checked 616 resources, and `check:locks` passed. The new
+modules `test_member_rebase_resolution` and `test_member_mergeability`
+cover apply, resume, abort, tampering, CLI, archive close, and
+prepare-final. Each review finding has a regression test. The existing
+adoption tests (66) pass unchanged.
+- Against the blocked consumer's member repository, the simulated replay
+  of its 31 commits found the 3 conflicting commits and their 10 paths
+  that its pull request reports. The member checkout was left unchanged.
+- The consumer sandbox's Git (2.53) supports `merge-tree -X`.
+- The archive undo preview, run with this branch's helper on the consumer,
+  now passes. It restores 8 appended lessons and deletes the publication
+  copy.
+
+Limits:
+- Only content conflicts can be resolved. Delete/modify, rename, and mode
+  conflicts still refuse.
+- The resolution is reviewed, but no behavior is proven until ship reruns
+  project Verify and the member final review at the new tip.
+- Changes to the skill text reach a consumer only through a skill update.
+  A consumer that receives only the runtime pin gets the helpers, and its
+  orchestrator needs the procedure in the prompt.
+- Not yet on main; the port is the next release.
 
 ## 1.6.2.32 — 2026-10-27 (maintenance)
 
