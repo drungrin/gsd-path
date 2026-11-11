@@ -199,6 +199,49 @@ dispatch contract and perform steps 1–5 by hand.
    reruns project Verify and the member final review at the new tip, and a
    repair that needs a task Verify at a replayed landing records a new run.
 
+   **Conflicting replay.** When the preview refuses with `conflict`, the
+   owner may rule a resolving adoption: rerun the preview and the apply with
+   `--resolve-conflicts`. Never resolve on the forge, merge the default
+   branch, or edit the replay in prose. The preview reports
+   `needs-resolution` with each conflicting commit and its paths. Apply
+   replays each conflicting commit favoring the member side of its
+   conflicting hunks (Git's deterministic merge, recomputed by every
+   validator), keeps every other replay exact, and stops at
+   `awaiting-resolution` with the replay worktree; nothing is published.
+   Conflicts that favoring the member side cannot settle (delete/modify,
+   renames) still refuse. Then:
+
+   1. Run `python3 <absolute isolation.py> member-rebase-resolution --repo
+      <absolute primary> --member <name>` (read-only). It returns the
+      worktree, each conflict with its `base`, `default`, and `member` sides,
+      the allowed `paths`, the `changed_paths`, the candidate `tree`, and any
+      conflict `markers`.
+   2. Dispatch one coder into that worktree to restore, in only those paths,
+      what the default branch's side needs while keeping the milestone's
+      edits. The coder edits files and never commits. Edits outside the paths
+      refuse (`resolution-scope`), and markers refuse (`resolution-unresolved`).
+   3. Review the candidate with the milestone's wave-review mode (panel when
+      the plan uses panels): the diff against `default`, against `member`, and
+      the worktree diff. The parent writes the merged review verbatim at the
+      returned `review` path. It must contain exactly one line
+      `Resolution-Tree: <tree>` with the status's current tree and the line
+      `Verdict: pass`. Any change after the review needs a new status and a
+      new review.
+   4. Present the conflicts, the review link, and the recommendation, and ask
+      the owner for the resolution ruling. Then rerun the same apply with
+      `--resolution-ruling '<ruling verbatim>'`. The helper commits only the
+      changed conflicting paths as
+      `fix: resolve integration conflicts with origin/<default>` without
+      member hooks. It proves the commit and continues to publication and the
+      recorded adoption. Accepting the member side unchanged needs no
+      commit; the review then binds the replay tree.
+
+   The receipt becomes `gsd-path/member-rebase-adoption/v2`. The resolved
+   adoption records its conflicts, the resolution commit and tree, the review
+   digest, and the resolution ruling. The adoption commit also adds the
+   review file. `--abort` still rolls back an unpublished adoption, including
+   one awaiting its resolution.
+
 2. **Prepare the ready set.** Run `python3 <absolute build_state.py> ready
    --repo <absolute primary>`. It is read-only: it validates every task's
    frontmatter against its dispatch metadata and the recovery report, then

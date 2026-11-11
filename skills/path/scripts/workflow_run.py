@@ -960,8 +960,8 @@ def run_workflow(repo: Path, action: str, project_dir: str, expected_head: str =
                     outputs["member_mergeability"] = merge
                     conflicting = [row for row in merge.get("members", []) if row.get("status") == "conflict"]
                     if conflicting:
-                        next_step = ("ship/blocked; ask the owner how the member work reaches its default "
-                                     "branch with a reviewed resolution before final review")
+                        next_step = ("ship/blocked; ask the owner for a member rebase adoption with "
+                                     "--resolve-conflicts (gsd-path-build step 1)")
                         raise StepFailed("member branch conflicts with its default branch: " + "; ".join(
                             f"{row['member']} vs origin/{row['default_branch']} in {', '.join(row['conflicts'])}"
                             for row in conflicting))

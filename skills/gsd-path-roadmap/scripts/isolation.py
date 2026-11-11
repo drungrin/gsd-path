@@ -4949,6 +4949,18 @@ MEMBER_REBASE_ADOPTION_KEYS = frozenset({
     "member", "branch", "default_branch", "ruling", "old_base", "old_tip", "new_base", "new_tip",
     "commits", "retention_ref", "published_from", "prior_close", "contract_head", "task_contracts",
 })
+# A conflicting replay, adopted only with --resolve-conflicts: each conflicting
+# commit is replayed favoring the member side of its conflicting hunks (a
+# deterministic merge every validator recomputes), then one reviewed and
+# owner-ruled resolution commit restores what the default branch needs there.
+MEMBER_REBASE_SCHEMA_V2 = "gsd-path/member-rebase-adoption/v2"
+MEMBER_REBASE_RESOLVED_KEYS = MEMBER_REBASE_ADOPTION_KEYS | {"resolution"}
+MEMBER_REBASE_RESOLUTION_KEYS = frozenset({"conflicts", "paths", "commit", "tree", "review", "ruling"})
+MEMBER_REBASE_RESOLUTION_DIR = "build/member-rebase-resolution"
+MEMBER_REBASE_RESOLUTION_SUBJECT = "fix: resolve integration conflicts with origin/"
+MEMBER_REBASE_REVIEW_VERDICT = "Verdict: pass"
+MEMBER_REBASE_REVIEW_TREE_RE = re.compile(r"(?m)^Resolution-Tree: ([0-9a-f]{40})\s*$")
+CONFLICT_MARKER_RE = re.compile(rb"(?m)^(?:<<<<<<<|>>>>>>>)(?: |$)")
 
 
 class MemberRebaseError(IsolationError):
@@ -5010,6 +5022,11 @@ def require_no_member_rebase(coordinator: Path, member: str) -> None:
 def member_rebase_branch_name(bound_branch: str, member: str) -> str:
     """The helper-owned replay branch: chore/rebase-<project>-milestone-NNN-<member>."""
     return MEMBER_REBASE_BRANCH_PREFIX + _common.branch_slug(bound_branch.removeprefix("feature/") + "-" + member)
+
+
+def member_rebase_review_path(member: str, old_tip: str) -> str:
+    """The resolution review's path relative to the live or archived project root."""
+    return f"{MEMBER_REBASE_RESOLUTION_DIR}/{member}-{old_tip[:12]}.md"
 
 
 def member_rebase_retention_ref(project: str, member: str, old_tip: str) -> str:
@@ -5076,6 +5093,134 @@ def _member_replay_error(repo: Path, original: str, rebased: str, parent: str) -
     return None
 
 
+def _changed_between(repo: Path, old: str, new: str) -> Set[str]:
+    return _split_paths(git_output(repo, "diff-tree", "-r", "--no-commit-id", "--no-renames", "--name-only",
+                                   old, new))
+
+
+def _member_replay_merge(
+    checkout: Path, env: Optional[Dict[str, str]], current: str, original: str, favor_member: bool
+) -> tuple[int, str, list[str]]:
+    """Git's replay of `original` onto `current`: (status, tree, conflicted paths).
+
+    `favor_member` resolves conflicting hunks with the replayed commit's side,
+    as `cherry-pick -X theirs` does; any other kind of conflict still conflicts.
+    """
+    parent = git_output(checkout, "rev-parse", original + "^")
+    arguments = ["merge-tree", "--write-tree", "--name-only", f"--merge-base={parent}"]
+    if favor_member:
+        arguments += ["-X", "theirs"]
+    merged = _git_in(checkout, env, *arguments, current, original)
+    lines = merged.stdout.split("\n")
+    tree = lines[0].strip()
+    if merged.returncode not in (0, 1) or not re.fullmatch(r"[0-9a-f]{40,64}", tree):
+        raise MemberRebaseError("replay-unavailable", "cannot simulate the replay (a Git whose merge-tree supports "
+                                "--merge-base and -X is required): " + (merged.stderr or merged.stdout).strip())
+    paths: list[str] = []
+    if merged.returncode == 1:
+        for line in lines[1:]:
+            if not line:
+                break
+            paths.append(line)
+    return merged.returncode, tree, sorted(set(paths))
+
+
+def _conflict_marker_paths(repo: Path, treeish: str, paths: Sequence[str]) -> list[str]:
+    """Paths whose content at `treeish` still holds a conflict marker line."""
+    found = []
+    for path in paths:
+        shown = subprocess.run(_common.git_command(repo, "cat-file", "blob", f"{treeish}:{path}"),
+                               capture_output=True, check=False)
+        if shown.returncode == 0 and CONFLICT_MARKER_RE.search(shown.stdout):
+            found.append(path)
+    return found
+
+
+def _member_favor_replay_error(
+    repo: Path, env: Optional[Dict[str, str]], original: str, rebased: str, parent: str, paths: Sequence[str]
+) -> Optional[str]:
+    """Why `rebased` is not the member-favoring replay of a conflicting `original`; None when it is."""
+    found, error = _single_parent(repo, rebased)
+    if error or found != parent:
+        return error or "rebased commit does not follow the previous rebased commit"
+    if _commit_identity(repo, original) != _commit_identity(repo, rebased):
+        return "rebased commit message or author differs"
+    status, _, conflicted = _member_replay_merge(repo, env, parent, original, False)
+    if status != 1 or conflicted != sorted(paths):
+        return "recorded conflict paths differ from Git's replay"
+    status, tree, _ = _member_replay_merge(repo, env, parent, original, True)
+    if status != 0 or tree != git_output(repo, "rev-parse", rebased + "^{tree}"):
+        return "rebased tree is not the replay that favors the member side of the conflicts"
+    changed = _changed_between(repo, parent, rebased)
+    if not changed or not changed <= _changed_between(repo, original + "^", original):
+        return "member-favoring replay changes paths the original commit does not"
+    return None
+
+
+def _member_resolution_error(
+    repo: Path, commit: str, parent: str, paths: Sequence[str], tree: str
+) -> Optional[str]:
+    """Why `commit` is not a valid resolution of the conflicting `paths`; None when it is."""
+    found, error = _single_parent(repo, commit)
+    if error or found != parent:
+        return error or "resolution commit does not follow the last replayed commit"
+    if git_output(repo, "rev-parse", commit + "^{tree}") != tree:
+        return "resolution commit tree differs from the reviewed tree"
+    subject = git_text(repo, "-c", "i18n.logOutputEncoding=UTF-8", "show", "-s", "--format=%s", commit)
+    if not subject.startswith(MEMBER_REBASE_RESOLUTION_SUBJECT):
+        return "resolution commit subject is not the helper's"
+    changed = _changed_between(repo, parent, commit)
+    if not changed:
+        return "resolution commit changes nothing"
+    if not changed <= set(paths):
+        return "resolution commit changes paths outside the conflicts: " + ", ".join(sorted(changed - set(paths)))
+    markers = _conflict_marker_paths(repo, commit, sorted(changed))
+    if markers:
+        return "resolution keeps conflict markers in " + ", ".join(markers)
+    return None
+
+
+def _require_member_resolution_shape(resolution: object, member: str, pending: bool = False) -> Dict[str, object]:
+    """The recorded resolution of a conflicting replay, or IsolationError."""
+    if not isinstance(resolution, dict):
+        raise IsolationError("member rebase resolution must be an object")
+    conflicts = resolution.get("conflicts")
+    if not isinstance(conflicts, list) or not conflicts:
+        raise IsolationError("member rebase resolution must name its conflicting commits")
+    seen = set()
+    for row in conflicts:
+        if (not isinstance(row, dict) or set(row) != {"original", "paths"}
+                or not isinstance(row["original"], str) or not re.fullmatch(r"[0-9a-f]{40}", row["original"])
+                or row["original"] in seen
+                or not isinstance(row["paths"], list) or not row["paths"]
+                or any(not isinstance(path, str) or not path for path in row["paths"])
+                or row["paths"] != sorted(set(row["paths"]))):
+            raise IsolationError("member rebase resolution has an invalid conflicting commit")
+        seen.add(row["original"])
+    if pending:
+        return resolution
+    if set(resolution) != MEMBER_REBASE_RESOLUTION_KEYS:
+        raise IsolationError("member rebase resolution has unexpected fields")
+    union = sorted({path for row in conflicts for path in row["paths"]})
+    if resolution["paths"] != union:
+        raise IsolationError("member rebase resolution paths are not the union of its conflicts")
+    if resolution["commit"] is not None and not (
+            isinstance(resolution["commit"], str) and re.fullmatch(r"[0-9a-f]{40}", resolution["commit"])):
+        raise IsolationError("member rebase resolution commit must be null or a full SHA")
+    if not isinstance(resolution["tree"], str) or not re.fullmatch(r"[0-9a-f]{40}", resolution["tree"]):
+        raise IsolationError("member rebase resolution tree must be a full SHA")
+    review = resolution["review"]
+    if (not isinstance(review, dict) or set(review) != {"path", "sha256"}
+            or not isinstance(review["path"], str)
+            or not re.fullmatch(re.escape(MEMBER_REBASE_RESOLUTION_DIR) + "/" + re.escape(member)
+                                + r"-[0-9a-f]{12}\.md", review["path"])
+            or not isinstance(review["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", review["sha256"])):
+        raise IsolationError("member rebase resolution review must name its canonical path and digest")
+    if not isinstance(resolution["ruling"], str) or not resolution["ruling"].strip():
+        raise IsolationError("member rebase resolution needs the owner ruling")
+    return resolution
+
+
 def _member_commit_summary(repo: Path, sha: str) -> tuple[str, Optional[str]]:
     message = git_text(repo, "-c", "i18n.logOutputEncoding=UTF-8", "show", "-s", "--format=%B", sha)
     tasks = re.findall(r"(?m)^Task: (\S+)$", message)
@@ -5083,26 +5228,55 @@ def _member_commit_summary(repo: Path, sha: str) -> tuple[str, Optional[str]]:
 
 
 def _member_adoption_commits(
-    checkout: Path, old_base: str, old_tip: str, new_base: str, new_tip: str
+    checkout: Path, old_base: str, old_tip: str, new_base: str, new_tip: str,
+    resolution: Optional[Dict[str, object]] = None,
 ) -> list[Dict[str, object]]:
-    """Recompute the original-to-rebased map from Git; refuse anything but an exact replay."""
+    """Recompute the original-to-rebased map from Git; refuse anything but a proven replay.
+
+    Without `resolution` every replay is exact. With it, each listed conflicting
+    commit is the member-favoring replay Git recomputes, and a recorded
+    resolution commit (when not null) follows the last replay. A resolution
+    whose `tree` is still null is pending: no resolution commit exists yet.
+    """
     if old_base == new_base:
         raise IsolationError("adoption must move the member base")
     if run_git(checkout, "merge-base", "--is-ancestor", old_base, new_base).returncode != 0:
         raise IsolationError("new member base does not descend from the locked base")
     originals = _linear_member_range(checkout, old_base, old_tip)
     rebased = _linear_member_range(checkout, new_base, new_tip)
-    if len(originals) != len(rebased):
-        raise IsolationError(f"rebase has {len(rebased)} commits for {len(originals)} original commits")
+    favored: Dict[str, list] = {}
+    commit = None
+    if resolution is not None:
+        favored = {str(row["original"]): list(row["paths"]) for row in resolution["conflicts"]}
+        if not favored or not set(favored) <= set(originals):
+            raise IsolationError("member rebase resolution names commits outside the original range")
+        commit = resolution.get("commit")
+    expected = len(originals) + (1 if commit else 0)
+    if len(rebased) != expected:
+        raise IsolationError(f"rebase has {len(rebased)} commits for {len(originals)} original commits"
+                             + (" and one resolution" if commit else ""))
     rows: list[Dict[str, object]] = []
     parent = new_base
-    for original, replayed in zip(originals, rebased):
-        error = _member_replay_error(checkout, original, replayed, parent)
-        if error:
-            raise IsolationError(f"{original[:12]} -> {replayed[:12]}: {error}")
-        subject, task = _member_commit_summary(checkout, original)
-        rows.append({"original": original, "rebased": replayed, "subject": subject, "task": task})
-        parent = replayed
+    scratch = _disposable_objects(checkout) if favored else contextlib.nullcontext(None)
+    with scratch as env:
+        for original, replayed in zip(originals, rebased):
+            if original in favored:
+                error = _member_favor_replay_error(checkout, env, original, replayed, parent, favored[original])
+            else:
+                error = _member_replay_error(checkout, original, replayed, parent)
+            if error:
+                raise IsolationError(f"{original[:12]} -> {replayed[:12]}: {error}")
+            subject, task = _member_commit_summary(checkout, original)
+            rows.append({"original": original, "rebased": replayed, "subject": subject, "task": task})
+            parent = replayed
+    if resolution is not None and resolution.get("tree") is not None:
+        paths = sorted({path for values in favored.values() for path in values})
+        if commit:
+            error = _member_resolution_error(checkout, str(commit), parent, paths, str(resolution["tree"]))
+            if error:
+                raise IsolationError(f"resolution {str(commit)[:12]}: {error}")
+        elif git_output(checkout, "rev-parse", new_tip + "^{tree}") != resolution["tree"]:
+            raise IsolationError("reviewed resolution tree differs from the adopted tip")
     return rows
 
 
@@ -5159,17 +5333,26 @@ def _validate_member_rebase(
     except ValueError as error:
         raise IsolationError(f"unreadable member rebase receipt: {error}") from error
     if (not isinstance(receipt, dict) or set(receipt) != {"schema", "adoptions"}
-            or receipt["schema"] != MEMBER_REBASE_SCHEMA
+            or receipt["schema"] not in (MEMBER_REBASE_SCHEMA, MEMBER_REBASE_SCHEMA_V2)
             or not isinstance(receipt["adoptions"], list) or not receipt["adoptions"]):
         raise IsolationError("unknown member rebase receipt schema")
+    resolved = [isinstance(item, dict) and "resolution" in item for item in receipt["adoptions"]]
+    if (receipt["schema"] == MEMBER_REBASE_SCHEMA_V2) != any(resolved):
+        raise IsolationError("member rebase receipt schema does not match its resolved adoptions")
     latest: Dict[str, Dict[str, object]] = {}
     processed = []
     for adoption in receipt["adoptions"]:
-        if not isinstance(adoption, dict) or set(adoption) != MEMBER_REBASE_ADOPTION_KEYS:
+        if not isinstance(adoption, dict) or set(adoption) not in (
+                MEMBER_REBASE_ADOPTION_KEYS, MEMBER_REBASE_RESOLVED_KEYS):
             raise IsolationError("member rebase adoption has unexpected fields")
         member = adoption["member"]
         if not isinstance(member, str) or not members.NAME_RE.fullmatch(member):
             raise IsolationError("member rebase adoption names an invalid member")
+        resolution = adoption.get("resolution")
+        if "resolution" in adoption:
+            _require_member_resolution_shape(resolution, member)
+            if resolution["review"]["path"] != member_rebase_review_path(member, str(adoption["old_tip"])):
+                raise IsolationError("member rebase resolution review is not at its canonical path")
         for key in ("old_base", "old_tip", "new_base", "new_tip"):
             if not isinstance(adoption[key], str):
                 raise IsolationError(f"{key} must be a full lowercase SHA")
@@ -5206,7 +5389,8 @@ def _validate_member_rebase(
         if adoption["retention_ref"] != member_rebase_retention_ref(project, member, adoption["old_tip"]):
             raise IsolationError("retention_ref is not the canonical ref of the old tip")
         commits = _member_adoption_commits(
-            checkout, adoption["old_base"], adoption["old_tip"], adoption["new_base"], adoption["new_tip"])
+            checkout, adoption["old_base"], adoption["old_tip"], adoption["new_base"], adoption["new_tip"],
+            resolution)
         if adoption["commits"] != commits:
             raise IsolationError("commit map does not match recomputed Git evidence")
         previous = latest.get(member)
@@ -5248,6 +5432,14 @@ def _member_rebase_receipt(coordinator: Path, project_root: Path) -> Optional[Di
         matches = False
     if not matches:
         raise IsolationError("member rebase receipt differs from its committed owner adoption record")
+    for adoption in receipt["adoptions"]:
+        resolution = adoption.get("resolution")
+        if resolution:
+            review = project_root / str(resolution["review"]["path"])
+            if (review.is_symlink() or not review.is_file()
+                    or hashlib.sha256(review.read_bytes()).hexdigest() != resolution["review"]["sha256"]):
+                raise IsolationError(f"member rebase resolution review {resolution['review']['path']} is missing "
+                                     "or differs from its recorded digest")
     _memoized(("member-rebase-record", str(coordinator), current_sha(coordinator), hashlib.sha256(raw).hexdigest()),
               lambda: _prove_member_rebase_record(coordinator, receipt))
     return receipt
@@ -5278,8 +5470,11 @@ def _prove_member_rebase_record(coordinator: Path, receipt: Dict[str, object]) -
                                            "receipt_digest": _member_rebase_digest(receipt)})
         parent, error = _single_parent(coordinator, sha)
         paths = git_output(coordinator, "diff-tree", "--no-commit-id", "--name-only", "-r", sha).splitlines()
+        recorded = {".project/build/members.json", MEMBER_REBASE_PATH}
+        if last.get("resolution"):
+            recorded.add(".project/" + str(last["resolution"]["review"]["path"]))
         if (error or parent is None or git_text(coordinator, "show", "-s", "--format=%B", sha).strip() != expected.strip()
-                or set(paths) != {".project/build/members.json", MEMBER_REBASE_PATH}):
+                or set(paths) != recorded):
             raise IsolationError("member rebase receipt has no canonical owner adoption commit")
         return
     raise IsolationError("member rebase receipt has no recorded owner adoption commit")
@@ -5450,7 +5645,9 @@ def _require_member_rebase_contracts(coordinator: Path, journal: Dict[str, objec
         raise MemberRebaseError("task-contract", "coordinator task files changed during member rebase adoption")
 
 
-def _member_rebase_plan(coordinator: Path, member: str, onto: str, ruling: str) -> Dict[str, object]:
+def _member_rebase_plan(
+    coordinator: Path, member: str, onto: str, ruling: str, resolve_conflicts: bool = False
+) -> Dict[str, object]:
     """Read-only preconditions that need no objects of `onto`; the journal's content."""
     members = _members_module()
     pipeline_state = _pipeline_state_module()
@@ -5628,6 +5825,7 @@ def _member_rebase_plan(coordinator: Path, member: str, onto: str, ruling: str) 
         "authorization_ref": authorization,
         "authorization_before": _optional_ref(checkout, authorization),
         "close": close,
+        "resolve_conflicts": bool(resolve_conflicts),
     }
 
 
@@ -5706,21 +5904,32 @@ def _require_member_rebase_product_history(
                                 "or cannot be inspected; adoption refused before publication")
 
 
-def _simulate_member_replay(checkout: Path, plan: Dict[str, object], env: Dict[str, str]) -> None:
-    """Replay every original commit with Git's merge in a disposable object store."""
+def _simulate_member_replay(
+    checkout: Path, plan: Dict[str, object], env: Dict[str, str]
+) -> list[Dict[str, object]]:
+    """Replay every original commit with Git's merge in a disposable object store.
+
+    Returns the conflicting commits, each replayed favoring the member side;
+    they are allowed only when the plan resolves conflicts.
+    """
     current = str(plan["onto"])
+    conflicts: list[Dict[str, object]] = []
     for row in plan["commits"]:
         original, subject = str(row["original"]), str(row["subject"])
-        parent = git_output(checkout, "rev-parse", original + "^")
-        merged = _git_in(checkout, env, "merge-tree", "--write-tree", f"--merge-base={parent}", current, original)
-        if merged.returncode == 1:
-            conflicts = [line for line in merged.stdout.splitlines() if line.startswith("CONFLICT")]
-            raise MemberRebaseError("conflict", f"replaying {original[:12]} {subject!r} onto origin/"
-                                    f"{plan['default_branch']} conflicts: " + ("; ".join(conflicts) or "conflict"))
-        if merged.returncode != 0 or not merged.stdout.strip():
-            raise MemberRebaseError("replay-unavailable", "cannot simulate the replay (Git 2.40 or later is "
-                                    "required): " + (merged.stderr or merged.stdout).strip())
-        tree = merged.stdout.splitlines()[0]
+        status, tree, paths = _member_replay_merge(checkout, env, current, original, False)
+        favored = status == 1
+        if favored:
+            if not plan.get("resolve_conflicts"):
+                raise MemberRebaseError("conflict", f"replaying {original[:12]} {subject!r} onto origin/"
+                                        f"{plan['default_branch']} conflicts: " + (", ".join(paths) or "conflict")
+                                        + "; --resolve-conflicts replays favoring the member side and requires "
+                                        "one reviewed resolution commit")
+            status, tree, remaining = _member_replay_merge(checkout, env, current, original, True)
+            if status != 0:
+                raise MemberRebaseError("conflict", f"replaying {original[:12]} {subject!r} onto origin/"
+                                        f"{plan['default_branch']} has conflicts that favoring the member side "
+                                        "cannot resolve: " + (", ".join(remaining) or "conflict"))
+            conflicts.append({"original": original, "paths": paths})
         if tree == _git_in(checkout, env, "rev-parse", current + "^{tree}").stdout.strip():
             raise MemberRebaseError("empty-commit", f"{original[:12]} {subject!r} is already in origin/"
                                     f"{plan['default_branch']}; the replay would drop it")
@@ -5728,10 +5937,17 @@ def _simulate_member_replay(checkout: Path, plan: Dict[str, object], env: Dict[s
         if created.returncode != 0:
             raise MemberRebaseError("replay-unavailable", (created.stderr or created.stdout).strip())
         replayed = created.stdout.strip()
-        if _ordered_edits_between(checkout, current, replayed, env) != _ordered_edits(checkout, original):
+        if favored:
+            changed = _split_paths(_git_in(checkout, env, "diff-tree", "-r", "--no-commit-id", "--no-renames",
+                                           "--name-only", current, replayed).stdout)
+            if not changed <= _changed_between(checkout, original + "^", original):
+                raise MemberRebaseError("edits-differ", f"replaying {original[:12]} {subject!r} would change "
+                                        "paths the original commit does not")
+        elif _ordered_edits_between(checkout, current, replayed, env) != _ordered_edits(checkout, original):
             raise MemberRebaseError("edits-differ", f"replaying {original[:12]} {subject!r} would change "
                                     "different bytes than the original commit")
         current = replayed
+    return conflicts
 
 
 def _member_rebase_report(plan: Dict[str, object]) -> Dict[str, object]:
@@ -5747,21 +5963,32 @@ def _member_rebase_report(plan: Dict[str, object]) -> Dict[str, object]:
     }
 
 
-def preview_member_rebase(coordinator: Path, member: str, onto: str, ruling: str) -> Dict[str, object]:
+def preview_member_rebase(
+    coordinator: Path, member: str, onto: str, ruling: str, resolve_conflicts: bool = False
+) -> Dict[str, object]:
     """Read-only: every precondition, plus the replay simulated in a disposable object store."""
-    plan = _member_rebase_plan(coordinator, member, onto, ruling)
+    plan = _member_rebase_plan(coordinator, member, onto, ruling, resolve_conflicts)
     checkout = Path(str(plan["checkout"]))
     with _disposable_objects(checkout) as env:
         if _git_in(checkout, env, "cat-file", "-e", str(plan["onto"]) + "^{commit}").returncode != 0:
             _fetch_into(checkout, str(plan["default_branch"]), env)
         _require_onto(checkout, plan, env)
         _require_member_rebase_product_history(checkout, plan, [str(plan["onto"]), str(plan["old_tip"])], env)
-        _simulate_member_replay(checkout, plan, env)
+        conflicts = _simulate_member_replay(checkout, plan, env)
     branch = plan["branch"]
+    resolution = [
+        f"replay {len(conflicts)} conflicting commit(s) favoring the member side of their conflicts: "
+        + "; ".join(f"{str(row['original'])[:12]} ({', '.join(row['paths'])})" for row in conflicts),
+        f"stop with the replay in {plan['replay_worktree']} for one resolution of only the conflicting paths",
+        f"require a passing review at .project/{member_rebase_review_path(member, str(plan['old_tip']))} bound "
+        "to the candidate tree, and the owner's --resolution-ruling, before any publication",
+    ] if conflicts else []
     return {
-        **_member_rebase_report(plan), "status": "preview", "verdict": "ready",
+        **_member_rebase_report(plan), "status": "preview",
+        "verdict": "needs-resolution" if conflicts else "ready", "conflicts": conflicts,
         "effects": [
             f"replay {len(plan['commits'])} commit(s) of {branch} onto {plan['onto']} in {plan['replay_branch']}",
+            *resolution,
             f"publish {branch} to origin with lease {plan['remote_before'] or 'absent'}",
             f"advance local {branch} from {plan['old_tip']} by compare-and-swap",
             f"set the {member} lock base to {plan['onto']} and append {MEMBER_REBASE_PATH}",
@@ -5784,7 +6011,8 @@ def _read_member_rebase_journal(path: Path) -> Dict[str, object]:
     except (OSError, ValueError) as error:
         raise MemberRebaseError("journal-invalid", f"unreadable member rebase journal {path}: {error}") from error
     if not isinstance(journal, dict) or journal.get("schema") != MEMBER_REBASE_JOURNAL_SCHEMA or journal.get(
-            "stage") not in {"prepared", "replayed", "publishing", "published", "advanced", "recorded"}:
+            "stage") not in {"prepared", "replayed", "awaiting-resolution", "publishing", "published", "advanced",
+                             "recorded"}:
         raise MemberRebaseError("journal-invalid", f"member rebase journal is invalid: {path}")
     return journal
 
@@ -5831,8 +6059,16 @@ def _validate_member_rebase_journal(
             if produced != [row["rebased"] for row in journal["commits"]]:
                 raise MemberRebaseError("journal-invalid", "proven replay differs from helper-produced commits")
             require_full_sha(journal["new_tip"])
+            resolution = _journal_resolution(journal)
+            if resolution is not None:
+                _require_member_resolution_shape(resolution, member, pending=resolution.get("tree") is None)
+                if journal["stage"] == "awaiting-resolution" and resolution.get("tree") is not None:
+                    raise MemberRebaseError("journal-invalid", "an awaiting resolution is already recorded")
+                if journal["stage"] not in {"prepared", "awaiting-resolution"} and resolution.get("tree") is None:
+                    raise MemberRebaseError("journal-invalid", "a conflicting replay cannot advance without "
+                                            "its reviewed resolution")
             actual = _member_adoption_commits(checkout, journal["old_base"], journal["old_tip"],
-                                              journal["onto"], journal["new_tip"])
+                                              journal["onto"], journal["new_tip"], resolution)
             if actual != journal["commits"]:
                 raise MemberRebaseError("journal-invalid", "member rebase journal's replay does not prove")
     except MemberRebaseError:
@@ -5843,7 +6079,7 @@ def _validate_member_rebase_journal(
 
 def _rollback_member_rebase(path: Path, journal: Dict[str, object]) -> None:
     """Undo an adoption only before any publication intent was recorded."""
-    if journal["stage"] not in {"prepared", "replayed"}:
+    if journal["stage"] not in {"prepared", "replayed", "awaiting-resolution"}:
         raise MemberRebaseError("published", "publication may have occurred; preserve the journal and lineage evidence")
     checkout = Path(str(journal["checkout"]))
     ref = f"refs/heads/{journal['replay_branch']}"
@@ -5852,13 +6088,21 @@ def _rollback_member_rebase(path: Path, journal: Dict[str, object]) -> None:
     if tip is not None:
         originals = _linear_member_range(checkout, str(journal["old_base"]), str(journal["old_tip"]))
         partial = _linear_member_range(checkout, str(journal["onto"]), tip)
-        if len(partial) > len(originals):
+        favored = journal.get("resolve_conflicts")
+        if len(partial) > len(originals) + (1 if favored else 0) or (
+                len(partial) > len(originals) and _member_resolution_error(
+                    checkout, partial[-1], partial[-2] if len(partial) > 1 else str(journal["onto"]),
+                    sorted({path for row in journal.get("conflicts") or [] for path in row["paths"]}),
+                    git_output(checkout, "rev-parse", partial[-1] + "^{tree}"))):
             raise MemberRebaseError("replay-leftover", "replay branch contains unowned commits; cleanup refused")
         produced = journal["produced_commits"]
         for index, (old, new) in enumerate(zip(originals, partial)):
             if index < len(produced):
                 if new != produced[index]:
                     raise MemberRebaseError("replay-leftover", "helper-produced replay ref changed; cleanup refused")
+            elif favored and _changed_between(checkout, new + "^", new) <= _changed_between(checkout, old + "^", old):
+                # A member-favoring replay killed before its SHA record: same commit, same or fewer paths.
+                continue
             elif _ordered_edits(checkout, old) != _ordered_edits(checkout, new):
                 # A kill can occur after Git commits but before the SHA record.
                 # Only unchanged ordered edits may close that unrecorded window.
@@ -5899,6 +6143,15 @@ def _remove_member_rebase_journal(path: Path) -> None:
         path.parent.rmdir()  # only when no other member's adoption is pending
 
 
+def _journal_resolution(journal: Dict[str, object]) -> Optional[Dict[str, object]]:
+    """The recorded resolution, a pending one for a conflicting replay, or None."""
+    if journal.get("resolution"):
+        return journal["resolution"]  # type: ignore[return-value]
+    if journal.get("conflicts"):
+        return {"conflicts": journal["conflicts"], "commit": None, "tree": None}
+    return None
+
+
 def _replay_member_rebase(journal: Dict[str, object]) -> None:
     """Cherry-pick the locked range onto `onto` in a named sidecar and prove the result."""
     checkout = Path(str(journal["checkout"]))
@@ -5907,18 +6160,30 @@ def _replay_member_rebase(journal: Dict[str, object]) -> None:
     if destination != Path(str(journal["replay_worktree"])):
         raise MemberRebaseError("replay-failed", f"replay worktree placement changed: {destination}")
     create_named_worktree(checkout, branch, destination, str(journal["onto"]), bound=str(journal["branch"]))
+    favored: list[Dict[str, object]] = []
     for row in journal["commits"]:
         original, subject = str(row["original"]), str(row["subject"])
         picked = run_git(destination, "-c", "rerere.enabled=false", "cherry-pick", original)
         if picked.returncode != 0:
-            conflicts = run_git(destination, "diff", "--name-only", "--diff-filter=U").stdout.split()
+            conflicts = sorted(set(_split_paths(git_output(destination, "diff", "--name-only", "--diff-filter=U"))))
             detail = (picked.stderr or picked.stdout).strip()
             run_git(destination, "cherry-pick", "--abort")
-            if conflicts:
+            if conflicts and journal.get("resolve_conflicts"):
+                # The member side of each conflicting hunk; the resolution commit restores the rest.
+                picked = run_git(destination, "-c", "rerere.enabled=false", "cherry-pick", "-X", "theirs", original)
+                if picked.returncode != 0:
+                    remaining = _split_paths(git_output(destination, "diff", "--name-only", "--diff-filter=U"))
+                    run_git(destination, "cherry-pick", "--abort")
+                    raise MemberRebaseError("conflict", f"replaying {original[:12]} {subject!r} has conflicts that "
+                                            "favoring the member side cannot resolve: "
+                                            + (", ".join(sorted(remaining)) or (picked.stderr or picked.stdout).strip()))
+                favored.append({"original": original, "paths": conflicts})
+            elif conflicts:
                 raise MemberRebaseError("conflict", f"replaying {original[:12]} {subject!r} conflicts: "
                                         + ", ".join(conflicts))
-            code = "empty-commit" if "empty" in detail.lower() else "replay-failed"
-            raise MemberRebaseError(code, f"replaying {original[:12]} {subject!r} failed: {detail}")
+            else:
+                code = "empty-commit" if "empty" in detail.lower() else "replay-failed"
+                raise MemberRebaseError(code, f"replaying {original[:12]} {subject!r} failed: {detail}")
         # Ownership evidence precedes the semantic proof. A rejected encoding,
         # message or edit must not make our own disposable replay unretirable.
         journal["produced_commits"].append(current_sha(destination))
@@ -5927,16 +6192,18 @@ def _replay_member_rebase(journal: Dict[str, object]) -> None:
     if uncommitted_paths(destination):
         raise MemberRebaseError("replay-failed", "replay left uncommitted changes")
     new_tip = current_sha(destination)
+    journal["conflicts"] = favored
     try:
         commits = _member_adoption_commits(checkout, str(journal["old_base"]), str(journal["old_tip"]),
-                                           str(journal["onto"]), new_tip)
+                                           str(journal["onto"]), new_tip, _journal_resolution(journal))
     except IsolationError as error:
         raise MemberRebaseError("proof-failed", str(error)) from error
     if [row["original"] for row in commits] != [row["original"] for row in journal["commits"]]:
         raise MemberRebaseError("proof-failed", "replay does not cover the planned commits")
-    _remove_worktree(checkout, destination, False)
-    with contextlib.suppress(OSError):
-        destination.parent.rmdir()  # only when empty
+    if not favored:
+        _remove_worktree(checkout, destination, False)
+        with contextlib.suppress(OSError):
+            destination.parent.rmdir()  # only when empty
     retention, old_tip = str(journal["retention_ref"]), str(journal["old_tip"])
     created = run_git(checkout, "update-ref", retention, old_tip, "")
     if created.returncode != 0 and _optional_ref(checkout, retention) != old_tip:
@@ -6046,7 +6313,9 @@ def _member_rebase_message(journal: Dict[str, object]) -> str:
             f"Member: {journal['member']}\nBranch: {journal['branch']}\n"
             f"Old-Base: {journal['old_base']}\nOld-Tip: {journal['old_tip']}\n"
             f"New-Base: {journal['onto']}\nNew-Tip: {journal['new_tip']}\n"
-            f"Receipt: {MEMBER_REBASE_PATH}\nReceipt-SHA256: {journal['receipt_digest']}\n")
+            f"Receipt: {MEMBER_REBASE_PATH}\nReceipt-SHA256: {journal['receipt_digest']}\n"
+            + (f"Resolution-Review: .project/{journal['resolution']['review']['path']}\n"
+               if journal.get("resolution") else ""))
 
 
 def _record_member_rebase(coordinator: Path, journal: Dict[str, object]) -> str:
@@ -6069,6 +6338,15 @@ def _record_member_rebase(coordinator: Path, journal: Dict[str, object]) -> str:
         "prior_close": journal["close"],
         "contract_head": journal["contract_head"], "task_contracts": journal["task_contracts"],
     }
+    resolution = journal.get("resolution")
+    paths = [members.LOCK_PATH, MEMBER_REBASE_PATH]
+    if resolution:
+        adoption["resolution"] = resolution
+        review = coordinator / ".project" / str(resolution["review"]["path"])
+        if (review.is_symlink() or not review.is_file()
+                or hashlib.sha256(review.read_bytes()).hexdigest() != resolution["review"]["sha256"]):
+            raise MemberRebaseError("review-mismatch", "the resolution review changed after the owner ruling")
+        paths.append(".project/" + str(resolution["review"]["path"]))
     _require_member_rebase_contracts(coordinator, journal)
     raw = _read_member_rebase(coordinator / ".project")
     adoptions = json.loads(raw)["adoptions"] if raw is not None else []
@@ -6078,7 +6356,8 @@ def _record_member_rebase(coordinator: Path, journal: Dict[str, object]) -> str:
                                     f"of {journal['old_tip']}")
         adoptions.append(adoption)
     lock_text = json.dumps(lock, indent=2) + "\n"
-    receipt_text = json.dumps({"schema": MEMBER_REBASE_SCHEMA, "adoptions": adoptions},
+    schema = MEMBER_REBASE_SCHEMA_V2 if any("resolution" in item for item in adoptions) else MEMBER_REBASE_SCHEMA
+    receipt_text = json.dumps({"schema": schema, "adoptions": adoptions},
                               indent=2, ensure_ascii=False) + "\n"
     # Never record a receipt that its own validator would refuse.
     _validate_member_rebase(coordinator, receipt_text.encode("utf-8"), lock_text.encode("utf-8"))
@@ -6090,12 +6369,11 @@ def _record_member_rebase(coordinator: Path, journal: Dict[str, object]) -> str:
         rows = members.read_member_close(common, str(close["archive"]))
         if [row for row in rows if row.get("name") == member] != [close["row"]]:
             raise MemberRebaseError("close-journal", "member-close row changed during adoption; preserve and inspect it")
-    paths = (members.LOCK_PATH, MEMBER_REBASE_PATH)
     git_output(coordinator, "add", "--", *paths)
     if run_git(coordinator, "diff", "--cached", "--quiet", "HEAD", "--", *paths).returncode == 0:
         # Resumed after the commit: the adoption commit is the last one that wrote the receipt.
         return git_output(coordinator, "log", "-1", "--format=%H", "--", MEMBER_REBASE_PATH)
-    journal["receipt_digest"] = _member_rebase_digest({"schema": MEMBER_REBASE_SCHEMA, "adoptions": adoptions})
+    journal["receipt_digest"] = _member_rebase_digest({"schema": schema, "adoptions": adoptions})
     committed = run_git(coordinator, "commit", "-q", "--only", "-F", "-", "--", *paths,
                         input=_member_rebase_message(journal))
     if committed.returncode != 0:
@@ -6115,6 +6393,7 @@ def _member_rebase_result(journal: Dict[str, object]) -> Dict[str, object]:
         "published": {"ref": f"refs/heads/{journal['branch']}",
                       "lease": journal.get("published_from") or "absent", "remote": journal["new_tip"]},
         "preserved_close": journal["close"],
+        "resolution": journal.get("resolution"),
     }
 
 
@@ -6137,6 +6416,14 @@ def _finish_member_rebase(coordinator: Path, path: Path, journal: Dict[str, obje
     if journal["stage"] in {"replayed", "publishing"}:
         if _optional_ref(checkout, f"refs/heads/{journal['replay_branch']}") != journal["new_tip"]:
             raise MemberRebaseError("replay-lost", "the replay branch moved; journal retained, refusing publication or deletion")
+        leftover = Path(str(journal["replay_worktree"]))
+        if journal.get("resolution") and leftover.is_dir() and not leftover.is_symlink():
+            # Interrupted after recording the resolution, before its worktree was removed.
+            if uncommitted_paths(leftover) or current_sha(leftover) != journal["new_tip"]:
+                raise MemberRebaseError("replay-leftover", f"resolution worktree changed after the review: {leftover}")
+            _remove_worktree(checkout, leftover, False)
+            with contextlib.suppress(OSError):
+                leftover.parent.rmdir()  # only when empty
         try:
             _publish_member_rebase(journal)
         except MemberRebaseError as error:
@@ -6172,19 +6459,167 @@ def _finish_member_rebase(coordinator: Path, path: Path, journal: Dict[str, obje
     return result
 
 
-def adopt_member_rebase(coordinator: Path, member: str, onto: str, ruling: str) -> Dict[str, object]:
+def _member_resolution_message(journal: Dict[str, object], paths: Sequence[str]) -> str:
+    return (f"{MEMBER_REBASE_RESOLUTION_SUBJECT}{journal['default_branch']}\n\n"
+            f"The rebase of {journal['branch']} onto {journal['onto']} replayed the conflicting hunks of "
+            f"{len(journal['conflicts'])} commit(s) with this branch's side. This reviewed resolution "
+            "restores what the default branch needs in them.\n\n"
+            + "".join(f"- {path}\n" for path in paths))
+
+
+def _member_resolution_candidate(journal: Dict[str, object]) -> Dict[str, object]:
+    """The resolution waiting in the replay worktree: its scope, tree and remaining markers.
+
+    The candidate tree is written through a temporary index, so neither the
+    replay worktree's index nor any ref changes; only Git objects are added.
+    """
+    checkout, destination = Path(str(journal["checkout"])), Path(str(journal["replay_worktree"]))
+    replay_tip = str(journal["new_tip"])
+    paths = sorted({path for row in journal["conflicts"] for path in row["paths"]})
+    if (destination.is_symlink() or not destination.is_dir()
+            or git_output(destination, "branch", "--show-current") != journal["replay_branch"]):
+        raise MemberRebaseError("resolution-worktree", f"the replay worktree {destination} is missing or not on "
+                                f"{journal['replay_branch']}; --abort and start again")
+    head = current_sha(destination)
+    committed = None
+    if head != replay_tip:
+        # Resumed after the helper's own resolution commit, before the journal recorded it.
+        if _member_resolution_error(checkout, head, replay_tip, paths,
+                                    git_output(checkout, "rev-parse", head + "^{tree}")):
+            raise MemberRebaseError("resolution-worktree", f"{journal['replay_branch']} moved beyond the replay tip "
+                                    "with a commit the helper did not make; --abort and start again")
+        committed = head
+    changed = uncommitted_paths(destination)
+    if committed and changed:
+        raise MemberRebaseError("resolution-worktree", "the replay worktree changed after the resolution commit")
+    outside = sorted(changed - set(paths))
+    if outside:
+        raise MemberRebaseError("resolution-scope", "the resolution may change only the conflicting paths; "
+                                "revert: " + ", ".join(outside))
+    if committed:
+        tree = git_output(checkout, "rev-parse", committed + "^{tree}")
+        touched = sorted(_changed_between(checkout, replay_tip, committed))
+    else:
+        with tempfile.TemporaryDirectory(prefix="member-resolution-") as temporary:
+            env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
+            steps = [("read-tree", replay_tip)]
+            if changed:
+                steps.append(("add", "-A", "--", *sorted(changed)))
+            for arguments in steps:
+                step = _git_in(destination, env, *arguments)
+                if step.returncode != 0:
+                    raise MemberRebaseError("resolution-worktree", (step.stderr or step.stdout).strip())
+            written = _git_in(destination, env, "write-tree")
+            if written.returncode != 0:
+                raise MemberRebaseError("resolution-worktree", (written.stderr or written.stdout).strip())
+            tree = written.stdout.strip()
+        touched = sorted(_changed_between(checkout, replay_tip + "^{tree}", tree))
+    markers = _conflict_marker_paths(checkout, tree, paths)
+    review = member_rebase_review_path(str(journal["member"]), str(journal["old_tip"]))
+    return {
+        "verdict": "unresolved" if markers else "ready-for-review", "member": journal["member"],
+        "branch": journal["branch"], "default_branch": journal["default_branch"], "onto": journal["onto"],
+        "worktree": str(destination), "replay_tip": replay_tip, "commit": committed,
+        "conflicts": [{**row, "subject": next((item["subject"] for item in journal["commits"]
+                                               if item["original"] == row["original"]), ""),
+                       "sides": {"base": f"{row['original']}^", "default": journal["onto"],
+                                 "member": row["original"]}}
+                      for row in journal["conflicts"]],
+        "paths": paths, "changed_paths": touched, "tree": tree, "markers": markers,
+        "review": f".project/{review}",
+        "review_contract": (f"the review at .project/{review} must contain exactly one line "
+                            f"`Resolution-Tree: {tree}` and the line `{MEMBER_REBASE_REVIEW_VERDICT}`"),
+    }
+
+
+def member_rebase_resolution(coordinator: Path, member: str) -> Dict[str, object]:
+    """Read-only status of a conflicting adoption waiting for its resolution."""
+    coordinator = require_directory(coordinator, "coordinator")
+    path = _member_rebase_journal_path(coordinator, member)
+    if not os.path.lexists(path):
+        return {"verdict": "none", "member": member}
+    journal = _read_member_rebase_journal(path)
+    _validate_member_rebase_journal(coordinator, member, journal)
+    if journal["stage"] != "awaiting-resolution":
+        return {"verdict": "not-awaiting", "member": member, "stage": journal["stage"]}
+    return _member_resolution_candidate(journal)
+
+
+def _resolve_member_rebase(coordinator: Path, path: Path, journal: Dict[str, object], ruling: str) -> None:
+    """Commit the reviewed resolution on the replay branch and make the adoption publishable."""
+    if not isinstance(ruling, str) or not ruling.strip():
+        raise MemberRebaseError("ruling-required", "an explicit owner --resolution-ruling is required")
+    candidate = _member_resolution_candidate(journal)
+    if candidate["markers"]:
+        raise MemberRebaseError("resolution-unresolved", "conflict markers remain in "
+                                + ", ".join(candidate["markers"]))
+    relative = member_rebase_review_path(str(journal["member"]), str(journal["old_tip"]))
+    review = coordinator / ".project" / relative
+    if review.is_symlink() or not review.is_file() or review.resolve() != review.absolute():
+        raise MemberRebaseError("review-required", f"write the passing resolution review to .project/{relative}")
+    raw = review.read_bytes()
+    text = raw.decode("utf-8", errors="replace")
+    if (MEMBER_REBASE_REVIEW_TREE_RE.findall(text) != [candidate["tree"]]
+            or not re.search(r"(?m)^" + re.escape(MEMBER_REBASE_REVIEW_VERDICT) + r"\s*$", text)):
+        raise MemberRebaseError("review-mismatch", candidate["review_contract"])
+    checkout, destination = Path(str(journal["checkout"])), Path(str(journal["replay_worktree"]))
+    replay_tip, paths = str(journal["new_tip"]), list(candidate["paths"])
+    commit = candidate["commit"]
+    if commit is None and candidate["changed_paths"]:
+        # Build the commit without running member hooks, then move only the replay branch.
+        changed = sorted(uncommitted_paths(destination))
+        git_output(destination, "add", "-A", "--", *changed)
+        tree = git_output(destination, "write-tree")
+        if tree != candidate["tree"]:
+            raise MemberRebaseError("review-mismatch", "the replay worktree changed after the review; review again")
+        made = run_git(destination, "commit-tree", tree, "-p", replay_tip, "-F", "-",
+                       input=_member_resolution_message(journal, candidate["changed_paths"]))
+        if made.returncode != 0:
+            raise MemberRebaseError("resolution-failed", (made.stderr or made.stdout).strip())
+        commit = made.stdout.strip()
+        git_output(destination, "update-ref", f"refs/heads/{journal['replay_branch']}", commit, replay_tip)
+        if uncommitted_paths(destination):
+            raise MemberRebaseError("resolution-failed", "the replay worktree does not match the resolution commit")
+    resolution = {
+        "conflicts": journal["conflicts"], "paths": paths, "commit": commit, "tree": candidate["tree"],
+        "review": {"path": relative, "sha256": hashlib.sha256(raw).hexdigest()}, "ruling": ruling,
+    }
+    new_tip = str(commit or replay_tip)
+    try:
+        commits = _member_adoption_commits(checkout, str(journal["old_base"]), str(journal["old_tip"]),
+                                           str(journal["onto"]), new_tip, resolution)
+    except IsolationError as error:
+        raise MemberRebaseError("proof-failed", str(error)) from error
+    if commits != journal["commits"]:
+        raise MemberRebaseError("proof-failed", "the resolved replay changed the proven commit map")
+    journal["resolution"], journal["new_tip"], journal["stage"] = resolution, new_tip, "replayed"
+    _write_member_rebase_journal(path, journal)
+    _remove_worktree(checkout, destination, False)
+    with contextlib.suppress(OSError):
+        destination.parent.rmdir()  # only when empty
+
+
+def adopt_member_rebase(
+    coordinator: Path, member: str, onto: str, ruling: str, resolve_conflicts: bool = False,
+    resolution_ruling: Optional[str] = None,
+) -> Dict[str, object]:
     """Apply, or resume, an owner-ruled rebase of a locked member's bound branch onto `onto`.
 
     Every precondition and a simulated replay run before the journal. The
     journal precedes every member mutation: before publication an interruption
     rolls back; from publication on, a rerun with the same arguments rolls forward.
+    With `resolve_conflicts`, a conflicting replay stops at `awaiting-resolution`
+    with its replay worktree; a rerun with `resolution_ruling` commits the
+    reviewed resolution and continues to publication.
     """
     coordinator = require_directory(coordinator, "coordinator")
     path = _member_rebase_journal_path(coordinator, member)
     # Refusals are read-only, including conflict/empty/range checks. Do not
     # create even the landing lock or fetch into the member before they pass.
     if not os.path.lexists(path):
-        preview_member_rebase(coordinator, member, onto, ruling)
+        if resolution_ruling is not None:
+            raise MemberRebaseError("arguments", "--resolution-ruling needs an adoption awaiting its resolution")
+        preview_member_rebase(coordinator, member, onto, ruling, resolve_conflicts)
         # Admission of a new adoption only: resuming a journaled one reuses the lens event it admitted.
         project = coordinator / ".project"
         if _common.lens_enforced_for(project, "rebase"):
@@ -6199,12 +6634,19 @@ def adopt_member_rebase(coordinator: Path, member: str, onto: str, ruling: str) 
             if (journal["onto"], journal["ruling"]) != (onto, ruling):
                 raise MemberRebaseError("journal-pending", f"member {member} has a pending adoption onto "
                                         f"{journal['onto']}; rerun with its recorded --onto and --ruling, or --abort")
+            if journal["stage"] == "awaiting-resolution":
+                if resolution_ruling is None:
+                    return _member_resolution_candidate(journal)
+                _resolve_member_rebase(coordinator, path, journal, resolution_ruling)
             if journal["stage"] != "prepared":
                 return _finish_member_rebase(coordinator, path, journal)
             _rollback_member_rebase(path, journal)
-        plan = _member_rebase_plan(coordinator, member, onto, ruling)
+        if resolution_ruling is not None:
+            raise MemberRebaseError("arguments", "--resolution-ruling needs an adoption awaiting its resolution")
+        plan = _member_rebase_plan(coordinator, member, onto, ruling, resolve_conflicts)
         checkout = Path(str(plan["checkout"]))
-        journal = {"schema": MEMBER_REBASE_JOURNAL_SCHEMA, "stage": "prepared", "produced_commits": [], **plan}
+        journal = {"schema": MEMBER_REBASE_JOURNAL_SCHEMA, "stage": "prepared", "produced_commits": [],
+                   "conflicts": [], "resolution": None, **plan}
         _write_member_rebase_journal(path, journal)
         try:
             _fetch_into(checkout, str(plan["default_branch"]), None)
@@ -6218,6 +6660,10 @@ def adopt_member_rebase(coordinator: Path, member: str, onto: str, ruling: str) 
             # A failed cleanup must remain visible, with the journal retained.
             _rollback_member_rebase(path, journal)
             raise
+        if journal["conflicts"]:
+            journal["stage"] = "awaiting-resolution"
+            _write_member_rebase_journal(path, journal)
+            return _member_resolution_candidate(journal)
         journal["stage"] = "replayed"
         _write_member_rebase_journal(path, journal)
         return _finish_member_rebase(coordinator, path, journal)
@@ -6234,7 +6680,7 @@ def abort_member_rebase(coordinator: Path, member: str) -> Dict[str, object]:
             return {"verdict": "none", "member": member}
         journal = _read_member_rebase_journal(path)
         _validate_member_rebase_journal(coordinator, member, journal)
-        published = journal["stage"] not in {"prepared", "replayed"} or (
+        published = journal["stage"] not in {"prepared", "replayed", "awaiting-resolution"} or (
             journal.get("new_tip") and _remote_ref(Path(str(journal["checkout"])),
                                                    f"refs/heads/{journal['branch']}") == journal["new_tip"])
         if published:
@@ -7064,6 +7510,19 @@ def parser() -> argparse.ArgumentParser:
                                     help="read-only preview, including a simulated replay")
     member_rebase_mode.add_argument("--abort", action="store_true",
                                     help="roll back an interrupted adoption that is not yet published")
+    member_rebase_parser.add_argument(
+        "--resolve-conflicts", action="store_true",
+        help="replay conflicting commits favoring the member side and stop for one reviewed resolution commit")
+    member_rebase_parser.add_argument(
+        "--resolution-ruling", help="the owner ruling accepting the reviewed resolution, verbatim")
+
+    resolution_parser = subparsers.add_parser(
+        "member-rebase-resolution",
+        help="read-only status of a conflicting member rebase adoption waiting for its resolution",
+    )
+    resolution_parser.add_argument("--repo", type=Path, required=True, help="coordinator root")
+    resolution_parser.add_argument("--member", required=True)
+
 
     mergeability_parser = subparsers.add_parser(
         "member-mergeability",
@@ -7199,9 +7658,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             elif arguments.onto is None or arguments.ruling is None:
                 raise MemberRebaseError("arguments", "--onto and --ruling are required unless --abort")
             elif arguments.dry_run:
-                result = preview_member_rebase(arguments.repo, arguments.member, arguments.onto, arguments.ruling)
+                if arguments.resolution_ruling is not None:
+                    raise MemberRebaseError("arguments", "--resolution-ruling cannot be previewed")
+                result = preview_member_rebase(arguments.repo, arguments.member, arguments.onto, arguments.ruling,
+                                               arguments.resolve_conflicts)
             else:
-                result = adopt_member_rebase(arguments.repo, arguments.member, arguments.onto, arguments.ruling)
+                result = adopt_member_rebase(arguments.repo, arguments.member, arguments.onto, arguments.ruling,
+                                             arguments.resolve_conflicts, arguments.resolution_ruling)
+        elif arguments.command == "member-rebase-resolution":
+            result = member_rebase_resolution(arguments.repo, arguments.member)
         elif arguments.command == "member-mergeability":
             result = member_mergeability(arguments.repo)
         elif arguments.command == "recover":
@@ -7245,7 +7710,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               file=sys.stderr)
         return 1
     except (IsolationError, OSError, ValueError) as error:
-        if arguments.command in {"adopt-member-rebase", "member-mergeability"}:
+        if arguments.command in {"adopt-member-rebase", "member-rebase-resolution", "member-mergeability"}:
             print(json.dumps({"code": "invalid-input", "error": str(error), "verdict": "refused"}, sort_keys=True),
                   file=sys.stderr)
         elif isinstance(error, IsolationError):
