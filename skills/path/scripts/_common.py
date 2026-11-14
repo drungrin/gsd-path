@@ -1605,3 +1605,170 @@ def latest_lens_event(events: Sequence[str], gate: str, scope: str = "",
         if parsed and parsed.gate == gate and parsed.scope == scope:
             found = parsed
     return found
+
+
+# --- Receipt line ------------------------------------------------------------
+#
+# A helper's stdout is the JSON its caller parses, so the receipt line goes to
+# stderr. A shell tool that shows both streams (Claude Code's Bash, for one)
+# then keeps one stable line per helper call even when the caller sent stdout
+# to a file or through a filter, for activity panels and session forensics to
+# read without parsing every helper's own receipt shape.
+
+RECEIPT_PREFIX = "GSD-RECEIPT v1 "
+# Set while a helper runs, so the helpers it starts stay quiet: their stderr
+# is the parent's evidence, not the caller's.
+RECEIPT_NESTED = "GSD_PATH_RECEIPT_NESTED"
+# `0`, `off`, `false` or `no` turns the line off.
+RECEIPT_SWITCH = "GSD_PATH_RECEIPT"
+_RECEIPT_FAILED = frozenset({"blocked", "error", "failed", "refused"})
+_RECEIPT_KEEP = 4 * 1024 * 1024
+
+
+class _Recorder:
+    """A text stream that writes through and keeps what passed, up to a limit."""
+
+    def __init__(self, stream) -> None:
+        self.stream = stream
+        self.parts: List[str] = []
+        self.size = 0
+
+    def write(self, text: str) -> int:
+        if self.size <= _RECEIPT_KEEP:
+            self.parts.append(text)
+            self.size += len(text)
+        return self.stream.write(text)
+
+    def text(self) -> str:
+        return "".join(self.parts)
+
+    def __getattr__(self, name: str):
+        return getattr(self.stream, name)
+
+
+def _receipt_result(output: str) -> dict:
+    """The JSON object a helper printed: its whole stdout, or its last object line."""
+    text = output.strip()
+    if not text:
+        return {}
+    candidates = [text] + [line.strip() for line in reversed(text.splitlines()) if line.strip().startswith("{")]
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _receipt_flag(argv: Sequence[str], name: str) -> str:
+    for index, argument in enumerate(argv):
+        if argument == name and index + 1 < len(argv):
+            return argv[index + 1]
+        if argument.startswith(name + "="):
+            return argument[len(name) + 1:]
+    return ""
+
+
+def receipt_line(script: str, argv: Sequence[str], code: int, output: str, error: str = "") -> str:
+    """The `GSD-RECEIPT v1 {...}` line for one helper call.
+
+    `outcome` is `fail` for a nonzero exit or a blocked, failed or refused
+    result, `warn` for a question or a route that blocks, and `ok` otherwise;
+    `status` is the helper's own status word when it printed one, else a
+    route's action, else `ok` or `failed` by exit status.
+    """
+    command = argv[0] if argv and re.fullmatch(r"[a-z][a-z0-9-]*", argv[0]) else ""
+    result = _receipt_result(output)
+    status = result.get("status") if isinstance(result.get("status"), str) else ""
+    reason = result.get("reason") if isinstance(result.get("reason"), str) else ""
+    blocked = result.get("blocked") if isinstance(result.get("blocked"), list) else []
+    landed = result.get("landed") if isinstance(result.get("landed"), list) else []
+    route = result.get("route") if isinstance(result.get("route"), dict) else {}
+    if blocked and not reason:
+        first = blocked[0]
+        reason = str(first.get("reason") or first.get("task") or "") if isinstance(first, dict) else str(first)
+    if code != 0 or status in _RECEIPT_FAILED or blocked:
+        outcome = "fail"
+    elif status == "question" or route.get("action") == "block":
+        outcome = "warn"
+        reason = reason or str(route.get("reason") or "")
+    else:
+        outcome = "ok"
+    if outcome == "fail" and not reason:
+        lines = [line.strip() for line in error.splitlines() if line.strip() and not line.startswith(RECEIPT_PREFIX)]
+        reason = lines[-1] if lines else ""
+    receipt: Dict[str, object] = {
+        "cmd": command,
+        "exit": code,
+        "outcome": outcome,
+        "script": script,
+        "status": status or str(route.get("action") or "") or ("ok" if code == 0 else "failed"),
+    }
+    task = _receipt_flag(argv, "--task-id") or (result.get("task") if isinstance(result.get("task"), str) else "")
+    if task:
+        receipt["task"] = task
+    for name in ("wave", "cycle"):
+        value = _receipt_flag(argv, f"--{name}")
+        if value.isdigit():
+            receipt[name] = int(value)
+    commit = result.get("commit") if isinstance(result.get("commit"), str) else ""
+    if not commit and landed and isinstance(landed[0], dict) and isinstance(landed[0].get("commit"), str):
+        commit = landed[0]["commit"]
+    if commit:
+        receipt["commit"] = commit
+    if reason:
+        line = " ".join(reason.split())
+        receipt["reason"] = line if len(line) <= 300 else line[:299] + "…"
+    return RECEIPT_PREFIX + json.dumps(receipt, sort_keys=True)
+
+
+def _receipt_code(value: object) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    return 1
+
+
+def cli_receipt(main) -> object:
+    """Run a helper's `main()` and end its call with a receipt line on stderr.
+
+    Returns what `main()` returned and lets its exceptions through; the line
+    never changes a helper's output or exit status. An internal subcommand
+    (`_child`) writes none and clears the nested mark, so what it starts is a
+    caller of its own.
+    """
+    argv = sys.argv[1:]
+    if argv and argv[0].startswith("_"):
+        os.environ.pop(RECEIPT_NESTED, None)
+        return main()
+    switched_off = os.environ.get(RECEIPT_SWITCH, "").strip().lower() in {"0", "off", "false", "no"}
+    if switched_off or os.environ.get(RECEIPT_NESTED) == "1":
+        return main()
+    os.environ[RECEIPT_NESTED] = "1"
+    out, err = _Recorder(sys.stdout), _Recorder(sys.stderr)
+    sys.stdout, sys.stderr = out, err
+    code = 1
+    try:
+        returned = main()
+        code = _receipt_code(returned)
+        return returned
+    except SystemExit as stop:
+        code = _receipt_code(stop.code)
+        raise
+    finally:
+        sys.stdout, sys.stderr = out.stream, err.stream
+        try:
+            # A typed refusal is a JSON object on stderr that callers parse
+            # whole; the exit status already says it failed.
+            errors = err.text().strip()
+            typed = errors.startswith("{") and errors.endswith("}") and bool(_receipt_result(errors))
+            if not typed:
+                line = receipt_line(Path(sys.argv[0]).name, argv, code, out.text(), err.text())
+                sys.stdout.flush()
+                sys.stderr.write(line + "\n")
+                sys.stderr.flush()
+        except Exception:  # noqa: BLE001 - the receipt must never change a helper's result
+            pass

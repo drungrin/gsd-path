@@ -226,6 +226,34 @@ Each generated fix-task Verify runs the distinct source Verify commands in
 separate subshells under `set -e`. An `exit 0` or trailing comment in one source
 cannot skip the next source command, and a failing subshell stops the Verify.
 
+## Receipt line
+
+The pipeline helpers (`dispatch_driver.py`, `pipeline_state.py`,
+`isolation.py`, `workflow_run.py`, `model_policy.py`, `check_handoffs.py`,
+`check_task_briefs.py`, `review_panel.py`, `build_state.py` and the other
+helpers an orchestrator runs from a shell) end each call with one line on
+stderr:
+
+```text
+GSD-RECEIPT v1 {"cmd": "finish", "commit": "<full sha>", "exit": 0, "outcome": "ok", "script": "dispatch_driver.py", "status": "landed", "task": "T002"}
+```
+
+Stdout stays the JSON receipt callers parse, and the exit status does not
+change. The line is one JSON object with sorted keys: `script`, `cmd` (the
+subcommand, or `""`), `exit`, `status` (the helper's own status word, else
+a route's action, else `ok` or `failed` by exit status), and `outcome`: `fail` for a nonzero exit or
+a `blocked`, `error`, `failed` or `refused` result (including a non-empty
+`blocked` list), `warn` for a `question` or a route whose action is `block`,
+and `ok` otherwise. `task`, `wave`, `cycle`, `commit` and a one-line `reason`
+(the result's reason, else the last stderr line of a failure) appear when
+known. Shell tools that show both streams keep the line even when the caller
+sent stdout to a file or a filter, so activity views and session forensics can
+read a helper's outcome without parsing each receipt shape. A helper started by
+another helper writes no line: its stderr is its parent's evidence. A typed
+refusal, whose stderr is one JSON object callers parse whole, writes none
+either; its exit status already says it failed. Hooks write none. Set `GSD_PATH_RECEIPT=off` to turn the line off. Fields may be added
+within `v1`; a reader ignores the ones it does not know.
+
 ## Token accounting
 
 `token_budget.py` is in the router and build bundles. Limits have no defaults.

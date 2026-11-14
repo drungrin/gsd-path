@@ -2769,4 +2769,6 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from _common import cli_receipt
+
+    raise SystemExit(cli_receipt(main))

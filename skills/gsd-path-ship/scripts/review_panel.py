@@ -572,4 +572,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from _common import cli_receipt
+
+    raise SystemExit(cli_receipt(main))

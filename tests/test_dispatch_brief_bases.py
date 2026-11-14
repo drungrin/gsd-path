@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts import state_checkpoint
+from scripts import _common, state_checkpoint
 from tests.test_task_briefs import TASK_TEMPLATE
 
 
@@ -105,7 +105,9 @@ class DispatchBriefBasesTests(unittest.TestCase):
     def assert_passes(self, result: subprocess.CompletedProcess, tasks: int) -> None:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["tasks"], tasks)
-        self.assertEqual(result.stderr, "")
+        # Nothing but the helper's receipt line: no diagnostic, no warning.
+        self.assertEqual([line for line in result.stderr.splitlines()
+                          if not line.startswith(_common.RECEIPT_PREFIX)], [])
 
     def assert_diagnostic(self, result: subprocess.CompletedProcess, *fragments: str) -> None:
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)

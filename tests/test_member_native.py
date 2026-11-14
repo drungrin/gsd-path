@@ -335,7 +335,8 @@ class NativeMemberDispatchTests(unittest.TestCase):
             refused = call("isolation.py", "activate-member-task", "--repo", str(self.coordinator),
                            "--member", "web", "--task-id", "T001", "--reauthorize")
         self.assertEqual(refused.returncode, 1, refused.stderr)
-        self.assertEqual(refused.stderr.strip(), "another dispatch_driver invocation holds the lock")
+        self.assertEqual([line for line in refused.stderr.splitlines() if not line.startswith("GSD-RECEIPT v1 ")],
+                         ["another dispatch_driver invocation holds the lock"])
         self.assertEqual(git(self.member, "for-each-ref", self.AUTH_REF), "")
 
     def test_reauthorize_reads_only_the_live_copy(self) -> None:
