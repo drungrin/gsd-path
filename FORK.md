@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.50**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.51**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,60 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.51 — 2026-11-14
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 50 to 51.
+
+Applies upstream as is. The commit carries no fork bookkeeping, and on upstream
+main `d5a30f5f` it applies with one trivial conflict, both sides appending at the
+end of `scripts/_common.py`; its tests pass there:
+- [`38136b17 — end each pipeline helper call with a GSD-RECEIPT v1 line on stderr`](https://github.com/drungrin/gsd-path/commit/38136b1799ff2fe4458b2dc7579ebed687fbbd28)
+
+### Receipt line on stderr
+
+- An orchestrator often sends a helper's stdout to a file or through a filter,
+  and many command lines end in `echo`. The transcript then keeps neither the
+  helper's receipt nor its outcome: a blocked landing, a model the host cannot
+  run, or a failed handoff check reads like any command that exited 0.
+- The 22 pipeline helpers an orchestrator runs from a shell now end each call
+  with one line on stderr, through `_common.cli_receipt`:
+  `GSD-RECEIPT v1 {"cmd", "exit", "outcome", "script", "status", ...}`, with
+  `task`, `wave`, `cycle`, `commit` and a one-line `reason` when known.
+  `outcome` is `fail` for a nonzero exit or a blocked, error, failed or refused
+  result, `warn` for a question or a blocking route, and `ok` otherwise. Stdout
+  and the exit status do not change. The format is documented in `RUNTIME.md`.
+- A helper started by another helper writes no line
+  (`GSD_PATH_RECEIPT_NESTED`), so a parent's captured stderr stays its
+  evidence; the dispatch `_child` wrapper clears the mark for the child it
+  starts. A typed refusal, whose stderr is one JSON object callers parse whole,
+  writes none. Hooks are not wrapped, because their stderr goes back to the
+  model. `GSD_PATH_RECEIPT=off` turns the line off.
+- Readers: the Paseo Sonar plugin prefers this line over its own reading of
+  helper output, and works without it. Session forensics can read a helper's
+  outcome from any transcript that shows stderr.
+
+Validation: 11 new tests in `tests/test_receipt_line.py` cover the line for a
+landing, a blocked result behind exit 0, a question, a blocking route, a
+nonzero exit with the last error line, a one-line bounded reason with escaped
+direction marks, unreadable output, the pass-through of `main()`'s result and
+`SystemExit`, a typed refusal, nested and switched-off calls, the `_child`
+wrapper, and a real `check_handoffs.py` process with and without the nested
+mark. Two existing tests that compared a helper's whole stderr now allow the
+receipt line beside it. The full Python suite ran in eight parallel shards
+(3,826 tests, 41 skipped); its one failure, the native member lock test
+comparing the whole stderr, was fixed and `tests.test_member_native` passed
+on rerun (15 tests). The daemon suite passed (496 tests, 13 skipped), Node
+tests passed (118, one skipped), resource synchronization checked 558
+resources, and `check:locks` passed. The release commit changes only version
+metadata and this entry.
+
+Limits:
+- A caller that sends stderr to a file or `/dev/null` drops the line too.
+- Helpers outside the 22 (installers, migrations, hooks, status line) write
+  none.
+- No upstream submission.
 
 ## 1.7.1.50 — 2026-11-11
 
