@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.51**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.52**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,53 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.52 — 2026-11-15
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 51 to 52.
+
+Applies upstream: the first commit carries no fork-only code. On upstream main
+`d5a30f5f` it conflicts only in `file_kind`, which the fork split into
+`path_kind` and `file_kind`. There the same `try`/`except UndecodableEvidence`
+wraps upstream's inline Markdown read. Its two new tests pass there, and the
+module's failure set is the same with and without the patch:
+- [`d33613bb — count non-UTF-8 Markdown as a docs signal`](https://github.com/drungrin/gsd-path/commit/d33613bb197eb4aa5b6c0ec221d7cca8d482b5fd)
+
+Fork only (member inspection at a pin):
+- [`4c5b31ad — classify non-UTF-8 member Markdown as docs at a pin`](https://github.com/drungrin/gsd-path/commit/4c5b31ada28ee90390021e57ef69e346fce29ce4)
+
+### Non-UTF-8 Markdown is content, not a detection failure
+
+- A consumer's milestone added a deliberately broken upload fixture, a `.md`
+  file whose bytes are not UTF-8, to a member repository. The next
+  milestone's inspection stopped before any sidecar: `classify_revision`
+  raised `cannot read Markdown evidence` and the member became
+  `unverifiable`, even though its source files already made it brownfield.
+  The same strict read in `classify` stops project detection for any
+  repository with such a file.
+- Detection now treats a Markdown file that is not UTF-8 as existing content:
+  a `docs` signal from the working tree or a pinned revision, and a `git`
+  signal when only the index has it. It never makes a repository greenfield,
+  so this keeps the fail-safe direction of upstream's earlier change from
+  "no body" to an error. A non-UTF-8 `STATE.md` or any other evidence keeps
+  strict decoding (`UndecodableEvidence` is a `DetectError`).
+
+Validation: upstream's `test_unreadable_markdown_errors`, which asserted the
+error, is replaced by tests for a working-tree file (title plus a bad byte,
+and pure binary) and a staged-only file; a new revision test checks that
+`classify_revision` and `classify` agree on a committed binary `.md`.
+`classify_revision` on the consumer member's pinned commit now returns
+brownfield with the fixture as a `docs` signal. The full Python suite ran in
+eight parallel shards (3,823 tests, 41 skipped, no failures), the daemon
+suite passed (496 tests, 13 skipped), Node tests passed (118, one skipped),
+resource synchronization checked 558 resources, and `check:locks` passed.
+The release commit changes only version metadata and this entry.
+
+Limits:
+- The docs audit still lists such a file in its inventory by path; the
+  auditor finds no claims in it.
+- No upstream submission.
 
 ## 1.7.1.51 — 2026-11-14
 
