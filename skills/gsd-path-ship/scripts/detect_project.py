@@ -1425,10 +1425,10 @@ def classify_revision(checkout: Path, sha: str, first_signal: bool = False) -> d
     blobs = read_revision_blobs(root, [entry.oid for entry in markdown])
     for entry in markdown:
         try:
-            text = blobs[entry.oid].decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise DetectError(f"cannot read Markdown evidence: {entry.path}") from error
-        if markdown_has_body(text):
+            has_body = markdown_has_body(blobs[entry.oid].decode("utf-8"))
+        except UnicodeDecodeError:
+            has_body = True  # classify's rule: non-UTF-8 Markdown is content
+        if has_body:
             signals.append({"kind": "docs", "path": entry.path})
     signals.sort(key=lambda item: (item["kind"], item["path"]))
     if first_signal:

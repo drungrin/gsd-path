@@ -2475,6 +2475,21 @@ class ClassifyRevisionTests(unittest.TestCase):
                 with self.subTest(sha=sha):
                     self.assertEqual(detect_project.classify_revision(repo, sha)["verdict"], verdict)
 
+    def test_revision_counts_non_utf8_markdown_like_classify(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            self.git(repo, "init", "-q", "-b", "main")
+            (repo / "testdata").mkdir()
+            (repo / "testdata" / "broken.md").write_bytes(b"\x81\x8d\x8f\x90\x9d")
+            self.git(repo, "add", "-A")
+            self.git(repo, "commit", "-q", "-m", "fixture")
+            sha = self.git(repo, "rev-parse", "HEAD")
+            expected = detect_project.classify(repo)
+            actual = detect_project.classify_revision(repo, sha, first_signal=True)
+            self.assertEqual(actual["verdict"], "brownfield")
+            self.assertEqual(actual["signals"], [{"kind": "docs", "path": "testdata/broken.md"}])
+            self.assertEqual(actual["signals"], expected["signals"])
+
     def test_revision_excludes_project_links_and_managed_bundles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
