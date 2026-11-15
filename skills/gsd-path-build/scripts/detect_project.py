@@ -260,6 +260,10 @@ class DetectError(RuntimeError):
     pass
 
 
+class UndecodableEvidence(DetectError):
+    """Evidence bytes were read but are not UTF-8."""
+
+
 class GitIndexEntry(NamedTuple):
     path: str
     mode: int
@@ -574,7 +578,7 @@ def read_anchored_evidence(
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise DetectError(
+        raise UndecodableEvidence(
             f"cannot read {evidence_name} evidence: {root / relative}"
         ) from error
 
@@ -632,7 +636,9 @@ def read_lstat_open_evidence(
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise DetectError(f"cannot read {evidence_name} evidence: {current}") from error
+        raise UndecodableEvidence(
+            f"cannot read {evidence_name} evidence: {current}"
+        ) from error
 
 
 def is_thematic_break(line: str) -> bool:
@@ -759,16 +765,21 @@ def file_kind(
     if kind != "markdown":
         return kind
     path = root.joinpath(*PurePosixPath(relative).parts)
-    text = read_regular_evidence(
-        path,
-        root,
-        missing_ok=tracked,
-        evidence_name="Markdown",
-    )
-    if text is None and tracked:
-        if index_oid is None:
-            raise DetectError(f"missing staged Markdown blob identity: {relative}")
-        text = read_git_index_blob(root, relative, index_oid)
+    # Markdown that is not UTF-8 (an encoding fixture, a legacy-encoded note)
+    # still holds existing content, so it is a docs signal: never greenfield.
+    try:
+        text = read_regular_evidence(
+            path,
+            root,
+            missing_ok=tracked,
+            evidence_name="Markdown",
+        )
+        if text is None and tracked:
+            if index_oid is None:
+                raise DetectError(f"missing staged Markdown blob identity: {relative}")
+            text = read_git_index_blob(root, relative, index_oid)
+    except UndecodableEvidence:
+        return "docs"
     if text is None:
         return None
     if not markdown_has_body(text):
@@ -795,7 +806,7 @@ def read_git_index_blob(root: Path, relative: str, oid: str) -> str:
     try:
         return result.stdout.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise DetectError(f"cannot read Markdown evidence: {relative}") from error
+        raise UndecodableEvidence(f"cannot read Markdown evidence: {relative}") from error
 
 
 def parse_git_index_record(raw: bytes) -> GitIndexEntry:
@@ -1943,7 +1954,7 @@ def read_windows_anchored_evidence(
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise DetectError(
+        raise UndecodableEvidence(
             f"cannot read {evidence_name} evidence: {root / relative}"
         ) from error
 

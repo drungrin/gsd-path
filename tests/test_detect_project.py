@@ -1315,15 +1315,31 @@ class DetectProjectTests(unittest.TestCase):
         self.assertIn("classify is read-only", help_text)
         self.assertIn("initialize creates .project/STATE.md", help_text)
 
-    def test_unreadable_markdown_errors(self) -> None:
+    def test_non_utf8_markdown_is_a_docs_signal(self) -> None:
+        # A title alone is greenfield, so the undecodable byte must not be
+        # dropped or replaced: the file counts as existing content.
+        for contents in (b"# Demo\n\xff\n", b"\x81\x8d\x8f\x90\x9d"):
+            with self.subTest(contents=contents), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary)
+                (repo / "README.md").write_bytes(contents)
+                result = self.command(repo)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["verdict"], "brownfield")
+                self.assertEqual(payload["signals"], [{"kind": "docs", "path": "README.md"}])
+
+    def test_staged_non_utf8_markdown_is_a_git_signal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
-            (repo / "README.md").write_bytes(b"# Demo\n\n\xff\n")
-            result = self.command(repo)
-            self.assertEqual(result.returncode, 2)
-            payload = json.loads(result.stdout)
-            self.assertEqual(payload["status"], "error")
-            self.assertIn("cannot read Markdown evidence", payload["error"])
+            self.git(repo, "init", "-q", "-b", "main")
+            fixture = repo / "testdata" / "broken.md"
+            fixture.parent.mkdir()
+            fixture.write_bytes(b"\x81\x8d\x8f\x90\x9d")
+            self.git(repo, "add", "testdata/broken.md")
+            fixture.unlink()
+            payload = self.classify(repo)
+            self.assertEqual(payload["verdict"], "brownfield")
+            self.assertEqual(payload["signals"], [{"kind": "git", "path": "testdata/broken.md"}])
 
     def test_git_ls_files_failure_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
