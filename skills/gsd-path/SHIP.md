@@ -385,7 +385,9 @@ The persisted `STATE.archive` field is the transaction identity.
    `awaiting-merge`, report the member PR
    link, stop, and rerun the same command after the user merges it; never
    merge a member PR yourself. When the user reports that the reviewer
-   requested changes on that PR, follow [PR fix lane](#pr-fix-lane) below. After an actual user merge, the runtime first
+   requested changes on that PR, follow [PR fix lane](#pr-fix-lane) below;
+   its steps 1, 2 and 5 also apply when the lane does not, so every round
+   answers and resolves the PR conversations. After an actual user merge, the runtime first
    validates source, landing, ancestry, and published proof tags. Only then
    does it apply the publication's Azure work-item plan: complete accepted
    delivery, keep partial items open with remaining work, or mark justified
@@ -681,9 +683,12 @@ step; do not reconstruct them in shell calls.
    run `python3 <absolute pr_fix_lane.py> snapshot --repo <root>`. A refusal
    names why the lane does not apply (setting `pr_fix_lane` off, Azure or
    single-repo integration, no active change request, a moved PR head, three
-   rounds already); then use the ordinary route: undo the uncommitted archive
-   with `$gsd-path-undo` and rerun final review. A success writes the baseline
-   capsule and returns the review items; nothing in `.project/` changes.
+   rounds already). For a GitHub member PR, then run the same command with
+   `--record-only`: it records the items without entering the lane, so the
+   ordinary route can still answer the conversations. Then use the ordinary
+   route: undo the uncommitted archive with `$gsd-path-undo` and rerun final
+   review. A success writes the baseline capsule and returns the review
+   items; nothing in `.project/` changes.
 2. Read every item against the code at the PR head, and propose one class
    per item: `fix` (local: no change to a success criterion, interface
    contract, or design decision), `follow-up` (left for a later milestone;
@@ -694,7 +699,11 @@ step; do not reconstruct them in shell calls.
 3. Write the answer to a file outside `.project/` as
    `{"verbatim": "<the owner's answer>", "items": [{"id", "class", "group",
    "title", "fix_direction"}]}` (title, group and fix_direction only for
-   `fix`), then run `python3 <absolute pr_fix_lane.py> start --repo <root>
+   `fix`; `follow-up` items carry a `note` with the reason, and a record-only
+   round may also mark items `redesign` with their fix_direction). For a
+   record-only round, run `python3 <absolute pr_fix_lane.py> rule --repo
+   <root> --ruling <file>` and continue with the ordinary route. Otherwise
+   run `python3 <absolute pr_fix_lane.py> start --repo <root>
    --ruling <file>`. It records the ruling, undoes the archive, writes
    `.project/review/pr-review-<n>.md` and PATCH-FINDINGS.md, and sets
    `ship/blocked`. Route to plan patch mode; the plan contract writes the
@@ -703,9 +712,14 @@ step; do not reconstruct them in shell calls.
    as described above. The archive transaction and `close-members` run as
    usual and publish the lane landings onto the same PR.
 5. After `close-members` returns `awaiting-merge` with the new head, run
-   `python3 <absolute pr_fix_lane.py> reply --repo <root>` once: it answers
-   each fixed inline comment with its commit, and a rerun never repeats a
-   reply. Report the PR link and stop for the reviewer.
+   `python3 <absolute pr_fix_lane.py> threads --repo <root>` once, in the lane
+   and in a record-only round. It posts one COMMENT review that lists every
+   item with its disposition. Inside that review it replies to each inline
+   item: a `fix` cites the new head and is resolved; a `follow-up` gives the
+   owner's reason and stays open. A rerun posts nothing twice and replaces a
+   pending review a crash left behind. Report the PR link and stop for the
+   reviewer, who checks the resolved conversations and reopens any that are
+   not fixed.
 6. Before `record-shipment`, run `python3 <absolute pr_fix_lane.py>
    ship-check --repo <root>`. A still-active change request blocks: report it
    and stop. Only an explicit owner ruling overrides it, passed as

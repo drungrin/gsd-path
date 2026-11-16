@@ -228,10 +228,15 @@ additions:
   replaced, and a substantive body is kept. The capsule keeps the last
   publication record, so a later revision can stop and ask when the live body
   differs from it. That comparison is a follow-up and is not implemented.
-- **Inline replies.** After the push, Path replies to each fixed inline comment
-  with its commit link. A reply is keyed by PR, comment or thread id, and the
-  published head. A remote marker inside the reply makes a crash after a
-  successful reply safe to retry.
+- **PR conversations.** After the push, `threads` posts one COMMENT review
+  that lists every item with its disposition, so body-only items are answered
+  too. Inside it, each inline item gets a reply: a fixed item cites the
+  published head and its thread is resolved; a follow-up item gives the
+  owner's reason and stays open. The reviewer checks the resolved
+  conversations and reopens any that are not fixed. A remote marker per reply
+  and per round makes a retry skip what was posted, and a pending review a
+  crash left behind is replaced. One review instead of one reply per item
+  matters: GitHub files each separate reply under its own review.
 - **Before `record-shipment`.** The helper re-reads the review state. A change
   request that is still active, from any reviewer, blocks until it clears or
   the user rules. That ruling binds the published head and the exact set of
@@ -334,3 +339,19 @@ unless the user explicitly overrides that.
 - A lane item that contradicts a recorded `met` or `pass` verdict yields one
   repeat-offender line in `LESSONS.md`, through the existing ship lesson scan.
   For this, the delta report format must be readable by that scan.
+
+## Update 2026-11-16 (PR conversations on every route)
+
+A consumer member PR ended with 19 review threads and no reply. The
+only resolved ones were the 7 the owner asked to close by hand, and the 8
+threads of the change-request round stayed open after their fixes landed and
+the PR merged. A second PR showed the same: 17 threads, no reply. The ordinary
+route never captured the comment ids, so it could not answer them.
+
+Every round of a GitHub member PR now records its items. When the lane does
+not apply, `snapshot --record-only` and `rule` capture the items and the
+ruling (classes `fix`, `follow-up`, and `redesign`, the latter fixed by the
+ordinary route) without entering the lane. A record-only round never changes
+the plan, the build, or final review: the lane's gates read only lane rounds.
+At republication, both routes run `threads`. `threads --plan <file>`
+answers a round outside a recorded one, for a PR that predates this update.
