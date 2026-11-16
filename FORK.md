@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.52**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.53**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,95 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.53 — 2026-11-16
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 52 to 53.
+
+Applies upstream (no fork-only code; the shard balance only):
+- [`63c6767b — start shard zero with the Node step when balancing Windows CI`](https://github.com/drungrin/gsd-path/commit/63c6767b05aae08c3ae5e86c96258056c2c2be9e)
+
+Fork only (upstream main `d5a30f5f` has no route for a PR change request):
+- [`eff523ca — answer a PR change request with a proportional fix lane`](https://github.com/drungrin/gsd-path/commit/eff523caa51002cec5dad0c54fa4681196a43396)
+- [`ee06c5d2 — record ADR 0006 and the PR fix lane in the phase contracts`](https://github.com/drungrin/gsd-path/commit/ee06c5d2da4f3a85ae114fa6357a94dc32affa3f)
+
+### A PR change request no longer costs a full milestone cycle
+
+- A change request on an open member PR could only go back through the
+  route built for a red required check:
+  - undo the archive;
+  - a complete final review at the unchanged, already-approved head;
+  - a patch plan with a planner and a plan panel;
+  - landings that rerun every earlier Verify sharing a file;
+  - a wave review and a second complete final review.
+
+  On a consumer run, one return with six items took seven to eight hours
+  and about twenty agents, and a one-line fix was estimated at about three
+  hours. Measured across 30 milestones, cost per task does not grow with
+  milestone size, so smaller milestones would not remove it.
+- The opt-in PR fix lane (`pr_fix_lane`, user or project setting, `off` by
+  default) keeps the frame (undo, archive transaction, pending-close rebind,
+  exact-lease publication to the same PR) and replaces the middle
+  ([ADR 0006](docs/adr/0006-pr-review-fix-lane.md)):
+  - `pr_fix_lane.py snapshot` checks entry and writes a baseline capsule
+    before any undo. Entry needs a GitHub member PR that is open, whose head
+    equals the pending close, with an active change request and a passing
+    archived final.
+  - `start` records the owner's triage ruling verbatim, undoes the archive,
+    and writes `review/pr-review-<n>.md` and `PATCH-FINDINGS.md`. It then
+    blocks ship, so the existing patch route opens unchanged.
+  - The orchestrator appends one `Review depth: delta` wave without a
+    planner. A delta wave is legal only in an open lane round. It has one
+    reviewer and no panel, and its tasks run only their own Verify.
+  - `prepare-final` generates `FINAL.md` and the gap reports as views of the
+    baseline plus the delta review, with a provenance record. A non-local
+    change, a new integration risk, an unmet delta verdict, or any missing
+    proof falls back to the ordinary final review.
+  - `reply` answers each fixed inline comment once. `ship-check` refuses
+    shipment while a change request is still active.
+- A two-model design panel reviewed the ADR twice. The first revision built
+  on the prepared archive with addenda. The panel rejected it because it
+  broke the archive inventory, the FINAL-pinned reviewed heads, and the
+  source-advance proofs.
+
+Validation:
+- New unit tests: `tests/test_pr_fix_lane.py`, 18 tests.
+- New end-to-end tests: `tests/test_pr_fix_lane_cycle.py`. They run real
+  repositories with guard hooks and a fake GitHub API, through:
+  - ship to an open PR;
+  - change request, snapshot, start and patch gate;
+  - delta wave, landing and delta gate;
+  - generated views and the final gate;
+  - archive preflight and republication to the same PR;
+  - an idempotent reply;
+  - ship-check, merge, ship commit and `archive_milestone validate` on the
+    committed archive.
+
+  They also cover a second round on the republished head, and the fallback
+  for a non-local delta.
+- A live run against a private, disposable GitHub repository confirmed the
+  PR, review and inline-comment shapes and the reply endpoint, and that a
+  rerun does not repeat a reply. It also showed that GitHub files each
+  inline reply under a new `COMMENTED` review; a unit test now covers it.
+  GitHub refuses a change request on one's own PR, so that state was
+  simulated on the real review.
+- The full Python suite ran in eight parallel shards: 3,849 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 577 resources, and `check:locks`
+  passed.
+
+Limits:
+- GitHub members only. Azure members, single-repo pull-request, and
+  `external-landing` integration refuse the lane and name the ordinary
+  route.
+- The PR description is not yet compared with the last Path publication;
+  the existing editorial rules keep a substantive human-edited body.
+- The time targets (one-line fix ≤ 45 minutes, five small items ≤ 2 hours)
+  are unmeasured until the first consumer pilot.
+- No upstream submission.
 
 ## 1.7.1.52 — 2026-11-15
 
