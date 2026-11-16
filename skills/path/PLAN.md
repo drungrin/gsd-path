@@ -53,6 +53,17 @@ Require a non-empty `## Decisions` or `## Settled` section and no unresolved
 precondition fails. Report stale member evidence as advisory (operating
 rules); it never blocks or reopens inspect.
 
+## Parking lot
+
+Each `.project/PARKING.md` item with status `planned M<this milestone>` is
+owned by a task that cites its `K###` in `## Context` with the item's source
+link and evidence; a task that cites an item not planned for this milestone is
+refused. The plan gate (`check_handoffs.py plan`) enforces both. Parking
+decisions belong to define; when planning shows an item will not fit, change
+it there with `parking.py triage` (still legal at plan) and the owner's words,
+never by leaving it uncited. A plan repair that withdraws the citing task must
+cite the item from another task or re-triage it.
+
 ## Alignment queue check
 
 Before planning, read every audit in the supplied track root's `research/`

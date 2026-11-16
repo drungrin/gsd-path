@@ -624,9 +624,13 @@ Log, then:
   `branch: feature/milestone-00n`, and `archive: null`. The event records the returned
   base and integration SHA. Route to the bundled [inspect contract](INSPECT.md)
   so the changed codebase is rescanned before milestone define. When every
-  entry is terminal (`shipped` or `abandoned`),
+  entry is terminal (`shipped` or `abandoned`), run the bundled
+  `parking.py check --gate program --repo <absolute-primary-root>`, then
   report the program complete against CHARTER.md's program success criteria
-  and stop.
+  and stop. When the check lists items (a planned item no done task closed, or
+  a follow-up from the last PR that was never parked), report them in the
+  Outcome as outstanding parking-lot work with their sources; never call the
+  program complete without them.
 - **Single milestone** (no ROADMAP.md): use the same guarded transition from
   the complete previous `shipped/done` state to `phase: inspect`, `status:
   active`, `milestone: null`, `branch: feature/milestone-00n`, and `archive: null`.

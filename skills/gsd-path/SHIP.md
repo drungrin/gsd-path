@@ -699,7 +699,9 @@ step; do not reconstruct them in shell calls.
 3. Write the answer to a file outside `.project/` as
    `{"verbatim": "<the owner's answer>", "items": [{"id", "class", "group",
    "title", "fix_direction"}]}` (title, group and fix_direction only for
-   `fix`; `follow-up` items carry a `note` with the reason, and a record-only
+   `fix`; `follow-up` items carry a `note` with the reason and a `risk`
+   class for the parking lot — `security`, `data-loss`, `correctness`,
+   `operations`, `docs`, or `other` — and a record-only
    round may also mark items `redesign` with their fix_direction). For a
    record-only round, run `python3 <absolute pr_fix_lane.py> rule --repo
    <root> --ruling <file>` and continue with the ordinary route. Otherwise
@@ -716,7 +718,9 @@ step; do not reconstruct them in shell calls.
    and in a record-only round. It posts one COMMENT review that lists every
    item with its disposition. Inside that review it replies to each inline
    item: a `fix` cites the new head and is resolved; a `follow-up` gives the
-   owner's reason and stays open. A rerun posts nothing twice and replaces a
+   owner's reason and stays open. The next milestone's define imports each
+   `follow-up` into `.project/PARKING.md` with `parking.py sync`, where it must
+   be planned, scheduled, or dropped. A rerun posts nothing twice and replaces a
    pending review a crash left behind. Report the PR link and stop for the
    reviewer, who checks the resolved conversations and reopens any that are
    not fixed.

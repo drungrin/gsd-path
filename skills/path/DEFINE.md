@@ -255,6 +255,38 @@ The rules change for every primary mode:
   in the track's `research/` (`.project/next/research/` in Lookahead mode).
   Omit that section for greenfield. Do not add it to CHARTER.md.
 
+## Parking lot
+
+`.project/PARKING.md` holds deferred work that persists across milestones:
+PR change-request follow-ups, review warnings the owner parked, and items the
+owner added. Only the bundled `scripts/parking.py` writes it, and only from
+inspect to plan; never edit it by hand. On the active `.project` track, before
+the intent approval question of every milestone:
+
+1. Run `python3 <absolute-bundled-parking.py> sync --repo <absolute-root>`. It
+   imports the follow-ups of recorded PR rounds and settles each item an
+   earlier milestone planned: `done` when a done task of that archive cites
+   its `K###`, otherwise open again.
+2. When `status` lists items that are `open` or due (`scheduled` for this
+   milestone), present them in the same confirmation as one list: id, class,
+   title, source link, and a recommended decision with a one-line reason.
+   Decisions are `planned` (this milestone; the plan must cite it),
+   `scheduled` with a later milestone (in program flow, a `pending` ROADMAP
+   entry), or `dropped`. Recommend `planned` for `security` and `data-loss`
+   items; scheduling one of them later needs the owner's explicit
+   `accept_risk`. When no later pending milestone fits the remaining items,
+   offer a `$gsd-path-roadmap` re-slice that adds a final parking-lot
+   milestone.
+3. Record the reply with `parking.py triage --repo <absolute-root> --ruling
+   <file>`, where the file holds `{"verbatim": "<the owner's words>",
+   "items": [{"id", "decision", "milestone"?, "accept_risk"?}]}`.
+   Planned items join Scope in; list them in INTENT.md so the plan owns them.
+
+The intent approval transition refuses while any item is open, due, or
+scheduled for a milestone that is no longer pending. A lookahead track never
+writes the lot; its milestone is triaged on `.project` before build starts,
+which the build-start transition enforces.
+
 ## Process
 
 1. Open in this order, then stop for the reply:
