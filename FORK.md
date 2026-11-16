@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.54**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.55**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,68 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.55 — 2026-11-16
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 54 to 55.
+
+Fork only (it builds on the PR fix lane of 1.7.1.53 and 1.7.1.54):
+- [`383923b8 — keep deferred work in a parking lot every milestone boundary decides`](https://github.com/drungrin/gsd-path/commit/383923b8a3629049e80a91255f4c49e26ccf6a3f)
+- [`ceb8012c — record ADR 0007 and the parking lot in the phase contracts`](https://github.com/drungrin/gsd-path/commit/ceb8012c42a831152aabc519ff04d772743ece1d)
+
+### Deferred work is decided at every milestone boundary
+
+- On a consumer PR, 11 of 17 change-request items were answered "left for
+  later". They included a request-forgery bypass and two data-loss paths.
+  Nothing carried them forward. The next milestone was defined from its
+  roadmap entry alone.
+- `.project/PARKING.md` now persists across milestones, like LESSONS.md, and
+  only `parking.py` writes it, from inspect to plan:
+  - `sync` imports the `follow-up` items of recorded PR rounds once per
+    source link. It also settles earlier planned items: `done` when a done
+    task of that milestone's archive cites the `K###`, otherwise open again.
+  - `add` parks items from a file with the owner's words.
+  - `triage` records each decision verbatim: `planned` for this milestone,
+    `scheduled` for a later milestone (a pending ROADMAP entry in program
+    flow), or `dropped`. A `security` or `data-loss` item scheduled for later
+    needs `accept_risk`.
+- Gates:
+  - The intent approval transition refuses an open item, a due schedule, or a
+    schedule for a milestone that is no longer pending.
+  - The build-start transition repeats that check and requires a citing task.
+    This covers a promoted lookahead milestone.
+  - The plan gate requires every item planned for this milestone to be cited
+    in a non-withdrawn task's Context, and refuses citations of other items.
+- At the last roadmap milestone, items must be planned or dropped, or a
+  roadmap re-slice adds a final parking-lot milestone. When every entry is
+  terminal, `check --gate program` lists what is still unresolved.
+- PR fix lane `follow-up` rows may carry a `risk` class for the parking lot.
+- A project without PARKING.md behaves as before.
+
+Validation:
+- New unit tests cover the round trip, deduplication, the write window, the
+  triage rules, the define, plan, and build-start gates, settlement from
+  archived tasks, the import of PR round follow-ups, and program completion.
+- A copy of a consumer orchestrator at `inspect/active` took 11 items through
+  `add`, `sync`, and `check --gate define` (11 open items refused). A schedule
+  for a milestone missing from its roadmap was refused.
+- The full Python suite ran in eight parallel shards: 3,869 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- Items found during build or review cannot be written until the next
+  boundary. Review warnings stay in their review files until the owner parks
+  them.
+- A follow-up from the PR of the program's last milestone has no later
+  boundary. It is reported at program completion, not enforced.
+- Settlement trusts that a done task citing an item fixed it. The final review
+  checks the task's criteria, not the item.
+- No upstream submission.
 
 ## 1.7.1.54 — 2026-11-16
 
