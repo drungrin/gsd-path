@@ -18,7 +18,7 @@ class CiShardTests(unittest.TestCase):
         # step (263 seconds), which runs before Python on shard zero. Fork
         # modules have no Windows measurement and count DEFAULT seconds each,
         # so permit one of them as well.
-        loads[0] += 263
+        loads[0] += ci_shard.NODE_STEP
         self.assertLessEqual(max(loads), max(measured.values()) + 263 + ci_shard.DEFAULT)
 
     def test_shards_partition_every_test_module(self):

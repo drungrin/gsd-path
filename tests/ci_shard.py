@@ -18,6 +18,9 @@ TESTS = Path(__file__).resolve().parent
 # ponytail: one measured run; refresh from shard output when workloads drift.
 SECONDS = json.loads((TESTS / "windows_ci_seconds.json").read_text(encoding="utf-8"))
 DEFAULT = 5
+# Shard zero also runs the Node tests and the sync check before Python
+# (.github/workflows/ci.yml), measured at 263 seconds on Windows.
+NODE_STEP = 263
 
 
 def modules(index=0, total=1):
@@ -25,6 +28,8 @@ def modules(index=0, total=1):
         raise SystemExit("usage: python -m tests.ci_shard INDEX TOTAL (0 <= INDEX < TOTAL)")
     names = sorted(path.name for path in TESTS.glob("test*.py"))
     shards, loads = [[] for _ in range(total)], [0] * total
+    if total > 1:
+        loads[0] = NODE_STEP  # shard zero starts busy, so it takes less Python
     for name in sorted(names, key=lambda item: (-SECONDS.get(item, DEFAULT), item)):
         lightest = loads.index(min(loads))
         shards[lightest].append(name)
