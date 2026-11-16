@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.55**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.56**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,46 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.56 — 2026-11-16
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 55 to 56.
+
+Fork only (the `.sandbox-out/` folder is a convention of the Paseo sandbox):
+- [`95debc49 — let every phase write the ignored Paseo scratch folder`](https://github.com/drungrin/gsd-path/commit/95debc49578225d1759d2f89d2844d617e4c81d2)
+
+### Sandboxed orchestrators keep scratch files outside build
+
+- In the Paseo sandbox, `~` and `/tmp` exist only in the VM. The only
+  host-visible place for briefs, capability files, saved patches, and helper
+  receipts is the orchestrator's git-ignored `.sandbox-out/` folder.
+- The guard classified that folder as a product path. Outside the routed
+  build phase, it refused every write there. A consumer orchestrator then kept
+  an inspect capability file and a saved coder patch inside the VM, where the
+  owner could not see them.
+- A path under `<root>/.sandbox-out/` is now external while Git ignores it,
+  through `.gitignore` or `.git/info/exclude`. A tracked file, an unignored
+  folder, or a folder that is a link stays a product path.
+
+Validation:
+- New guard tests cover the folder before and after it exists, the inspect
+  phase allowing a scratch write while still refusing a product write (Write
+  tool and shell redirection), an unignored folder, a tracked file inside an
+  ignored folder, a nested folder of the same name, and a linked folder.
+  Without the change, three of the four tests fail.
+- The full Python suite ran in eight parallel shards: 3,873 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- Only the folder named `.sandbox-out` at the repository root qualifies.
+  A custom `$PASEO_SBX_OUT` elsewhere in the repository is still a product
+  path.
+- No upstream submission.
 
 ## 1.7.1.55 — 2026-11-16
 
