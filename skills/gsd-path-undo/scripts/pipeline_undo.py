@@ -638,6 +638,23 @@ def _archive_metadata_error(
             expected_inventory.update(
                 path.relative_to(archive_path).as_posix() for path in gap_reviews
             )
+            lane_rounds = sorted(
+                path for path in (archive_path / "review").glob("pr-fix-*") if path.is_dir()
+            )
+            if lane_rounds:
+                # ADR 0006: an earlier PR fix lane round's record belongs to the archive
+                # only when its provenance still binds the archived FINAL.md and gaps.
+                lane = _pr_fix_lane()
+                try:
+                    lane.validate_views(repo, archive_path / "review")
+                except (lane.LaneError, ValueError, KeyError) as error:
+                    return f"archive undo cannot prove the PR fix lane record: {error}"
+                expected_inventory.update(
+                    path.relative_to(archive_path).as_posix()
+                    for directory in lane_rounds
+                    for path in directory.rglob("*")
+                    if path.is_file()
+                )
         actual_directories = sorted(
             path.relative_to(archive_path).as_posix()
             for path in archive_path.rglob("*")
@@ -969,6 +986,12 @@ def _finish_transaction_locked(repo: Path, transaction: dict[str, object]) -> No
     path = _git_path(repo, UNDO_TRANSACTION_NAME)
     path.unlink()
     pipeline_state._common.fsync_directory(path.parent)
+
+
+def _pr_fix_lane():
+    import importlib
+
+    return importlib.import_module(f"{__package__}.pr_fix_lane" if __package__ else "pr_fix_lane")
 
 
 def classify_undo(repo: Path) -> dict[str, object]:

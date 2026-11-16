@@ -837,7 +837,7 @@ def validate_wave_review(
 ) -> Sequence[str]:
     lines = path.read_text(encoding="utf-8").splitlines()
     depth = completed_field(lines, "Depth:", path.name)
-    if depth not in {"full", "deep", "verify-only"}:
+    if depth not in {"full", "deep", "verify-only", "delta"}:
         raise ArchiveError(f"{path.name} has an invalid review depth")
     if is_last_cycle and depth != expected_depth:
         raise ArchiveError(f"{path.name} has an invalid review depth")
@@ -1006,7 +1006,7 @@ def plan_wave_depths(plan_text: str) -> tuple[Sequence[int], dict[int, str]]:
         if len(depths) > 1:
             raise ArchiveError(f"plan wave {wave} has multiple review depths")
         depth = depths[0] if depths else "full"
-        if depth not in {"full", "deep", "verify-only"}:
+        if depth not in {"full", "deep", "verify-only", "delta"}:
             raise ArchiveError(f"plan wave {wave} has an invalid review depth")
         wave_depths[wave] = depth
     return wave_numbers, wave_depths

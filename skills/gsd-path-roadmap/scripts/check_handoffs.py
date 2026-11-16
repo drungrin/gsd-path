@@ -62,7 +62,7 @@ WAVE_REVIEW_NAME = re.compile(
     r"wave-(?P<wave>[1-9]\d*)\.cycle(?P<cycle>[1-9]\d*)"
     r"(?:\.(?P<lens>contract|adversarial))?\.md$"
 )
-VALID_REVIEW_DEPTHS = frozenset({"full", "deep", "verify-only"})
+VALID_REVIEW_DEPTHS = frozenset({"full", "deep", "verify-only", "delta"})
 
 
 def _max_wave_cycle(root: Path, project_dir: str, wave: int) -> int:
@@ -119,7 +119,7 @@ GAP_HEADING_PATTERN = re.compile(
 
 def _source_pattern(project_dir: str) -> "re.Pattern[str]":
     return re.compile(
-        rf"^{re.escape(project_dir)}/review/(?:FINAL\.md|final-gap-\d+\.md)$"
+        rf"^{re.escape(project_dir)}/review/(?:FINAL\.md|final-gap-\d+\.md|pr-review-[1-9]\d*\.md)$"
     )
 
 
@@ -140,6 +140,14 @@ def _project_dir(value: str) -> str:
 
 class HandoffError(RuntimeError):
     """Raised when a phase hand-off is absent, stale, or incomplete."""
+
+
+def _pr_fix_lane():
+    try:
+        import pr_fix_lane
+    except ImportError:  # pragma: no cover - package import used by tests
+        from scripts import pr_fix_lane
+    return pr_fix_lane
 
 
 _strip_yaml_comment = _common.strip_yaml_comment
@@ -612,7 +620,19 @@ def _heading_block(text: str, heading: re.Match[str]) -> str:
 
 
 def _source_repair_fields(source: str, text: str, locator: str) -> Tuple[str, str]:
-    if source.endswith("FINAL.md"):
+    if PurePosixPath(source).name.startswith("pr-review-"):
+        item = re.fullmatch(r"Item ([RC][1-9]\d*)", locator)
+        if not item:
+            raise HandoffError(f"{source} locator must be `Item <id>`; copy it from an item heading")
+        heading = re.search(rf"(?m)^### Item {re.escape(item.group(1))} — .+$", text)
+        if not heading:
+            raise HandoffError(f"{source} has no item heading for locator {locator}")
+        block = _heading_block(text, heading)
+        if _source_field(block, "Class", source) != "fix":
+            raise HandoffError(f"{source} locator {locator} is not a fix item")
+        evidence = _source_field(block, "Found", source)
+        fix_direction = _source_field(block, "Fix direction", source)
+    elif source.endswith("FINAL.md"):
         if not CRITERION_LOCATOR_PATTERN.fullmatch(locator):
             raise HandoffError(
                 f"{source} locator must be an SC<n> id; copy the id from a "
@@ -1814,9 +1834,9 @@ def _plan_waves(plan: str) -> Tuple[Dict[int, str], List[int]]:
         if not goal:
             raise HandoffError(f"PLAN.md Wave {wave} is missing Goal")
         _non_placeholder(goal.group(1), f"PLAN.md Wave {wave} Goal")
-        if not depth or depth.group(1) not in {"full", "deep", "verify-only"}:
+        if not depth or depth.group(1) not in VALID_REVIEW_DEPTHS:
             raise HandoffError(f"PLAN.md Wave {wave} has an invalid Review depth")
-        if wave == 1 and depth.group(1) == "verify-only":
+        if wave == 1 and depth.group(1) in {"verify-only", "delta"}:
             raise HandoffError("PLAN.md Wave 1 Review depth must be full or deep")
         depths[wave] = depth.group(1)
     return depths, waves
@@ -2272,6 +2292,16 @@ def validate_plan(
     # Build readiness owns task lifecycle validation; coverage must survive landings.
     state = _require_pipeline(root, project_dir)
     _validate_task_graph(wave_depths, tasks, initial=state["phase"] == "plan", repo=root, project_dir=project_dir)
+    if "delta" in wave_depths.values():
+        lane_tasks = []
+        for task_id, text in tasks.items():
+            wave_value = _strict_frontmatter(text, task_id).get("wave")
+            context_match = re.search(r"(?ms)^## Context\s*$(.*?)^## ", text)
+            lane_tasks.append({"id": task_id, "wave": int(wave_value) if str(wave_value).isdigit() else 0,
+                               "context": context_match.group(1) if context_match else ""})
+        errors = _pr_fix_lane().lane_plan_errors(root, wave_depths, lane_tasks)
+        if errors:
+            raise HandoffError("; ".join(errors))
     integrated = _integrated_members(root, state)
     for task_id, text in tasks.items():
         repo = str(_common.effective_task_repo(root, task_id, _strict_frontmatter(text, task_id).get("repo"), project_dir) or "")
@@ -2539,6 +2569,10 @@ def validate_wave_evidence(
     overall = _line_value(text, "Wave verdict:")
     if overall not in {"pass", "blocked"}:
         raise HandoffError(f"{name} Wave verdict is invalid")
+    if expected_depth == "delta" and is_last_cycle and overall == "pass":
+        errors = _pr_fix_lane().delta_errors(root, text)
+        if errors:
+            raise HandoffError(f"{name}: " + "; ".join(errors))
     reviewed = _line_value(text, "Tasks reviewed:")
     enforce_plan_tasks = is_last_cycle and overall != "blocked"
     if not reviewed.isdigit() or int(reviewed) < 1:
@@ -2896,6 +2930,8 @@ def validate_final(
         raise HandoffError(
             f"FINAL.md Overall verdict must be {expected_overall} for its SC and gap verdicts"
         )
+    if final_text is None:
+        _require_lane_provenance(root / PurePosixPath(project_dir) / "review", reviewed_head)
     return {
         "phase": "ship",
         "criteria": expected,
@@ -2903,6 +2939,25 @@ def validate_final(
         "reviewed_head": reviewed_head,
         "gaps": sorted(gaps),
     }
+
+
+def _require_lane_provenance(review: Path, reviewed_head: str) -> None:
+    """A FINAL.md generated by the PR fix lane must still match its recorded provenance."""
+    lane = _pr_fix_lane()
+    rounds = sorted(
+        (int(match.group("round")), path)
+        for path in (review.iterdir() if review.is_dir() else [])
+        if path.is_dir() and (match := lane.ROUND_DIR.fullmatch(path.name))
+    )
+    if not rounds or not (rounds[-1][1] / "provenance.json").is_file():
+        return
+    try:
+        provenance = json.loads((rounds[-1][1] / "provenance.json").read_text(encoding="utf-8"))
+        if provenance.get("head") != reviewed_head:
+            return  # an ordinary final review replaced an earlier lane view
+        lane.validate_views(review.parent.parent, review)
+    except (lane.LaneError, ValueError, OSError, KeyError) as error:
+        raise HandoffError(f"PR fix lane provenance: {error}") from error
 
 
 def _reopened_patch_plan(root: Path, project_dir: str) -> bool:
@@ -2966,7 +3021,14 @@ def validate_patch_findings(
         source_head = _reviewed_head(source_text, source)
         if source_head != reviewed_head:
             raise HandoffError(f"{source} Reviewed HEAD differs from PATCH-FINDINGS.md")
-        if source.endswith("FINAL.md"):
+        if PurePosixPath(source).name.startswith("pr-review-"):
+            if _line_value(source_text, "Review verdict:") != "changes-requested":
+                raise HandoffError(f"{source} is not a change-request finding source")
+            try:
+                _pr_fix_lane().require_source(root, source, source_text)
+            except _pr_fix_lane().LaneError as error:
+                raise HandoffError(str(error)) from error
+        elif source.endswith("FINAL.md"):
             if _line_value(source_text, "Overall verdict:") != "blocked":
                 raise HandoffError("FINAL.md is not a blocked finding source")
         elif _line_value(source_text, "Gap verdict:") != "blocked":
@@ -2978,7 +3040,7 @@ def validate_patch_findings(
             source, source_text, locator
         )
         if evidence != source_evidence:
-            evidence_field = "Finding" if source.endswith("FINAL.md") else "Found"
+            evidence_field = "Finding" if source.endswith("FINAL.md") else "Found"  # pr-review uses Found
             raise HandoffError(
                 f"{source} locator {locator} Evidence must equal the source's "
                 f"{evidence_field} field; copy it verbatim: {source_evidence!r}"

@@ -648,6 +648,23 @@ def retired_verifies(
     return retired
 
 
+def _pr_fix_lane_task(repo: Path, task: "Task", project_dir: str) -> bool:
+    """Whether the task sits in the delta wave of the open PR fix lane round."""
+    import importlib
+
+    if project_dir != DEFAULT_PROJECT_DIR:
+        return False
+    package = f"{__package__}." if __package__ else ""
+    review_findings = importlib.import_module(f"{package}review_findings")
+    lane = importlib.import_module(f"{package}pr_fix_lane")
+    plan = Path(repo) / project_dir / "plan/PLAN.md"
+    try:
+        depth = review_findings.wave_depth(plan.read_text(encoding="utf-8"), int(task.wave))
+    except (OSError, ValueError, review_findings.ReviewFindingsError):
+        return False
+    return depth == "delta" and lane.active_round(Path(repo)) is not None
+
+
 def regression_verifies(
     repo: Path, task_id: str, own: str, project_dir: str = DEFAULT_PROJECT_DIR
 ) -> List[Dict[str, object]]:
@@ -663,6 +680,10 @@ def regression_verifies(
     """
 
     tasks, task = _landing_tasks(repo, task_id, project_dir)
+    if _pr_fix_lane_task(repo, task, project_dir):
+        # ADR 0006: a PR fix lane task runs only its own Verify; the project Verify at ship
+        # covers regressions, and the delta review maps every criterion and gap.
+        return []
     by_id = {item.task_id: item for item in tasks}
     composed = [by_id[dependency].verify for dependency in task.deps if dependency in by_id]
     covered = {own, *(composed if own == _common.fix_verify(composed) else ())}

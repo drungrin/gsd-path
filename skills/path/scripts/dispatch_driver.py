@@ -31,7 +31,8 @@ from typing import BinaryIO, Callable, Dict, List, Optional, Tuple
 
 try:
     from scripts import (_common, archive_milestone, build_state, discussion_validate, isolation,
-                         pipeline_state, review_findings, review_panel, workflow_run, task_context, model_policy)
+                         pipeline_state, review_findings, review_panel, workflow_run, task_context, model_policy,
+                         pr_fix_lane)
     from scripts import check_handoffs as contracts
     from scripts.pipeline_git import is_bound_branch
 except ImportError:  # bundled copy inside a skill's scripts directory
@@ -47,6 +48,7 @@ except ImportError:  # bundled copy inside a skill's scripts directory
     import review_panel
     import workflow_run
     import model_policy
+    import pr_fix_lane
     from pipeline_git import is_bound_branch
 
 if os.name == "nt":
@@ -101,6 +103,7 @@ _RUNTIME_ACTIVATION_ORDER = (
     "review_findings",
     "path_config",
     "model_policy",
+    "pr_fix_lane",
 )
 RECOVERY_BLOCKED = "recovery blocked"
 LEFTOVER_ISOLATE = "task {} is landed; remove its leftover isolate: {}"
@@ -134,7 +137,7 @@ def helper_script(name: str) -> Path:
 
 def _reload_pinned_modules(runtime_root: Path) -> None:
     global isolation, build_state, task_context, contracts, pipeline_state
-    global archive_milestone, review_findings, model_policy, _RUNTIME_ROOT
+    global archive_milestone, review_findings, model_policy, pr_fix_lane, _RUNTIME_ROOT
     _RUNTIME_ROOT = runtime_root
     if _bundled_helpers():
         path = str(runtime_root)
@@ -152,6 +155,7 @@ def _reload_pinned_modules(runtime_root: Path) -> None:
         archive_milestone = sys.modules["archive_milestone"]
         review_findings = sys.modules["review_findings"]
         model_policy = sys.modules["model_policy"]
+        pr_fix_lane = sys.modules.get("pr_fix_lane", pr_fix_lane)
     else:
         import scripts
         path = str(runtime_root)
@@ -169,6 +173,7 @@ def _reload_pinned_modules(runtime_root: Path) -> None:
         archive_milestone = scripts.archive_milestone
         review_findings = scripts.review_findings
         model_policy = scripts.model_policy
+        pr_fix_lane = getattr(scripts, "pr_fix_lane", pr_fix_lane)
     _refresh_stop_errors()
 
 
@@ -1566,6 +1571,19 @@ def review_brief(state: Dict[str, object], options: argparse.Namespace, primary:
               for name, sha in sorted(state.get("member_heads", {}).items())],
             "Judge every task and owned INTENT criterion against that pinned product, reusing recorded Verify evidence.",
         ]
+    if state.get("depth") == "delta":
+        lane = pr_fix_lane.active_round(primary)
+        capsule = Path(str(lane["directory"])) / "capsule/review" if lane else None
+        lines += [
+            "PR fix lane delta review (ADR 0006): this wave answers a PR change request. Record `Depth: delta` "
+            f"and add the `## {pr_fix_lane.DELTA_SECTION}` section of the delta template: {options.delta_template}",
+            f"Change-request items and the owner's ruling: {primary / '.project/review/PATCH-FINDINGS.md'}",
+            f"Previously approved FINAL.md and gap reports (baseline): {capsule}",
+            "Judge four things: each fix item closed or not; whether the landed diff stays local (no change to "
+            "a success criterion, interface contract, or design decision); for every success criterion and "
+            "every numbered gap risk from 2, affected or unaffected with the reason, and a full verdict for each "
+            "affected one; and whether the baseline risk list is still complete.",
+        ]
     if final_scope:
         lines.append(f"Final scope applies: record `Review scope: final` and `Reviewed HEAD: {state['base']}`, "
                      "check every INTENT success criterion and PLAN.md's Surface contract, and add "
@@ -1652,7 +1670,8 @@ class Review:
             previous = earlier.get(key)
             state = {"task_id": self.lens_name(key), "lens": None if key == "canonical" else key,
                      "wave": self.wave, "cycle": self.cycle, "base": base, "relative": relative,
-                     "product_scope": "current" if current_product else "isolated", "member_heads": member_heads}
+                     "product_scope": "current" if current_product else "isolated", "member_heads": member_heads,
+                     "depth": depth}
             spawn_in_sidecar(self.root, self.primary, self.receipt, self.options, name, state,
                              lambda fresh, previous=previous: review_brief(fresh, self.options, self.primary, tasks,
                                                                             final_scope, previous))
@@ -1786,7 +1805,8 @@ class Review:
                 self.receipt.update(status="not-applicable",
                                     reason="verify-only reviews are orchestrator-written; the driver does not run them")
                 return self.receipt
-            self.receipt["panel_required"] = review_panel.plan_review_panel_enabled(plan_text)
+            # A PR fix lane delta wave has one reviewer and never a panel (ADR 0006).
+            self.receipt["panel_required"] = depth != "delta" and review_panel.plan_review_panel_enabled(plan_text)
             lenses = {key: path.relative_to(self.primary).as_posix() for key, path in
                       review_findings.review_paths(project, self.wave, self.cycle, depth).items()}
             states = self.current_states(list(lenses))
@@ -1979,8 +1999,8 @@ class Panel(Children):
             plan_text = (project / "plan/PLAN.md").read_text(encoding="utf-8")
             depth = review_findings.wave_depth(plan_text, self.wave)
             self.receipt["depth"] = depth
-            if depth == "verify-only":
-                raise DriverStop("never spawn a review panel at verify-only")
+            if depth in {"verify-only", "delta"}:
+                raise DriverStop(f"never spawn a review panel at {depth}")
             paths = review_findings.review_paths(project, self.wave, self.cycle, depth)
             review = next(iter(paths.values())).relative_to(self.primary).as_posix()
             if not all(path.is_file() for path in paths.values()):
@@ -2623,6 +2643,8 @@ def main(argv=None) -> int:
     review_parser.add_argument("--repair-evidence", type=Path,
                                help="review_findings.py repair-evidence receipt for a re-review")
     review_parser.add_argument("--template", type=Path, default=default_resource("templates/wave-review.md"))
+    review_parser.add_argument("--delta-template", type=Path, default=default_resource("templates/delta-review.md"),
+                               help="PR fix lane delta section template, used only by a delta wave")
     review_parser.add_argument("--current-product", action="store_true",
                                help="review the pinned combined product instead of historical task isolates")
     panel_parser = commands.add_parser("panel", parents=[cycle_child],

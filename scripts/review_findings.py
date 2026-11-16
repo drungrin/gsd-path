@@ -161,7 +161,7 @@ def wave_depth(plan_text: str, wave: int) -> str:
             continue
         end = headings[index + 1].start() if index + 1 < len(headings) else len(plan_text)
         depth = re.search(r"(?m)^Review depth:\s*(\S+)", plan_text[heading.end() : end])
-        if not depth or depth.group(1) not in {"full", "deep", "verify-only"}:
+        if not depth or depth.group(1) not in {"full", "deep", "verify-only", "delta"}:
             raise ReviewFindingsError(f"PLAN.md Wave {wave} has an invalid Review depth")
         return depth.group(1)
     raise ReviewFindingsError(f"PLAN.md has no Wave {wave}")

@@ -320,11 +320,33 @@ def verify_project(repo, expected_head, *, rerun: bool = False):
             **({"rerun": True} if rerun else {})}
 
 
+def _lane_final(repo, expected_head):
+    """ADR 0006: generate FINAL.md and gap views for an open PR fix lane round, or fall back."""
+    if __package__:
+        from scripts import pr_fix_lane
+    else:
+        import pr_fix_lane
+    record = pr_fix_lane.active_round(repo)
+    if record is None or record.get("stage") not in {"opened", "viewed"}:
+        return None
+    try:
+        result = pr_fix_lane.views(repo, expected_head)
+    except (pr_fix_lane.LaneError, contracts.HandoffError, build_state.BuildStateError) as error:
+        # The lane tasks are ordinary tasks: the ordinary final review re-reviews them.
+        return {"reused": False, "lane": "fallback", "reason": f"PR fix lane fell back: {error}"}
+    return {"reused": True, "lane": "views", "path": str(repo / ".project/review/FINAL.md"),
+            "reviewed_head": expected_head, "source": result["provenance"]}
+
+
 def prepare_final(repo, expected_head, *, rerun: bool = False):
     verification = verify_project(repo, expected_head, rerun=rerun)
     if not verification["passed"]:
         return {"status": "blocked", "verification": verification,
                 "reason": "project Verify failed; use its recorded output"}
+    lane = _lane_final(Path(repo), expected_head)
+    if lane is not None:
+        return {"status": "complete", "verification": verification, "final": lane,
+                "next": "final-gate" if lane["reused"] else "review-final"}
     final = reuse_final(repo, expected_head)
     if not _locked_members(Path(repo)) and not final["reused"] and (Path(repo) / ".project/review/FINAL.md").exists():
         try:
