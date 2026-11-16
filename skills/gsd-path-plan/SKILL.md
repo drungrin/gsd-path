@@ -463,12 +463,24 @@ first.
    normal gates. Preserve any pending open-PR close left by an undone archive;
    the helper records its old binding, and ship rebinds it only after fresh
    final review/publication.
+   **PR fix lane** (every PATCH-FINDINGS.md source is
+   `.project/review/pr-review-<n>.md`, written by `pr_fix_lane.py start`):
+   dispatch no planner and no plan panel. Append wave W+1 yourself with
+   `Review depth: delta`, one task per group of the recorded ruling. Each
+   task's Context cites the `P###` ids it closes and quotes their Evidence;
+   its Intent coverage is `- None`; it names a test that fails before the
+   fix unless the item is docs-only; its Verify names a path from its
+   `files`. Every lane finding has exactly one task. The `delta` depth is
+   legal only in an open lane round, and the plan gate checks this.
 3. Gate exactly as in step 3 above, scoped to the new tasks plus one extra
    check: patch tasks must not touch a scope-out veto or contradict a
    SYNTHESIS decision — a finding that requires either goes back to the
    user, not into the wave.
 4. Show the patch wave outcome (finding → task mapping), link the resolved
    absolute PLAN.md and task set, and ask the same two-option approval question.
+   In the PR fix lane the owner's triage ruling already approved the classes
+   and grouping: when the tasks follow that grouping, present the mapping and
+   approve without a second question; ask again only if they diverge.
    On approval, relink the approved plan, run `python3 <absolute
    pipeline_state.py> approve --repo <absolute root> --kind plan --patch`
    (it records `plan/done` with event `patch plan approved` and no

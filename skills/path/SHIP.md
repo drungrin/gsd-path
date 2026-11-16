@@ -144,7 +144,12 @@ so the position is unchanged. Then:
    is failing. Record the command failure in STATE.md and link its gap evidence.
 
    Read the final step's `result.final`. `reused: true` means FINAL.md already
-   proves final scope: do not dispatch `review_final` or rewrite it. For a
+   proves final scope: do not dispatch `review_final` or rewrite it. With
+   `lane: views` the PR fix lane generated FINAL.md and every gap report as
+   views of its baseline plus the delta review: dispatch no gap reviewer and
+   no `review_final`, and go to step 5. With `lane: fallback` the lane could
+   not inherit the baseline (its `reason` says why): run the ordinary final
+   review below; the lane tasks are ordinary tasks and are reviewed as such. For a
    quick lane with one full wave, reuse requires a committed review explicitly
    covering final scope, every success criterion and required walkthrough,
    and unchanged product and approved contracts. The helper generates FINAL.md
@@ -379,7 +384,8 @@ The persisted `STATE.archive` field is the transaction identity.
    `remote default must be <recorded>`, stop and report it. When it returns
    `awaiting-merge`, report the member PR
    link, stop, and rerun the same command after the user merges it; never
-   merge a member PR yourself. After an actual user merge, the runtime first
+   merge a member PR yourself. When the user reports that the reviewer
+   requested changes on that PR, follow [PR fix lane](#pr-fix-lane) below. After an actual user merge, the runtime first
    validates source, landing, ancestry, and published proof tags. Only then
    does it apply the publication's Azure work-item plan: complete accepted
    delivery, keep partial items open with remaining work, or mark justified
@@ -661,3 +667,49 @@ the exact PR metadata, annotated tag metadata, and merge topology instead.
 - Never merge or back-merge into the bound branch; ship's integration is its
   only path to the default branch. Never enter the default checkout; its
   local default branch ref may lag origin.
+
+## PR fix lane
+
+An opt-in route for a change request on an open member pull request
+([ADR 0006](https://github.com/drungrin/gsd-path/blob/main/docs/adr/0006-pr-review-fix-lane.md)).
+It keeps the milestone's frame (archive undo, archive transaction, pending-close
+rebind and exact-lease publication) and replaces the second complete final
+review with one delta wave. The bundled `scripts/pr_fix_lane.py` owns every
+step; do not reconstruct them in shell calls.
+
+1. With STATE `ship/active`, a prepared archive and the member PR still open,
+   run `python3 <absolute pr_fix_lane.py> snapshot --repo <root>`. A refusal
+   names why the lane does not apply (setting `pr_fix_lane` off, Azure or
+   single-repo integration, no active change request, a moved PR head, three
+   rounds already); then use the ordinary route: undo the uncommitted archive
+   with `$gsd-path-undo` and rerun final review. A success writes the baseline
+   capsule and returns the review items; nothing in `.project/` changes.
+2. Read every item against the code at the PR head, and propose one class
+   per item: `fix` (local: no change to a success criterion, interface
+   contract, or design decision), `follow-up` (left for a later milestone;
+   never for an item that shows a recorded criterion or gap failing), or
+   `redesign`. Group the `fix` items into tasks. Ask one question with the
+   classes, the selection and the grouping, recommending your proposal.
+   Any selected `redesign` means the ordinary route for this round.
+3. Write the answer to a file outside `.project/` as
+   `{"verbatim": "<the owner's answer>", "items": [{"id", "class", "group",
+   "title", "fix_direction"}]}` (title, group and fix_direction only for
+   `fix`), then run `python3 <absolute pr_fix_lane.py> start --repo <root>
+   --ruling <file>`. It records the ruling, undoes the archive, writes
+   `.project/review/pr-review-<n>.md` and PATCH-FINDINGS.md, and sets
+   `ship/blocked`. Route to plan patch mode; the plan contract writes the
+   lane wave without a planner.
+4. After build, final review step 3 returns `lane: views` or `lane: fallback`
+   as described above. The archive transaction and `close-members` run as
+   usual and publish the lane landings onto the same PR.
+5. After `close-members` returns `awaiting-merge` with the new head, run
+   `python3 <absolute pr_fix_lane.py> reply --repo <root>` once: it answers
+   each fixed inline comment with its commit, and a rerun never repeats a
+   reply. Report the PR link and stop for the reviewer.
+6. Before `record-shipment`, run `python3 <absolute pr_fix_lane.py>
+   ship-check --repo <root>`. A still-active change request blocks: report it
+   and stop. Only an explicit owner ruling overrides it, passed as
+   `--override <file>` holding `{"head", "reviews", "verbatim"}` for the
+   published head and the exact outstanding review ids; record that ruling
+   in the Log.
+

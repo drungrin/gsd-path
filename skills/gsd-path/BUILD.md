@@ -156,6 +156,11 @@ Every recorded `full` or `deep` cycle owes its configured panel, including
 blocked cycles, focused re-checks, and repair waves. `review-panel-required`
 stops task dispatch and later review cycles until that evidence is present;
 run the panel step for the named wave and cycle before advancing.
+A `delta` wave belongs to the PR fix lane (ship contract, ADR 0006). It has
+one canonical reviewer and never a panel, and its tasks run only their own
+Verify at landing. The driver's review brief names the lane baseline and
+`templates/delta-review.md`. A natively dispatched reviewer gets the same two
+inputs and writes the same `## PR fix delta` section with `Depth: delta`.
 
 | Receipt | Next action |
 |---|---|
