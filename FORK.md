@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.53**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.54**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,61 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.54 — 2026-11-16
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 53 to 54.
+
+Fork only (it extends the PR fix lane of 1.7.1.53):
+- [`91547057 — answer and resolve PR review conversations on every route`](https://github.com/drungrin/gsd-path/commit/9154705704e627d281d99b00424b1dea729babf1)
+- [`fdfb5066 — answer PR conversations in the ship contract and ADR 0006`](https://github.com/drungrin/gsd-path/commit/fdfb5066fc1aef5d4ff2062df5041866694fe8d2)
+
+### PR conversations are answered and resolved
+
+- A consumer member PR merged with 19 review threads and not one reply. The
+  7 resolved threads were the ones the owner asked to close by hand. The 8
+  threads of the change-request round stayed open after their fixes landed.
+  A second PR showed the same pattern: 17 threads, no reply. The ordinary
+  route never kept the comment ids. The 1.7.1.53 lane replied only to fixed
+  inline comments, posted one review per reply, and resolved nothing.
+- Every round of a GitHub member PR now records its items:
+  - `snapshot --record-only` and `rule` capture the items and the owner's
+    ruling when the lane does not apply. They never enter the lane: its
+    plan, build and final gates read only lane rounds.
+  - After `close-members` publishes the new head, `threads` runs on both
+    routes. It posts one COMMENT review listing every item, review-body
+    items included, and replies inside it to each inline item.
+  - Fixed threads cite the published head and are resolved. Follow-up
+    threads give the owner's reason and stay open. The reviewer still checks
+    the resolved ones and can reopen any.
+  - Markers make reruns post nothing twice. A pending review left by a crash
+    is replaced.
+- `threads --plan <file>` answers a PR outside a recorded round, such as a
+  PR whose round started before this release.
+
+Validation:
+- New unit tests for one-review answering, resolution of fixes only,
+  follow-ups left open, crash recovery of a pending review, waiting for the
+  published head, English text, and the record-only round.
+- The end-to-end lane tests now answer through `threads` and confirm a rerun
+  posts nothing.
+- A live run against a private, disposable GitHub repository used the real
+  GraphQL mutations: one COMMENT review, a reply inside it, the thread
+  resolved, and a second run that posted nothing.
+- The full Python suite ran in eight parallel shards: 3,858 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 577 resources, and `check:locks`
+  passed.
+
+Limits:
+- GitHub only.
+- Replies speak for the PR author's account.
+- A ruling that wrongly marks an item fixed resolves its thread; the
+  reviewer's next round must catch it.
+- No upstream submission.
 
 ## 1.7.1.53 — 2026-11-16
 
