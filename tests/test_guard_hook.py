@@ -5231,5 +5231,72 @@ class SuccessorRuntimeAcceptanceTests(unittest.TestCase):
         self.assertEqual(self.guard(self.helper(unlisted)).returncode, 2)
 
 
+class SandboxOutTests(unittest.TestCase):
+    """The Paseo scratch folder is writable in every phase only while Git ignores it."""
+
+    def repo(self, temporary: str, exclude: bool = True) -> Path:
+        root = Path(temporary)
+        subprocess.run(["git", "init", "-q", "-b", "feature/milestone-003", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+        if exclude:
+            with (root / ".git" / "info" / "exclude").open("a", encoding="utf-8") as handle:
+                handle.write("/.sandbox-out/\n")
+        return root
+
+    def kind(self, root: Path, relative: str) -> str:
+        return guard_hook.target_kind(relative, [str(root)], root, ())
+
+    def test_ignored_scratch_is_external_before_and_after_it_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.repo(temporary)
+            for relative in (".sandbox-out", ".sandbox-out/m003/inspect/capabilities.json"):
+                self.assertEqual(self.kind(root, relative), "external", relative)
+            (root / ".sandbox-out" / "m003").mkdir(parents=True)
+            self.assertEqual(self.kind(root, ".sandbox-out"), "external")
+            self.assertEqual(self.kind(root, ".sandbox-out/m003/brief.md"), "external")
+
+    def test_unignored_tracked_or_linked_scratch_stays_product(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.repo(temporary, exclude=False)
+            self.assertEqual(self.kind(root, ".sandbox-out/brief.md"), "product")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.repo(temporary)
+            (root / ".sandbox-out").mkdir()
+            (root / ".sandbox-out" / "kept.md").write_text("x", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "-f", ".sandbox-out/kept.md"], check=True)
+            self.assertEqual(self.kind(root, ".sandbox-out/kept.md"), "product")
+            self.assertEqual(self.kind(root, ".sandbox-out/other.md"), "external")
+            self.assertEqual(self.kind(root, "src/.sandbox-out/x.md"), "product")
+
+    def test_inspect_allows_scratch_writes_and_still_denies_product(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.repo(temporary)
+            (root / ".project").mkdir()
+            (root / ".project" / "STATE.md").write_bytes("owned\n".encode("utf-8"))
+            hooks = GuardHookTests()
+            with (
+                mock.patch.object(guard_hook, "repository_root", return_value=root),
+                mock.patch.object(guard_hook, "project_status",
+                                  return_value=hooks.status(root, phase="inspect")),
+            ):
+                hooks.assert_allowed({"tool_name": "Write", "tool_input": {
+                    "file_path": str(root / ".sandbox-out/m003/inspect/capabilities.json"), "content": "{}"}})
+                hooks.assert_allowed({"tool_name": "Bash", "tool_input": {
+                    "cwd": str(root), "command": "echo '{}' > .sandbox-out/m003/capabilities.json"}})
+                hooks.assert_denied({"tool_name": "Bash", "tool_input": {
+                    "cwd": str(root), "command": "echo '{}' > src/capabilities.json"}})
+                hooks.assert_denied({"tool_name": "Write", "tool_input": {
+                    "file_path": str(root / "src/app.py"), "content": "x"}})
+
+    @requires_symlink
+    def test_a_linked_scratch_folder_stays_product(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.repo(temporary)
+            (root / "src").mkdir()
+            (root / ".sandbox-out").symlink_to(root / "src", target_is_directory=True)
+            self.assertEqual(self.kind(root, ".sandbox-out/app.py"), "product")
+
+
 if __name__ == "__main__":
     unittest.main()

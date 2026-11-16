@@ -1037,7 +1037,31 @@ def path_kind(candidate, repo, control_roots=()):
         return "protected"
     if parts and parts[0] == ".project":
         return "artifact"
+    if parts and parts[0] == SANDBOX_OUT and _ignored_scratch(repo, parts):
+        return "external"
     return "product"
+
+
+# The Paseo sandbox's host-visible scratch folder. Git must ignore it (.gitignore or
+# .git/info/exclude); a tracked, unignored or linked one stays a product path.
+SANDBOX_OUT = ".sandbox-out"
+
+
+def _ignored_scratch(repo, parts):
+    current = repo
+    for part in parts:
+        current = current / part
+        if is_link_like(current):
+            return False
+        if not current.exists():
+            break
+    found = subprocess.run(
+        # A bare folder name matches a `/.sandbox-out/` pattern only with its trailing slash.
+        ["git", "-C", str(repo), "check-ignore", "-q", "--", "/".join(parts) + ("/" if len(parts) == 1 else "")],
+        capture_output=True, encoding="utf-8", errors="replace", check=False,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    return found.returncode == 0
 
 
 def member_target_kind(candidate, repo):
