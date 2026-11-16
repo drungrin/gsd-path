@@ -10,7 +10,8 @@ pending-close rebind and exact-lease source advance) and replaces its middle:
               source and PATCH-FINDINGS.md, and block ship so patch mode opens
     views     after the delta wave and the project Verify, generate FINAL.md and
               the gap reports as views of the capsule plus the delta review
-    reply     answer each fixed inline comment once the new head is published
+    rule      record the ruling of a record-only round (the ordinary route keeps its frame)
+    threads   after republication, answer every item in one review and resolve the fixed threads
     ship-check  refuse shipment while a change request is still active
 
 See docs/adr/0006-pr-review-fix-lane.md.
@@ -50,8 +51,15 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 CLASSES = ("fix", "follow-up", "redesign")
 DECISIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
 REPLY_MARKER = "<!-- gsd-path-pr-fix: {key} -->"
-REPLY_TEXT = {"en": "Fixed in {head} (PR fix round {round}).",
-              "pt-BR": "Corrigido em {head} (rodada {round} de correção do PR)."}
+FINISHED_STAGES = {"viewed", "replied"}
+REPLY_TEXT = {
+    "en": {"fix": "Fixed in `{head}`: {note}", "follow-up": "Left for a later change: {note}",
+           "summary": "PR fix round {round}, published in `{head}`.",
+           "fixed": "fixed", "later": "left for later"},
+    "pt-BR": {"fix": "Corrigi em `{head}`: {note}", "follow-up": "Deixei para depois: {note}",
+              "summary": "Rodada {round} de correção do PR, publicada em `{head}`.",
+              "fixed": "corrigido", "later": "fica para depois"},
+}
 DELTA_SECTION = "PR fix delta"
 
 
@@ -156,6 +164,12 @@ def active_round(repo: Path) -> Optional[dict]:
     return dict(_read_json(directory / "round.json"), directory=str(directory))
 
 
+def lane_round(repo: Path) -> Optional[dict]:
+    """The open round when it runs the lane; a record-only round never changes the plan or build."""
+    record = active_round(repo)
+    return record if record is not None and record.get("mode", "lane") == "lane" else None
+
+
 def _set_active(repo: Path, round_record: Mapping[str, object], status: str = "open") -> None:
     _write_json(lane_root(repo) / "active.json", {
         "archive_name": round_record["archive_name"], "branch": round_record["branch"],
@@ -256,11 +270,17 @@ def _count_rounds(review: Path) -> int:
         if review.is_dir() else 0
 
 
-def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_rounds: bool = False) -> dict:
-    """Check entry, read the change request, and write the baseline capsule (no mutation of .project/)."""
+def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_rounds: bool = False,
+             record_only: bool = False) -> dict:
+    """Check entry, read the change request, and write the baseline capsule (no mutation of .project/).
+
+    With record_only the round only records the items and the ruling so the ordinary route can
+    answer and resolve the PR conversations at republication; it never enters the lane.
+    """
     repo = repo.resolve()
-    if not setting_enabled(repo):
-        raise LaneError("the PR fix lane is off; set pr_fix_lane to on in Path settings or use the ordinary route")
+    if not record_only and not setting_enabled(repo):
+        raise LaneError("the PR fix lane is off; set pr_fix_lane to on in Path settings or use the ordinary route "
+                        "(snapshot --record-only still records the items for the PR conversations)")
     state = _state(repo)
     if (state.phase, state.status) != ("ship", "active") or not state.archive:
         raise LaneError("the PR fix lane starts from ship/active with a prepared archive")
@@ -268,7 +288,7 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
     if existing and existing.get("archive_name") == _archive_name(state.archive):
         if existing.get("stage") == "captured":
             return _summary(existing)  # the same capture, retried before the ruling
-        if existing.get("stage") != "viewed":
+        if existing.get("stage") not in FINISHED_STAGES:
             raise LaneError(f"PR fix lane round {existing['round']} is still in progress ({existing['stage']})")
         # The previous round published its views; a new change request opens the next round.
         _set_active(repo, existing, status="closed")
@@ -292,8 +312,8 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
     candidates = [row for row in pending if row.get("mode") == "pull-request" and row.get("pull_request")]
     if not candidates:
         raise LaneError("no pending member pull request; use the ordinary route")
-    rounds = _count_rounds(review) + 1
-    if rounds > MAX_ROUNDS and not allow_more_rounds:
+    rounds = max(_count_rounds(review), _recorded_rounds(repo, archive_name)) + 1
+    if rounds > MAX_ROUNDS and not allow_more_rounds and not record_only:
         raise LaneError(f"the lane already ran {MAX_ROUNDS} rounds; use the ordinary route, "
                         "or rerun snapshot with --allow-more-rounds after an explicit owner ruling")
     selected = None
@@ -364,7 +384,7 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
                       (("INTENT.md", "intent/INTENT.md"), ("PLAN.md", "plan/PLAN.md"))
                       if (archive / relative).is_file()},
         "gaps": [path.name for path in gaps],
-        "stage": "captured",
+        "stage": "captured", "mode": "record" if record_only else "lane",
     }
     record["capsule_digest"] = _json_digest({"files": files, "head": head, "members": final_members})
     _save_round(repo, record)
@@ -372,10 +392,17 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
     return _summary(dict(record, directory=str(directory)))
 
 
+def _recorded_rounds(repo: Path, archive_name: str) -> int:
+    """Rounds already recorded for this archive; record-only rounds leave no pr-fix directory."""
+    root = lane_root(repo) / archive_name
+    return sum(1 for path in root.glob("round-*/round.json")) if root.is_dir() else 0
+
+
 def _summary(record: Mapping[str, object]) -> dict:
     directory = Path(str(record["directory"]))
     snap = _read_json(directory / "snapshot.json")
     return {"schema": SCHEMA, "status": record.get("stage"), "round": record["round"],
+            "mode": record.get("mode", "lane"),
             "pull_request": record["pull_request"], "member": record["member"],
             "directory": str(directory),
             "items": [{key: item[key] for key in ("id", "kind", "location", "link")} | {"text": one_line(item["text"])}
@@ -384,7 +411,7 @@ def _summary(record: Mapping[str, object]) -> dict:
 
 # --- ruling and start ---------------------------------------------------------------
 
-def _validate_ruling(ruling: Mapping[str, object], snap: Mapping[str, object]) -> List[dict]:
+def _validate_ruling(ruling: Mapping[str, object], snap: Mapping[str, object], lane: bool = True) -> List[dict]:
     if not isinstance(ruling.get("verbatim"), str) or not ruling["verbatim"].strip():
         raise LaneError("the ruling must carry the owner's answer verbatim")
     known = {item["id"]: item for item in snap["items"]}
@@ -400,17 +427,18 @@ def _validate_ruling(ruling: Mapping[str, object], snap: Mapping[str, object]) -
         seen.add(row["id"])
         if row.get("class") not in CLASSES:
             raise LaneError(f"item {row['id']} class must be one of {', '.join(CLASSES)}")
-        if row["class"] == "fix":
-            for field in ("title", "fix_direction", "group"):
-                if not isinstance(row.get(field), str) or not one_line(row[field]):
-                    raise LaneError(f"fix item {row['id']} needs a {field}")
+        needed = {"fix": ("title", "fix_direction", "group") if lane else ("fix_direction",),
+                  "redesign": ("fix_direction",), "follow-up": ("note",)}[row["class"]]
+        for field in needed:
+            if not isinstance(row.get(field), str) or not one_line(row[field]):
+                raise LaneError(f"{row['class']} item {row['id']} needs a {field}")
     if seen != set(known):
         missing = ", ".join(sorted(set(known) - seen))
         raise LaneError(f"the ruling must classify every item; missing {missing}")
-    if any(row["class"] == "redesign" for row in rows):
+    if lane and any(row["class"] == "redesign" for row in rows):
         raise LaneError("a selected item is a redesign; the round uses the ordinary route")
-    fixes = [row for row in rows if row["class"] == "fix"]
-    if not fixes:
+    fixes = [row for row in rows if row["class"] in ("fix", "redesign")]
+    if lane and not fixes:
         raise LaneError("the ruling selects no fix item")
     return fixes
 
@@ -446,9 +474,9 @@ def findings_text(record: Mapping[str, object], snap: Mapping[str, object], fixe
 def start(repo: Path, ruling_path: Path) -> dict:
     """Record the ruling, undo the archive, write the hand-off, and block ship for patch mode."""
     repo = repo.resolve()
-    record = active_round(repo)
+    record = lane_round(repo)
     if record is None:
-        raise LaneError("no captured lane round; run snapshot first")
+        raise LaneError("no captured lane round; run snapshot first (a record-only round uses rule)")
     directory = Path(record.pop("directory"))
     snap = _read_json(directory / "snapshot.json")
     if record["stage"] == "captured":
@@ -502,7 +530,7 @@ def start(repo: Path, ruling_path: Path) -> dict:
 def require_source(repo: Path, relative: str, text: str) -> None:
     """A pr-review patch source must be exactly what the lane wrote for the active round."""
     match = SOURCE_NAME.fullmatch(PurePosixPath(relative).name)
-    record = active_round(repo)
+    record = lane_round(repo)
     if not match or record is None or int(match.group("round")) != int(record["round"]):
         raise LaneError(f"{relative} is not the pr-review source of an active PR fix lane round")
     directory = Path(str(record["directory"]))
@@ -523,7 +551,7 @@ def lane_plan_errors(repo: Path, waves: Mapping[int, str], tasks: Sequence[Mappi
     if not delta:
         return []
     errors: List[str] = []
-    record = active_round(repo)
+    record = lane_round(repo)
     if record is None or record.get("stage") not in {"opened", "built", "viewed"}:
         return ["Review depth: delta is legal only in an open PR fix lane round"]
     if delta != list(range(delta[0], max(waves) + 1)):
@@ -630,7 +658,7 @@ def delta_report(repo: Path, wave: int) -> Tuple[Path, str]:
 
 def delta_errors(repo: Path, text: str) -> List[str]:
     """Wave-gate checks for a delta review against the active round."""
-    record = active_round(repo)
+    record = lane_round(repo)
     if record is None:
         return ["a delta wave review needs an open PR fix lane round"]
     directory = Path(str(record["directory"]))
@@ -791,7 +819,7 @@ def _lane_tasks(repo: Path, lane_waves: Sequence[int]) -> Dict[str, dict]:
 def views(repo: Path, expected_head: str) -> dict:
     """Generate FINAL.md and gap views for the active lane round; refuse when anything is unproven."""
     repo = repo.resolve()
-    record = active_round(repo)
+    record = lane_round(repo)
     if record is None:
         raise LaneError("no PR fix lane round is open")
     directory = Path(str(record.pop("directory")))
@@ -935,48 +963,184 @@ def _reply_key(record: Mapping[str, object], item: str, head: str) -> str:
     return f"{record['round']}/{item}/{head}"
 
 
-def reply(repo: Path, api: Callable[..., object] = _default_api) -> dict:
-    """Reply once to each fixed inline comment with its commit link, after the new head is published."""
+THREADS_QUERY = """query($owner:String!,$name:String!,$number:Int!,$after:String){
+  viewer{login}
+  repository(owner:$owner,name:$name){pullRequest(number:$number){
+    id headRefOid
+    reviews(last:100){nodes{id state body author{login}}}
+    reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}
+      nodes{id isResolved comments(first:100){nodes{databaseId body}}}}
+  }}
+}"""
+
+
+def _graphql(api: Callable[..., object], query: str, **variables: object) -> dict:
+    arguments = ["graphql", "-f", f"query={query}"]
+    for name, value in variables.items():
+        if value is None:
+            continue
+        arguments += ["-F" if isinstance(value, int) else "-f", f"{name}={value}"]
+    result = api(*arguments)
+    if not isinstance(result, dict) or result.get("errors") or not isinstance(result.get("data"), dict):
+        raise LaneError(f"GitHub GraphQL refused the request: {result.get('errors') if isinstance(result, dict) else result}")
+    return result["data"]
+
+
+def _pull_threads(api: Callable[..., object], repository: str, number: int) -> dict:
+    owner, name = repository.split("/", 1)
+    threads, cursor, pull, viewer = [], None, None, None
+    while True:
+        data = _graphql(api, THREADS_QUERY, owner=owner, name=name, number=number, after=cursor)
+        viewer = (data.get("viewer") or {}).get("login")
+        pull = data["repository"]["pullRequest"]
+        page = pull["reviewThreads"]
+        threads += page["nodes"]
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        cursor = page["pageInfo"]["endCursor"]
+    return {"viewer": viewer, "id": pull["id"], "head": pull["headRefOid"], "reviews": pull["reviews"]["nodes"],
+            "threads": threads}
+
+
+def _thread_of(threads: Sequence[dict], comment_id: int) -> Optional[dict]:
+    for thread in threads:
+        nodes = (thread.get("comments") or {}).get("nodes") or []
+        if nodes and nodes[0].get("databaseId") == comment_id:
+            return thread
+    return None
+
+
+def post_threads(plan: Mapping[str, object], api: Callable[..., object] = _default_api) -> dict:
+    """Answer every review item of a round in one COMMENT review, then resolve the fixed threads.
+
+    `plan` holds pull_request, head (the published head the replies cite), round, language, and
+    items with id (R<review>|C<comment>), kind, class (fix|redesign|follow-up), note and optional
+    link. Fixed items get a reply and a resolved thread; follow-up items get a reply and stay open;
+    the review body lists every item, so body-only items are answered too. Markers make a rerun
+    skip what was already posted, and a pending review a crash left behind is replaced.
+    """
+    repository, number = pull_parts(str(plan["pull_request"]))
+    head = str(plan["head"])
+    text = REPLY_TEXT.get(str(plan.get("language") or "en"), REPLY_TEXT["en"])
+    index = _pull_threads(api, repository, number)
+    if index["head"] != head:
+        raise LaneError(f"the PR shows {str(index['head'])[:12]}, not the round's published head {head[:12]}; "
+                        "publish it through close-members first")
+    summary_marker = REPLY_MARKER.format(key=f"{plan['round']}/review/{head}")
+    submitted = [review for review in index["reviews"] if review.get("state") != "PENDING"]
+    done = any(summary_marker in str(review.get("body") or "") for review in submitted)
+    replied, skipped, resolved, missing = [], [], [], []
+    items = list(plan["items"])
+    if not done:
+        for review in index["reviews"]:
+            if review.get("state") == "PENDING" and (review.get("author") or {}).get("login") == index["viewer"]:
+                _graphql(api, "mutation($id:ID!){deletePullRequestReview(input:{pullRequestReviewId:$id})"
+                              "{pullRequestReview{id}}}", id=review["id"])
+        pending = _graphql(api, "mutation($pr:ID!){addPullRequestReview(input:{pullRequestId:$pr})"
+                                "{pullRequestReview{id}}}", pr=index["id"])["addPullRequestReview"]
+        review_id = pending["pullRequestReview"]["id"]
+        for item in items:
+            if item.get("kind") != "inline":
+                continue
+            thread = _thread_of(index["threads"], int(str(item["id"])[1:]))
+            if thread is None:
+                missing.append(item["id"])
+                continue
+            marker = REPLY_MARKER.format(key=f"{plan['round']}/{item['id']}/{head}")
+            bodies = "\n".join(str(node.get("body") or "") for node in thread["comments"]["nodes"])
+            if marker in bodies:
+                skipped.append(item["id"])
+                continue
+            kind = "follow-up" if item["class"] == "follow-up" else "fix"
+            body = text[kind].format(head=head[:12], note=one_line(item["note"])) + f"\n\n{marker}"
+            _graphql(api, "mutation($review:ID!,$thread:ID!,$body:String!){addPullRequestReviewThreadReply("
+                          "input:{pullRequestReviewId:$review,pullRequestReviewThreadId:$thread,body:$body})"
+                          "{comment{id}}}", review=review_id, thread=thread["id"], body=body)
+            replied.append(item["id"])
+        lines = [text["summary"].format(round=plan["round"], head=head[:12]), ""]
+        for item in items:
+            status = text["later"] if item["class"] == "follow-up" else text["fixed"]
+            label = f"[{item['id']}]({item['link']})" if item.get("link") and item["link"] != "none" else item["id"]
+            lines.append(f"- {label}: {status} — {one_line(item['note'])}")
+        _graphql(api, "mutation($review:ID!,$body:String!){submitPullRequestReview(input:"
+                      "{pullRequestReviewId:$review,event:COMMENT,body:$body}){pullRequestReview{id}}}",
+                 review=review_id, body="\n".join(lines) + f"\n\n{summary_marker}")
+    for item in items:
+        if item.get("kind") != "inline" or item["class"] == "follow-up":
+            continue
+        thread = _thread_of(index["threads"], int(str(item["id"])[1:]))
+        if thread is None or thread.get("isResolved"):
+            continue
+        _graphql(api, "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}",
+                 id=thread["id"])
+        resolved.append(item["id"])
+    return {"schema": SCHEMA, "status": "complete", "summary": "present" if done else "posted",
+            "replied": replied, "skipped": skipped, "resolved": resolved, "missing_threads": missing}
+
+
+def rule(repo: Path, ruling_path: Path) -> dict:
+    """Record the owner's ruling for a record-only round; the ordinary route does the rest."""
     repo = repo.resolve()
     record = active_round(repo)
-    if record is None:
-        raise LaneError("no PR fix lane round is open")
+    if record is None or record.get("mode") != "record":
+        raise LaneError("rule records a record-only round; a lane round records its ruling with start")
+    directory = Path(record.pop("directory"))
+    snap = _read_json(directory / "snapshot.json")
+    ruling = _read_json(ruling_path)
+    fixes = _validate_ruling(ruling, snap, lane=False)
+    if record["stage"] == "captured":
+        _write_json(directory / "ruling.json", ruling)
+        record.update(stage="ruled", ruling_digest=_digest(directory / "ruling.json"),
+                      fixes=[row["id"] for row in fixes])
+        _save_round(repo, record)
+    elif _digest(directory / "ruling.json") != record.get("ruling_digest") or \
+            _read_json(directory / "ruling.json") != ruling:
+        raise LaneError("this round already recorded a different ruling")
+    return {"schema": SCHEMA, "status": record["stage"], "round": record["round"],
+            "fixes": [row["id"] for row in fixes]}
+
+
+def round_plan(repo: Path) -> dict:
+    """The thread plan of the open round, once its head is published to the PR."""
+    record = active_round(repo)
+    if record is None or record.get("stage") in (None, "captured"):
+        raise LaneError("no ruled PR fix round is open")
     directory = Path(str(record.pop("directory")))
     snap = _read_json(directory / "snapshot.json")
+    ruling = _read_json(directory / "ruling.json")
     state = _state(repo)
     archive = repo / str(state.archive or "").rstrip("/")
     if not state.archive or not (archive / "review/FINAL.md").is_file():
-        raise LaneError("replies run after the archive is prepared and the PR is published")
+        raise LaneError("thread replies run after the archive is prepared again and close-members published it")
     _, members, _ = _final_header_heads((archive / "review/FINAL.md").read_text(encoding="utf-8"))
     head = members.get(str(record["member"]))
-    repository, number = pull_parts(str(record["pull_request"]))
-    pull = api(f"repos/{repository}/pulls/{number}")
-    if (pull.get("head") or {}).get("sha") != head:
-        raise LaneError("the PR does not show the lane head yet; publish it through close-members first")
-    existing = _pages(api(f"repos/{repository}/pulls/{number}/comments", "--paginate", "--slurp"))
-    bodies = "\n".join(str(comment.get("body") or "") for comment in existing)
-    validate_views(repo, archive / "review")
+    if not head or head == record["members"].get(str(record["member"])):
+        raise LaneError("the prepared archive does not name a new member head for this round")
+    if record.get("mode", "lane") == "lane":
+        validate_views(repo, archive / "review")
     publication = repo / ".project/publications" / str(record["archive_name"]) / f"{record['member']}.json"
     try:
         language = _read_json(publication).get("language", "en") if publication.is_file() else "en"
     except (LaneError, ValueError):
         language = "en"
-    sent, skipped = [], []
-    for item in snap["items"]:
-        if item["kind"] != "inline" or item["id"] not in (record.get("fixes") or []):
-            continue
-        key = _reply_key(record, item["id"], head)
-        marker = REPLY_MARKER.format(key=key)
-        if marker in bodies:
-            skipped.append(item["id"])
-            continue
-        comment_id = int(item["id"][1:])
-        body = REPLY_TEXT.get(language, REPLY_TEXT["en"]).format(head=head[:12], round=record["round"]) + \
-            f"\n\n{marker}"
-        api(f"repos/{repository}/pulls/{number}/comments/{comment_id}/replies", "--method", "POST",
-            "-f", f"body={body}")
-        sent.append(item["id"])
-    return {"schema": SCHEMA, "status": "complete", "sent": sent, "skipped": skipped}
+    known = {item["id"]: item for item in snap["items"]}
+    items = [{"id": row["id"], "kind": known[row["id"]]["kind"], "class": row["class"],
+              "link": known[row["id"]].get("link"),
+              "note": row.get("fix_direction") if row["class"] != "follow-up" else row.get("note")}
+             for row in ruling["items"]]
+    return {"pull_request": record["pull_request"], "head": head, "round": record["round"],
+            "language": language, "items": items, "_record": record}
+
+
+def threads(repo: Path, api: Callable[..., object] = _default_api) -> dict:
+    """Answer and resolve the round's PR conversations after close-members published the new head."""
+    repo = repo.resolve()
+    plan = round_plan(repo)
+    record = plan.pop("_record")
+    result = post_threads(plan, api)
+    record["stage"] = "replied"
+    _save_round(repo, record)
+    return result
 
 
 def ship_check(repo: Path, api: Callable[..., object] = _default_api, override: Optional[Path] = None) -> dict:
@@ -1008,11 +1172,18 @@ def ship_check(repo: Path, api: Callable[..., object] = _default_api, override: 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("snapshot", "start", "views", "reply", "ship-check", "status"):
+    for name in ("snapshot", "start", "rule", "views", "threads", "ship-check", "status"):
         command = commands.add_parser(name)
-        command.add_argument("--repo", type=Path, required=True)
+        command.add_argument("--repo", type=Path, required=name != "threads")
         if name == "snapshot":
             command.add_argument("--allow-more-rounds", action="store_true")
+            command.add_argument("--record-only", action="store_true",
+                                 help="record the items for the PR conversations without entering the lane")
+        if name == "rule":
+            command.add_argument("--ruling", type=Path, required=True)
+        if name == "threads":
+            command.add_argument("--plan", type=Path,
+                                 help="explicit thread plan for a one-off answer outside a recorded round")
         if name == "start":
             command.add_argument("--ruling", type=Path, required=True)
         if name == "views":
@@ -1022,13 +1193,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "snapshot":
-            result = snapshot(args.repo, allow_more_rounds=args.allow_more_rounds)
+            result = snapshot(args.repo, allow_more_rounds=args.allow_more_rounds, record_only=args.record_only)
+        elif args.command == "rule":
+            result = rule(args.repo, args.ruling)
+        elif args.command == "threads":
+            if args.plan is not None:
+                result = post_threads(_read_json(args.plan))
+            elif args.repo is not None:
+                result = threads(args.repo)
+            else:
+                raise LaneError("threads needs --repo (a recorded round) or --plan (a one-off)")
         elif args.command == "start":
             result = start(args.repo, args.ruling)
         elif args.command == "views":
             result = views(args.repo, args.expected_head)
-        elif args.command == "reply":
-            result = reply(args.repo)
         elif args.command == "ship-check":
             result = ship_check(args.repo, override=args.override)
         else:

@@ -16,6 +16,7 @@ from unittest import mock
 from scripts import build_state, check_handoffs, integration, isolation, lean_verification, pipeline_state
 from scripts import pr_fix_lane
 from tests._editorial_fixtures import publication_fixture
+from tests.test_pr_fix_lane import FakeThreads
 import tests.test_member_full_cycle as cycle
 
 BRANCH = cycle.BRANCH
@@ -120,6 +121,7 @@ class FakeGitHub:
     def __init__(self, test):
         self.test = test
         self.pulls, self.reviews, self.comments, self.replies, self.patches = [], [], [], [], []
+        self.threads = None
 
     def bound_tip(self):
         return self.test.remote_ref("refs/heads/" + BOUND)
@@ -143,6 +145,12 @@ class FakeGitHub:
         raw = tuple(arguments)
         self._sync()
         path = arguments[0] if arguments else ""
+        if "graphql" in raw and "mergeQueue" not in next(a for a in raw if str(a).startswith("query=")):
+            if self.threads is None:
+                self.threads = FakeThreads(self.bound_tip(), [comment for comment in self.comments
+                                                             if not comment.get("in_reply_to_id")])
+            self.threads.head = self.bound_tip()
+            return self.threads.api(*raw)
         if "graphql" in raw:
             merged = [pull["merge_commit_sha"] for pull in self.pulls if pull["merged_at"]]
             nodes = [{"__typename": "MergedEvent", "actor": {"__typename": "User", "login": "owner"},
@@ -349,9 +357,14 @@ class PrFixLaneCycleTests(unittest.TestCase):
         self.assertEqual(self.remote_ref("refs/heads/" + BOUND), second["landing"])
         self.assertEqual(len([pull for pull in self.fake.pulls]), 1)
 
-        replied = pr_fix_lane.reply(repo, api=self.fake.api)
-        self.assertEqual(replied["sent"], ["C21"])
-        self.assertEqual(pr_fix_lane.reply(repo, api=self.fake.api)["skipped"], ["C21"])
+        answered = pr_fix_lane.threads(repo, api=self.fake.api)
+        self.assertEqual((answered["replied"], answered["resolved"]), (["C21"], ["C21"]))
+        self.assertEqual(pr_fix_lane.post_threads(
+            {key: value for key, value in pr_fix_lane.round_plan(repo).items() if key != "_record"},
+            self.fake.api)["summary"], "present")
+        review = [item for item in self.fake.threads.reviews if item["state"] == "COMMENTED"]
+        self.assertEqual(len(review), 1)
+        self.assertIn("- [R11]", review[0]["body"])
         with self.assertRaisesRegex(pr_fix_lane.LaneError, "still active"):
             pr_fix_lane.ship_check(repo, api=self.fake.api)
         if second_round:

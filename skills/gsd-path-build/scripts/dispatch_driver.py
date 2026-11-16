@@ -1572,7 +1572,7 @@ def review_brief(state: Dict[str, object], options: argparse.Namespace, primary:
             "Judge every task and owned INTENT criterion against that pinned product, reusing recorded Verify evidence.",
         ]
     if state.get("depth") == "delta":
-        lane = pr_fix_lane.active_round(primary)
+        lane = pr_fix_lane.lane_round(primary)
         capsule = Path(str(lane["directory"])) / "capsule/review" if lane else None
         lines += [
             "PR fix lane delta review (ADR 0006): this wave answers a PR change request. Record `Depth: delta` "

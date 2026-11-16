@@ -427,3 +427,127 @@ class LaneGateTests(unittest.TestCase):
             with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened"}):
                 self.assertTrue(build_state._pr_fix_lane_task(root, task, ".project"))
                 self.assertFalse(build_state._pr_fix_lane_task(root, mock.Mock(wave=1), ".project"))
+
+
+class FakeThreads:
+    """The GitHub GraphQL surface post_threads uses: thread index, pending review, replies, resolve."""
+
+    def __init__(self, head, comments, viewer="author"):
+        self.head, self.viewer = head, viewer
+        self.reviews, self.calls, self.counter = [], [], 0
+        self.threads = [{"id": f"T{comment['id']}", "isResolved": False,
+                         "comments": {"nodes": [{"databaseId": comment["id"], "body": comment["body"]}]}}
+                        for comment in comments]
+
+    def _id(self, prefix):
+        self.counter += 1
+        return f"{prefix}{self.counter}"
+
+    def api(self, *arguments):
+        self.calls.append(arguments)
+        assert arguments[0] == "graphql", arguments
+        values = dict(argument.split("=", 1) for argument in arguments[1:] if "=" in argument)
+        query = values["query"]
+        if "reviewThreads" in query:
+            return {"data": {"viewer": {"login": self.viewer}, "repository": {"pullRequest": {
+                "id": "PR1", "headRefOid": self.head,
+                "reviews": {"nodes": [dict(review) for review in self.reviews]},
+                "reviewThreads": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                                  "nodes": json.loads(json.dumps(self.threads))}}}}}
+        if "deletePullRequestReview" in query:
+            self.reviews = [review for review in self.reviews if review["id"] != values["id"]]
+            return {"data": {"deletePullRequestReview": {"pullRequestReview": {"id": values["id"]}}}}
+        if "addPullRequestReview(" in query:
+            review = {"id": self._id("V"), "state": "PENDING", "body": "", "author": {"login": self.viewer},
+                      "replies": []}
+            self.reviews.append(review)
+            return {"data": {"addPullRequestReview": {"pullRequestReview": {"id": review["id"]}}}}
+        if "addPullRequestReviewThreadReply" in query:
+            review = next(item for item in self.reviews if item["id"] == values["review"])
+            review["replies"].append((values["thread"], values["body"]))
+            return {"data": {"addPullRequestReviewThreadReply": {"comment": {"id": self._id("K")}}}}
+        if "submitPullRequestReview" in query:
+            review = next(item for item in self.reviews if item["id"] == values["review"])
+            review.update(state="COMMENTED", body=values["body"])
+            for thread_id, body in review["replies"]:
+                thread = next(item for item in self.threads if item["id"] == thread_id)
+                thread["comments"]["nodes"].append({"databaseId": 0, "body": body})
+            return {"data": {"submitPullRequestReview": {"pullRequestReview": {"id": review["id"]}}}}
+        if "resolveReviewThread" in query:
+            next(item for item in self.threads if item["id"] == values["id"])["isResolved"] = True
+            return {"data": {"resolveReviewThread": {"thread": {"id": values["id"], "isResolved": True}}}}
+        raise AssertionError(query)
+
+
+class PostThreadsTests(unittest.TestCase):
+    head = "e" * 40
+    plan = {"pull_request": PULL, "head": "e" * 40, "round": 1, "language": "pt-BR", "items": [
+        {"id": "R11", "kind": "review", "class": "fix", "note": "Declarei o escopo", "link": "l1"},
+        {"id": "C21", "kind": "inline", "class": "fix", "note": "Recusar token sem escopo", "link": "l2"},
+        {"id": "C22", "kind": "inline", "class": "follow-up", "note": "Fica para o M003", "link": "l3"}]}
+
+    def fake(self):
+        return FakeThreads(self.head, [{"id": 21, "body": "Falta escopo"}, {"id": 22, "body": "Lento"}])
+
+    def test_one_review_answers_every_item_and_resolves_only_the_fixes(self) -> None:
+        fake = self.fake()
+        result = pr_fix_lane.post_threads(self.plan, fake.api)
+        self.assertEqual((result["summary"], result["replied"], result["resolved"]), ("posted", ["C21", "C22"], ["C21"]))
+        submitted = [review for review in fake.reviews if review["state"] == "COMMENTED"]
+        self.assertEqual(len(submitted), 1)
+        body = submitted[0]["body"]
+        self.assertIn("Rodada 1 de correção do PR, publicada em `eeeeeeeeeeee`.", body)
+        self.assertIn("- [R11](l1): corrigido — Declarei o escopo", body)
+        self.assertIn("- [C22](l3): fica para depois — Fica para o M003", body)
+        replies = dict(submitted[0]["replies"])
+        self.assertTrue(replies["T21"].startswith("Corrigi em `eeeeeeeeeeee`: Recusar token sem escopo"))
+        self.assertTrue(replies["T22"].startswith("Deixei para depois: Fica para o M003"))
+        self.assertEqual([thread["isResolved"] for thread in fake.threads], [True, False])
+        again = pr_fix_lane.post_threads(self.plan, fake.api)
+        self.assertEqual((again["summary"], again["replied"], again["resolved"]), ("present", [], []))
+        self.assertEqual(len([review for review in fake.reviews if review["state"] == "COMMENTED"]), 1)
+
+    def test_a_pending_review_left_by_a_crash_is_replaced(self) -> None:
+        fake = self.fake()
+        fake.reviews.append({"id": "OLD", "state": "PENDING", "body": "", "author": {"login": "author"},
+                             "replies": [("T21", "half")]})
+        pr_fix_lane.post_threads(self.plan, fake.api)
+        self.assertNotIn("OLD", [review["id"] for review in fake.reviews])
+        self.assertEqual(len(fake.reviews), 1)
+
+    def test_replies_wait_for_the_published_head(self) -> None:
+        fake = self.fake()
+        fake.head = "f" * 40
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "publish it through close-members"):
+            pr_fix_lane.post_threads(self.plan, fake.api)
+        self.assertEqual(fake.reviews, [])
+
+    def test_english_text_and_a_missing_thread_is_reported(self) -> None:
+        fake = FakeThreads(self.head, [{"id": 22, "body": "Lento"}])
+        plan = dict(self.plan, language="en")
+        result = pr_fix_lane.post_threads(plan, fake.api)
+        self.assertEqual(result["missing_threads"], ["C21"])
+        self.assertIn("PR fix round 1, published in", fake.reviews[0]["body"])
+
+
+class RecordOnlyRoundTests(LaneEntryTests):
+    def test_record_only_needs_no_setting_and_never_opens_the_lane(self) -> None:
+        with mock.patch.object(pr_fix_lane, "setting_enabled", return_value=False):
+            result = pr_fix_lane.snapshot(self.root, api=self.api, record_only=True)
+        self.assertEqual(result["mode"], "record")
+        self.assertIsNone(pr_fix_lane.lane_round(self.root))
+        ruling = self.root.parent / "ruling.json"
+        ruling.write_text(json.dumps({"verbatim": "Corrigir R11; C21 fica.", "items": [
+            {"id": "R11", "class": "redesign", "fix_direction": "Refazer a guarda"},
+            {"id": "C21", "class": "follow-up", "note": "Próximo milestone"}]}), encoding="utf-8")
+        self.assertEqual(pr_fix_lane.rule(self.root, ruling)["fixes"], ["R11"])
+        self.assertEqual(pr_fix_lane.active_round(self.root)["stage"], "ruled")
+        self.assertEqual(pipeline_state.load_state(self.root)[0].archive, ARCHIVE)
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "record-only round uses rule"):
+            pr_fix_lane.start(self.root, ruling)
+        bad = self.root.parent / "bad.json"
+        bad.write_text(json.dumps({"verbatim": "x", "items": [{"id": "R11", "class": "follow-up", "note": "n"},
+                                                               {"id": "C21", "class": "fix", "fix_direction": "y"}]}),
+                       encoding="utf-8")
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "different ruling"):
+            pr_fix_lane.rule(self.root, bad)

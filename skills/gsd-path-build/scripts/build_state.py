@@ -662,7 +662,7 @@ def _pr_fix_lane_task(repo: Path, task: "Task", project_dir: str) -> bool:
         depth = review_findings.wave_depth(plan.read_text(encoding="utf-8"), int(task.wave))
     except (OSError, ValueError, review_findings.ReviewFindingsError):
         return False
-    return depth == "delta" and lane.active_round(Path(repo)) is not None
+    return depth == "delta" and lane.lane_round(Path(repo)) is not None
 
 
 def regression_verifies(

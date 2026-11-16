@@ -326,7 +326,7 @@ def _lane_final(repo, expected_head):
         from scripts import pr_fix_lane
     else:
         import pr_fix_lane
-    record = pr_fix_lane.active_round(repo)
+    record = pr_fix_lane.lane_round(repo)
     if record is None or record.get("stage") not in {"opened", "viewed"}:
         return None
     try:
