@@ -244,6 +244,7 @@ def parse_review_bullet_field(lines: Sequence[str], field: str) -> str:
 PROJECT_PROBE_PATHS = (
     ".project/STATE.md",
     ".project/LESSONS.md",
+    ".project/PARKING.md",
     ".project/REPOSITORY.md",
     ".project/MEMBERS.md",
     ".project/CHARTER.md",

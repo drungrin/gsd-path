@@ -1859,7 +1859,7 @@ def require_canonical_archive(archive: Path) -> None:
 def require_clean_active_root(active_root: Path, archive: Path) -> None:
     pending = {audit.name: audit for audit, _ in pending_audits(archive / "research")}
     # Persistent project metadata ships but never archives with a milestone.
-    allowed = {"STATE.md", "REPOSITORY.md", "MEMBERS.md", "archive", "LESSONS.md", "next", "publications"}
+    allowed = {"STATE.md", "REPOSITORY.md", "MEMBERS.md", "archive", "LESSONS.md", "PARKING.md", "next", "publications"}
     publications = active_root / "publications"
     if publications.exists() or publications.is_symlink():
         if publications.is_symlink() or not publications.is_dir():

@@ -104,6 +104,7 @@ _RUNTIME_ACTIVATION_ORDER = (
     "path_config",
     "model_policy",
     "pr_fix_lane",
+    "parking",
 )
 RECOVERY_BLOCKED = "recovery blocked"
 LEFTOVER_ISOLATE = "task {} is landed; remove its leftover isolate: {}"

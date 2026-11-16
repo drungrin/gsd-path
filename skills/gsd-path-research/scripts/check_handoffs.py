@@ -150,6 +150,16 @@ def _pr_fix_lane():
     return pr_fix_lane
 
 
+def _parking():
+    try:
+        import parking
+    except ModuleNotFoundError as error:  # pragma: no cover - package import used by tests
+        if error.name != "parking":
+            raise
+        from scripts import parking
+    return parking
+
+
 _strip_yaml_comment = _common.strip_yaml_comment
 
 
@@ -2302,6 +2312,18 @@ def validate_plan(
         errors = _pr_fix_lane().lane_plan_errors(root, wave_depths, lane_tasks)
         if errors:
             raise HandoffError("; ".join(errors))
+    if project_dir == DEFAULT_PROJECT_DIR:
+        parked = []
+        for task_id, text in tasks.items():
+            context_match = re.search(r"(?ms)^## Context\s*$(.*?)^## ", text)
+            parked.append({"id": task_id, "status": _task_scalar(text, task_id, "status"),
+                           "context": context_match.group(1) if context_match else ""})
+        try:
+            errors = _parking().plan_errors(root, parked)
+        except _parking().ParkingError as error:
+            errors = [str(error)]
+        if errors:
+            raise HandoffError("parking lot: " + "; ".join(errors))
     integrated = _integrated_members(root, state)
     for task_id, text in tasks.items():
         repo = str(_common.effective_task_repo(root, task_id, _strict_frontmatter(text, task_id).get("repo"), project_dir) or "")

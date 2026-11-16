@@ -65,6 +65,7 @@
     "scripts/task_context.py",
     "scripts/lean_verification.py",
     "scripts/pr_fix_lane.py",
+    "scripts/parking.py",
     "scripts/token_budget.py",
     "scripts/pipeline_undo.py",
     "scripts/pipeline_diagnose.py",

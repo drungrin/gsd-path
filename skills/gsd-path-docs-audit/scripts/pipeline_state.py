@@ -2072,6 +2072,8 @@ def transition_state(
                 validator(resolved, project_dir)
             except check_handoffs.HandoffError as error:
                 raise PipelineStateError(f"{state.phase} handoff failed: {error}") from error
+        if leaving_define and project_dir == ".project" and not (recovery_context and recovery_context["active"]):
+            _require_parking_decided(resolved)
         lens_reason = _transition_lens_refusal(
             project, text, " ".join(event.split()), recovery_context
         )
@@ -2079,6 +2081,8 @@ def transition_state(
             raise PipelineStateError(lens_reason)
         if (project_dir == ".project" and (state.phase, state.status) == ("plan", "done")
                 and (after.phase, after.status) == ("build", "active")):
+            # A promoted lookahead skipped the define gate on this track.
+            _require_parking_decided(resolved, building=True)
             _lock_build_members(resolved)
         if state.phase == "build" and after.phase in {"define", "plan"}:
             recovery = _build_recovery().begin(resolved, state, after, event)
@@ -2519,6 +2523,25 @@ def _lock_build_members(repo: Path) -> None:
         members.lock_build_members(repo)
     except members.MembersError as error:
         raise PipelineStateError(f"build start: {error}") from error
+
+
+def _require_parking_decided(repo: Path, building: bool = False) -> None:
+    """Every parked item is decided before the milestone's intent or build is approved."""
+    if __package__:
+        from scripts import parking
+    else:
+        import parking
+    try:
+        errors = parking.define_errors(repo)
+        if building:
+            errors += parking.plan_errors(repo, parking.task_rows(repo / ".project" / "tasks"))
+    except parking.ParkingError as error:
+        errors = [str(error)]
+    if errors:
+        raise PipelineStateError(
+            "parking lot: " + "; ".join(errors)
+            + "; record the owner's decisions with parking.py triage"
+        )
 
 
 def _build_recovery():
