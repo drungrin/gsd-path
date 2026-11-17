@@ -10,6 +10,9 @@ pending-close rebind and exact-lease source advance) and replaces its middle:
               source and PATCH-FINDINGS.md, and block ship so patch mode opens
     views     after the delta wave and the project Verify, generate FINAL.md and
               the gap reports as views of the capsule plus the delta review
+    fall-back hand the round to the ordinary final review when the views cannot stand
+              in for it; prepare-final does this itself, and a blocked final then takes
+              the ordinary patch route after the landed delta waves
     rule      record the ruling of a record-only round (the ordinary route keeps its frame)
     threads   after republication, answer every item in one review and resolve the fixed threads
     ship-check  refuse shipment while a change request is still active
@@ -52,6 +55,10 @@ CLASSES = ("fix", "follow-up", "redesign")
 DECISIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
 REPLY_MARKER = "<!-- gsd-path-pr-fix: {key} -->"
 FINISHED_STAGES = {"viewed", "replied"}
+# The lane's views could not stand in for the final review: the ordinary final review and,
+# when it blocks, the ordinary patch route continue the round. The round stays active so its
+# delta wave reviews still validate and `threads` still answers the PR at republication.
+FELL_BACK = "fell-back"
 REPLY_TEXT = {
     "en": {"fix": "Fixed in `{head}`: {note}", "follow-up": "Left for a later change: {note}",
            "summary": "PR fix round {round}, published in `{head}`.",
@@ -168,6 +175,20 @@ def lane_round(repo: Path) -> Optional[dict]:
     """The open round when it runs the lane; a record-only round never changes the plan or build."""
     record = active_round(repo)
     return record if record is not None and record.get("mode", "lane") == "lane" else None
+
+
+def fall_back(repo: Path, reason: str) -> dict:
+    """Hand the open lane round to the ordinary final review (idempotent)."""
+    repo = repo.resolve()
+    record = lane_round(repo)
+    if record is None:
+        raise LaneError("no PR fix lane round is open")
+    if record.get("stage") not in {"opened", "built", FELL_BACK}:
+        raise LaneError(f"PR fix lane round {record['round']} is {record.get('stage')}; it cannot fall back")
+    if record.get("stage") != FELL_BACK:
+        record.update(stage=FELL_BACK, fallback=one_line(reason) or "ordinary final review")
+        _save_round(repo, record)
+    return {"schema": SCHEMA, "status": FELL_BACK, "round": record["round"], "reason": record.get("fallback")}
 
 
 def _set_active(repo: Path, round_record: Mapping[str, object], status: str = "open") -> None:
@@ -552,6 +573,13 @@ def lane_plan_errors(repo: Path, waves: Mapping[int, str], tasks: Sequence[Mappi
         return []
     errors: List[str] = []
     record = lane_round(repo)
+    if record is not None and record.get("stage") == FELL_BACK:
+        # The ordinary final review took over: the delta waves are landed history, and the
+        # ordinary patch route adds standard waves after them.
+        return [f"{task['id']} in delta wave {task.get('wave')} is {task.get('status')}; after a PR fix lane "
+                "fallback the delta waves are history and new work goes in a standard wave"
+                for task in tasks if int(task.get("wave") or 0) in delta
+                and str(task.get("status") or "") not in ("done", "withdrawn")]
     if record is None or record.get("stage") not in {"opened", "built", "viewed"}:
         return ["Review depth: delta is legal only in an open PR fix lane round"]
     if delta != list(range(delta[0], max(waves) + 1)):
@@ -1172,7 +1200,7 @@ def ship_check(repo: Path, api: Callable[..., object] = _default_api, override: 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("snapshot", "start", "rule", "views", "threads", "ship-check", "status"):
+    for name in ("snapshot", "start", "rule", "views", "fall-back", "threads", "ship-check", "status"):
         command = commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=name != "threads")
         if name == "snapshot":
@@ -1190,6 +1218,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             command.add_argument("--expected-head", required=True)
         if name == "ship-check":
             command.add_argument("--override", type=Path)
+        if name == "fall-back":
+            command.add_argument("--reason", default="",
+                                 help="why the ordinary final review replaces the lane views")
     args = parser.parse_args(argv)
     try:
         if args.command == "snapshot":
@@ -1207,6 +1238,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = start(args.repo, args.ruling)
         elif args.command == "views":
             result = views(args.repo, args.expected_head)
+        elif args.command == "fall-back":
+            result = fall_back(args.repo, args.reason)
         elif args.command == "ship-check":
             result = ship_check(args.repo, override=args.override)
         else:

@@ -2308,6 +2308,7 @@ def validate_plan(
             wave_value = _strict_frontmatter(text, task_id).get("wave")
             context_match = re.search(r"(?ms)^## Context\s*$(.*?)^## ", text)
             lane_tasks.append({"id": task_id, "wave": int(wave_value) if str(wave_value).isdigit() else 0,
+                               "status": _task_scalar(text, task_id, "status"),
                                "context": context_match.group(1) if context_match else ""})
         errors = _pr_fix_lane().lane_plan_errors(root, wave_depths, lane_tasks)
         if errors:

@@ -332,7 +332,9 @@ def _lane_final(repo, expected_head):
     try:
         result = pr_fix_lane.views(repo, expected_head)
     except (pr_fix_lane.LaneError, contracts.HandoffError, build_state.BuildStateError) as error:
-        # The lane tasks are ordinary tasks: the ordinary final review re-reviews them.
+        # The lane tasks are ordinary tasks: the ordinary final review re-reviews them, and a
+        # blocked final continues on the ordinary patch route (the delta waves become history).
+        pr_fix_lane.fall_back(repo, str(error))
         return {"reused": False, "lane": "fallback", "reason": f"PR fix lane fell back: {error}"}
     return {"reused": True, "lane": "views", "path": str(repo / ".project/review/FINAL.md"),
             "reviewed_head": expected_head, "source": result["provenance"]}

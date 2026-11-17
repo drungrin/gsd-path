@@ -149,7 +149,11 @@ so the position is unchanged. Then:
    views of its baseline plus the delta review: dispatch no gap reviewer and
    no `review_final`, and go to step 5. With `lane: fallback` the lane could
    not inherit the baseline (its `reason` says why): run the ordinary final
-   review below; the lane tasks are ordinary tasks and are reviewed as such. For a
+   review below; the lane tasks are ordinary tasks and are reviewed as such.
+   The helper has marked the round `fell-back`: when that final review blocks,
+   write PATCH-FINDINGS.md from its gaps and take the ordinary patch route. The
+   landed delta waves stay as history, and the repair goes in a standard wave
+   after them. For a
    quick lane with one full wave, reuse requires a committed review explicitly
    covering final scope, every success criterion and required walkthrough,
    and unchanged product and approved contracts. The helper generates FINAL.md
@@ -712,7 +716,10 @@ step; do not reconstruct them in shell calls.
    lane wave without a planner.
 4. After build, final review step 3 returns `lane: views` or `lane: fallback`
    as described above. The archive transaction and `close-members` run as
-   usual and publish the lane landings onto the same PR.
+   usual and publish the lane landings onto the same PR. A round that fell
+   back under a runtime before 1.7.1.57 is still marked open: run
+   `python3 <absolute pr_fix_lane.py> fall-back --repo <root> --reason <why>`
+   once before the ordinary patch route.
 5. After `close-members` returns `awaiting-merge` with the new head, run
    `python3 <absolute pr_fix_lane.py> threads --repo <root>` once, in the lane
    and in a record-only round. It posts one COMMENT review that lists every

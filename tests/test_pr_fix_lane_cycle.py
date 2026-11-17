@@ -339,6 +339,7 @@ class PrFixLaneCycleTests(unittest.TestCase):
             self.assertEqual((final["next"], final["final"]["lane"]), ("review-final", "fallback"), final)
             self.assertIn("non-local", final["final"]["reason"])
             self.assertFalse((repo / ".project/review/FINAL.md").exists())
+            self.patch_after_fallback(repo)
             return
         self.assertEqual(final["next"], "final-gate", final)
         self.assertEqual(final["final"]["lane"], "views")
@@ -405,6 +406,34 @@ class PrFixLaneCycleTests(unittest.TestCase):
             shipped = self.gate("archive_milestone.py", "validate", "--repo", str(repo))
         self.assertEqual(shipped["members"][0]["merge"], merge)
         pr_fix_lane.validate_views(repo, repo / prepared2 / "review")
+
+    def patch_after_fallback(self, repo):
+        """A blocked ordinary final review after a lane fallback takes the ordinary patch route."""
+        record = pr_fix_lane.lane_round(repo)
+        self.assertEqual(record["stage"], pr_fix_lane.FELL_BACK)
+        self.assertIn("non-local", record["fallback"])
+        # The landed delta wave still validates against its round.
+        self.state("build", "active")
+        self.gate("check_handoffs.py", "wave", "--repo", str(repo), "--review", ".project/review/wave-2.cycle1.md")
+        self.state("plan", "active")
+        plan = (repo / ".project/plan/PLAN.md").read_text(encoding="utf-8")
+        standard = ("## Wave 3 — final gap repair\n\nGoal: close the blocked final gap\nReview depth: full\n\n"
+                    "## Intent coverage")
+        self.write(".project/plan/PLAN.md", plan.replace("## Intent coverage", standard, 1))
+        task = LANE_TASK.format(today=TODAY).replace("id: T002", "id: T003").replace("wave: 2", "wave: 3") \
+            .replace("# T002", "# T003").replace("Closes P001 and P002 from the PR change request",
+                                                 "Closes the final gap 3 finding")
+        self.write(".project/tasks/T003-gap.md", task)
+        self.gate("check_handoffs.py", "plan", "--repo", str(repo))
+        # New work never joins a delta wave once the round fell back.
+        self.write(".project/tasks/T003-gap.md", task.replace("wave: 3", "wave: 2").replace("lib.py", "scope.py")
+                   .replace("import lib", "import scope").replace("lib.require_scope", "scope.require_scope"))
+        refused = subprocess.run([cycle.sys.executable, str(cycle.SCRIPTS / "check_handoffs.py"), "plan",
+                                  "--repo", str(repo)], capture_output=True, text=True)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("delta waves are history", refused.stderr + refused.stdout)
+        # The round can still answer the PR once the ordinary route republishes.
+        self.assertEqual(pr_fix_lane.fall_back(repo, "again")["status"], pr_fix_lane.FELL_BACK)
 
     def land(self, task_id, path, content, coordinator_base):
         repo = self.repo

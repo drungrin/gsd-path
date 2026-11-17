@@ -389,6 +389,34 @@ class LaneGateTests(unittest.TestCase):
         self.assertIn("every lane finding needs one task; uncovered: P002", errors)
         self.assertEqual(len(errors), 2)
 
+    def test_after_a_fallback_the_delta_waves_are_history(self) -> None:
+        tasks = [{"id": "T011", "wave": 7, "status": "done", "context": "Closes P001."},
+                 {"id": "T014", "wave": 8, "status": "done", "context": "repair of T011"},
+                 {"id": "T015", "wave": 9, "status": "pending", "context": "Closes the final gap 3 finding."}]
+        waves = {6: "full", 7: "delta", 8: "delta", 9: "full"}
+        with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "fell-back"}):
+            self.assertEqual(pr_fix_lane.lane_plan_errors(Path("."), waves, tasks), [])
+            pending = [dict(tasks[0], status="pending")] + tasks[1:]
+            self.assertRegex(pr_fix_lane.lane_plan_errors(Path("."), waves, pending)[0],
+                             "T011 in delta wave 7 is pending; .* delta waves are history")
+        with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened"}):
+            self.assertIn("the PR fix lane waves must be the last waves of the plan",
+                          pr_fix_lane.lane_plan_errors(Path("."), waves, tasks))
+
+    def test_only_an_unfinished_lane_round_falls_back(self) -> None:
+        saved = []
+        for stage, allowed in (("opened", True), ("built", True), ("fell-back", True),
+                               ("viewed", False), ("replied", False)):
+            record = {"stage": stage, "round": 1, "mode": "lane"}
+            with mock.patch.object(pr_fix_lane, "active_round", return_value=dict(record)), \
+                    mock.patch.object(pr_fix_lane, "_save_round", side_effect=lambda repo, value: saved.append(value)):
+                if allowed:
+                    self.assertEqual(pr_fix_lane.fall_back(Path("."), "new risk")["status"], "fell-back")
+                else:
+                    with self.assertRaisesRegex(pr_fix_lane.LaneError, "cannot fall back"):
+                        pr_fix_lane.fall_back(Path("."), "new risk")
+        self.assertEqual([value["fallback"] for value in saved], ["new risk", "new risk"])
+
     def test_a_delta_cycle_owes_no_panel_and_refuses_a_stray_receipt(self) -> None:
         from scripts import archive_milestone
         with tempfile.TemporaryDirectory() as temporary:
