@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.57**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.58**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,49 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.58 — 2026-11-17
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 57 to 58.
+
+Fork only (it fixes the PR fix lane of 1.7.1.53):
+- [`73ad6d9e — let a later PR fix round own only its delta waves`](https://github.com/drungrin/gsd-path/commit/73ad6d9e3be63931d0fb1670342bcfca5f1fb7a7)
+
+### A second change request in the same milestone can use the lane
+
+- A consumer's second lane round in one milestone stopped at the plan gate.
+  The gate and the lane views treated the first delta wave of the whole plan
+  as the lane wave. The second round's PATCH-FINDINGS.md was therefore
+  checked against the first round's tasks, which cite other ids, so the gate
+  could never pass. The earlier end-to-end test stopped right after the
+  second `start` and never planned the round.
+- `start` now records the round's first wave (`first_wave` in the round
+  record). The plan gate and the views use only the round's own delta waves.
+  Earlier rounds' delta waves are landed history and must be done or
+  withdrawn.
+- A round opened by an earlier runtime has no `first_wave`. The plan gate
+  takes the first delta wave with unfinished work and records it.
+
+Validation:
+- The second-round end-to-end test now drops `first_wave` to act as an older
+  round, plans round 2 in its own delta wave, lands it, passes the delta
+  wave gate, and gets `lane: views` and a passing final gate. Without the
+  change it fails. A unit test covers earlier rounds as history and the
+  recorded first wave.
+- On the consumer's real plan (delta waves 7 to 11, round 2 in wave 11), a
+  read-only run of the new gate passed and would record wave 11.
+- The full Python suite ran in eight parallel shards: 3,876 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- A consumer already past plan approval can take this runtime only with an
+  owner-authorized forced installer commit, as in 1.7.1.57.
+- No upstream submission.
 
 ## 1.7.1.57 — 2026-11-17
 
