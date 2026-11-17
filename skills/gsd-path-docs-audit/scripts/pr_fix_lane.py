@@ -540,6 +540,9 @@ def start(repo: Path, ruling_path: Path) -> dict:
                 {"status": "blocked"},
                 f"{LANE_EVENT}: round {record['round']}; {record['pull_request']}; "
                 f"{len(fixes)} fix item(s); ruling: {one_line(ruling['verbatim'])}")
+        # The round's own waves start after every wave the plan already holds; earlier
+        # delta waves belong to earlier rounds of this milestone.
+        record["first_wave"] = max(_plan_depths(repo) or {0: ""}) + 1
         record["stage"] = "opened"
         _save_round(repo, record)
     return {"schema": SCHEMA, "status": record["stage"], "round": record["round"],
@@ -566,25 +569,72 @@ def require_source(repo: Path, relative: str, text: str) -> None:
 
 # --- lane plan ---------------------------------------------------------------------
 
+def _plan_depths(repo: Path) -> Dict[int, str]:
+    plan = repo / ".project/plan/PLAN.md"
+    if not plan.is_file():
+        return {}
+    return _sibling("check_handoffs")._plan_waves(plan.read_text(encoding="utf-8"))[0]
+
+
+def _first_round_wave(repo: Path, record: Mapping[str, object], delta: Sequence[int],
+                      statuses: Mapping[int, Sequence[str]]) -> int:
+    """The first wave of the round's own delta waves.
+
+    `start` records it. A round opened by an earlier runtime has no record: its first delta
+    wave that still holds unfinished work is the round's, and the plan gate records it then.
+    """
+    recorded = record.get("first_wave")
+    if isinstance(recorded, int):
+        return recorded
+    for wave in delta:
+        if any(status not in ("done", "withdrawn") for status in statuses.get(wave, [])):
+            return wave
+    return delta[0]
+
+
+def _record_first_wave(repo: Path, record: dict, wave: int) -> None:
+    if record.get("first_wave") is None and record.get("stage") in {"opened", "built"}:
+        saved = {key: value for key, value in record.items() if key != "directory"}
+        saved["first_wave"] = wave
+        _save_round(repo, saved)
+
+
 def lane_plan_errors(repo: Path, waves: Mapping[int, str], tasks: Sequence[Mapping[str, object]]) -> List[str]:
-    """Plan-gate checks for a `Review depth: delta` wave."""
+    """Plan-gate checks for `Review depth: delta` waves.
+
+    Only the open round's own delta waves are checked against PATCH-FINDINGS.md; delta waves
+    of an earlier round of this milestone, or of a round that fell back, are landed history.
+    """
     delta = sorted(number for number, depth in waves.items() if depth == "delta")
     if not delta:
         return []
     errors: List[str] = []
     record = lane_round(repo)
+    statuses: Dict[int, List[str]] = {}
+    for task in tasks:
+        statuses.setdefault(int(task.get("wave") or 0), []).append(str(task.get("status") or ""))
+
+    def unfinished_history(history: Sequence[int], note: str) -> List[str]:
+        return [f"{task['id']} in delta wave {task.get('wave')} is {task.get('status')}; {note}"
+                for task in tasks if int(task.get("wave") or 0) in history
+                and str(task.get("status") or "") not in ("done", "withdrawn")]
+
     if record is not None and record.get("stage") == FELL_BACK:
         # The ordinary final review took over: the delta waves are landed history, and the
         # ordinary patch route adds standard waves after them.
-        return [f"{task['id']} in delta wave {task.get('wave')} is {task.get('status')}; after a PR fix lane "
-                "fallback the delta waves are history and new work goes in a standard wave"
-                for task in tasks if int(task.get("wave") or 0) in delta
-                and str(task.get("status") or "") not in ("done", "withdrawn")]
+        return unfinished_history(delta, "after a PR fix lane fallback the delta waves are history and "
+                                         "new work goes in a standard wave")
     if record is None or record.get("stage") not in {"opened", "built", "viewed"}:
         return ["Review depth: delta is legal only in an open PR fix lane round"]
-    if delta != list(range(delta[0], max(waves) + 1)):
+    wave = _first_round_wave(repo, record, delta, statuses)
+    current = [number for number in delta if number >= wave]
+    errors += unfinished_history([number for number in delta if number < wave],
+                                 "delta waves of an earlier PR fix round are landed history")
+    if not current or current != list(range(wave, max(waves) + 1)):
         errors.append("the PR fix lane waves must be the last waves of the plan")
-    wave = delta[0]  # later delta waves are its repair waves (they inherit its depth)
+    if not errors:
+        _record_first_wave(repo, record, wave)
+    # Later delta waves of this round are its repair waves (they inherit its depth).
     findings = (repo / ".project/review/PATCH-FINDINGS.md")
     ids = re.findall(r"(?m)^### (P\d{3}) — ", findings.read_text(encoding="utf-8")) if findings.is_file() else []
     covered: Dict[str, str] = {}
@@ -818,14 +868,14 @@ def build_gap_view(capsule_gap: str, row: dict, head: str, members: Mapping[str,
             f"- **Found**: {values['Found']}\n- **Fix direction**: {values['Fix direction']}\n")
 
 
-def _lane_waves(repo: Path) -> List[int]:
-    """The lane wave first, then its repair waves; all carry `Review depth: delta`."""
-    plan = (repo / ".project/plan/PLAN.md").read_text(encoding="utf-8")
-    waves, _ = _sibling("check_handoffs")._plan_waves(plan)
-    delta = sorted(number for number, depth in waves.items() if depth == "delta")
-    if not delta:
-        raise LaneError("the plan has no PR fix lane wave")
-    return delta
+def _lane_waves(repo: Path, record: Mapping[str, object]) -> List[int]:
+    """The round's lane wave first, then its repair waves; all carry `Review depth: delta`."""
+    delta = sorted(number for number, depth in _plan_depths(repo).items() if depth == "delta")
+    first = record.get("first_wave")
+    current = [number for number in delta if not isinstance(first, int) or number >= first]
+    if not current:
+        raise LaneError("the plan has no PR fix lane wave for this round")
+    return current
 
 
 def _lane_tasks(repo: Path, lane_waves: Sequence[int]) -> Dict[str, dict]:
@@ -865,7 +915,7 @@ def views(repo: Path, expected_head: str) -> dict:
             or contracts.member_reviewed_heads(gap_one, "final-gap-1.md") != members \
             or contracts._line_value(gap_one, "Gap verdict:") != "pass":
         raise LaneError("the project Verify gap must pass at the current head and member tips")
-    lane_waves = _lane_waves(repo)
+    lane_waves = _lane_waves(repo, record)
     wave = lane_waves[0]
     tasks = _lane_tasks(repo, lane_waves)
     if not tasks or any(task["status"] != "done" for task in tasks.values()):

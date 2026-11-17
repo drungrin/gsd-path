@@ -380,7 +380,7 @@ class LaneGateTests(unittest.TestCase):
             (root / ".project/review").mkdir(parents=True)
             (root / ".project/review/PATCH-FINDINGS.md").write_text(
                 "### P001 — a\n\n### P002 — b\n", encoding="utf-8")
-            with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened"}):
+            with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened", "first_wave": 2}):
                 tasks = [{"id": "T003", "wave": 2, "context": "Closes P001."},
                          {"id": "T004", "wave": 2, "context": "Closes P001 again."},
                          {"id": "T005", "wave": 3, "context": "repair of T003"}]
@@ -402,6 +402,28 @@ class LaneGateTests(unittest.TestCase):
         with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened"}):
             self.assertIn("the PR fix lane waves must be the last waves of the plan",
                           pr_fix_lane.lane_plan_errors(Path("."), waves, tasks))
+
+    def test_a_later_round_checks_only_its_own_delta_waves(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".project/review").mkdir(parents=True)
+            (root / ".project/review/PATCH-FINDINGS.md").write_text("### P001 — a\n", encoding="utf-8")
+            waves = {6: "full", 7: "delta", 8: "delta", 9: "delta"}
+            tasks = [{"id": "T010", "wave": 7, "status": "done", "context": "Closes P012 and P025."},
+                     {"id": "T013", "wave": 8, "status": "done", "context": "repair of T010"},
+                     {"id": "T015", "wave": 9, "status": "pending", "context": "Closes P001."}]
+            saved = []
+            with mock.patch.object(pr_fix_lane, "_save_round", side_effect=lambda repo, value: saved.append(value)):
+                with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened", "first_wave": 9}):
+                    self.assertEqual(pr_fix_lane.lane_plan_errors(root, waves, tasks), [])
+                # A round opened by an earlier runtime: its first delta wave with open work, recorded once.
+                with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened"}):
+                    self.assertEqual(pr_fix_lane.lane_plan_errors(root, waves, tasks), [])
+                self.assertEqual([value["first_wave"] for value in saved], [9])
+                pending = [dict(tasks[0], status="pending")] + tasks[1:]
+                with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened", "first_wave": 9}):
+                    self.assertRegex(pr_fix_lane.lane_plan_errors(root, waves, pending)[0],
+                                     "T010 in delta wave 7 is pending; delta waves of an earlier PR fix round")
 
     def test_only_an_unfinished_lane_round_falls_back(self) -> None:
         saved = []

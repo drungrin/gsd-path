@@ -385,6 +385,8 @@ class PrFixLaneCycleTests(unittest.TestCase):
             self.gate("check_handoffs.py", "patch", "--repo", str(repo))
             self.assertTrue((repo / ".project/review/pr-review-2.md").is_file())
             self.assertFalse((repo / prepared2).exists())
+            self.assertEqual(pr_fix_lane.lane_round(repo)["first_wave"], 3)
+            self.second_round_cycle(repo, second["landing"])
             return
         self.fake.reviews.append({"id": 12, "state": "APPROVED", "user": {"login": "rev"},
                                   "submitted_at": "2026-11-16T05:00:00Z", "body": "", "commit_id": second["landing"]})
@@ -406,6 +408,52 @@ class PrFixLaneCycleTests(unittest.TestCase):
             shipped = self.gate("archive_milestone.py", "validate", "--repo", str(repo))
         self.assertEqual(shipped["members"][0]["merge"], merge)
         pr_fix_lane.validate_views(repo, repo / prepared2 / "review")
+
+    def second_round_cycle(self, repo, published):
+        """Round 2 plans, builds and reviews its own delta wave; round 1's delta wave is history."""
+        git = cycle.git
+        self.transition("patch plan reopened", "ship", "blocked", set_phase="plan", set_status="active")
+        plan = (repo / ".project/plan/PLAN.md").read_text(encoding="utf-8")
+        plan = plan.replace("## Intent coverage", "## Wave 3 — PR fix lane round 2\n\nGoal: answer the second "
+                                                  "change request\nReview depth: delta\n\n## Intent coverage", 1)
+        self.write(".project/plan/PLAN.md", plan)
+        task = LANE_TASK.format(today=TODAY).replace("id: T002", "id: T003").replace("wave: 2", "wave: 3") \
+            .replace("# T002", "# T003").replace("Closes P001 and P002 from the PR change request",
+                                                 "Closes P001 from the second PR change request")
+        self.write(".project/tasks/T003-doc.md", task)
+        # A round opened by an earlier runtime has no first_wave: the gate finds and records it.
+        record_path = Path(pr_fix_lane.lane_round(repo)["directory"]) / "round.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record.pop("first_wave")
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        self.gate("check_handoffs.py", "plan", "--repo", str(repo))
+        self.assertEqual(pr_fix_lane.lane_round(repo)["first_wave"], 3)
+        self.gate("pipeline_state.py", "approve", "--repo", str(repo), "--kind", "plan", "--patch")
+        self.transition("build started", "plan", "done", set_phase="build", set_status="active")
+        restart = isolation.checkpoint(repo, git(repo, "rev-parse", "HEAD").stdout.strip(), "build: start milestone",
+                                       "Why: patch wave for the second PR change request", [".project"])
+        third = self.land("T003", "lib.py",
+                          "value = 2\n\n\ndef require_scope(scope):\n    \"\"\"Refuse a call without a scope.\"\"\"\n"
+                          "    if scope is None:\n        raise ValueError('scope required')\n    return scope\n",
+                          restart["commit"])
+        review = (DELTA_REVIEW.replace("wave 2", "wave 3").replace("T002", "T003")
+                  .replace("### Item R11: closed\n\n- **Evidence**: web lib.py require_scope\n\n", "")
+                  .replace("### Item C21: closed", "### Item R13: closed"))
+        self.write(".project/review/wave-3.cycle1.md", review)
+        self.gate("check_handoffs.py", "wave", "--repo", str(repo), "--review", ".project/review/wave-3.cycle1.md")
+        wave3 = isolation.checkpoint(repo, third["commit"], "build: wave 3 reviewed",
+                                     f"Why: delta review passed\nWave: 3\nTasks: T003\nBase: {third['commit']}",
+                                     [".project"])
+        self.transition("build done; final review pending", "build", "active", set_phase="ship",
+                        set_status="active")
+        reviewed3 = isolation.checkpoint(repo, wave3["commit"], "build: final review",
+                                         "Why: build done; final review pending", [".project"])["commit"]
+        final = lean_verification.prepare_final(repo, reviewed3)
+        self.assertEqual((final["next"], final["final"]["lane"]), ("final-gate", "views"), final)
+        self.gate("check_handoffs.py", "final", "--repo", str(repo))
+        text = (repo / ".project/review/FINAL.md").read_text(encoding="utf-8")
+        self.assertIn(f"Member reviewed HEAD: web {third['landing']}", text)
+        self.assertNotEqual(third["landing"], published)
 
     def patch_after_fallback(self, repo):
         """A blocked ordinary final review after a lane fallback takes the ordinary patch route."""
