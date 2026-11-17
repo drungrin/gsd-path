@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.56**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.57**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,61 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.57 — 2026-11-17
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 56 to 57.
+
+Fork only (it fixes the PR fix lane of 1.7.1.53):
+- [`7d04c995 — continue a fallen-back PR fix round on the ordinary patch route`](https://github.com/drungrin/gsd-path/commit/7d04c995b1e20b785bf97dc9a2176bf3c86fb42d)
+
+### A lane round that falls back can still be repaired
+
+- In the first consumer pilot of the lane, the delta review recorded a new
+  integration risk. `prepare-final` therefore fell back to the ordinary final
+  review, as designed, and that review blocked on a real defect.
+- The plan gate then refused every patch plan while `PLAN.md` held delta
+  waves:
+  - With the round still open, coverage counted only the first delta wave
+    against PATCH-FINDINGS.md.
+  - With the round closed, delta depth was illegal.
+  The milestone had no legal route left.
+- `prepare-final` now marks the round `fell-back` when the views cannot stand
+  in for the final review. When that review blocks, the plan gate treats the
+  landed delta waves as history and accepts the repair in a standard wave
+  after them. New work in a delta wave is refused. The round stays active, so
+  the delta wave reviews still validate and `threads` still answers the PR.
+- `pr_fix_lane.py fall-back --repo <root> --reason <why>` marks a round that
+  fell back under an earlier runtime.
+
+Validation:
+- The end-to-end fallback test now marks the round, revalidates the landed
+  delta wave review, passes the plan gate with a standard repair wave, and
+  refuses new work in the delta wave. Unit tests cover the plan gate after a
+  fallback and the stages that may fall back.
+- On a copy of the consumer orchestrator stuck at that point, the 1.7.1.55
+  plan gate refused the repair plan, and this runtime accepted it. The copy
+  then went through the patch approval, build start, recovery, readiness,
+  brief, and handoff checks. It stopped at the member sidecar preparation
+  because the copy had no `node_modules`.
+- The copy also showed that the runtime cannot be switched in the middle of
+  ship. `git_guard.py` refuses the installer commit once the milestone plan
+  is approved, which keeps landed history task-proven. The copy needed a
+  forced commit (`--no-verify`) to take the new runtime.
+- The full Python suite ran in eight parallel shards: 3,875 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- A consumer already stuck in ship can take this runtime only with an
+  owner-authorized forced installer commit. That commit was tested through
+  build readiness on a copy, not through archive and integration.
+- A fallback still costs a complete ordinary final review.
+- No upstream submission.
 
 ## 1.7.1.56 — 2026-11-16
 
