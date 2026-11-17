@@ -367,9 +367,14 @@ if __name__ == "__main__":
 
 class LaneGateTests(unittest.TestCase):
     def test_delta_depth_is_legal_only_in_an_open_lane_round(self) -> None:
+        pending = [{"id": "T002", "wave": 2, "status": "pending", "context": "Closes P001."}]
         with mock.patch.object(pr_fix_lane, "active_round", return_value=None):
-            errors = pr_fix_lane.lane_plan_errors(Path("."), {1: "full", 2: "delta"}, [])
-        self.assertEqual(errors, ["Review depth: delta is legal only in an open PR fix lane round"])
+            errors = pr_fix_lane.lane_plan_errors(Path("."), {1: "full", 2: "delta"}, pending)
+            # Landed delta waves of a finished round stay legal history for a later ordinary patch.
+            landed = [dict(pending[0], status="done"), {"id": "T003", "wave": 3, "status": "pending"}]
+            self.assertEqual(pr_fix_lane.lane_plan_errors(Path("."), {1: "full", 2: "delta", 3: "full"}, landed), [])
+        self.assertEqual(errors, ["T002 in delta wave 2 is pending; Review depth: delta is legal only in an "
+                                  "open PR fix lane round"])
         self.assertEqual(pr_fix_lane.lane_plan_errors(Path("."), {1: "full"}, []), [])
         with self.assertRaisesRegex(check_handoffs.HandoffError, "Wave 1 Review depth"):
             check_handoffs._plan_waves("## Wave 1 — x\n\nGoal: g\nReview depth: delta\n")

@@ -625,7 +625,9 @@ def lane_plan_errors(repo: Path, waves: Mapping[int, str], tasks: Sequence[Mappi
         return unfinished_history(delta, "after a PR fix lane fallback the delta waves are history and "
                                          "new work goes in a standard wave")
     if record is None or record.get("stage") not in {"opened", "built", "viewed"}:
-        return ["Review depth: delta is legal only in an open PR fix lane round"]
+        # Landed delta waves of finished rounds are history for any later patch of this
+        # milestone; only new delta work needs an open lane round.
+        return unfinished_history(delta, "Review depth: delta is legal only in an open PR fix lane round")
     wave = _first_round_wave(repo, record, delta, statuses)
     current = [number for number in delta if number >= wave]
     errors += unfinished_history([number for number in delta if number < wave],
