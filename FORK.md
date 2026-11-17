@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.58**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.59**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,39 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.59 — 2026-11-17
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 58 to 59.
+
+Fork only (it fixes the PR fix lane of 1.7.1.53):
+- [`8f29b8bd — keep landed delta waves legal once no lane round is open`](https://github.com/drungrin/gsd-path/commit/8f29b8bd72c400ed18203fa832eb546bb94ae3f6)
+
+### Earlier lane waves no longer block a later ordinary patch
+
+- Suppose a milestone's lane round has finished, or a later change request
+  takes the ordinary record-only route. Any later patch plan was refused
+  with "Review depth: delta is legal only in an open PR fix lane round",
+  because `PLAN.md` still held the earlier round's landed delta waves.
+- With no lane round open, landed delta waves are now history. Only a delta
+  wave with unfinished work still needs an open round.
+
+Validation:
+- A unit test covers a finished round's landed delta wave followed by a
+  standard repair wave, and an unfinished delta wave with no open round.
+- On a consumer's archived plan (delta waves 7 and 8 landed, standard waves
+  9 and 10), a read-only run of the gate passed both with no open round and
+  with a second lane round in wave 11, and would record wave 11.
+- The full Python suite ran in eight parallel shards: 3,876 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- No upstream submission.
 
 ## 1.7.1.58 — 2026-11-17
 
