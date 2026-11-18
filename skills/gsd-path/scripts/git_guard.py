@@ -67,17 +67,9 @@ PRODUCT_HINT = (
 # What the installer writes into a project: GSD Path skills under each host's
 # project skill root and the managed contracts. Tests keep these in step with
 # scripts/skill-resources.json.
-INSTALL_SKILL_ROOTS = (
-    ".agents/skills", ".claude/skills", ".cursor/skills", ".github/skills", ".grok/skills",
-    ".kimi-code/skills", ".kiro/skills", ".opencode/skills", ".qwen/skills",
-)
-INSTALL_SKILL_NAMES = frozenset({
-    "gsd-path", "gsd-path-build", "gsd-path-decide", "gsd-path-define", "gsd-path-discuss",
-    "gsd-path-docs-audit", "gsd-path-forensics", "gsd-path-inspect", "gsd-path-loop",
-    "gsd-path-migrate", "gsd-path-plan", "gsd-path-research", "gsd-path-roadmap",
-    "gsd-path-ship", "gsd-path-undo", "path",
-})
-INSTALL_CONTRACTS = frozenset({"AGENTS.md", "WORKFLOW.md", ".claude/CLAUDE.md", ".cursor/agents/gsd-path.md"})
+INSTALL_SKILL_ROOTS = _common.INSTALL_SKILL_ROOTS
+INSTALL_SKILL_NAMES = _common.INSTALL_SKILL_NAMES
+INSTALL_CONTRACTS = _common.INSTALL_CONTRACTS
 INSTALL_COMMIT_PHASES = frozenset({"inspect", "define", "research", "decide", "roadmap", "plan"})
 MEMBER_PUSH_HINT = (
     "a member publishes its coordinator's Path refs, or work from them, only with "

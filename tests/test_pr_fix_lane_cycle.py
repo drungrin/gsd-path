@@ -372,6 +372,13 @@ class PrFixLaneCycleTests(unittest.TestCase):
             self.fake.reviews.append({"id": 13, "state": "CHANGES_REQUESTED", "user": {"login": "rev"},
                                       "submitted_at": "2026-11-16T05:00:00Z", "body": "Documente o escopo.",
                                       "commit_id": second["landing"], "html_url": PULL + "#pullrequestreview-13"})
+            # The owner forces a runtime upgrade while the PR waits: an installer-only commit
+            # after the reviewed head must not block the next round.
+            skill = next((repo / ".claude/skills").glob("*/SKILL.md"))
+            skill.write_text(skill.read_text(encoding="utf-8") + "\n<!-- upgraded -->\n", encoding="utf-8")
+            forced = git(repo, "commit", "-q", "--no-verify", "-m", "chore(gsd-path): upgrade runtime and skills",
+                         "--", str(skill.relative_to(repo)))
+            self.assertEqual(forced.returncode, 0, forced.stderr)
             # The reviewer also reopens the round-1 conversation inside its old thread.
             self.fake.comments.append({"id": 23, "pull_request_review_id": 13, "body": "Ainda falta documentar.",
                                        "path": "lib.py", "line": 1, "in_reply_to_id": 21,

@@ -327,7 +327,7 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
     final_text = (review / "FINAL.md").read_text(encoding="utf-8")
     head = _git(repo, "rev-parse", "HEAD")
     final_head, final_members, verdict = _final_header_heads(final_text)
-    if final_head != head or verdict != "pass":
+    if not _common.reviewed_head_covers(repo, str(final_head or ""), head) or verdict != "pass":
         raise LaneError("the prepared FINAL.md must pass at the current HEAD before the lane can inherit it")
     gaps = sorted((path for path in review.iterdir() if GAP_NAME.fullmatch(path.name)),
                   key=lambda path: int(GAP_NAME.fullmatch(path.name).group("number")))

@@ -871,6 +871,29 @@ def git_visible_entries(directory: Path) -> set:
 
 
 RUNTIME_PIN_PATH = ".gsd-path/runtime.json"
+# What the GSD Path installer writes into a project: the managed .gsd-path/ directory,
+# GSD Path skills under each host's skills root, and the installed agent contracts.
+INSTALL_SKILL_ROOTS = (
+    ".agents/skills", ".claude/skills", ".cursor/skills", ".github/skills", ".grok/skills",
+    ".kimi-code/skills", ".kiro/skills", ".opencode/skills", ".qwen/skills",
+)
+INSTALL_SKILL_NAMES = frozenset({
+    "gsd-path", "gsd-path-build", "gsd-path-decide", "gsd-path-define", "gsd-path-discuss",
+    "gsd-path-docs-audit", "gsd-path-forensics", "gsd-path-inspect", "gsd-path-loop",
+    "gsd-path-migrate", "gsd-path-plan", "gsd-path-research", "gsd-path-roadmap",
+    "gsd-path-ship", "gsd-path-undo", "path",
+})
+INSTALL_CONTRACTS = frozenset({"AGENTS.md", "WORKFLOW.md", ".claude/CLAUDE.md", ".cursor/agents/gsd-path.md"})
+
+
+def installer_path(path: str) -> bool:
+    """True for a path only the GSD Path installer writes (never reviewed product)."""
+    if path.startswith(".gsd-path/") or path in INSTALL_CONTRACTS:
+        return True
+    for root in INSTALL_SKILL_ROOTS:
+        if path.startswith(root + "/"):
+            return path[len(root) + 1:].split("/", 1)[0] in INSTALL_SKILL_NAMES
+    return False
 RUNTIME_PIN_ALLOWANCE = (
     "only runtime-pin commits (.gsd-path/runtime.json) may follow the reviewed HEAD"
 )
@@ -881,8 +904,9 @@ def reviewed_head_covers(repo: Path, reviewed: str, head: str) -> bool:
 
     That is the same commit, or `reviewed` is an ancestor of `head` and every
     commit on the first-parent path in ``reviewed..head`` is a non-merge commit
-    whose only change is ``.gsd-path/runtime.json``. An empty commit does not
-    qualify. Any other path, any merge commit, an unresolvable SHA, or a
+    that changes only installer paths: ``.gsd-path/runtime.json`` (a runtime
+    pin) or a whole installer upgrade (`installer_path`). An empty commit does
+    not qualify. Any other path, any merge commit, an unresolvable SHA, or a
     non-ancestor returns False.
     """
     if not reviewed or not head:
@@ -929,7 +953,10 @@ def reviewed_head_covers(repo: Path, reviewed: str, head: str) -> bool:
         )
         if changed.returncode != 0:
             return False
-        if {path for path in changed.stdout.splitlines() if path} != {RUNTIME_PIN_PATH}:
+        paths = {path for path in changed.stdout.splitlines() if path}
+        # A runtime pin, or a whole installer upgrade (pin, guard, skills, contracts),
+        # changes no reviewed product; any other path ends the coverage.
+        if not paths or not all(installer_path(path) for path in paths):
             return False
     return True
 

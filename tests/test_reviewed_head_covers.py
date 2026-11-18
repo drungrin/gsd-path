@@ -107,6 +107,33 @@ class ReviewedHeadCoversTests(unittest.TestCase):
             self.pin_runtime(repo, "two")
             self.assertFalse(self.covers(repo, reviewed))
 
+    def install(self, repo: Path, *paths: str) -> None:
+        for relative in paths:
+            path = repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"installed {relative}\n", encoding="utf-8")
+        self.git(repo, "add", *paths)
+        self.git(repo, "commit", "-q", "-m", "chore(gsd-path): upgrade runtime and skills")
+
+    def test_installer_upgrade_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            self.init_repo(repo)
+            reviewed = self.reviewed_head(repo)
+            self.pin_runtime(repo, "one")
+            self.install(repo, ".gsd-path/guard_hook.py", ".claude/skills/gsd-path-ship/SKILL.md",
+                         ".claude/skills/path/scripts/pr_fix_lane.py", "AGENTS.md")
+            self.assertTrue(self.covers(repo, reviewed))
+
+    def test_installer_commit_with_a_foreign_skill_or_product_path(self) -> None:
+        for extra in (".claude/skills/team-skill/SKILL.md", "src/app.py", ".claude/settings.json"):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary)
+                self.init_repo(repo)
+                reviewed = self.reviewed_head(repo)
+                self.install(repo, ".gsd-path/guard_hook.py", extra)
+                self.assertFalse(self.covers(repo, reviewed))
+
     def test_nested_runtime_json_is_not_pin(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
