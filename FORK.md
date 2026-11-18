@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.60**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.61**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,45 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.61 — 2026-11-18
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 60 to 61.
+
+Fork only (it fixes the resolving member rebase adoption of 1.7.1.49):
+- [`304d0742 — let the resolution coder edit the conflicting paths of an awaiting member rebase`](https://github.com/drungrin/gsd-path/commit/304d07423da65c6e2a5b88703ab5dae24f03292b)
+
+### The conflict resolution coder can write
+
+- A resolving adoption (`--resolve-conflicts`) stops at
+  `awaiting-resolution`. The build contract then dispatches one coder to edit
+  the conflicting paths in the replay worktree. The pending adoption journal
+  routes every phase to `block`, and the guard classified the replay
+  worktree as member product. Every edit was refused. The earlier tests
+  called the helper directly and never went through the guard. A consumer's
+  first real resolution stopped there.
+- While a journal is `awaiting-resolution`, the guard now lets writes through
+  only on that journal's conflicting paths inside its replay worktree. Every
+  other path stays product. `isolation.py` still refuses changes outside
+  those paths and leftover conflict markers.
+
+Validation:
+- A new test classifies the conflicting path as writable, and another file in
+  the replay, the bound checkout, and the same path after the stage changes
+  as product. Without the change, it fails. The guard, member guard, and
+  resolution suites pass.
+- On the consumer's real awaiting journal, the new check accepted the
+  conflicting `catalogo.ts` and refused another path.
+- The full Python suite ran in eight parallel shards: 3,879 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- No upstream submission.
 
 ## 1.7.1.60 — 2026-11-18
 
