@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.62**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.63**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,46 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.63 — 2026-11-18
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 62 to 63.
+
+Fork only (it fixes the PR conversation answers of 1.7.1.54):
+- [`d8a4b3d1 — answer a reviewer reply that reopens an earlier PR conversation`](https://github.com/drungrin/gsd-path/commit/d8a4b3d10bd2ee051ea1a7479699934523f2f6df)
+
+### A conversation the reviewer reopens is answered and resolved
+
+- In a consumer PR's second round, the reviewer reopened a round-1 point by
+  replying inside its old thread instead of opening a new conversation. The
+  same point was also in the review body, so the round fixed it. The
+  conversation, though, stayed open with no answer:
+  - the snapshot kept only top-level comments, so the reply never became a
+    round item;
+  - `threads` found a conversation only by its first comment.
+- A reply that an active change request adds to a conversation an earlier
+  round opened is now a round item. A reply inside the request's own new
+  conversation is still answered with that conversation. `threads` now finds
+  a conversation by any of its comments.
+- The consumer's open conversation was answered and resolved once with
+  `threads --plan`, after the owner approved the text.
+
+Validation:
+- New tests cover the snapshot items with a reply to an earlier
+  conversation, and the answer and resolution of that conversation through
+  the reply. Without the change, both fail. The second-round end-to-end test
+  now has the reviewer reopen the round-1 conversation. The round captures,
+  rules, and closes that item through to the final gate.
+- The full Python suite ran in eight parallel shards: 3,882 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- No upstream submission.
 
 ## 1.7.1.62 — 2026-11-18
 
