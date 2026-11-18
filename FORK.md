@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.63**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.64**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,48 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.64 — 2026-11-18
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 63 to 64.
+
+Fork only (it extends upstream's runtime-pin coverage, #297, to forced
+installer upgrades):
+- [`7ffe2b7d — let an installer-only commit after the reviewed head keep the review`](https://github.com/drungrin/gsd-path/commit/7ffe2b7dc998dae48eb7458149b12285cca5d637)
+
+### A forced runtime upgrade while a PR waits keeps the next round open
+
+- The owner needed newer lane fixes in two consumers waiting at ship for a
+  member PR's next review round. A forced installer commit at that point
+  rewrites `.gsd-path/`, the GSD Path skills, and the installed contracts.
+  `reviewed_head_covers` accepted only runtime-pin commits after the
+  reviewed HEAD. The lane snapshot required strict equality. The next round's
+  snapshot, the archive undo, and the ship checks would therefore all have
+  refused a review that was still valid.
+- Commits that touch only installer paths now keep the coverage. Any product
+  path, merge, or empty commit still ends it. The lane snapshot uses the
+  same coverage. `git_guard.py` shares the installer path lists from
+  `_common.py`.
+
+Validation:
+- New coverage tests: a pin followed by a whole installer upgrade is covered.
+  An installer commit that also touches a team skill, a product file, or
+  `.claude/settings.json` is not covered.
+- The second-round end-to-end test now forces an installer commit after
+  round 1 is published. Round 2 then snapshots, starts, and reaches the
+  final gate. Without the change, its snapshot refuses.
+- The full Python suite ran in eight parallel shards: 3,884 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- The installer commit itself still needs `--no-verify` after plan
+  approval. The guard keeps that gate, and the owner authorizes each use.
+- No upstream submission.
 
 ## 1.7.1.63 — 2026-11-18
 
