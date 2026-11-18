@@ -185,7 +185,7 @@ def fall_back(repo: Path, reason: str) -> dict:
     record = lane_round(repo)
     if record is None:
         raise LaneError("no PR fix lane round is open")
-    if record.get("stage") not in {"opened", "built", FELL_BACK}:
+    if record.get("stage") not in {"opened", "built", "viewed", FELL_BACK}:
         raise LaneError(f"PR fix lane round {record['round']} is {record.get('stage')}; it cannot fall back")
     if record.get("stage") != FELL_BACK:
         record.update(stage=FELL_BACK, fallback=one_line(reason) or "ordinary final review")
@@ -520,6 +520,23 @@ def findings_text(record: Mapping[str, object], snap: Mapping[str, object], fixe
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _preflight_handoff(record: Mapping[str, object], snap: Mapping[str, object], fixes: Sequence[dict]) -> None:
+    """Read the hand-off this ruling produces the way the patch gate will, before it is locked."""
+    contracts = _sibling("check_handoffs")
+    source = f".project/review/pr-review-{record['round']}.md"
+    source_value, findings = source_text(record, snap, fixes), findings_text(record, snap, fixes)
+    try:
+        for heading, block in contracts._finding_blocks(findings):
+            contracts._reject_placeholder(heading, heading)
+            evidence, direction = contracts._source_repair_fields(source, source_value,
+                                                                  contracts._field(block, "Locator"))
+            if (contracts._field(block, "Evidence"), contracts._field(block, "Fix direction")) != (evidence, direction):
+                raise contracts.HandoffError(f"{heading} does not match its source item")
+    except contracts.HandoffError as error:
+        raise LaneError(f"the hand-off this ruling produces would fail the patch gate ({error}); "
+                        "correct the ruling text and run start again (nothing was recorded)") from error
+
+
 def start(repo: Path, ruling_path: Path) -> dict:
     """Record the ruling, undo the archive, write the hand-off, and block ship for patch mode."""
     repo = repo.resolve()
@@ -531,6 +548,7 @@ def start(repo: Path, ruling_path: Path) -> dict:
     if record["stage"] == "captured":
         ruling = _read_json(ruling_path)
         fixes = _validate_ruling(ruling, snap)
+        _preflight_handoff(record, snap, fixes)
         _write_json(directory / "ruling.json", ruling)
         record.update(stage="ruled", ruling_digest=_digest(directory / "ruling.json"),
                       fixes=[row["id"] for row in fixes])
@@ -784,6 +802,35 @@ def parse_delta(text: str, criteria: Sequence[str], gaps: Sequence[int], item_id
             "criteria": criterion_rows, "gaps": gap_rows}
 
 
+def _delta_coverage_error(repo: Path, delta_path: Path) -> Optional[str]:
+    """Why the delta review no longer covers the product that ships, or None.
+
+    The review judged the product as committed when it was recorded. A later member rebase
+    adoption, a new member base, or another landing changes that product, so its
+    affected/unaffected map cannot stand in for the final review any more.
+    """
+    relative = delta_path.relative_to(repo).as_posix()
+    recorded = _git(repo, "log", "-1", "--format=%H", "--", relative, check=False)
+    if not recorded:
+        return f"{relative} is not committed; record the wave review before the views"
+    changed = set(_git(repo, "diff", "--name-only", recorded, "HEAD").splitlines())
+    isolation = _sibling("isolation")
+    members = _sibling("members")
+    moved = sorted(changed & {isolation.MEMBER_REBASE_PATH, members.LOCK_PATH})
+    if moved:
+        return (f"the member product changed after {relative} was recorded ({', '.join(moved)}); "
+                "use the ordinary final review")
+    for path in sorted(changed):
+        if not re.fullmatch(r"\.project/tasks/T\d{3}[^/]*\.md", path) or not (repo / path).is_file():
+            continue
+        status_now = re.search(r"(?m)^status:\s*(\S+)", (repo / path).read_text(encoding="utf-8"))
+        before = _git(repo, "show", f"{recorded}:{path}", check=False)
+        status_then = re.search(r"(?m)^status:\s*(\S+)", before)
+        if status_now and status_now.group(1) == "done" and (not status_then or status_then.group(1) != "done"):
+            return f"{path} landed after {relative} was recorded; use the ordinary final review"
+    return None
+
+
 def delta_report(repo: Path, wave: int) -> Tuple[Path, str]:
     """The latest cycle of the delta wave review."""
     review = repo / ".project/review"
@@ -991,6 +1038,9 @@ def views(repo: Path, expected_head: str) -> dict:
     if set(landings) != set(tasks) or not all(landings.values()):
         raise LaneError("a lane task is not proven landed")
     delta_path, delta_text = delta_report(repo, wave)
+    stale = _delta_coverage_error(repo, delta_path)
+    if stale:
+        raise LaneError(stale)
     if contracts._line_value(delta_text, "Wave verdict:") != "pass" or \
             contracts._line_value(delta_text, "Depth:") != "delta":
         raise LaneError(f"{delta_path.name} is not a passing delta review")

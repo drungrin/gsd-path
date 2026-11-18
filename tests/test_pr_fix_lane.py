@@ -1,6 +1,7 @@
 """PR fix lane (ADR 0006): entry, capsule, ruling, undo, hand-off, delta parsing and views."""
 
 import json
+import subprocess
 import tempfile
 import os
 import shutil
@@ -110,6 +111,14 @@ class HandoffTextTests(unittest.TestCase):
                 ".project/review/pr-review-1.md", source, check_handoffs._field(block, "Locator"))
             self.assertEqual(check_handoffs._field(block, "Evidence"), evidence)
             self.assertEqual(check_handoffs._field(block, "Fix direction"), direction)
+
+    def test_start_refuses_a_ruling_whose_hand_off_the_patch_gate_would_refuse(self) -> None:
+        ruling = json.loads(json.dumps(RULING))
+        ruling["items"][0]["fix_direction"] = "<codigo>"  # only a placeholder: the gate refuses it
+        fixes = pr_fix_lane._validate_ruling(ruling, self.snap)
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "would fail the patch gate .*nothing was recorded"):
+            pr_fix_lane._preflight_handoff(self.record, self.snap, fixes)
+        pr_fix_lane._preflight_handoff(self.record, self.snap, pr_fix_lane._validate_ruling(RULING, self.snap))
 
     def test_ruling_must_classify_every_item_and_refuses_redesign(self) -> None:
         partial = dict(RULING, items=RULING["items"][:1])
@@ -475,8 +484,9 @@ class LaneGateTests(unittest.TestCase):
 
     def test_only_an_unfinished_lane_round_falls_back(self) -> None:
         saved = []
+        # A retry of prepare-final may find a viewed round whose views no longer stand.
         for stage, allowed in (("opened", True), ("built", True), ("fell-back", True),
-                               ("viewed", False), ("replied", False)):
+                               ("viewed", True), ("replied", False)):
             record = {"stage": stage, "round": 1, "mode": "lane"}
             with mock.patch.object(pr_fix_lane, "active_round", return_value=dict(record)), \
                     mock.patch.object(pr_fix_lane, "_save_round", side_effect=lambda repo, value: saved.append(value)):
@@ -485,7 +495,40 @@ class LaneGateTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(pr_fix_lane.LaneError, "cannot fall back"):
                         pr_fix_lane.fall_back(Path("."), "new risk")
-        self.assertEqual([value["fallback"] for value in saved], ["new risk", "new risk"])
+        self.assertEqual([value["fallback"] for value in saved], ["new risk", "new risk", "new risk"])
+
+    def test_a_delta_review_stops_covering_a_product_that_changed_after_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            run = lambda *args: subprocess.run(["git", "-C", temporary, "-c", "user.name=t",
+                                                "-c", "user.email=t@example.invalid", *args],
+                                               check=True, capture_output=True)
+            run("init", "-q")
+            tasks, review = repo / ".project/tasks", repo / ".project/review"
+            tasks.mkdir(parents=True)
+            review.mkdir(parents=True)
+            (tasks / "T001-a.md").write_text("---\nid: T001\nstatus: done\n---\n", encoding="utf-8")
+            (tasks / "T002-b.md").write_text("---\nid: T002\nstatus: pending\n---\n", encoding="utf-8")
+            delta = review / "wave-2.cycle1.md"
+            delta.write_text("# Review\n", encoding="utf-8")
+            (repo / ".project/build").mkdir()
+            (repo / ".project/build/members.json").write_text("{}", encoding="utf-8")
+            run("add", "-A")
+            run("commit", "-q", "-m", "build: record wave 2 review")
+            self.assertIsNone(pr_fix_lane._delta_coverage_error(repo, delta))
+            (tasks / "T001-a.md").write_text("---\nid: T001\nstatus: done\n---\nlog\n", encoding="utf-8")
+            run("commit", "-qam", "bookkeeping")
+            self.assertIsNone(pr_fix_lane._delta_coverage_error(repo, delta))
+            (tasks / "T002-b.md").write_text("---\nid: T002\nstatus: done\n---\n", encoding="utf-8")
+            run("commit", "-qam", "T002 landed")
+            self.assertRegex(pr_fix_lane._delta_coverage_error(repo, delta), "T002-b.md landed after")
+            run("reset", "-q", "--hard", "HEAD~1")
+            (repo / ".project/build/members.json").write_text('{"base": "x"}', encoding="utf-8")
+            run("commit", "-qam", "adopt rebased member")
+            self.assertRegex(pr_fix_lane._delta_coverage_error(repo, delta), "member product changed")
+            uncommitted = review / "wave-3.cycle1.md"
+            uncommitted.write_text("# Review\n", encoding="utf-8")
+            self.assertRegex(pr_fix_lane._delta_coverage_error(repo, uncommitted), "is not committed")
 
     def test_a_delta_cycle_owes_no_panel_and_refuses_a_stray_receipt(self) -> None:
         from scripts import archive_milestone

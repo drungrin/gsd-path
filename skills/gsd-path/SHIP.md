@@ -150,6 +150,8 @@ so the position is unchanged. Then:
    no `review_final`, and go to step 5. With `lane: fallback` the lane could
    not inherit the baseline (its `reason` says why): run the ordinary final
    review below; the lane tasks are ordinary tasks and are reviewed as such.
+   Views also fall back when the product changed after the delta review was
+   recorded (a member rebase adoption, a new member base, or another landing).
    The helper has marked the round `fell-back`: when that final review blocks,
    write PATCH-FINDINGS.md from its gaps and take the ordinary patch route. The
    landed delta waves stay as history, and the repair goes in a standard wave
