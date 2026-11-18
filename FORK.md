@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.66**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.67**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,109 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.67 — 2026-11-18
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 66 to 67.
+
+Applies upstream (no fork code or bookkeeping in the commit):
+- [`a0b130a5 — resume a patch build entry whose checkpoint was interrupted`](https://github.com/drungrin/gsd-path/commit/a0b130a52b040d4e4c71f548d4fef2c9d5b3dd51)
+
+Fork only (PR fix lane revision 4, [ADR 0008](docs/adr/0008-pr-fix-lane-ownership-and-early-validation.md)):
+- [`17c41615 — wait for the forge to show a pushed member PR head`](https://github.com/drungrin/gsd-path/commit/17c4161549d1f5d84cd212601057ff3184e7de9d)
+- [`13f7fb76 — split the final gate into a pure content check and its wrapper`](https://github.com/drungrin/gsd-path/commit/13f7fb76c25767bbd176ee1efe12bbc10528f6fb)
+- [`3dd4b670 — own PR fix rounds through an approved membership file`](https://github.com/drungrin/gsd-path/commit/3dd4b670d725f214a66911f315a1ff92241a413e)
+- [`4bf226c6 — validate PR fix lane views at the wave gate and prove the reviewed product`](https://github.com/drungrin/gsd-path/commit/4bf226c69b90b94f06d4cb3a027e71b7869edf2d)
+- [`ed69a55e — recompute PR fix lane provenance from the archived files`](https://github.com/drungrin/gsd-path/commit/ed69a55e726cb89e388a8d6f2fffd152cacbe40d)
+- [`78b3c50b — keep the Log lines and lessons a PR fix round's archive undo drops`](https://github.com/drungrin/gsd-path/commit/78b3c50b39d4bb0ccc3124207b02688a0d14f45d)
+- [`3b0c313a — capture, rule, and answer inline comments left with a PR approval`](https://github.com/drungrin/gsd-path/commit/3b0c313af39844dc3428801f2d9d1fbec25fe728)
+- [`d45f4d9c — record PR fix lane revision 4 in its contracts and ADRs`](https://github.com/drungrin/gsd-path/commit/d45f4d9c9edb829ebf0c69b8c81a4b5589fd99a2)
+
+### Recurrence and decision change
+
+This release changes the two lane decisions that the 1.7.1.66 panel traced
+most pilot defects to, instead of patching another symptom:
+- Releases 1.7.1.57, 58, and 59 patched the inference of a round's waves from
+  `PLAN.md` geometry. A round now owns an approved membership file.
+- Release 1.7.1.62 made the views tolerate a thinner delta review, and the
+  evidence-range fallback stayed open. The wave gate now applies the final
+  gate's content rules to the views a delta produces.
+
+Two further review-panel rounds checked the design before the code. The
+implementation corrected three points that both panels missed:
+- Most repairs come from `fix-tasks` without a new approval.
+- The state lock does not span worktrees.
+- Changing the depth of a reviewed delta wave would break its history.
+
+### Behavior changes
+
+- **Round membership.** `pr_fix_lane.py bind` writes
+  `.project/plan/pr-fix-round-<n>.json`. It holds the ruling groups with
+  their items, findings, and closing task, each member task's contract
+  digest, and each repair with its source review. Member tasks carry
+  `lane_round: <n>`.
+  - The patch approval records the membership digest in the round directory.
+  - Build entry refuses a membership that differs from it.
+  - `fix-tasks` binds repairs of member tasks.
+  - The plan gate, the regression exemption, and the views read the
+    membership. The exemption now ends at a fallback.
+  - An open round from an earlier runtime is refused with the exact
+    `fall-back` command.
+- **Early final validation.** The round's first lane wave carries the
+  cumulative assessment: every member task, the membership digest, and the
+  judged coordinator and member heads.
+  - At that wave's gate the views are rendered and checked with the final
+    gate's content rules, with gap 1 deferred to ship.
+  - The delta parser refuses repeated or contradictory entries and closed
+    items without evidence.
+  - At ship the judged heads must still hold, and later coordinator commits
+    must be lane bookkeeping only.
+  - A fallback records its kind.
+- **Provenance.** `validate_views` recomputes each capsule digest from the
+  archived baseline files, walks the chain of earlier rounds, and re-proves
+  the membership and the landing set. Views refuse INTENT or PLAN drift
+  outside the round's waves.
+- **Continuation.** `start` keeps the Log lines the archive undo drops in
+  `.project/review/pr-fix-continuation-<n>.md`. `restore-lessons` re-appends
+  the dropped lessons once in the ship lessons step.
+- **Approval comments.** `snapshot --record-only` captures unanswered inline
+  comments of an approval or comment review on the published head. `threads`
+  answers them on that head. `ship-check` refuses while captured items are
+  unruled.
+- **`close-members`** waits, up to 30 seconds, while the forge still serves
+  the exact head its lease push replaced. Any other head refuses at once.
+- **Build entry** resumes a patch re-entry whose checkpoint a crash
+  interrupted (applies upstream).
+
+Validation:
+- New tests cover:
+  - the binding: skew both ways, a paired change after approval, a contract
+    that survives appended Logs, repair binding, legacy refusal, the fallback
+    move, and closed-round history;
+  - the parser rules and coordinator equivalence;
+  - the content-validator equivalence and deferred gap;
+  - provenance tampering of a baseline file, the membership, the capsule
+    digest, the landing set, and the round chain;
+  - contract drift, approval capture, the forge stale reads, and the build
+    entry resume.
+- The end-to-end lane cycle, with guard hooks installed, now also runs:
+  - a repaired round through `fix-tasks` to views;
+  - a wave-gate content refusal;
+  - the continuation and lessons restore;
+  - an approval round answered on the unchanged head.
+- The full Python suite ran in eight parallel shards: 3,916 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks` passed.
+
+Limits:
+- Deliver at a milestone boundary. An open round from an earlier runtime must
+  fall back.
+- Skew and content refusals are counted from gate receipts, because
+  validators never write.
+- No upstream submission.
 
 ## 1.7.1.66 — 2026-11-18
 
