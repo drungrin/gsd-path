@@ -304,6 +304,12 @@ class PrFixLaneCycleTests(unittest.TestCase):
         self.assertEqual(opened["status"], "opened")
         self.assertEqual(pipeline_state.load_state(repo)[0].status, "blocked")
         self.gate("check_handoffs.py", "patch", "--repo", str(repo))
+        # A hand-off an earlier runtime wrote is rewritten from the recorded ruling.
+        self.assertEqual(pr_fix_lane.regenerate(repo)["written"], [])
+        stale = repo / ".project/review/pr-review-1.md"
+        stale.write_text(stale.read_text(encoding="utf-8").replace("Falta checar", "Falta  checar"), encoding="utf-8")
+        self.assertEqual(pr_fix_lane.regenerate(repo)["written"], [".project/review/pr-review-1.md"])
+        self.gate("check_handoffs.py", "patch", "--repo", str(repo))
 
         # --- patch mode: the orchestrator appends the delta wave; no planner, no panel
         self.transition("patch plan reopened", "ship", "blocked", set_phase="plan", set_status="active")

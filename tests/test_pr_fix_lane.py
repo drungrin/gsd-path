@@ -93,6 +93,24 @@ class HandoffTextTests(unittest.TestCase):
             self.assertEqual(check_handoffs._field(block, "Fix direction"), direction)
         self.assertIn("- **Found**: Fix the scope.", source)
 
+    def test_placeholder_shaped_text_is_quoted_for_the_patch_gate(self) -> None:
+        ruling = json.loads(json.dumps(RULING))
+        ruling["items"][0]["fix_direction"] = "Logar 'prazo-estourado sistema=<codigo>' e manter `<ok>` como está"
+        snap = json.loads(json.dumps(self.snap))
+        snap["items"][1]["text"] = "O <div> sem fechamento quebra a tela; use `<span>`."
+        fixes = pr_fix_lane._validate_ruling(ruling, snap)
+        source = pr_fix_lane.source_text(self.record, snap, fixes)
+        findings = pr_fix_lane.findings_text(self.record, snap, fixes)
+        self.assertIn("Logar 'prazo-estourado sistema=`<codigo>`' e manter `<ok>` como está", findings)
+        self.assertIn("O `<div>` sem fechamento quebra a tela; use `<span>`.", source)
+        for heading, block in check_handoffs._finding_blocks(findings):
+            for field in ("Evidence", "Fix direction"):
+                check_handoffs._reject_placeholder(check_handoffs._field(block, field), field)
+            evidence, direction = check_handoffs._source_repair_fields(
+                ".project/review/pr-review-1.md", source, check_handoffs._field(block, "Locator"))
+            self.assertEqual(check_handoffs._field(block, "Evidence"), evidence)
+            self.assertEqual(check_handoffs._field(block, "Fix direction"), direction)
+
     def test_ruling_must_classify_every_item_and_refuses_redesign(self) -> None:
         partial = dict(RULING, items=RULING["items"][:1])
         with self.assertRaisesRegex(pr_fix_lane.LaneError, "missing C21"):

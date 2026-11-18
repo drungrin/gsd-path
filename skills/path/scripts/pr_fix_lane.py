@@ -10,6 +10,8 @@ pending-close rebind and exact-lease source advance) and replaces its middle:
               source and PATCH-FINDINGS.md, and block ship so patch mode opens
     views     after the delta wave and the project Verify, generate FINAL.md and
               the gap reports as views of the capsule plus the delta review
+    regenerate rewrite an opened round's pr-review source and PATCH-FINDINGS.md from its
+              recorded ruling (before plan approval)
     fall-back hand the round to the ordinary final review when the views cannot stand
               in for it; prepare-final does this itself, and a blocked final then takes
               the ordinary patch route after the landed delta waves
@@ -473,6 +475,23 @@ def _validate_ruling(ruling: Mapping[str, object], snap: Mapping[str, object], l
     return fixes
 
 
+def _text(value: object) -> str:
+    """One line, with every `<placeholder>`-shaped token outside code spans put in backticks.
+
+    The patch gate refuses such a token outside a code span as an unfilled template
+    placeholder; review comments and owner rulings quote log formats or HTML that way.
+    """
+    contracts = _sibling("check_handoffs")
+    text = one_line(value)
+    quote = lambda chunk: contracts.PLACEHOLDER_PATTERN.sub(lambda found: f"`{found.group(0)}`", chunk)
+    pieces, last = [], 0
+    for span in contracts.CODE_SPAN_PATTERN.finditer(text):
+        pieces += [quote(text[last:span.start()]), span.group(0)]
+        last = span.end()
+    pieces.append(quote(text[last:]))
+    return "".join(pieces)
+
+
 def source_text(record: Mapping[str, object], snap: Mapping[str, object], fixes: Sequence[dict]) -> str:
     known = {item["id"]: item for item in snap["items"]}
     lines = [f"# PR Review — round {record['round']}", "",
@@ -481,10 +500,10 @@ def source_text(record: Mapping[str, object], snap: Mapping[str, object], fixes:
              f"Snapshot: {record['snapshot_digest']}", "", "## Items", ""]
     for row in fixes:
         item = known[row["id"]]
-        lines += [f"### Item {row['id']} — {one_line(row['title'])}", "",
+        lines += [f"### Item {row['id']} — {_text(row['title'])}", "",
                   f"- **Kind**: {item['kind']}", f"- **Location**: {item['location']}",
-                  f"- **Link**: {item['link']}", "- **Class**: fix", f"- **Group**: {one_line(row['group'])}",
-                  f"- **Found**: {one_line(item['text'])}", f"- **Fix direction**: {one_line(row['fix_direction'])}", ""]
+                  f"- **Link**: {item['link']}", "- **Class**: fix", f"- **Group**: {_text(row['group'])}",
+                  f"- **Found**: {_text(item['text'])}", f"- **Fix direction**: {_text(row['fix_direction'])}", ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -494,10 +513,10 @@ def findings_text(record: Mapping[str, object], snap: Mapping[str, object], fixe
     lines = ["# Patch Findings", "", f"Reviewed HEAD: {record['head']}", "State: ship/blocked", "",
              "## Findings", ""]
     for index, row in enumerate(fixes, start=1):
-        lines += [f"### P{index:03d} — {one_line(row['title'])}", "",
+        lines += [f"### P{index:03d} — {_text(row['title'])}", "",
                   f"- **Source**: `{source}`", f"- **Locator**: Item {row['id']}",
-                  f"- **Evidence**: {one_line(known[row['id']]['text'])}",
-                  f"- **Fix direction**: {one_line(row['fix_direction'])}", ""]
+                  f"- **Evidence**: {_text(known[row['id']]['text'])}",
+                  f"- **Fix direction**: {_text(row['fix_direction'])}", ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -558,6 +577,37 @@ def start(repo: Path, ruling_path: Path) -> dict:
             "source": f".project/review/pr-review-{record['round']}.md",
             "patch_findings": ".project/review/PATCH-FINDINGS.md",
             "fixes": [{"id": row["id"], "group": row["group"], "title": one_line(row["title"])} for row in fixes]}
+
+
+def regenerate(repo: Path) -> dict:
+    """Rewrite the open round's pr-review source and PATCH-FINDINGS.md from its recorded ruling.
+
+    For a round opened by an earlier runtime whose hand-off text the patch gate now refuses;
+    the snapshot, the ruling and its digest stay untouched. Legal only before the round's
+    plan is approved.
+    """
+    repo = repo.resolve()
+    record = lane_round(repo)
+    if record is None or record.get("stage") != "opened":
+        raise LaneError("regenerate needs an opened PR fix lane round")
+    state = _state(repo)
+    if (state.phase, state.status) not in {("ship", "blocked"), ("plan", "active"), ("plan", "blocked")}:
+        raise LaneError(f"regenerate runs before the round's plan is approved; STATE is {state.phase}/{state.status}")
+    directory = Path(str(record["directory"]))
+    if _digest(directory / "ruling.json") != record.get("ruling_digest"):
+        raise LaneError("the recorded ruling changed after it was accepted")
+    snap = _read_json(directory / "snapshot.json")
+    fixes = _validate_ruling(_read_json(directory / "ruling.json"), snap)
+    review = repo / ".project/review"
+    source = f"pr-review-{record['round']}.md"
+    written = []
+    for name, text in ((source, source_text(record, snap, fixes)),
+                       ("PATCH-FINDINGS.md", findings_text(record, snap, fixes))):
+        path = review / name
+        if not path.is_file() or path.read_text(encoding="utf-8") != text:
+            _common.atomic_write(path, text)
+            written.append(f".project/review/{name}")
+    return {"schema": SCHEMA, "status": "regenerated", "round": record["round"], "written": written}
 
 
 def require_source(repo: Path, relative: str, text: str) -> None:
@@ -1266,7 +1316,7 @@ def ship_check(repo: Path, api: Callable[..., object] = _default_api, override: 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("snapshot", "start", "rule", "views", "fall-back", "threads", "ship-check", "status"):
+    for name in ("snapshot", "start", "rule", "regenerate", "views", "fall-back", "threads", "ship-check", "status"):
         command = commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=name != "threads")
         if name == "snapshot":
@@ -1304,6 +1354,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = start(args.repo, args.ruling)
         elif args.command == "views":
             result = views(args.repo, args.expected_head)
+        elif args.command == "regenerate":
+            result = regenerate(args.repo)
         elif args.command == "fall-back":
             result = fall_back(args.repo, args.reason)
         elif args.command == "ship-check":
