@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.65**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.66**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,63 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.66 — 2026-11-18
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 65 to 66.
+
+Fork only (it fixes the PR fix lane of 1.7.1.53):
+- [`49b958b5 — refuse stale lane views, let a viewed round fall back, and check the hand-off before locking`](https://github.com/drungrin/gsd-path/commit/49b958b5e0455bbee4f98d803959e291e30a4b87)
+
+### Recurrence and decision review
+
+After thirteen lane releases in two days, a two-model review panel assessed
+the lane's design decisions. Its findings:
+- Releases 1.7.1.57–59 are symptoms of inferring a round's waves from
+  `PLAN.md` geometry.
+- Release 1.7.1.62 and an open evidence-citation fallback are symptoms of a
+  wave gate that accepts a delta review weaker than the final gate requires.
+
+The owner chose a staged response:
+1. This release fixes three panel findings that are not new symptom patches.
+2. A later redesign gives each round explicit ownership of its tasks and
+   validates the delta review at the wave gate with the shared final
+   validator.
+
+### Fixes
+
+- Generated views could reuse a delta review after the product it judged had
+  changed: a member rebase adoption with conflict resolution, a new member
+  base, or a later landing. In one consumer round, that would have shipped a
+  FINAL.md whose unaffected claims described the pre-rebase code. Only an
+  unrelated format fallback prevented it. Views now refuse when any of those
+  changes happened after the commit that recorded the delta review, and the
+  round falls back to the ordinary final review.
+- A `prepare-final` retry on a round in stage `viewed` called `fall_back`,
+  which refused that stage, so `prepare-final` raised instead of falling
+  back. A viewed round may now fall back.
+- `start` locked the ruling before anything read the hand-off it produces
+  (the 1.7.1.65 stranding). It now reads the generated hand-off the way the
+  patch gate will. On a refusal, it records nothing.
+
+Validation:
+- New tests cover a delta review that stops covering the product after a
+  later landing or member base change, an uncommitted review, the viewed
+  fallback, and a ruling whose hand-off the gate would refuse. The
+  end-to-end lane rounds that finish in views still do.
+- The full Python suite ran in eight parallel shards: 3,887 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- The stale check reads the coordinator history. A member product change
+  that leaves no coordinator trace, such as a hand push to the member branch,
+  is caught only by the landing proofs.
+- No upstream submission.
 
 ## 1.7.1.65 — 2026-11-18
 
