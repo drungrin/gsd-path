@@ -833,6 +833,38 @@ class PendingOpenMemberCloseTests(MemberRebaseFixture):
                           closed["pull_request"]), (repaired, self.old_tip, "pending", self.pr_url))
         self.assertFalse(any(call[:3] == ("repos", "pr", "create") for call in self.calls))
 
+    def test_close_waits_out_a_forge_that_still_shows_the_replaced_head(self) -> None:
+        from tests._editorial_fixtures import publication_fixture
+        archive, repaired = self.repaired_archive()
+        publication_fixture(self.coordinator, archive, "web", repaired, self.azure_url)
+        real = integration.find_pull_request
+        stale = {"reads": 0, "showing_old": False}
+
+        def lagging(repository, branch, head, base="main"):
+            # The push moved the branch; the forge still serves the old head twice.
+            pushed = self.remote_ref("refs/heads/" + BOUND) == repaired
+            if pushed and head == repaired:
+                stale["showing_old"] = stale["reads"] < 2
+                stale["reads"] += 1
+                if stale["showing_old"]:
+                    raise integration.ArchiveError("Azure pull request head is not the ship commit")
+            if pushed and head == self.old_tip and stale["showing_old"]:
+                return real(repository, branch, repaired, base)
+            return real(repository, branch, head, base)
+
+        sleeps = []
+        with mock.patch.object(integration, "find_pull_request", side_effect=lagging), \
+                mock.patch.object(integration.time, "sleep", side_effect=sleeps.append), \
+                mock.patch.object(integration, "_push_member_ref", wraps=integration._push_member_ref) as publish:
+            waiting = self.close(archive)
+            self.assertEqual((waiting["status"], waiting["pull_request"]), ("awaiting-merge", self.pr_url))
+            # A restart after the push waits from the durable row and never pushes again.
+            stale.update(reads=0, showing_old=False)
+            self.assertEqual(self.close(archive)["pull_request"], self.pr_url)
+        self.assertEqual(publish.call_count, 1)
+        self.assertEqual(sleeps, [1.0, 2.0, 1.0, 2.0])
+        self.assertEqual(self.remote_ref("refs/heads/" + BOUND), repaired)
+
     def test_unadopted_advance_refuses_an_unproven_tail(self) -> None:
         from tests._editorial_fixtures import publication_fixture
         archive, _ = self.repaired_archive()
@@ -1553,6 +1585,63 @@ class MemberRebaseCloseTests(MemberRebaseFixture):
         with mock.patch.object(integration.archive_milestone, "strict_state", return_value=(state, None, None)):
             with self.assertRaisesRegex(integration.ArchiveError, "member rebase adoption receipt is invalid"):
                 integration.close_members(self.coordinator)
+
+
+class AwaitPullRequestHeadTests(unittest.TestCase):
+    """The forge read after a push waits only for an exact replaced head."""
+
+    OLD, NEW, OTHER = "a" * 40, "b" * 40, "c" * 40
+
+    def run_reads(self, shown, *, state="open", merged=None, wait=30.0):
+        clock = {"now": 0.0}
+        sleeps = []
+
+        current = {"sha": None}
+
+        def find(repository, branch, head, base="main"):
+            # Each read of the expected head is a fresh forge response.
+            if head == self.NEW:
+                current["sha"] = shown.pop(0) if len(shown) > 1 else shown[0]
+            if current["sha"] != head:
+                raise integration.ArchiveError("GitHub pull request head is not the ship commit")
+            return {"head": {"sha": head}, "state": state, "merged_at": merged}
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock["now"] += seconds
+
+        with mock.patch.object(integration, "find_pull_request", side_effect=find):
+            result = integration._await_pull_request_head(
+                "example/web", "feature/milestone-001", self.NEW, {self.OLD}, "main",
+                wait=wait, sleep=sleep, clock=lambda: clock["now"])
+        return result, sleeps
+
+    def test_a_stale_read_that_clears(self) -> None:
+        result, sleeps = self.run_reads([self.OLD, self.OLD, self.NEW])
+        self.assertEqual(result["head"]["sha"], self.NEW)
+        self.assertEqual(sleeps, [1.0, 2.0])
+
+    def test_a_permanently_stale_read_refuses_after_the_bound(self) -> None:
+        with self.assertRaisesRegex(integration.ArchiveError, "still shows the replaced head .* rerun close-members"):
+            self.run_reads([self.OLD], wait=10.0)
+
+    def test_an_unrelated_head_refuses_at_once(self) -> None:
+        with self.assertRaisesRegex(integration.ArchiveError, "not the ship commit"):
+            self.run_reads([self.OTHER])
+
+    def test_a_closed_or_merged_stale_pull_request_refuses_at_once(self) -> None:
+        for state, merged in (("closed", None), ("closed", "2026-11-18T00:00:00Z")):
+            with self.subTest(state=state, merged=merged):
+                with self.assertRaisesRegex(integration.ArchiveError, "not the ship commit"):
+                    self.run_reads([self.OLD], state=state, merged=merged)
+
+    def test_no_known_replaced_head_refuses_at_once(self) -> None:
+        clock = iter(range(100))
+        with mock.patch.object(integration, "find_pull_request",
+                               side_effect=integration.ArchiveError("head is not the ship commit")):
+            with self.assertRaises(integration.ArchiveError):
+                integration._await_pull_request_head("example/web", "b", self.NEW, set(), "main",
+                                                     sleep=self.fail, clock=lambda: next(clock))
 
 
 if __name__ == "__main__":

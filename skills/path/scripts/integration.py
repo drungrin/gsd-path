@@ -10,6 +10,7 @@ sys.dont_write_bytecode = True
 import json
 import re
 import contextlib
+import time
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Optional, Sequence, Union
 
@@ -2338,6 +2339,82 @@ def pending_close_can_advance(checkout: Path, row: dict, new_head: str) -> bool:
     )
 
 
+PULL_REQUEST_HEAD_WAIT = 30.0
+
+
+def _published_stale_heads(coordinator: Path, member: str, archive_path: str, reviewed_head: str,
+                           checkout: Path) -> set:
+    """Heads a lease push in this close replaced, from durable records only.
+
+    A forge can serve a pull request with the replaced head for a while after
+    the push. Only these exact heads may be waited out: the pending close row's
+    `previous_reviewed_head`, and the proven adopted lineage before the reviewed
+    head. Both survive a restart after the push.
+    """
+    if __package__:
+        from . import isolation
+    else:
+        import isolation
+    stale = set()
+    row = _pending_close_row(coordinator, archive_path, member)
+    if row and row.get("status") == "pending" and row.get("reviewed_head") == reviewed_head:
+        previous = row.get("previous_reviewed_head")
+        if isinstance(previous, str) and previous != reviewed_head:
+            stale.add(previous)
+    try:
+        receipt = isolation._member_rebase_receipt(coordinator, coordinator / archive_path)
+        adoptions = [entry for entry in receipt["adoptions"] if entry["member"] == member] if receipt else []
+        if adoptions:
+            adopted = adoptions[-1]["new_tip"]
+            lineage = [adopted, *isolation._linear_member_range(checkout, adopted, reviewed_head)]
+            stale.update(head for head in lineage if head != reviewed_head)
+    except isolation.IsolationError:
+        pass  # the advance itself refuses an unproven lineage; nothing to wait out
+    return stale
+
+
+def _await_pull_request_head(
+    repository: PullRequestRepository, branch: str, head: str, stale: set, base: str, *,
+    wait: Optional[float] = None, sleep=None, clock=None,
+) -> Optional[dict]:
+    """Read the bound branch's pull request, waiting while the forge still shows a replaced head.
+
+    Only an open, unmerged pull request of the bound branch whose head is one of
+    the exact `stale` heads is waited out, with bounded backoff. Any other
+    mismatch refuses at once, and this never pushes again.
+    """
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    deadline = clock() + (PULL_REQUEST_HEAD_WAIT if wait is None else wait)
+    delay = 1.0
+    while True:
+        try:
+            return find_pull_request(repository, branch, head, base)
+        except ArchiveError as error:
+            shown = None
+            for candidate in sorted(stale):
+                try:
+                    pull = find_pull_request(repository, branch, candidate, base)
+                except ArchiveError:
+                    continue
+                if pull is not None and pull["state"] == "open" and pull["merged_at"] is None:
+                    shown = candidate
+                    break
+            if shown is None:
+                raise
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise ArchiveError(
+                    f"pull request of {branch} still shows the replaced head {shown} after "
+                    f"{PULL_REQUEST_HEAD_WAIT if wait is None else wait:.0f}s; the push is done, "
+                    "rerun close-members later") from error
+            pause = min(delay, remaining)
+            print(f"waiting {pause:.0f}s for the forge to show {head} on {branch} (still {shown})",
+                  file=sys.stderr)
+            sleep(pause)
+            delay = min(delay * 2, 8.0)
+
+
 def _advance_pending_member_source(
     coordinator: Path, member: str, archive_path: str, reviewed_head: str,
     checkout: Path, project: str, bound: str, default: str, repository: Optional[PullRequestRepository],
@@ -2460,7 +2537,9 @@ def integrate_member_pull_request(coordinator: Path, member: str, archive_path: 
         reviewed_head, default, repository, adopt)
     if adopted is not None:
         return adopted
-    pull = find_pull_request(repository, bound, reviewed_head, default)
+    pull = _await_pull_request_head(
+        repository, bound, reviewed_head,
+        _published_stale_heads(coordinator, member, archive_path, reviewed_head, checkout), default)
     try:
         prior = member_rebase_prior_close(coordinator, archive_path, member)
     except RuntimeError as error:
