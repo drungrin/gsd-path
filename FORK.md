@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.61**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.62**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,42 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.62 — 2026-11-18
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 61 to 62.
+
+Fork only (it fixes the PR fix lane views of 1.7.1.53):
+- [`37497acd — inherit the baseline Surface of an affected criterion in the lane's FINAL view`](https://github.com/drungrin/gsd-path/commit/37497acd78dad69c0928eccf37d605a7719813a8)
+
+### A delta review without a Surface no longer forces a full final review
+
+- A consumer's second lane round fell back to the ordinary final review with
+  "FINAL.md SC4 is missing Surface". The delta review marked SC4, a Surface
+  contract criterion, affected and gave its full verdict, but no `Surface`
+  field. The template asked for that field without requiring it, and the
+  view generator accepted the gap. The final gate refused the view only at
+  the end, and the round paid three more review agents.
+- The view now inherits the baseline FINAL.md `Surface` when the delta omits
+  it. The criterion's surface does not change with a local fix, and a value
+  the delta does give still wins. The delta template says so.
+
+Validation:
+- A new view test covers the inherited and the explicit Surface. Without the
+  change, it fails.
+- With the consumer's real round-2 capsule and delta review, a read-only
+  rebuild of the view now carries SC4's Surface.
+- The full Python suite ran in eight parallel shards: 3,880 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- It does not change a round that already fell back.
+- No upstream submission.
 
 ## 1.7.1.61 — 2026-11-18
 
