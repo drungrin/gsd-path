@@ -1109,6 +1109,43 @@ def member_target_kind(candidate, repo):
     return "product"
 
 
+def awaiting_resolution_path(repo, candidate):
+    """True for a conflicting path in the replay worktree of a member rebase awaiting its resolution.
+
+    A resolving adoption (`--resolve-conflicts`) stops at `awaiting-resolution` and asks a
+    coder to edit only the conflicting paths in its replay worktree. The pending journal
+    blocks every route, so without this the resolution step could never write.
+    isolation.py still refuses any change outside those paths, and conflict markers.
+    """
+    roots = repository_control_roots(repo)
+    directory = Path(roots[-1]) / "gsd-path" / "member-rebase"
+    if not directory.is_dir() or is_link_like(directory):
+        return False
+    for journal_path in sorted(directory.glob("*.json")):
+        try:
+            journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(journal, dict) or journal.get("stage") != "awaiting-resolution":
+            continue
+        worktree = journal.get("replay_worktree")
+        conflicts = journal.get("conflicts")
+        if not isinstance(worktree, str) or not isinstance(conflicts, list):
+            continue
+        root = Path(worktree)
+        if is_link_like(root) or not root.is_dir():
+            continue
+        try:
+            relative = Path(candidate).resolve(strict=False).relative_to(root.resolve(strict=True))
+        except (OSError, ValueError):
+            continue
+        paths = {path for row in conflicts if isinstance(row, dict)
+                 for path in (row.get("paths") or []) if isinstance(path, str)}
+        if relative.as_posix() in paths and not is_link_like(root / relative):
+            return True
+    return False
+
+
 def target_kind(path, working_directories, repo, control_roots=None):
     lexical, resolved = target_paths(path, working_directories, repo)
     repo = repo.resolve()
@@ -1131,6 +1168,8 @@ def target_kind(path, working_directories, repo, control_roots=None):
                 f"member write refused: {error}; "
                 "run members.py repair --repo <coordinator>"
             )
+        if member_kind == "product" and awaiting_resolution_path(repo, resolved):
+            member_kind = "external"
         if member_kind:
             kinds.add(member_kind)
     for kind in ("protected", "product", "artifact", "external"):

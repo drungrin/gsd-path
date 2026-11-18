@@ -139,6 +139,20 @@ class MemberRebaseResolutionTests(MemberRebaseResolutionFixture):
                          ["member_rebase"]["status"], "verified")
         self.assertEqual(isolation.member_mergeability(self.coordinator)["members"][0]["status"], "current")
 
+    def test_the_guard_lets_the_resolution_coder_edit_only_the_conflicting_paths(self) -> None:
+        sys.path.insert(0, str(Path(isolation.__file__).resolve().parent))
+        import guard_hook
+
+        worktree = Path(self.adopt()["worktree"])
+        kind = lambda path: guard_hook.target_kind(str(path), [str(worktree)], self.coordinator.resolve())
+        # The pending journal blocks every route, so only `external` lets the coder write.
+        self.assertEqual(kind(worktree / "app.py"), "external")
+        self.assertEqual(kind(worktree / "config.py"), "product")
+        self.assertEqual(kind(self.bound / "app.py"), "product")
+        journal = json.loads(self.journal().read_text(encoding="utf-8"))
+        self.journal().write_text(json.dumps({**journal, "stage": "replayed"}), encoding="utf-8")
+        self.assertEqual(kind(worktree / "app.py"), "product")
+
     def test_accepting_the_member_side_needs_no_resolution_commit(self) -> None:
         waiting = self.adopt()
         self.write_review(waiting["tree"])
