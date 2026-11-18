@@ -39,6 +39,12 @@ for maintaining this fork live here instead.
   rulings, failures, review cycles, or cost), tell the user plainly with the
   evidence, even when not asked, so they can decide whether to revert it.
   Never revert a fork decision on your own.
+- Before every fork change, check whether its scenario already happened:
+  read the `FORK.md` entries for earlier fixes that trace back to the same
+  fork decision. When two or more fixes treat symptoms of one decision, stop
+  patching. Present the decision itself to the user, with the evidence and
+  the review panel, and propose changing it before another symptom fix. Name
+  the recurrence in the change's `FORK.md` entry.
 - This repository is public. Tests, fixtures, and documentation use synthetic
   organizations, projects, repository names, and accounts. Never copy private
   identifiers, credentials, personal filesystem paths, or content from a
