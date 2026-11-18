@@ -73,7 +73,18 @@ DELTA_SECTION = "PR fix delta"
 
 
 class LaneError(RuntimeError):
-    """Raised when the lane cannot enter, proceed, or prove its outputs."""
+    """Raised when the lane cannot enter, proceed, or prove its outputs.
+
+    `kind` names why the views fell back (ADR 0008): new-risk, non-local, stale-product,
+    content, or provenance.
+    """
+
+    def __init__(self, message: str, kind: str = "content") -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+FALLBACK_KINDS = ("new-risk", "non-local", "stale-product", "content", "provenance")
 
 
 # --- small helpers -----------------------------------------------------------------
@@ -179,8 +190,11 @@ def lane_round(repo: Path) -> Optional[dict]:
     return record if record is not None and record.get("mode", "lane") == "lane" else None
 
 
-def fall_back(repo: Path, reason: str) -> dict:
-    """Hand the open lane round to the ordinary final review (idempotent)."""
+def fall_back(repo: Path, reason: str, kind: Optional[str] = None) -> dict:
+    """Hand the open lane round to the ordinary final review (idempotent).
+
+    The stage becomes `fell-back`; `outcome` records `fallback` and why (ADR 0008).
+    """
     repo = repo.resolve()
     with _LaneLock(repo):
         record = lane_round(repo)
@@ -189,7 +203,8 @@ def fall_back(repo: Path, reason: str) -> dict:
         if record.get("stage") not in {"opened", "built", "viewed", FELL_BACK}:
             raise LaneError(f"PR fix lane round {record['round']} is {record.get('stage')}; it cannot fall back")
         if record.get("stage") != FELL_BACK:
-            record.update(stage=FELL_BACK, fallback=one_line(reason) or "ordinary final review")
+            record.update(stage=FELL_BACK, fallback=one_line(reason) or "ordinary final review",
+                          outcome="fallback", fallback_kind=kind if kind in FALLBACK_KINDS else "manual")
             _save_round(repo, record)
     return {"schema": SCHEMA, "status": FELL_BACK, "round": record["round"], "reason": record.get("fallback")}
 
@@ -708,8 +723,15 @@ def task_contract(text: str) -> dict:
     isolation = _sibling("isolation")
     head, body = isolation.split_frontmatter(text)
     body_bytes = isolation._normalize_newlines(body).encode("utf-8")
-    return {"digest": _contract_digest(isolation._immutable_frontmatter(head), body_bytes),
+    return {"digest": _contract_digest(_contract_frontmatter(head), body_bytes),
             "body_length": len(body_bytes)}
+
+
+def _contract_frontmatter(head: Sequence[str]) -> List[str]:
+    """Frontmatter without the lifecycle fields that activation and landing set (member tasks too)."""
+    isolation = _sibling("isolation")
+    lifecycle = set(isolation.LANDING_MUTABLE_FIELDS) | set(isolation.MEMBER_ACTIVATION_FIELDS)
+    return [line for line in head if isolation._frontmatter_key(line) not in lifecycle]
 
 
 def _contract_digest(frontmatter: Sequence[str], body: bytes) -> str:
@@ -725,7 +747,7 @@ def contract_matches(bound: Mapping[str, object], text: str) -> bool:
     body_bytes = isolation._normalize_newlines(body).encode("utf-8")
     length = int(bound.get("body_length") or 0)
     return len(body_bytes) >= length and _contract_digest(
-        isolation._immutable_frontmatter(head), body_bytes[:length]) == bound.get("digest")
+        _contract_frontmatter(head), body_bytes[:length]) == bound.get("digest")
 
 
 def _task_files(repo: Path) -> Dict[str, dict]:
@@ -848,6 +870,11 @@ def bind(repo: Path, source: Optional[str] = None) -> dict:
         tasks = _task_files(repo)
         computed = _initial_membership(repo, record, tasks)
         existing = read_membership(repo, number)
+        bound = {row["id"]: row["contract"] for row in (existing or {}).get("tasks") or []}
+        for row in computed["tasks"]:
+            # A landed task keeps its bound contract: landing only appends to the body.
+            if row["id"] in bound and contract_matches(bound[row["id"]], tasks[row["id"]]["text"]):
+                row["contract"] = bound[row["id"]]
         approval = _approval_receipt(record)
         if approval is not None and approval.get("membership_digest") != _approval_digest(computed):
             raise LaneError(f"the lane tasks of round {number} changed after the patch plan approval; "
@@ -1032,11 +1059,12 @@ def _delta_section(text: str) -> Optional[str]:
     return body[: following.start() if following else len(body)]
 
 
-def _blocks(section: str) -> Dict[str, str]:
+def _blocks(section: str) -> List[Tuple[str, str]]:
+    """The `###` blocks of a section, in order; a repeated heading identity is kept for refusal."""
     matches = list(re.finditer(r"(?m)^### (.+)$", section))
-    return {match.group(1).strip(): section[match.end(): (matches[index + 1].start() if index + 1 < len(matches)
-                                                          else len(section))]
-            for index, match in enumerate(matches)}
+    return [(match.group(1).strip(), section[match.end(): (matches[index + 1].start() if index + 1 < len(matches)
+                                                            else len(section))])
+            for index, match in enumerate(matches)]
 
 
 def _bullet(block: str, field: str) -> Optional[str]:
@@ -1044,30 +1072,53 @@ def _bullet(block: str, field: str) -> Optional[str]:
     return values[0].strip() if len(values) == 1 else None
 
 
+def _single_line(section: str, label: str) -> Optional[str]:
+    values = re.findall(rf"(?m)^{re.escape(label)}[ \t]*(\S.*?)[ \t]*$", section)
+    if len(values) > 1:
+        raise LaneError(f"the delta review repeats `{label}`")
+    return values[0] if values else None
+
+
 def parse_delta(text: str, criteria: Sequence[str], gaps: Sequence[int], item_ids: Sequence[str]) -> dict:
-    """Parse and check the `## PR fix delta` section of a delta wave review."""
+    """Parse and check the `## PR fix delta` section of a delta wave review.
+
+    Every item, criterion, and gap appears exactly once; a closed item cites its evidence.
+    The cumulative fields (Round tasks, Membership, Product HEAD, Member product HEAD) are
+    returned as found; the wave gate decides where they are required.
+    """
     section = _delta_section(text)
     if section is None:
         raise LaneError(f"a delta wave review needs a `## {DELTA_SECTION}` section")
-    eligibility = re.search(r"(?m)^Eligibility:\s*(\S+)\s*$", section)
-    inventory = re.search(r"(?m)^Risk inventory:\s*(\S+)\s*$", section)
-    if not eligibility or eligibility.group(1) not in {"local", "not-local"}:
+    eligibility = _single_line(section, "Eligibility:")
+    inventory = _single_line(section, "Risk inventory:")
+    if eligibility not in {"local", "not-local"}:
         raise LaneError("the delta review needs `Eligibility: local` or `Eligibility: not-local`")
-    if not inventory or inventory.group(1) not in {"complete", "new"}:
+    if inventory not in {"complete", "new"}:
         raise LaneError("the delta review needs `Risk inventory: complete` or `Risk inventory: new`")
-    blocks = _blocks(section)
+    contracts = _sibling("check_handoffs")
     items: Dict[str, str] = {}
     criterion_rows: Dict[str, dict] = {}
     gap_rows: Dict[int, dict] = {}
-    for heading, block in blocks.items():
+    for heading, block in _blocks(section):
         item = re.fullmatch(r"Item ([RC]\d+): (closed|not-closed)", heading)
         criterion = re.fullmatch(r"(SC[1-9]\d*) — (affected|unaffected)", heading)
         gap = re.fullmatch(r"Gap ([1-9]\d*) — (affected|unaffected)", heading)
         if item:
+            if item.group(1) in items:
+                raise LaneError(f"the delta review reports item {item.group(1)} twice")
             items[item.group(1)] = item.group(2)
+            evidence = _bullet(block, "Evidence")
+            if item.group(2) == "closed":
+                if not evidence or evidence.casefold() == "none" or contracts.PLACEHOLDER_PATTERN.search(
+                        contracts.CODE_SPAN_PATTERN.sub("", evidence)):
+                    raise LaneError(f"closed item {item.group(1)} needs its Evidence")
         elif criterion:
+            if criterion.group(1) in criterion_rows:
+                raise LaneError(f"the delta review maps {criterion.group(1)} twice")
             criterion_rows[criterion.group(1)] = {"impact": criterion.group(2), "block": block}
         elif gap:
+            if int(gap.group(1)) in gap_rows:
+                raise LaneError(f"the delta review maps gap {gap.group(1)} twice")
             gap_rows[int(gap.group(1))] = {"impact": gap.group(2), "block": block}
         else:
             raise LaneError(f"unexpected delta heading: ### {heading}")
@@ -1083,8 +1134,17 @@ def parse_delta(text: str, criteria: Sequence[str], gaps: Sequence[int], item_id
             if not reason or reason.casefold() == "none":
                 raise LaneError(f"{key} is unaffected without a Reason")
             row["reason"] = one_line(reason)
-    return {"eligibility": eligibility.group(1), "inventory": inventory.group(1), "items": items,
-            "criteria": criterion_rows, "gaps": gap_rows}
+    round_tasks = _single_line(section, "Round tasks:")
+    member_heads: Dict[str, str] = {}
+    for name, sha in re.findall(r"(?m)^Member product HEAD:[ \t]*(\S+)[ \t]+([0-9a-f]{40})[ \t]*$", section):
+        if name in member_heads:
+            raise LaneError(f"the delta review names member {name} twice")
+        member_heads[name] = sha
+    return {"eligibility": eligibility, "inventory": inventory, "items": items,
+            "criteria": criterion_rows, "gaps": gap_rows,
+            "round_tasks": [task.strip() for task in round_tasks.split(",")] if round_tasks else None,
+            "membership": _single_line(section, "Membership:"),
+            "product_head": _single_line(section, "Product HEAD:"), "member_heads": member_heads}
 
 
 def _delta_coverage_error(repo: Path, delta_path: Path) -> Optional[str]:
@@ -1127,23 +1187,150 @@ def delta_report(repo: Path, wave: int) -> Tuple[Path, str]:
     return path, path.read_text(encoding="utf-8")
 
 
-def delta_errors(repo: Path, text: str) -> List[str]:
-    """Wave-gate checks for a delta review against the active round."""
-    record = lane_round(repo)
-    if record is None:
-        return ["a delta wave review needs an open PR fix lane round"]
+def _round_record(repo: Path, round_number: int) -> Optional[dict]:
+    """The recorded round of this milestone's archive, open or closed."""
+    pointer = lane_root(repo) / "active.json"
+    if not pointer.is_file():
+        return None
+    directory = _round_dir(repo, str(_read_json(pointer)["archive_name"]), round_number)
+    return dict(_read_json(directory / "round.json"), directory=str(directory)) \
+        if (directory / "round.json").is_file() else None
+
+
+def _owner_of_wave(repo: Path, wave: int) -> Optional[Tuple[dict, dict]]:
+    """The round whose membership holds a task in this wave, with that membership."""
+    for number, membership in sorted(_round_records(repo).items()):
+        if any(row["wave"] == wave for row in [*(membership.get("tasks") or []), *(membership.get("repairs") or [])]):
+            record = _round_record(repo, number)
+            return (record, membership) if record is not None else None
+    return None
+
+
+def coordinator_equivalent(repo: Path, reviewed: str, head: str) -> bool:
+    """Whether every coordinator commit after the reviewed one is lane bookkeeping (ADR 0008).
+
+    Allowed: non-merge commits that change only `.project/` outside INTENT.md, PLAN.md, and
+    the round membership files, or installer paths. The generic installer-only
+    `_common.reviewed_head_covers` keeps its contract for its other callers.
+    """
+    if not SHA.fullmatch(reviewed or ""):
+        return False
+    if reviewed == head:
+        return True
+    ancestry = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", reviewed, head],
+                              capture_output=True)
+    if ancestry.returncode != 0:
+        return False
+    for commit in _git(repo, "rev-list", f"{reviewed}..{head}").split():
+        parents = _git(repo, "rev-list", "--parents", "-n", "1", commit).split()[1:]
+        if len(parents) != 1:
+            return False
+        paths = _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", commit).splitlines()
+        if not paths:
+            return False
+        for path in paths:
+            if _common.installer_path(path):
+                continue
+            if not path.startswith(".project/") or path.startswith(".project/intent/") \
+                    or path == ".project/plan/PLAN.md" or MEMBERSHIP_NAME.fullmatch(PurePosixPath(path).name):
+                return False
+    return True
+
+
+def _findings_map(repo: Path) -> Dict[str, str]:
+    findings_text_value = (repo / ".project/review/PATCH-FINDINGS.md").read_text(encoding="utf-8")
+    return dict(re.findall(r"(?m)^### (P\d{3}) — .*\n\n- \*\*Source\*\*: .*\n- \*\*Locator\*\*: Item (\S+)",
+                           findings_text_value))
+
+
+def render_views(repo: Path, record: Mapping[str, object], membership: Mapping[str, object], delta: dict,
+                 delta_relative: str, head: str, members: Mapping[str, str]) -> Tuple[str, Dict[int, str]]:
+    """FINAL.md and the gap reports from 2 that the round's capsule and delta produce."""
     directory = Path(str(record["directory"]))
     capsule = directory / "capsule/review"
+    ruling = _read_json(directory / "ruling.json")
+    task_of = {finding: str(group["task"]) for group in membership["groups"] for finding in group["findings"]}
+    final = build_final_view((capsule / "FINAL.md").read_text(encoding="utf-8"), delta, head, members,
+                             record, ruling, delta_relative, _findings_map(repo), task_of)
+    gaps = {number: build_gap_view((capsule / f"final-gap-{number}.md").read_text(encoding="utf-8"),
+                                   delta["gaps"][number], head, members, record, delta_relative)
+            for number in membership["gaps"] if number > 1}
+    return final, gaps
+
+
+def _cumulative_errors(repo: Path, membership: Mapping[str, object], delta: dict) -> List[str]:
+    """The round's cumulative assessment must name every member and the reviewed product vector."""
+    errors = []
+    members = member_ids(membership)
+    if delta["round_tasks"] != members:
+        errors.append("the cumulative delta review must list `Round tasks: " + ", ".join(members) + "`")
+    files = _task_files(repo)
+    unfinished = [task_id for task_id in members if (files.get(task_id) or {}).get("status") != "done"]
+    if unfinished:
+        errors.append("the cumulative delta review runs after every member landed; pending: " + ", ".join(unfinished))
+    digest = _digest(membership_path(repo, int(membership["round"])))
+    if delta["membership"] != digest:
+        errors.append(f"the cumulative delta review must record `Membership: {digest}`")
+    head = delta["product_head"] or ""
+    if not SHA.fullmatch(head) or not coordinator_equivalent(repo, head, _git(repo, "rev-parse", "HEAD")):
+        errors.append("the cumulative delta review must record the coordinator commit it judged as `Product HEAD`")
+    tips = _sibling("check_handoffs")._member_tips(repo)
+    if delta["member_heads"] != tips:
+        expected = "; ".join(f"Member product HEAD: {name} {sha}" for name, sha in sorted(tips.items()))
+        errors.append(f"the cumulative delta review must record the member tips it judged ({expected})")
+    return errors
+
+
+def delta_errors(repo: Path, text: str, wave: Optional[int] = None, relative: Optional[str] = None) -> List[str]:
+    """Wave-gate checks for a passing delta review against the round that owns its wave.
+
+    The round's first lane wave carries the cumulative assessment: it must name every member
+    task and the reviewed product vector, and the views it produces must pass the final
+    gate's content rules (gap 1, the project Verify, is deferred to ship).
+    """
+    owner = _owner_of_wave(repo, wave) if wave is not None else None
+    if owner is None:
+        record = lane_round(repo)
+        if record is None:
+            return ["a delta wave review needs an open PR fix lane round"]
+        if record.get("membership") == MEMBERSHIP_SCHEMA:
+            return [f"delta wave {wave} belongs to no PR fix round membership; run `pr_fix_lane.py bind`"]
+        membership = None  # a round opened by an earlier runtime keeps the earlier check
+    else:
+        record, membership = owner
+    directory = Path(str(record["directory"]))
     contracts = _sibling("check_handoffs")
     criteria = list(contracts._success_criteria((repo / ".project/intent/INTENT.md").read_text(encoding="utf-8")))
     gaps = [int(GAP_NAME.fullmatch(name).group("number")) for name in record.get("gaps", [])
             if GAP_NAME.fullmatch(name) and int(GAP_NAME.fullmatch(name).group("number")) > 1]
     try:
-        parse_delta(text, criteria, gaps, list(record.get("fixes") or []))
+        delta = parse_delta(text, criteria, gaps, list(record.get("fixes") or []))
     except LaneError as error:
         return [str(error)]
+    capsule = directory / "capsule/review"
     if not (capsule / "FINAL.md").is_file():
         return ["the lane capsule lost its FINAL.md"]
+    if membership is None or wave != min(row["wave"] for row in membership["tasks"]):
+        return []
+    if membership.get("gaps") != sorted(int(GAP_NAME.fullmatch(name).group("number"))
+                                        for name in record.get("gaps") or []):
+        return ["the round membership and its capsule name different gap reports"]
+    if record.get("stage") not in OPEN_STAGES:
+        return []  # a closed round's wave: its views were proven at its own ship
+    errors = _cumulative_errors(repo, membership, delta)
+    if errors:
+        return errors
+    if delta["eligibility"] != "local" or delta["inventory"] != "complete":
+        return []  # the designed fallback; the views are not attempted
+    try:
+        final, gap_texts = render_views(repo, record, membership, delta, relative or "delta review",
+                                        str(delta["product_head"]), delta["member_heads"])
+        gap_one = _replace_header((capsule / "final-gap-1.md").read_text(encoding="utf-8"),
+                                  str(delta["product_head"]), delta["member_heads"])
+        contracts.validate_final_content(contracts.final_contract(repo), final, {1: gap_one, **gap_texts},
+                                         deferred=(1,))
+    except (LaneError, contracts.HandoffError) as error:
+        return [f"the views this delta review produces would fail the final gate: {error}"]
     return []
 
 
@@ -1305,11 +1492,11 @@ def views(repo: Path, expected_head: str) -> dict:
     landings = {row["task"]["id"]: row.get("landed_commit") for row in proof.get("tasks") or []
                 if isinstance(row.get("task"), dict) and row["task"].get("id") in tasks}
     if set(landings) != set(tasks) or not all(landings.values()):
-        raise LaneError("a lane task is not proven landed")
+        raise LaneError("a lane task is not proven landed", "provenance")
     delta_path, delta_text = delta_report(repo, wave)
     stale = _delta_coverage_error(repo, delta_path)
     if stale:
-        raise LaneError(stale)
+        raise LaneError(stale, "stale-product")
     if contracts._line_value(delta_text, "Wave verdict:") != "pass" or \
             contracts._line_value(delta_text, "Depth:") != "delta":
         raise LaneError(f"{delta_path.name} is not a passing delta review")
@@ -1317,26 +1504,25 @@ def views(repo: Path, expected_head: str) -> dict:
     capsule = directory / "capsule/review"
     capsule_gaps = sorted(int(GAP_NAME.fullmatch(path.name).group("number"))
                           for path in capsule.iterdir() if GAP_NAME.fullmatch(path.name))
+    if capsule_gaps != membership["gaps"]:
+        raise LaneError("the round capsule and its membership name different gap reports", "provenance")
     delta = parse_delta(delta_text, criteria, [number for number in capsule_gaps if number > 1],
                         list(record.get("fixes") or []))
     if delta["eligibility"] != "local":
-        raise LaneError("the delta review found a non-local change; use the ordinary final review")
+        raise LaneError("the delta review found a non-local change; use the ordinary final review", "non-local")
     if delta["inventory"] != "complete":
-        raise LaneError("the delta review found a new integration risk; use the ordinary final review")
+        raise LaneError("the delta review found a new integration risk; use the ordinary final review", "new-risk")
     if any(value != "closed" for value in delta["items"].values()):
         raise LaneError("a lane item is not closed")
-    findings_text_value = (review / "PATCH-FINDINGS.md").read_text(encoding="utf-8")
-    findings = dict(re.findall(r"(?m)^### (P\d{3}) — .*\n\n- \*\*Source\*\*: .*\n- \*\*Locator\*\*: Item (\S+)",
-                               findings_text_value))
-    task_of = {finding: str(group["task"]) for group in membership["groups"] for finding in group["findings"]}
-    ruling = _read_json(directory / "ruling.json")
+    cumulative = _cumulative_errors(repo, membership, delta)
+    if cumulative:
+        raise LaneError("; ".join(cumulative), "stale-product")
+    if delta["member_heads"] != members:
+        raise LaneError("the member tips changed after the delta review", "stale-product")
     relative_delta = delta_path.relative_to(repo).as_posix()
-    final = build_final_view((capsule / "FINAL.md").read_text(encoding="utf-8"), delta, head, members,
-                             record, ruling, relative_delta, findings, task_of)
+    final, gap_texts = render_views(repo, dict(record, directory=str(directory)), membership, delta,
+                                    relative_delta, head, members)
     outputs: Dict[str, str] = {}
-    gap_texts = {number: build_gap_view((capsule / f"final-gap-{number}.md").read_text(encoding="utf-8"),
-                                        delta["gaps"][number], head, members, record, relative_delta)
-                 for number in capsule_gaps if number > 1}
     # Write the views, validate them as an ordinary final, and restore the prior files on refusal.
     before = {path.name: path.read_bytes() for path in review.iterdir()
               if path.is_file() and (path.name == "FINAL.md" or GAP_NAME.fullmatch(path.name))
@@ -1384,7 +1570,7 @@ def views(repo: Path, expected_head: str) -> dict:
         "outputs": outputs,
     }
     _write_json(preserved / "provenance.json", provenance)
-    record["stage"] = "viewed"
+    record.update(stage="viewed", outcome="views")
     _save_round(repo, record)
     return {"schema": SCHEMA, "status": "complete", "round": record["round"], "head": head,
             "outputs": sorted(outputs), "provenance": f".project/review/pr-fix-{record['round']}/provenance.json"}

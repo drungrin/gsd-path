@@ -93,6 +93,7 @@ Tasks reviewed: 1
 
 ## PR fix delta
 
+{cumulative}
 Eligibility: local
 Risk inventory: complete
 
@@ -107,6 +108,19 @@ Risk inventory: complete
 ### SC1 — unaffected
 
 - **Reason**: require_scope leaves value at 2 and the project Verify still asserts it
+"""
+
+BLOCKED_DELTA = """# Review — wave 2, cycle 1
+
+Wave verdict: blocked
+Cycle: 1
+Depth: delta
+Tasks reviewed: 1
+
+## T002 — refuse a missing scope: fail
+
+- ❌ `lib.require_scope(None)` raises `ValueError`. — found: the error message does not say the scope is required, lib.py:5
+  fix: say that the scope is required
 """
 
 RULING = {"verbatim": "Corrigir os dois itens nesta PR.",
@@ -210,7 +224,11 @@ class PrFixLaneCycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             self.run_lane(Path(temporary).resolve(), eligibility="not-local")
 
-    def run_lane(self, base, eligibility="local", second_round=False):
+    def test_a_repaired_round_reaches_views_through_its_cumulative_cycle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.run_lane(Path(temporary).resolve(), repair=True)
+
+    def run_lane(self, base, eligibility="local", second_round=False, repair=False):
         self.default_line = ""
         environment = mock.patch.dict(os.environ, {
             "GSD_PATH_WORKTREE_ROOT": str(base / "workspace"), "HOME": str(base / "home"),
@@ -335,9 +353,32 @@ class PrFixLaneCycleTests(unittest.TestCase):
         second = self.land("T002", "lib.py",
                            "value = 2\n\n\ndef require_scope(scope):\n    if scope is None:\n"
                            "        raise ValueError('scope required')\n    return scope\n", restart["commit"])
-        self.write(".project/review/wave-2.cycle1.md",
-                   DELTA_REVIEW.replace("Eligibility: local", f"Eligibility: {eligibility}"))
-        self.gate("check_handoffs.py", "wave", "--repo", str(repo), "--review", ".project/review/wave-2.cycle1.md")
+        cycle_name = "wave-2.cycle1.md"
+        if not repair and not second_round and eligibility == "local":
+            # A delta whose views would fail the final gate is refused inside the wave cycle.
+            thin = (DELTA_REVIEW.replace("{cumulative}", self.cumulative(repo, 1, ["T002"]))
+                    .replace("### SC1 — unaffected\n\n- **Reason**: require_scope leaves value at 2 and the "
+                             "project Verify still asserts it\n",
+                             "### SC1 — affected\n\n- **Verdict**: met\n- **Check**: `python3 -c 'import lib'`\n"
+                             "- **Observed**: none\n- **Reference**: lib.py:1\n- **Finding**: none\n"
+                             "- **Fix direction**: none\n"))
+            self.assertIn("### SC1 — affected", thin)
+            self.write(".project/review/wave-2.cycle1.md", thin)
+            refused = subprocess.run([cycle.sys.executable, str(cycle.SCRIPTS / "check_handoffs.py"), "wave",
+                                      "--repo", str(repo), "--review", ".project/review/wave-2.cycle1.md"],
+                                     capture_output=True, text=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("would fail the final gate: FINAL.md SC1 lacks an Observed result",
+                          refused.stderr + refused.stdout)
+        if repair:
+            second, cycle_name = self.repair_round(repo, second), "wave-2.cycle2.md"
+        self.write(f".project/review/{cycle_name}",
+                   DELTA_REVIEW.replace("{cumulative}", self.cumulative(
+                       repo, 1, ["T002", "T003"] if repair else ["T002"]))
+                   .replace("Eligibility: local", f"Eligibility: {eligibility}")
+                   .replace("cycle 1\n\nWave verdict", f"cycle {2 if repair else 1}\n\nWave verdict")
+                   .replace("Cycle: 1", f"Cycle: {2 if repair else 1}"))
+        self.gate("check_handoffs.py", "wave", "--repo", str(repo), "--review", f".project/review/{cycle_name}")
         wave2 = isolation.checkpoint(repo, second["commit"], "build: wave 2 reviewed",
                                      f"Why: delta review passed\nWave: 2\nTasks: T002\nBase: {second['commit']}",
                                      [".project"])
@@ -459,7 +500,8 @@ class PrFixLaneCycleTests(unittest.TestCase):
                           "value = 2\n\n\ndef require_scope(scope):\n    \"\"\"Refuse a call without a scope.\"\"\"\n"
                           "    if scope is None:\n        raise ValueError('scope required')\n    return scope\n",
                           restart["commit"])
-        review = (DELTA_REVIEW.replace("wave 2", "wave 3").replace("T002", "T003")
+        review = (DELTA_REVIEW.replace("{cumulative}", self.cumulative(repo, 2, ["T003"]))
+                  .replace("wave 2", "wave 3").replace("T002", "T003")
                   .replace("### Item R11: closed\n\n- **Evidence**: web lib.py require_scope\n\n", "")
                   .replace("### Item C21: closed", "### Item C23: closed\n\n- **Evidence**: web lib.py docstring"
                                                     "\n\n### Item R13: closed"))
@@ -506,6 +548,47 @@ class PrFixLaneCycleTests(unittest.TestCase):
         self.assertIn("delta waves are history: move it to a standard wave", refused.stderr + refused.stdout)
         # The round can still answer the PR once the ordinary route republishes.
         self.assertEqual(pr_fix_lane.fall_back(repo, "again")["status"], pr_fix_lane.FELL_BACK)
+
+    def repair_round(self, repo, landed):
+        """A blocked delta cycle, fix-tasks, and the landed repair: the repair joins the round."""
+        self.write(".project/review/wave-2.cycle1.md", BLOCKED_DELTA)
+        self.gate("check_handoffs.py", "wave", "--repo", str(repo), "--review", ".project/review/wave-2.cycle1.md")
+        blocked = isolation.checkpoint(repo, landed["commit"], "build: record wave 2 cycle 1 review",
+                                       "Why: persist the blocked wave review verdict\nWave: 2", [".project"])
+        created = self.gate("dispatch_driver.py", "fix-tasks", "--repo", str(repo), "--wave", "2", "--cycle", "1")
+        self.assertEqual([item["task"] for item in created["created"]], ["T003"], created)
+        repair_path = repo / created["created"][0]["path"]
+        self.assertIn("lane_round: 1\n", repair_path.read_text(encoding="utf-8"))
+        self.assertEqual(created["lane"]["repairs"], ["T003"])
+        repairs = json.loads(pr_fix_lane.membership_path(repo, 1).read_text(encoding="utf-8"))["repairs"]
+        self.assertEqual((repairs[0]["id"], repairs[0]["source"]), ("T003", ".project/review/wave-2.cycle1.md"))
+        pr_fix_lane.require_approved_membership(repo)  # the approved part is unchanged
+        self.gate("check_handoffs.py", "plan", "--repo", str(repo))
+        head = cycle.git(repo, "rev-parse", "HEAD").stdout.strip()
+        if any(path.startswith(".project/") for path in isolation.uncommitted_paths(repo)):
+            head = isolation.checkpoint(repo, head, "build: record fix tasks",
+                                        "Why: fix tasks for wave 2 cycle 1", [".project"])["commit"]
+        repaired = self.land("T003", "lib.py",
+                             "value = 2\n\n\ndef require_scope(scope):\n    if scope is None:\n"
+                             "        raise ValueError('scope is required')\n    return scope\n", head)
+        # A cumulative cycle that forgets the repair is refused at the wave gate.
+        self.write(".project/review/wave-2.cycle2.md",
+                   DELTA_REVIEW.replace("{cumulative}", self.cumulative(repo, 1, ["T002"]))
+                   .replace("cycle 1\n\nWave verdict", "cycle 2\n\nWave verdict").replace("Cycle: 1", "Cycle: 2"))
+        refused = subprocess.run([cycle.sys.executable, str(cycle.SCRIPTS / "check_handoffs.py"), "wave", "--repo",
+                                  str(repo), "--review", ".project/review/wave-2.cycle2.md"],
+                                 capture_output=True, text=True)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("must list `Round tasks: T002, T003`", refused.stderr + refused.stdout)
+        return repaired
+
+    def cumulative(self, repo, round_number, tasks):
+        """The cumulative fields the delta brief hands the reviewer for the round's first lane wave."""
+        membership = pr_fix_lane.membership_path(repo, round_number)
+        tips = check_handoffs._member_tips(repo)
+        return "\n".join([f"Round tasks: {', '.join(tasks)}", f"Membership: {pr_fix_lane._digest(membership)}",
+                          f"Product HEAD: {cycle.git(repo, 'rev-parse', 'HEAD').stdout.strip()}",
+                          *[f"Member product HEAD: {name} {sha}" for name, sha in sorted(tips.items())]]) + "\n"
 
     def land(self, task_id, path, content, coordinator_base):
         repo = self.repo

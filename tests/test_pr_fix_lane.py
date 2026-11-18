@@ -1,6 +1,7 @@
 """PR fix lane (ADR 0006): entry, capsule, ruling, undo, hand-off, delta parsing and views."""
 
 import json
+import re
 import subprocess
 import tempfile
 import os
@@ -236,6 +237,67 @@ class DeltaViewTests(unittest.TestCase):
         unreasoned = DELTA.replace("- **Reason**: no delivery code changed", "- **Reason**: none")
         with self.assertRaisesRegex(pr_fix_lane.LaneError, "without a Reason"):
             pr_fix_lane.parse_delta(unreasoned, ["SC1", "SC2"], [2], ["R11", "C21"])
+
+    def test_a_duplicate_or_contradictory_conclusion_is_refused(self) -> None:
+        args = (["SC1", "SC2"], [2], ["R11", "C21"])
+        cases = {
+            "item R11 twice": DELTA.replace("### Item C21: closed", "### Item R11: not-closed\n\n- **Evidence**: no"
+                                            "\n\n### Item C21: closed"),
+            "maps SC1 twice": DELTA.replace("### SC2 — affected", "### SC1 — affected\n\n### SC2 — affected"),
+            "maps gap 2 twice": DELTA + "\n### Gap 2 — affected\n\n- **Gap verdict**: pass\n",
+            "repeats `Eligibility:`": DELTA.replace("Risk inventory:", "Eligibility: not-local\nRisk inventory:"),
+        }
+        for message, text in cases.items():
+            with self.subTest(message):
+                with self.assertRaisesRegex(pr_fix_lane.LaneError, re.escape(message)):
+                    pr_fix_lane.parse_delta(text, *args)
+
+    def test_a_closed_item_needs_real_evidence(self) -> None:
+        args = (["SC1", "SC2"], [2], ["R11", "C21"])
+        for evidence in ("- **Evidence**: none", "- **Evidence**: <file:line>", ""):
+            with self.subTest(evidence=evidence):
+                text = DELTA.replace("- **Evidence**: src/a.py:3", evidence)
+                with self.assertRaisesRegex(pr_fix_lane.LaneError, "closed item R11 needs its Evidence"):
+                    pr_fix_lane.parse_delta(text, *args)
+        quoted = DELTA.replace("- **Evidence**: src/a.py:3", "- **Evidence**: logs `<codigo>` at src/a.py:3")
+        self.assertEqual(pr_fix_lane.parse_delta(quoted, *args)["items"]["R11"], "closed")
+
+    def test_the_cumulative_fields_are_parsed_once(self) -> None:
+        fields = ("Round tasks: T003, T005\nMembership: " + "a" * 64 + "\nProduct HEAD: " + "b" * 40
+                  + "\nMember product HEAD: web " + "c" * 40 + "\n")
+        text = DELTA.replace("Eligibility: local", fields + "Eligibility: local")
+        delta = pr_fix_lane.parse_delta(text, ["SC1", "SC2"], [2], ["R11", "C21"])
+        self.assertEqual((delta["round_tasks"], delta["membership"], delta["product_head"], delta["member_heads"]),
+                         (["T003", "T005"], "a" * 64, "b" * 40, {"web": "c" * 40}))
+        twice = text.replace("Eligibility: local", "Member product HEAD: web " + "d" * 40 + "\nEligibility: local")
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "names member web twice"):
+            pr_fix_lane.parse_delta(twice, ["SC1", "SC2"], [2], ["R11", "C21"])
+
+    def test_coordinator_equivalence_accepts_only_lane_bookkeeping(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            run = lambda *args: subprocess.run(["git", "-C", temporary, "-c", "user.name=t",
+                                                "-c", "user.email=t@example.invalid", *args],
+                                               check=True, capture_output=True, text=True).stdout.strip()
+            run("init", "-q")
+            for path in (".project/review/a.md", ".project/intent/INTENT.md", ".project/plan/PLAN.md", "src.py"):
+                (repo / path).parent.mkdir(parents=True, exist_ok=True)
+                (repo / path).write_text("x\n", encoding="utf-8")
+            run("add", "-A")
+            run("commit", "-qm", "base")
+            reviewed = run("rev-parse", "HEAD")
+            commit = lambda path, text: ((repo / path).write_text(text, encoding="utf-8"),
+                                         run("commit", "-qam", path), run("rev-parse", "HEAD"))[-1]
+            bookkeeping = commit(".project/review/a.md", "review recorded\n")
+            self.assertTrue(pr_fix_lane.coordinator_equivalent(repo, reviewed, bookkeeping))
+            self.assertTrue(pr_fix_lane.coordinator_equivalent(repo, reviewed, reviewed))
+            for path in (".project/intent/INTENT.md", ".project/plan/PLAN.md", "src.py"):
+                with self.subTest(path=path):
+                    changed = commit(path, f"changed {path}\n")
+                    self.assertFalse(pr_fix_lane.coordinator_equivalent(repo, reviewed, changed))
+                    run("reset", "-q", "--hard", bookkeeping)
+            self.assertFalse(pr_fix_lane.coordinator_equivalent(repo, bookkeeping, reviewed))  # not an ancestor
+            self.assertFalse(pr_fix_lane.coordinator_equivalent(repo, "not-a-sha", bookkeeping))
 
     def test_views_inherit_unaffected_blocks_and_replace_affected_ones(self) -> None:
         old, new, old_member, new_member = "a" * 40, "b" * 40, "c" * 40, "d" * 40

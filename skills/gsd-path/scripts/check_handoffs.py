@@ -2593,7 +2593,7 @@ def validate_wave_evidence(
     if overall not in {"pass", "blocked"}:
         raise HandoffError(f"{name} Wave verdict is invalid")
     if expected_depth == "delta" and is_last_cycle and overall == "pass":
-        errors = _pr_fix_lane().delta_errors(root, text)
+        errors = _pr_fix_lane().delta_errors(root, text, wave, review_path.as_posix())
         if errors:
             raise HandoffError(f"{name}: " + "; ".join(errors))
     reviewed = _line_value(text, "Tasks reviewed:")

@@ -1592,6 +1592,17 @@ def review_brief(state: Dict[str, object], options: argparse.Namespace, primary:
             "every numbered gap risk from 2, affected or unaffected with the reason, and a full verdict for each "
             "affected one; and whether the baseline risk list is still complete.",
         ]
+        membership = pr_fix_lane.read_membership(primary, int(lane["round"])) if lane else None
+        if membership is not None and state.get("wave") == min(row["wave"] for row in membership["tasks"]):
+            membership_file = pr_fix_lane.membership_path(primary, int(lane["round"]))
+            lines += [
+                "This is the round's cumulative assessment: judge the whole round as landed, repairs included, "
+                "and record these lines in the delta section exactly:",
+                "Round tasks: " + ", ".join(pr_fix_lane.member_ids(membership)),
+                f"Membership: {pr_fix_lane._digest(membership_file)}",
+                f"Product HEAD: {state['base']}",
+                *[f"Member product HEAD: {name} {sha}" for name, sha in sorted(contracts._member_tips(primary).items())],
+            ]
     if final_scope:
         lines.append(f"Final scope applies: record `Review scope: final` and `Reviewed HEAD: {state['base']}`, "
                      "check every INTENT success criterion and PLAN.md's Surface contract, and add "
