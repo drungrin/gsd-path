@@ -742,6 +742,31 @@ class LaneMembershipTests(unittest.TestCase):
         self.write_task("T002", 2, "done", lane=1, context="Closes P001 of round 1.")
         self.assertEqual(self.gate(), [])
 
+    def test_contract_drift_allows_only_the_rounds_own_waves(self) -> None:
+        plan = ("# Plan\n\n## Wave 1 — a\n\nGoal: g\nReview depth: full\n\n## Wave 2 — b\n\nGoal: g\n"
+                "Review depth: full\n\n## Intent coverage\n\n| SC | Task |\n")
+        intent = "# Intent\n"
+        (self.directory / "contracts").mkdir()
+        (self.directory / "contracts/PLAN.md").write_text(plan, encoding="utf-8")
+        (self.root / ".project/intent").mkdir()
+        (self.root / ".project/intent/INTENT.md").write_text(intent, encoding="utf-8")
+        record = dict(self.record, contracts={"INTENT.md": pr_fix_lane._digest(self.root / ".project/intent/INTENT.md")})
+        membership = {"tasks": [{"id": "T005", "wave": 3}], "repairs": [{"id": "T009", "wave": 4}]}
+        lane = plan.replace("## Intent coverage", "## Wave 3 — lane\n\nGoal: g\nReview depth: delta\n\n"
+                                                  "## Wave 4 — repair\n\nGoal: g\nReview depth: delta\n\n"
+                                                  "## Intent coverage")
+        (self.root / ".project/plan/PLAN.md").write_text(lane, encoding="utf-8")
+        self.assertIsNone(pr_fix_lane._contract_drift(self.root, record, self.directory, membership))
+        (self.root / ".project/plan/PLAN.md").write_text(lane.replace("## Wave 2 — b\n\nGoal: g",
+                                                                      "## Wave 2 — b\n\nGoal: changed"),
+                                                         encoding="utf-8")
+        self.assertRegex(pr_fix_lane._contract_drift(self.root, record, self.directory, membership),
+                         "PLAN.md changed outside the round's lane waves")
+        (self.root / ".project/plan/PLAN.md").write_text(lane, encoding="utf-8")
+        (self.root / ".project/intent/INTENT.md").write_text(intent + "More.\n", encoding="utf-8")
+        self.assertRegex(pr_fix_lane._contract_drift(self.root, record, self.directory, membership),
+                         "INTENT.md changed after the round's baseline")
+
     def test_regression_exemption_is_limited_to_members_of_an_open_round(self) -> None:
         from scripts import build_state
         pr_fix_lane.bind(self.root)

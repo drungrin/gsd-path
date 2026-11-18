@@ -475,6 +475,36 @@ class PrFixLaneCycleTests(unittest.TestCase):
             shipped = self.gate("archive_milestone.py", "validate", "--repo", str(repo))
         self.assertEqual(shipped["members"][0]["merge"], merge)
         pr_fix_lane.validate_views(repo, repo / prepared2 / "review")
+        self.tampered_archives_refuse(repo, repo / prepared2, base)
+
+    def tampered_archives_refuse(self, repo, archive, base):
+        """The archived lane record proves itself from its files; each tampered input is refused."""
+        import shutil
+        cases = {
+            "baseline FINAL.md differs from its capsule": lambda copy: (copy / "review/pr-fix-1/baseline/FINAL.md")
+            .write_text("# tampered\n", encoding="utf-8"),
+            "pr-fix-round-1.json differs": lambda copy: (copy / "plan/pr-fix-round-1.json").write_text(
+                (copy / "plan/pr-fix-round-1.json").read_text(encoding="utf-8").replace("T002", "T009"),
+                encoding="utf-8"),
+            "capsule digest does not match": lambda copy: self.rewrite_provenance(
+                copy, lambda value: value.update(capsule_digest="0" * 64)),
+            "landed tasks of the PR fix round differ": lambda copy: self.rewrite_provenance(
+                copy, lambda value: value.update(tasks={}), keep_outputs=True),
+        }
+        for message, tamper in cases.items():
+            with self.subTest(message):
+                copy = base / "tampered" / "archive"
+                shutil.rmtree(copy.parent, ignore_errors=True)
+                shutil.copytree(archive, copy)
+                tamper(copy)
+                with self.assertRaisesRegex(pr_fix_lane.LaneError, message):
+                    pr_fix_lane.validate_views(repo, copy / "review")
+
+    def rewrite_provenance(self, copy, change, keep_outputs=True):
+        path = copy / "review/pr-fix-1/provenance.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        change(value)
+        path.write_text(json.dumps(value), encoding="utf-8")
 
     def second_round_cycle(self, repo, published):
         """Round 2 plans, builds and reviews its own delta wave; round 1's delta wave is history."""
@@ -520,6 +550,18 @@ class PrFixLaneCycleTests(unittest.TestCase):
         text = (repo / ".project/review/FINAL.md").read_text(encoding="utf-8")
         self.assertIn(f"Member reviewed HEAD: web {third['landing']}", text)
         self.assertNotEqual(third["landing"], published)
+        # Round 2 points at round 1's provenance; a rewritten round-1 record breaks the chain.
+        review_dir = repo / ".project/review"
+        pointer = json.loads((review_dir / "pr-fix-2/provenance.json").read_text(encoding="utf-8"))["previous"]
+        self.assertEqual(pointer["round"], 1)
+        pr_fix_lane.validate_views(repo, review_dir)
+        first = review_dir / "pr-fix-1/provenance.json"
+        original = first.read_bytes()
+        first.write_text(original.decode("utf-8").replace('"round": 1', '"round": 1, "note": "edited"'),
+                         encoding="utf-8")
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "pr-fix-1/provenance.json differs"):
+            pr_fix_lane.validate_views(repo, review_dir)
+        first.write_bytes(original)
 
     def patch_after_fallback(self, repo):
         """A blocked ordinary final review after a lane fallback takes the ordinary patch route."""

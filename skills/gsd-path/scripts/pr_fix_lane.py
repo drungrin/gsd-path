@@ -435,6 +435,11 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
         "stage": "captured", "mode": "record" if record_only else "lane",
     }
     record["capsule_digest"] = _json_digest({"files": files, "head": head, "members": final_members})
+    for name, relative in (("INTENT.md", "intent/INTENT.md"), ("PLAN.md", "plan/PLAN.md")):
+        if (archive / relative).is_file():
+            target = directory / "contracts" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((archive / relative).read_bytes())
     _save_round(repo, record)
     _set_active(repo, record)
     return _summary(dict(record, directory=str(directory)))
@@ -1519,6 +1524,9 @@ def views(repo: Path, expected_head: str) -> dict:
         raise LaneError("; ".join(cumulative), "stale-product")
     if delta["member_heads"] != members:
         raise LaneError("the member tips changed after the delta review", "stale-product")
+    contract_error = _contract_drift(repo, record, directory, membership)
+    if contract_error:
+        raise LaneError(contract_error, "provenance")
     relative_delta = delta_path.relative_to(repo).as_posix()
     final, gap_texts = render_views(repo, dict(record, directory=str(directory)), membership, delta,
                                     relative_delta, head, members)
@@ -1553,6 +1561,11 @@ def views(repo: Path, expected_head: str) -> dict:
                 target = preserved / "baseline" / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(path.read_bytes())
+    for path in sorted((directory / "capsule/publications").glob("*")):
+        if path.is_file():
+            target = preserved / "publications" / path.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(path.read_bytes())
     for name in ("snapshot.json", "ruling.json"):
         (preserved / name).write_bytes((directory / name).read_bytes())
     for path in sorted(review.iterdir()):
@@ -1568,6 +1581,11 @@ def views(repo: Path, expected_head: str) -> dict:
         "pr_review": {"path": f".project/review/pr-review-{record['round']}.md",
                       "sha256": _digest(review / f"pr-review-{record['round']}.md")},
         "outputs": outputs,
+        "capsule_files": record["capsule_files"],
+        "membership": {"path": membership_path(repo, int(record["round"])).relative_to(repo).as_posix(),
+                       "sha256": _digest(membership_path(repo, int(record["round"])))},
+        "product": {"head": delta["product_head"], "members": delta["member_heads"]},
+        "previous": _previous_provenance(review, int(record["round"])),
     }
     _write_json(preserved / "provenance.json", provenance)
     record.update(stage="viewed", outcome="views")
@@ -1576,8 +1594,71 @@ def views(repo: Path, expected_head: str) -> dict:
             "outputs": sorted(outputs), "provenance": f".project/review/pr-fix-{record['round']}/provenance.json"}
 
 
+def _plan_sections(text: str) -> Dict[str, str]:
+    """PLAN.md `## ` sections by heading line; a lane wave is one section."""
+    matches = list(re.finditer(r"(?m)^## .*$", text))
+    return {match.group(0).strip(): text[match.end(): matches[index + 1].start() if index + 1 < len(matches)
+                                         else len(text)].strip()
+            for index, match in enumerate(matches)}
+
+
+def _contract_drift(repo: Path, record: Mapping[str, object], directory: Path,
+                    membership: Mapping[str, object]) -> Optional[str]:
+    """Why INTENT.md or PLAN.md differ from the round's baseline beyond its own lane waves, or None."""
+    contracts = record.get("contracts") or {}
+    intent = repo / ".project/intent/INTENT.md"
+    if "INTENT.md" in contracts and (not intent.is_file() or _digest(intent) != contracts["INTENT.md"]):
+        return "INTENT.md changed after the round's baseline; use the ordinary final review"
+    baseline = directory / "contracts/PLAN.md"
+    if not baseline.is_file():
+        return None  # a round captured by an earlier runtime kept only the digest
+    waves = {row["wave"] for row in [*(membership.get("tasks") or []), *(membership.get("repairs") or [])]}
+    own = lambda heading: (match := re.match(r"## Wave (\d+)\b", heading)) is not None and int(match.group(1)) in waves
+    current = {heading: body for heading, body in _plan_sections((repo / ".project/plan/PLAN.md").read_text(
+        encoding="utf-8")).items() if not own(heading)}
+    if current != _plan_sections(baseline.read_text(encoding="utf-8")):
+        return "PLAN.md changed outside the round's lane waves; use the ordinary final review"
+    return None
+
+
+def _previous_provenance(review: Path, round_number: int) -> Optional[dict]:
+    earlier = sorted((int(match.group("round")), path) for path in review.iterdir()
+                     if path.is_dir() and (match := ROUND_DIR.fullmatch(path.name))
+                     and int(match.group("round")) < round_number and (path / "provenance.json").is_file())
+    if not earlier:
+        return None
+    number, path = earlier[-1]
+    return {"round": number, "sha256": _digest(path / "provenance.json")}
+
+
+def _validate_capsule(review_dir: Path, preserved: Path, provenance: Mapping[str, object]) -> None:
+    """Recompute the round's capsule digest from the archived baseline files."""
+    files = provenance.get("capsule_files")
+    if files is None:
+        return  # recorded by an earlier runtime: read-only compatibility, nothing to backfill
+    for key, digest in files.items():
+        kind, _, relative = key.partition("/")
+        if kind == "review":
+            path = (review_dir / relative if ROUND_DIR.fullmatch(relative.split("/")[0])
+                    else preserved / "baseline" / relative)
+        elif kind == "publications":
+            path = preserved / "publications" / relative
+        else:
+            raise LaneError(f"unknown capsule entry {key} in {preserved.name}")
+        if not path.is_file() or _digest(path) != digest:
+            raise LaneError(f"{preserved.name} baseline {relative} differs from its capsule")
+    recomputed = _json_digest({"files": files, "head": provenance["baseline_head"],
+                               "members": provenance["baseline_members"]})
+    if recomputed != provenance["capsule_digest"]:
+        raise LaneError(f"{preserved.name} capsule digest does not match its baseline files")
+
+
 def validate_views(repo: Path, review_dir: Path) -> None:
-    """Re-prove the newest round's provenance from files alone (active or archived review/)."""
+    """Re-prove the newest round's provenance from files alone (active or archived review/).
+
+    Earlier rounds are walked through their recorded pointers: each capsule is recomputed
+    from the archived baseline files. Records from earlier runtimes are read as they are.
+    """
     rounds = sorted((int(match.group("round")), path) for path in review_dir.iterdir()
                     if path.is_dir() and (match := ROUND_DIR.fullmatch(path.name))) if review_dir.is_dir() else []
     if not rounds:
@@ -1600,6 +1681,22 @@ def validate_views(repo: Path, review_dir: Path) -> None:
     head, members, verdict = _final_header_heads(final_text)
     if head != provenance["head"] or members != provenance["members"] or verdict != "pass":
         raise LaneError("FINAL.md heads differ from the PR fix lane provenance")
+    if "membership" in provenance:
+        path = review_dir.parent / "plan" / PurePosixPath(provenance["membership"]["path"]).name
+        if not path.is_file() or _digest(path) != provenance["membership"]["sha256"]:
+            raise LaneError(f"{provenance['membership']['path']} differs from its PR fix lane provenance")
+        if sorted(member_ids(_read_json(path))) != sorted(provenance["tasks"]):
+            raise LaneError("the landed tasks of the PR fix round differ from its membership")
+    current, record = newest, provenance
+    while True:
+        _validate_capsule(review_dir, current, record)
+        pointer = record.get("previous")
+        if not pointer:
+            break
+        current = review_dir / f"pr-fix-{pointer['round']}"
+        if not (current / "provenance.json").is_file() or _digest(current / "provenance.json") != pointer["sha256"]:
+            raise LaneError(f"pr-fix-{pointer['round']}/provenance.json differs from the next round's pointer")
+        record = _read_json(current / "provenance.json")
 
 
 # --- after publication -------------------------------------------------------------
