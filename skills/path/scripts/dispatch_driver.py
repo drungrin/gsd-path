@@ -1002,10 +1002,12 @@ class Round:
     def enter(self) -> None:
         """The contract's checkpointed entry from plan/done, or recovery from build/blocked."""
         state, _, _ = pipeline_state.load_state(self.primary, self.project_dir)
-        if (state.phase, state.status) not in (("plan", "done"), ("build", "blocked")):
+        reentry = (state.phase, state.status) == ("build", "active") and isolation._patch_reentry(self.primary)
+        if (state.phase, state.status) not in (("plan", "done"), ("build", "blocked")) and not reentry:
             return
-        transition(self.primary, self.project_dir, self.receipt, state, {"phase": "build", "status": "active"},
-                   "build started")
+        if not reentry:  # a crash after the transition left the patch artifacts uncommitted
+            transition(self.primary, self.project_dir, self.receipt, state, {"phase": "build", "status": "active"},
+                       "build started")
         checkpoint_project(self.primary, self.receipt, "build: start milestone",
                            f"Why: enter build from {state.phase}/{state.status} with the initial .project artifacts")
 

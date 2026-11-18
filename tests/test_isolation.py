@@ -2439,6 +2439,25 @@ class IsolationTests(unittest.TestCase):
             self.assertEqual(git(repo, "rev-parse", "HEAD^"), head)
             self.assertIn(".project/review/PATCH-FINDINGS.md", result["paths"])
 
+    def test_build_entry_completes_a_patch_reentry_left_uncommitted(self) -> None:
+        """A crash between the build-started transition and its checkpoint is resumed, not skipped."""
+        from scripts import dispatch_driver
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            head = self.patch_reentry_repo(repo, self.PATCH_EVENTS)
+            driver = mock.Mock(primary=repo, project_dir=".project", receipt={"steps": []})
+            state = mock.Mock(phase="build", status="active")
+            with mock.patch.object(dispatch_driver.pipeline_state, "load_state", return_value=(state, None, None)), \
+                    mock.patch.object(dispatch_driver, "transition") as transition:
+                dispatch_driver.Round.enter(driver)
+                transition.assert_not_called()
+                self.assertEqual(git(repo, "log", "-1", "--format=%s"), "build: start milestone")
+                self.assertEqual(git(repo, "rev-parse", "HEAD^"), head)
+                committed = git(repo, "rev-parse", "HEAD")
+                dispatch_driver.Round.enter(driver)  # nothing pending: an ordinary build/active is left alone
+                self.assertEqual(git(repo, "rev-parse", "HEAD"), committed)
+
     def test_patch_reentry_exception_is_narrow(self) -> None:
         entry = ("build: start milestone", "Why: enter build from plan/done with the initial .project artifacts")
         cases = {
