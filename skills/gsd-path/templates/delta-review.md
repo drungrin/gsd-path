@@ -22,7 +22,7 @@ Risk inventory: <complete | new — new when the diff opens an integration risk 
 
 <!-- For an affected criterion, replace Reason with the full final-review fields:
 - **Verdict**: <met | not-met | unverifiable>
-- **Surface**: <only for a Surface contract criterion>
+- **Surface**: <for a Surface contract criterion: the baseline FINAL.md value; omitted, it is inherited>
 - **Check**: `<command or walkthrough actually performed>`
 - **Observed**: <what it showed>
 - **Reference**: <file:line or artifact>

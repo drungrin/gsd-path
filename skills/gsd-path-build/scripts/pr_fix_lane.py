@@ -814,6 +814,10 @@ def build_final_view(capsule_final: str, delta: dict, head: str, members: Mappin
             lines = [""]
             for field in fields:
                 value = _bullet(row["block"], field)
+                if value is None and field == "Surface":
+                    # The criterion's surface does not change with the lane diff: inherit the
+                    # baseline's, so a delta review that omits it still yields a valid FINAL.md.
+                    value = _bullet(block, "Surface")
                 if value is None and field != "Surface":
                     raise LaneError(f"affected {criterion} needs a {field} field in the delta review")
                 if value is not None:

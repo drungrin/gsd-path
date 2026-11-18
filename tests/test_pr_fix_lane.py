@@ -222,6 +222,21 @@ class DeltaViewTests(unittest.TestCase):
         self.assertIn(f"Reviewed HEAD: {new}\nMember reviewed HEAD: web {new_member}\n", gap)
         self.assertIn("- **Reference**: c.py:1 (inherited from aaaaaaaaaaaa", gap)
 
+    def test_an_affected_surface_criterion_keeps_its_surface(self) -> None:
+        old, new = "a" * 40, "b" * 40
+        baseline = FINAL.format(head=old, member="c" * 40).replace(
+            "- **Verdict**: met\n- **Check**: `make two`", "- **Verdict**: met\n- **Surface**: MCP tools\n- **Check**: `make two`")
+        record = {"round": 1, "head": old, "pull_request": PULL, "member": "web",
+                  "members": {"web": "c" * 40}, "review_ids": [11]}
+        build = lambda text: pr_fix_lane.build_final_view(
+            baseline, pr_fix_lane.parse_delta(text, ["SC1", "SC2"], [2], ["R11", "C21"]), new, {"web": "d" * 40},
+            record, RULING, "x", {}, {})
+        # A delta review that omits the Surface inherits the baseline's.
+        self.assertIn("- **Verdict**: met\n- **Surface**: MCP tools\n- **Check**: `python3 -m unittest test_a`",
+                      build(DELTA))
+        named = DELTA.replace("- **Verdict**: met\n", "- **Verdict**: met\n- **Surface**: MCP tools (reviewed)\n")
+        self.assertIn("- **Surface**: MCP tools (reviewed)", build(named))
+
     def test_an_affected_criterion_that_is_not_met_is_refused(self) -> None:
         failing = DELTA.replace("- **Verdict**: met", "- **Verdict**: not-met")
         delta = pr_fix_lane.parse_delta(failing, ["SC1", "SC2"], [2], ["R11", "C21"])
