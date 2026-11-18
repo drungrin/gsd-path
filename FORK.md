@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.64**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.65**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,51 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.65 — 2026-11-18
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 64 to 65.
+
+Fork only (it fixes the PR fix lane hand-off of 1.7.1.53):
+- [`9987d2c2 — quote placeholder-shaped text in the lane hand-off and add regenerate`](https://github.com/drungrin/gsd-path/commit/9987d2c2a07ef4bce5fa0bcd0ef72e1f3d6a5a4b)
+
+### A ruling that quotes a log format no longer strands the round
+
+- A consumer's third lane round stopped at the patch gate. Four fix
+  directions in the owner-approved ruling quoted log formats such as
+  `'prazo-estourado sistema=<codigo>'`. The gate refuses a `<word>` token
+  outside a code span as an unfilled template placeholder. `start` had
+  already recorded the ruling and locked its digest, and the gate requires
+  `pr-review-N.md` to equal the text generated from that ruling. No legal
+  edit was left.
+- The lane hand-off now puts every placeholder-shaped token outside a code
+  span in backticks: titles, groups, reviewer text, and fix directions. The
+  output is deterministic, and the source and PATCH-FINDINGS.md stay
+  field-for-field equal.
+- `pr_fix_lane.py regenerate --repo <root>` rewrites an opened round's
+  `pr-review-N.md` and PATCH-FINDINGS.md from its recorded ruling before
+  plan approval. The snapshot, the ruling, and its digest are untouched.
+
+Validation:
+- A new hand-off test quotes a ruling log format and reviewer HTML, passes
+  the placeholder check on every field, and keeps the source and findings
+  equal. Without the change, it fails. The end-to-end lane test rewrites a
+  stale `pr-review-1.md` with `regenerate` and passes the patch gate again.
+- Read-only on the consumer's real round-3 ruling and items: all 20
+  generated findings pass the placeholder check and match their source.
+- The full Python suite ran in eight parallel shards: 3,885 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- The archive undo inside `start` still resets uncommitted STATE.md Log lines
+  and ship-appended lessons to HEAD, as every uncommitted-archive undo does.
+  Ship appends the lessons again at the next archive.
+- No upstream submission.
 
 ## 1.7.1.64 — 2026-11-18
 
