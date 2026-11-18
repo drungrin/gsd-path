@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.59**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.60**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,50 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.60 — 2026-11-18
+
+Upstream package base remains `1.7.1`, synchronized through upstream main
+`040bfae2`. The fork revision continues from 59 to 60.
+
+Fork only (it extends the member rebase adoption of 1.7.1.49 to the PR fix
+lane of 1.7.1.53):
+- [`3b4b1c73 — let a member rebase adoption carry a PR fix round's unpublished landings`](https://github.com/drungrin/gsd-path/commit/3b4b1c731965bf7015670b58f4d35b8bfc5a3c91)
+
+### A PR fix round can resolve a conflict with the member default branch
+
+- The second lane round of a consumer stopped at `prepare-final`: the
+  member branch conflicted with its default branch, which had moved since
+  the PR opened. `prepare-final` asked for a member rebase adoption with
+  `--resolve-conflicts`. The adoption refused with `remote-moved`, because
+  the published PR head was the previous round's head and the round's new
+  landing sat on top of it, unpublished. The lane publishes only through
+  `close-members` after final review, so the two helpers blocked each other.
+- The adoption now accepts a published head that is a strict ancestor of
+  the local tip, but only when the pending member close names exactly that
+  head. The lease, the preserved close, and the open-PR proof use the
+  published head. The receipt validator accepts that shape.
+
+Validation:
+- New adoption tests cover a round's unpublished landing rebased over the
+  published PR head, with the lease, the preserved close row, and the receipt
+  checked. They also cover the refusal when no pending close names the
+  published head. Without the change, both fail. The existing adoption suite
+  passes (72 tests).
+- A read-only preview on the consumer's real member, with the new code,
+  passed. It leases the published PR head and replays the milestone's
+  landings onto the moved default branch.
+- The full Python suite ran in eight parallel shards: 3,878 tests, 41
+  skipped, no failures.
+- The daemon suite passed: 496 tests, 13 skipped.
+- Node tests passed: 118, one skipped.
+- Resource synchronization checked 590 resources, and `check:locks`
+  passed.
+
+Limits:
+- The adoption publishes the round's landing to the PR before final review,
+  as it does with every adoption.
+- No upstream submission.
 
 ## 1.7.1.59 — 2026-11-17
 
