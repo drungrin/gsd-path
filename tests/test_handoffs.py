@@ -4276,6 +4276,85 @@ Waves checked: 1
                 check_handoffs.validate_final(root)
 
 
+    def test_final_content_validator_matches_the_full_gate_without_git(self) -> None:
+        """The pure content part accepts and rejects exactly what the full gate does."""
+        mutations = {
+            "valid": lambda final, gap: (final, gap),
+            "bad overall": lambda final, gap: (final.replace("Overall verdict: pass", "Overall verdict: ok"), gap),
+            "missing SC2": lambda final, gap: (final[: final.index("### SC2")], gap),
+            "heading drift": lambda final, gap: (final.replace("prints hello.", "prints bye."), gap),
+            "met with finding": lambda final, gap: (final.replace("- **Finding**: none", "- **Finding**: x", 1), gap),
+            "pass with not-met": lambda final, gap: (final.replace("- **Verdict**: met", "- **Verdict**: not-met", 1), gap),
+            "bad gap verdict": lambda final, gap: (final, gap.replace("Gap verdict: pass", "Gap verdict: maybe")),
+            "gap risk mismatch": lambda final, gap: (final, gap.replace("Risk: Project verify", "Risk: other")),
+            "blocked gap under pass": lambda final, gap: (final, gap.replace("Gap verdict: pass", "Gap verdict: blocked").replace("- **Fix direction**: none", "- **Fix direction**: rerun")),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_state(root, "ship", "active")
+            self.write_intent_criteria(root)
+            self.write_final_review(root)
+            contract = check_handoffs.final_contract(root)
+            final_path = root / ".project/review/FINAL.md"
+            gap_path = root / ".project/review/final-gap-1.md"
+            final, gap = final_path.read_text(encoding="utf-8"), gap_path.read_text(encoding="utf-8")
+            for name, mutate in mutations.items():
+                with self.subTest(name):
+                    changed_final, changed_gap = mutate(final, gap)
+                    final_path.write_text(changed_final, encoding="utf-8")
+                    gap_path.write_text(changed_gap, encoding="utf-8")
+                    outcomes = []
+                    for validate in (
+                        lambda: check_handoffs.validate_final(root),
+                        lambda: check_handoffs.validate_final_content(contract, changed_final, {1: changed_gap}),
+                    ):
+                        try:
+                            validate()
+                            outcomes.append(None)
+                        except check_handoffs.HandoffError as error:
+                            outcomes.append(str(error))
+                    self.assertEqual(outcomes[0], outcomes[1])
+                    self.assertEqual(outcomes[0] is None, name == "valid")
+
+    def test_a_deferred_gap_keeps_its_structure_but_not_its_vote(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_state(root, "ship", "active")
+            self.write_intent_criteria(root)
+            self.write_final_review(root)
+            contract = check_handoffs.final_contract(root)
+            final = (root / ".project/review/FINAL.md").read_text(encoding="utf-8")
+            gap = (root / ".project/review/final-gap-1.md").read_text(encoding="utf-8")
+            blocked = gap.replace("Gap verdict: pass", "Gap verdict: blocked").replace(
+                "- **Fix direction**: none", "- **Fix direction**: rerun the project Verify")
+            # Deferred: a stale gap 1 does not decide the overall verdict at the wave gate.
+            result = check_handoffs.validate_final_content(contract, final, {1: blocked}, deferred=(1,))
+            self.assertEqual(result["verdict"], "pass")
+            # At ship nothing is deferred, so the same report is refused.
+            with self.assertRaisesRegex(check_handoffs.HandoffError, "final gap is blocked"):
+                check_handoffs.validate_final_content(contract, final, {1: blocked})
+            # Structure is still checked for a deferred gap.
+            with self.assertRaisesRegex(check_handoffs.HandoffError, "heading risk does not match"):
+                check_handoffs.validate_final_content(
+                    contract, final, {1: gap.replace("Risk: Project verify", "Risk: other")}, deferred=(1,))
+            with self.assertRaisesRegex(check_handoffs.HandoffError, "contiguous from 1"):
+                check_handoffs.validate_final_content(contract, final, {}, deferred=(1,))
+
+    def test_gap_discovery_refuses_bad_names_before_the_content_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_state(root, "ship", "active")
+            self.write_intent_criteria(root)
+            self.write_final_review(root)
+            review = root / ".project/review"
+            (review / "final-gap-01.md").write_text("x\n", encoding="utf-8")
+            with self.assertRaisesRegex(check_handoffs.HandoffError, "invalid final gap artifact: final-gap-01.md"):
+                check_handoffs.final_gap_texts(root)
+            (review / "final-gap-01.md").unlink()
+            (review / "final-gap-2.md").symlink_to(review / "final-gap-1.md")
+            with self.assertRaisesRegex(check_handoffs.HandoffError, "invalid final gap artifact: final-gap-2.md"):
+                check_handoffs.validate_final(root)
+
 class SpecReachProbeTests(unittest.TestCase):
     """Spec-reach probes: Edge coverage, Prohibitions, Held-out checks, honest verifier."""
 

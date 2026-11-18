@@ -11,7 +11,7 @@ import sys
 # Runtime helpers must not modify their immutable installation.
 sys.dont_write_bytecode = True
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple
 
 if __package__:
     from .pipeline_state import PipelineStateError, load_state
@@ -2787,41 +2787,35 @@ def criterion_surfaces(root: Path, project_dir: str = DEFAULT_PROJECT_DIR) -> Di
     return surface_of
 
 
-def validate_final(
-    root: Path, project_dir: str = DEFAULT_PROJECT_DIR, *, final_text: Optional[str] = None
-) -> Dict[str, object]:
-    """Require FINAL.md to give an evidenced verdict for every INTENT SC."""
+class FinalContract(NamedTuple):
+    """What a FINAL.md must answer, read once from INTENT.md and PLAN.md."""
 
-    _require_state(root, "ship", "active", project_dir)
+    criteria: Dict[str, str]
+    tags: Dict[str, List[str]]
+    surfaces: Dict[str, str]
+
+
+def final_contract(root: Path, project_dir: str = DEFAULT_PROJECT_DIR) -> FinalContract:
     intent = _read(root, _intent_path(project_dir))
     criteria = _success_criteria(intent)
-    surface_of = criterion_surfaces(root, project_dir)
-    tags = evidence_tags(intent, criteria)
+    return FinalContract(criteria, evidence_tags(intent, criteria), criterion_surfaces(root, project_dir))
+
+
+def validate_final_content(
+    contract: FinalContract, text: str, gaps: Mapping[int, str], *,
+    project_dir: str = DEFAULT_PROJECT_DIR, deferred: Sequence[int] = (),
+) -> Dict[str, object]:
+    """Check FINAL.md and its gap reports as text: no files, Git, or member tips.
+
+    `gaps` maps each gap number to its report text. A gap in `deferred` is
+    checked for structure, but its verdict does not count toward the overall
+    verdict (the PR fix lane's wave gate, before the project Verify reruns).
+    """
+
+    criteria, tags, surface_of = contract
     relative = f"{project_dir}/review/FINAL.md"
-    text = _read(root, relative) if final_text is None else final_text
     reviewed_head = _reviewed_head(text, relative)
-    head_result = subprocess.run(
-        ("git", "-C", str(root), "rev-parse", "--verify", "HEAD"),
-        capture_output=True,
-        encoding="utf-8", errors="replace",
-        check=False,
-    )
-    if head_result.returncode != 0:
-        raise HandoffError("FINAL.md Reviewed HEAD cannot be checked because HEAD is missing")
-    current_head = head_result.stdout.strip()
-    if reviewed_head != current_head:
-        raise HandoffError(
-            f"FINAL.md Reviewed HEAD {reviewed_head} is not the current HEAD "
-            f"{current_head}; re-run the final review on the current commit"
-        )
     member_heads = member_reviewed_heads(text, relative)
-    tips = _member_tips(root)
-    if member_heads != tips:
-        expected = ", ".join(f"{name} {tip}" for name, tip in tips.items()) or "none"
-        raise HandoffError(
-            f"FINAL.md Member reviewed HEAD lines must name each locked member head ({expected}); "
-            "re-run the final review on the current member heads"
-        )
     overall = _line_value(text, "Overall verdict:")
     if overall not in {"pass", "blocked"}:
         raise HandoffError("FINAL.md Overall verdict is invalid")
@@ -2890,17 +2884,10 @@ def validate_final(
             )
         if overall == "pass" and verdict != "met":
             raise HandoffError(f"FINAL.md Overall verdict is pass while {sc_id} is {verdict}")
-    review_dir = root / project_dir / "review"
-    gaps: Dict[int, str] = {}
-    for path in sorted(review_dir.glob("final-gap-*.md")):
-        match = GAP_NAME_PATTERN.fullmatch(path.name)
-        if not match or not path.is_file() or path.is_symlink():
-            raise HandoffError(f"invalid final gap artifact: {path.name}")
-        number = int(match.group("number"))
-        if number in gaps:
-            raise HandoffError(f"duplicate final gap number {number}")
-        gap_relative = f"{project_dir}/review/{path.name}"
-        gap = _read(root, gap_relative)
+    verdict_of: Dict[int, str] = {}
+    for number in sorted(gaps):
+        gap_relative = f"{project_dir}/review/final-gap-{number}.md"
+        gap = gaps[number]
         heading = GAP_HEADING_PATTERN.fullmatch(gap.splitlines()[0] if gap else "")
         if not heading or int(heading.group("number")) != number:
             raise HandoffError(f"{gap_relative} heading does not match its file number")
@@ -2937,31 +2924,86 @@ def validate_final(
             raise HandoffError(f"{gap_relative} pass must use Fix direction: none")
         if verdict == "blocked" and fix_direction.casefold() == "none":
             raise HandoffError(f"{gap_relative} blocked verdict lacks a fix direction")
-        gaps[number] = verdict
+        verdict_of[number] = verdict
 
-    expected_gaps = list(range(1, len(gaps) + 1))
-    if sorted(gaps) != expected_gaps or not gaps:
+    expected_gaps = list(range(1, len(verdict_of) + 1))
+    if sorted(verdict_of) != expected_gaps or not verdict_of:
         raise HandoffError("final gap artifacts must be present and contiguous from 1")
-    if overall == "pass" and any(verdict != "pass" for verdict in gaps.values()):
+    counted = {number: verdict for number, verdict in verdict_of.items() if number not in deferred}
+    if overall == "pass" and any(verdict != "pass" for verdict in counted.values()):
         raise HandoffError("FINAL.md Overall verdict is pass while a final gap is blocked")
     all_evidence_passes = (
         all(verdict == "met" for verdict in verdicts.values())
-        and all(verdict == "pass" for verdict in gaps.values())
+        and all(verdict == "pass" for verdict in counted.values())
     )
     expected_overall = "pass" if all_evidence_passes else "blocked"
     if overall != expected_overall:
         raise HandoffError(
             f"FINAL.md Overall verdict must be {expected_overall} for its SC and gap verdicts"
         )
-    if final_text is None:
-        _require_lane_provenance(root / PurePosixPath(project_dir) / "review", reviewed_head)
     return {
         "phase": "ship",
         "criteria": expected,
         "verdict": overall,
         "reviewed_head": reviewed_head,
-        "gaps": sorted(gaps),
+        "member_heads": member_heads,
+        "gaps": sorted(verdict_of),
     }
+
+
+def final_gap_texts(root: Path, project_dir: str = DEFAULT_PROJECT_DIR) -> Dict[int, str]:
+    """Read the final gap reports, refusing bad names, symlinks, and duplicate numbers."""
+
+    review_dir = root / project_dir / "review"
+    gaps: Dict[int, str] = {}
+    for path in sorted(review_dir.glob("final-gap-*.md")):
+        match = GAP_NAME_PATTERN.fullmatch(path.name)
+        if not match or not path.is_file() or path.is_symlink():
+            raise HandoffError(f"invalid final gap artifact: {path.name}")
+        number = int(match.group("number"))
+        if number in gaps:
+            raise HandoffError(f"duplicate final gap number {number}")
+        gaps[number] = _read(root, f"{project_dir}/review/{path.name}")
+    return gaps
+
+
+def validate_final(
+    root: Path, project_dir: str = DEFAULT_PROJECT_DIR, *, final_text: Optional[str] = None
+) -> Dict[str, object]:
+    """Require FINAL.md to give an evidenced verdict for every INTENT SC."""
+
+    _require_state(root, "ship", "active", project_dir)
+    contract = final_contract(root, project_dir)
+    relative = f"{project_dir}/review/FINAL.md"
+    text = _read(root, relative) if final_text is None else final_text
+    reviewed_head = _reviewed_head(text, relative)
+    head_result = subprocess.run(
+        ("git", "-C", str(root), "rev-parse", "--verify", "HEAD"),
+        capture_output=True,
+        encoding="utf-8", errors="replace",
+        check=False,
+    )
+    if head_result.returncode != 0:
+        raise HandoffError("FINAL.md Reviewed HEAD cannot be checked because HEAD is missing")
+    current_head = head_result.stdout.strip()
+    if reviewed_head != current_head:
+        raise HandoffError(
+            f"FINAL.md Reviewed HEAD {reviewed_head} is not the current HEAD "
+            f"{current_head}; re-run the final review on the current commit"
+        )
+    member_heads = member_reviewed_heads(text, relative)
+    tips = _member_tips(root)
+    if member_heads != tips:
+        expected = ", ".join(f"{name} {tip}" for name, tip in tips.items()) or "none"
+        raise HandoffError(
+            f"FINAL.md Member reviewed HEAD lines must name each locked member head ({expected}); "
+            "re-run the final review on the current member heads"
+        )
+    result = validate_final_content(contract, text, final_gap_texts(root, project_dir), project_dir=project_dir)
+    result.pop("member_heads")
+    if final_text is None:
+        _require_lane_provenance(root / PurePosixPath(project_dir) / "review", reviewed_head)
+    return result
 
 
 def _require_lane_provenance(review: Path, reviewed_head: str) -> None:
