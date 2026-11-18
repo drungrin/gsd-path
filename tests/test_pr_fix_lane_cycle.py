@@ -476,6 +476,24 @@ class PrFixLaneCycleTests(unittest.TestCase):
         self.fake.reviews.append({"id": 12, "state": "APPROVED", "user": {"login": "rev"},
                                   "submitted_at": "2026-11-16T05:00:00Z", "body": "", "commit_id": second["landing"]})
         self.assertEqual(pr_fix_lane.ship_check(repo, api=self.fake.api)["status"], "clear")
+        # The approval also left an inline remark: a record-only round captures, rules, and answers it
+        # on the unchanged published head, and ship waits until it is ruled.
+        self.fake.comments.append({"id": 25, "pull_request_review_id": 12, "body": "Um nome melhor para value.",
+                                   "path": "lib.py", "line": 1, "in_reply_to_id": None,
+                                   "html_url": PULL + "#discussion_r25"})
+        remark = pr_fix_lane.snapshot(repo, api=self.fake.api, record_only=True)
+        self.assertEqual((remark["round"], [item["id"] for item in remark["items"]]), (2, ["C25"]))
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "never ruled"):
+            pr_fix_lane.ship_check(repo, api=self.fake.api)
+        later = base / "ruling-approval.json"
+        later.write_text(json.dumps({"verbatim": "Fica para depois.", "items": [
+            {"id": "C25", "class": "follow-up", "note": "Renomear no próximo milestone", "risk": "other"}]}),
+            encoding="utf-8")
+        pr_fix_lane.rule(repo, later)
+        self.fake.threads = None  # the forge now shows the new conversation
+        answered_remark = pr_fix_lane.threads(repo, api=self.fake.api)
+        self.assertEqual((answered_remark["replied"], answered_remark["resolved"]), (["C25"], []))
+        self.assertEqual(pr_fix_lane.ship_check(repo, api=self.fake.api)["status"], "clear")
 
         # --- the owner merges; ship closes the member and commits the archive with the lane record
         merge = self.github_merge(base)

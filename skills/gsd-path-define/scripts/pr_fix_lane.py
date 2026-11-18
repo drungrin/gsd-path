@@ -294,6 +294,24 @@ def review_items(requests: Sequence[dict], comments: Sequence[dict]) -> List[dic
     return items
 
 
+def approval_comments(reviews: Sequence[dict], comments: Sequence[dict], head: str) -> Tuple[List[dict], List[dict]]:
+    """Reviews on the published head without a change request whose inline comments wait for an answer.
+
+    An approval or a plain comment review can still carry inline remarks; each top-level one
+    that no lane reply answers yet is an item (ADR 0008). Review bodies are not items here.
+    """
+    answered = {int(comment["in_reply_to_id"]) for comment in comments
+                if comment.get("in_reply_to_id") and "<!-- gsd-path-pr-fix:" in str(comment.get("body") or "")}
+    reviews_on_head = [review for review in reviews
+                       if review.get("commit_id") == head and review.get("state") in {"APPROVED", "COMMENTED"}]
+    ids = {int(review["id"]) for review in reviews_on_head}
+    waiting = [comment for comment in comments
+               if int(comment.get("pull_request_review_id") or 0) in ids and not comment.get("in_reply_to_id")
+               and int(comment["id"]) not in answered and one_line(comment.get("body") or "")]
+    used = {int(comment["pull_request_review_id"]) for comment in waiting}
+    return [dict(review, body="") for review in reviews_on_head if int(review["id"]) in used], waiting
+
+
 # --- entry and capsule -------------------------------------------------------------
 
 def _archived_review(repo: Path, archive: str) -> Path:
@@ -380,10 +398,24 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
             if selected is not None:
                 raise LaneError("change requests on two member PRs; answer one PR per round")
             selected, forge = row, read
+    approval = False
+    if selected is None and record_only:
+        # No change request: an approval or comment review may still carry unanswered inline remarks.
+        for row in candidates:
+            read = read_forge(str(row["pull_request"]), api)
+            remarks = approval_comments(read["reviews"], read["comments"], str(row.get("reviewed_head")))
+            if remarks[1]:
+                if selected is not None:
+                    raise LaneError("unanswered review comments on two member PRs; answer one PR per round")
+                selected, forge, approval = row, read, True
     if selected is None or forge is None:
         raise LaneError("no active change request on the pending member pull requests")
-    requests = active_change_requests(forge["reviews"])
-    items = review_items(requests, forge["comments"])
+    if approval:
+        requests, comments = approval_comments(forge["reviews"], forge["comments"], str(selected["reviewed_head"]))
+        items = review_items(requests, comments)
+    else:
+        requests = active_change_requests(forge["reviews"])
+        items = review_items(requests, forge["comments"])
     if not items:
         raise LaneError("the change request has no item text to answer")
     snapshot_value = {
@@ -432,7 +464,7 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
                       (("INTENT.md", "intent/INTENT.md"), ("PLAN.md", "plan/PLAN.md"))
                       if (archive / relative).is_file()},
         "gaps": [path.name for path in gaps],
-        "stage": "captured", "mode": "record" if record_only else "lane",
+        "stage": "captured", "mode": "record" if record_only else "lane", "approval": approval,
     }
     record["capsule_digest"] = _json_digest({"files": files, "head": head, "members": final_members})
     for name, relative in (("INTENT.md", "intent/INTENT.md"), ("PLAN.md", "plan/PLAN.md")):
@@ -1931,7 +1963,7 @@ def round_plan(repo: Path) -> dict:
         raise LaneError("thread replies run after the archive is prepared again and close-members published it")
     _, members, _ = _final_header_heads((archive / "review/FINAL.md").read_text(encoding="utf-8"))
     head = members.get(str(record["member"]))
-    if not head or head == record["members"].get(str(record["member"])):
+    if not head or (head == record["members"].get(str(record["member"])) and not record.get("approval")):
         raise LaneError("the prepared archive does not name a new member head for this round")
     if record.get("mode", "lane") == "lane":
         validate_views(repo, archive / "review")
@@ -1966,6 +1998,9 @@ def ship_check(repo: Path, api: Callable[..., object] = _default_api, override: 
     record = active_round(repo)
     if record is None:
         return {"schema": SCHEMA, "status": "not-applicable"}
+    if record.get("stage") == "captured":
+        raise LaneError(f"PR fix round {record['round']} captured items that were never ruled; record the "
+                        "owner's ruling (`rule --ruling <file>` for a record-only round) and answer them first")
     read = read_forge(str(record["pull_request"]), api)
     requests = active_change_requests(read["reviews"])
     if not requests:

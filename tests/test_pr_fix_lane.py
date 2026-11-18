@@ -911,3 +911,35 @@ class RecordOnlyRoundTests(LaneEntryTests):
                        encoding="utf-8")
         with self.assertRaisesRegex(pr_fix_lane.LaneError, "different ruling"):
             pr_fix_lane.rule(self.root, bad)
+
+    def test_an_approval_with_inline_comments_is_captured_ruled_and_kept_until_answered(self) -> None:
+        # No change request: the reviewer approved the head and left two inline remarks.
+        self.reviews = [review(31, "APPROVED", body="Looks good.", commit=self.member_tip)]
+        self.comments = [comment(41, 31, "Consider a constant here", line=5),
+                         comment(42, 31, "Docs could mention the scope", path="README.md", line=1)]
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "no active change request"):
+            self.snapshot()  # the lane itself needs a change request
+        captured = pr_fix_lane.snapshot(self.root, api=self.api, record_only=True)
+        self.assertEqual([item["id"] for item in captured["items"]], ["C41", "C42"])
+        self.assertTrue(pr_fix_lane.active_round(self.root)["approval"])
+        # A captured round is never closed by ship-check while its items wait for a ruling.
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "captured items that were never ruled"):
+            pr_fix_lane.ship_check(self.root, api=self.api)
+        ruling = self.root.parent / "approval-ruling.json"
+        ruling.write_text(json.dumps({"verbatim": "Both later.", "items": [
+            {"id": "C41", "class": "follow-up", "note": "Next milestone", "risk": "other"},
+            {"id": "C42", "class": "follow-up", "note": "Next milestone", "risk": "docs"}]}), encoding="utf-8")
+        self.assertEqual(pr_fix_lane.rule(self.root, ruling)["status"], "ruled")
+        self.assertEqual(pr_fix_lane.ship_check(self.root, api=self.api)["status"], "clear")
+
+    def test_answered_approval_comments_are_not_captured_again(self) -> None:
+        marker = pr_fix_lane.REPLY_MARKER.format(key=f"1/C41/{self.member_tip}")
+        reviews = [review(31, "APPROVED", commit=self.member_tip), review(32, "COMMENTED", commit="0" * 40)]
+        comments = [comment(41, 31, "Consider a constant"), comment(43, 32, "On an older head"),
+                    comment(44, 31, f"Later.\n\n{marker}", reply_to=41)]
+        requests, waiting = pr_fix_lane.approval_comments(reviews, comments, self.member_tip)
+        self.assertEqual(([item["id"] for item in requests], waiting), ([], []))
+        comments = comments[:2]
+        requests, waiting = pr_fix_lane.approval_comments(reviews, comments, self.member_tip)
+        self.assertEqual(([item["id"] for item in requests], [item["id"] for item in waiting]), ([31], [41]))
+        self.assertEqual(requests[0]["body"], "")  # the approval text itself is not an item
