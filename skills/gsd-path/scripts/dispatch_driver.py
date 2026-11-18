@@ -1005,6 +1005,11 @@ class Round:
         reentry = (state.phase, state.status) == ("build", "active") and isolation._patch_reentry(self.primary)
         if (state.phase, state.status) not in (("plan", "done"), ("build", "blocked")) and not reentry:
             return
+        if self.project_dir == ".project":
+            try:
+                pr_fix_lane.require_approved_membership(self.primary)
+            except pr_fix_lane.LaneError as error:
+                raise DriverStop(str(error)) from error
         if not reentry:  # a crash after the transition left the patch artifacts uncommitted
             transition(self.primary, self.project_dir, self.receipt, state, {"phase": "build", "status": "active"},
                        "build started")
@@ -2350,6 +2355,12 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
         if repair_heading and int(repair_heading.group(1)) != fix_wave:
             raise DriverStop("repair tasks disagree with the PLAN repair wave")
         receipt["existing"] = existing
+        # Repairs of a PR fix round's members belong to that round (ADR 0008).
+        lane_record = pr_fix_lane.lane_round(primary) if options.project_dir == ".project" else None
+        lane_members: List[str] = []
+        if lane_record is not None and lane_record.get("stage") in pr_fix_lane.OPEN_STAGES:
+            membership = pr_fix_lane.read_membership(primary, int(lane_record["round"]))
+            lane_members = pr_fix_lane.member_ids(membership) if membership else []
         for batch in findings["fix_batches"]:
             repo = batch.get("repo")  # a member name, or None for the coordinator
             if any(item.get("repo") == repo and set(batch["locators"]) <= set(item["locators"]) for item in existing):
@@ -2380,6 +2391,8 @@ def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
                 + "\n".join(f"- {item['text']}" for item in group["observations"]) for group in batch_groups)
             files = "\n".join(f"  - {path}" for path in batch["files"])
             member = f"repo: {repo}\n" if repo else ""  # the task template puts `repo:` before `files:`
+            if lane_members and all(source in lane_members for source in sources):
+                member = f"lane_round: {lane_record['round']}\n" + member
             title = f"Fix wave {options.wave} cycle {options.cycle} review findings in {', '.join(sources)}"
             text = f"""---
 id: {task_id}
@@ -2473,6 +2486,11 @@ Heavy: {'yes' if heavy else 'no'}
         if plan_changed:
             _common.atomic_write(plan_path, updated)
         receipt["plan_wave"] = fix_wave
+        if lane_members:
+            try:
+                receipt["lane"] = pr_fix_lane.bind(primary)
+            except pr_fix_lane.LaneError as error:
+                raise DriverStop(f"PR fix lane repair binding: {error}") from error
         lint = subprocess.run([sys.executable, "-B", str(helper_script("check_task_briefs.py")),
                                "--repo", str(primary), "--base", isolation.current_sha(primary),
                                "--tasks-dir", f"{options.project_dir}/tasks",

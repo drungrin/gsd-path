@@ -418,70 +418,6 @@ if __name__ == "__main__":
 
 
 class LaneGateTests(unittest.TestCase):
-    def test_delta_depth_is_legal_only_in_an_open_lane_round(self) -> None:
-        pending = [{"id": "T002", "wave": 2, "status": "pending", "context": "Closes P001."}]
-        with mock.patch.object(pr_fix_lane, "active_round", return_value=None):
-            errors = pr_fix_lane.lane_plan_errors(Path("."), {1: "full", 2: "delta"}, pending)
-            # Landed delta waves of a finished round stay legal history for a later ordinary patch.
-            landed = [dict(pending[0], status="done"), {"id": "T003", "wave": 3, "status": "pending"}]
-            self.assertEqual(pr_fix_lane.lane_plan_errors(Path("."), {1: "full", 2: "delta", 3: "full"}, landed), [])
-        self.assertEqual(errors, ["T002 in delta wave 2 is pending; Review depth: delta is legal only in an "
-                                  "open PR fix lane round"])
-        self.assertEqual(pr_fix_lane.lane_plan_errors(Path("."), {1: "full"}, []), [])
-        with self.assertRaisesRegex(check_handoffs.HandoffError, "Wave 1 Review depth"):
-            check_handoffs._plan_waves("## Wave 1 — x\n\nGoal: g\nReview depth: delta\n")
-
-    def test_lane_tasks_must_cite_each_finding_once(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / ".project/review").mkdir(parents=True)
-            (root / ".project/review/PATCH-FINDINGS.md").write_text(
-                "### P001 — a\n\n### P002 — b\n", encoding="utf-8")
-            with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened", "first_wave": 2}):
-                tasks = [{"id": "T003", "wave": 2, "context": "Closes P001."},
-                         {"id": "T004", "wave": 2, "context": "Closes P001 again."},
-                         {"id": "T005", "wave": 3, "context": "repair of T003"}]
-                errors = pr_fix_lane.lane_plan_errors(root, {1: "full", 2: "delta", 3: "delta"}, tasks)
-        self.assertIn("P001 is closed by both T003 and T004", errors)
-        self.assertIn("every lane finding needs one task; uncovered: P002", errors)
-        self.assertEqual(len(errors), 2)
-
-    def test_after_a_fallback_the_delta_waves_are_history(self) -> None:
-        tasks = [{"id": "T011", "wave": 7, "status": "done", "context": "Closes P001."},
-                 {"id": "T014", "wave": 8, "status": "done", "context": "repair of T011"},
-                 {"id": "T015", "wave": 9, "status": "pending", "context": "Closes the final gap 3 finding."}]
-        waves = {6: "full", 7: "delta", 8: "delta", 9: "full"}
-        with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "fell-back"}):
-            self.assertEqual(pr_fix_lane.lane_plan_errors(Path("."), waves, tasks), [])
-            pending = [dict(tasks[0], status="pending")] + tasks[1:]
-            self.assertRegex(pr_fix_lane.lane_plan_errors(Path("."), waves, pending)[0],
-                             "T011 in delta wave 7 is pending; .* delta waves are history")
-        with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened"}):
-            self.assertIn("the PR fix lane waves must be the last waves of the plan",
-                          pr_fix_lane.lane_plan_errors(Path("."), waves, tasks))
-
-    def test_a_later_round_checks_only_its_own_delta_waves(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / ".project/review").mkdir(parents=True)
-            (root / ".project/review/PATCH-FINDINGS.md").write_text("### P001 — a\n", encoding="utf-8")
-            waves = {6: "full", 7: "delta", 8: "delta", 9: "delta"}
-            tasks = [{"id": "T010", "wave": 7, "status": "done", "context": "Closes P012 and P025."},
-                     {"id": "T013", "wave": 8, "status": "done", "context": "repair of T010"},
-                     {"id": "T015", "wave": 9, "status": "pending", "context": "Closes P001."}]
-            saved = []
-            with mock.patch.object(pr_fix_lane, "_save_round", side_effect=lambda repo, value: saved.append(value)):
-                with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened", "first_wave": 9}):
-                    self.assertEqual(pr_fix_lane.lane_plan_errors(root, waves, tasks), [])
-                # A round opened by an earlier runtime: its first delta wave with open work, recorded once.
-                with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened"}):
-                    self.assertEqual(pr_fix_lane.lane_plan_errors(root, waves, tasks), [])
-                self.assertEqual([value["first_wave"] for value in saved], [9])
-                pending = [dict(tasks[0], status="pending")] + tasks[1:]
-                with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened", "first_wave": 9}):
-                    self.assertRegex(pr_fix_lane.lane_plan_errors(root, waves, pending)[0],
-                                     "T010 in delta wave 7 is pending; delta waves of an earlier PR fix round")
-
     def test_only_an_unfinished_lane_round_falls_back(self) -> None:
         saved = []
         # A retry of prepare-final may find a viewed round whose views no longer stand.
@@ -554,20 +490,204 @@ class LaneGateTests(unittest.TestCase):
                 (repo / ".project/config.json").write_text('{"pr_fix_lane": "off"}', encoding="utf-8")
                 self.assertFalse(pr_fix_lane.setting_enabled(repo))
 
-    def test_regression_exemption_needs_a_delta_wave_and_an_open_round(self) -> None:
+TASK_FILE = """---
+id: {task_id}
+title: {title}
+wave: {wave}
+deps: []
+status: {status}
+agent: null
+base: null
+worktree: null
+task_branch: null
+{lane}files:
+  - src/{task_id}.py
+---
+
+# {task_id} — {title}
+
+## Context
+
+{context}
+
+## Acceptance criteria
+
+1. Done.
+{findings}
+## Log
+"""
+
+
+class LaneMembershipTests(unittest.TestCase):
+    """ADR 0008: round ownership is the bound membership file, never plan geometry."""
+
+    WAVES = {1: "full", 2: "full", 3: "delta"}
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "repo"
+        for name in ("tasks", "review", "plan"):
+            (self.root / ".project" / name).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.directory = Path(temporary.name) / "round"
+        self.directory.mkdir()
+        snap = {"items": [{"id": "I1"}, {"id": "I2"}, {"id": "I3"}]}
+        ruling = {"verbatim": "Fix them.", "items": [
+            {"id": "I1", "class": "fix", "title": "Scope check", "fix_direction": "check it", "group": "scope"},
+            {"id": "I2", "class": "fix", "title": "Scope message", "fix_direction": "say it", "group": "scope"},
+            {"id": "I3", "class": "fix", "title": "Docs", "fix_direction": "write it", "group": "docs"}]}
+        (self.directory / "snapshot.json").write_text(json.dumps(snap), encoding="utf-8")
+        (self.directory / "ruling.json").write_text(json.dumps(ruling), encoding="utf-8")
+        (self.root / ".project/review/PATCH-FINDINGS.md").write_text(
+            "### P001 — Scope check\n\n### P002 — Scope message\n\n### P003 — Docs\n", encoding="utf-8")
+        self.record = {"round": 2, "stage": "opened", "mode": "lane", "membership": pr_fix_lane.MEMBERSHIP_SCHEMA,
+                       "directory": str(self.directory), "pull_request": PULL, "snapshot_digest": "s" * 64,
+                       "ruling_digest": "r" * 64, "gaps": ["final-gap-1.md", "final-gap-2.md"]}
+        patcher = mock.patch.object(pr_fix_lane, "lane_round", side_effect=lambda repo: dict(self.record))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.write_task("T001", 1, "done", context="Original work.")
+        self.write_task("T005", 3, "pending", lane=2, context="Closes P001 and P002.")
+        self.write_task("T006", 3, "pending", lane=2, context="Closes P003.")
+
+    def write_task(self, task_id, wave, status, lane=None, context="", findings="", suffix="") -> Path:
+        path = self.root / f".project/tasks/{task_id}-{suffix or 'task'}.md"
+        path.write_text(TASK_FILE.format(task_id=task_id, title=f"Task {task_id}", wave=wave, status=status,
+                                         lane=f"lane_round: {lane}\n" if lane is not None else "",
+                                         context=context, findings=findings), encoding="utf-8")
+        return path
+
+    def plan_tasks(self):
+        return [{"id": task["id"], "wave": task["wave"], "status": task["status"], "context": task["context"]}
+                for task in pr_fix_lane._task_files(self.root).values()]
+
+    def gate(self, waves=None):
+        return pr_fix_lane.lane_plan_errors(self.root, waves or self.WAVES, self.plan_tasks())
+
+    def test_bind_records_the_grouping_and_contracts_and_is_idempotent(self) -> None:
+        result = pr_fix_lane.bind(self.root)
+        path = pr_fix_lane.membership_path(self.root, 2)
+        first = path.read_bytes()
+        self.assertEqual((result["tasks"], result["repairs"]), (["T005", "T006"], []))
+        membership = json.loads(first)
+        self.assertEqual([(group["group"], group["findings"], group["task"]) for group in membership["groups"]],
+                         [("scope", ["P001", "P002"], "T005"), ("docs", ["P003"], "T006")])
+        self.assertEqual(membership["gaps"], [1, 2])
+        pr_fix_lane.bind(self.root)
+        self.assertEqual(path.read_bytes(), first)
+        self.assertEqual(self.gate(), [])
+
+    def test_bind_refuses_a_group_split_across_tasks_and_uncovered_findings(self) -> None:
+        self.write_task("T005", 3, "pending", lane=2, context="Closes P001.")
+        self.write_task("T006", 3, "pending", lane=2, context="Closes P002 and P003.")
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "group 'scope' is split across T005 and T006"):
+            pr_fix_lane.bind(self.root)
+        self.write_task("T006", 3, "pending", lane=2, context="Closes nothing yet, see P009.")
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "unknown finding P009"):
+            pr_fix_lane.bind(self.root)
+
+    def test_membership_and_task_fields_must_agree_in_both_directions(self) -> None:
+        pr_fix_lane.bind(self.root)
+        self.write_task("T007", 3, "pending", lane=2, context="Closes P003 too.")
+        self.assertIn("tasks with `lane_round: 2` outside the membership (run bind): T007", self.gate())
+        (self.root / ".project/tasks/T007-task.md").unlink()
+        self.write_task("T006", 3, "pending", context="Closes P003.")
+        errors = self.gate()
+        self.assertIn("membership tasks without `lane_round: 2`: T006", errors)
+
+    def test_a_contract_change_refuses_but_an_appended_log_does_not(self) -> None:
+        pr_fix_lane.bind(self.root)
+        path = self.root / ".project/tasks/T005-task.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("status: pending", "status: done")
+                        + "- 2026-11-18 — landed\n", encoding="utf-8")
+        self.assertEqual(self.gate(), [])
+        path.write_text(path.read_text(encoding="utf-8").replace("1. Done.", "1. Done twice."), encoding="utf-8")
+        self.assertIn("T005 changed after it was bound; a changed lane plan needs a new approval", self.gate())
+
+    def test_lane_waves_hold_only_members_and_come_last(self) -> None:
+        pr_fix_lane.bind(self.root)
+        self.write_task("T008", 3, "pending", context="Unrelated.")
+        self.assertIn("wave 3 of PR fix round 2 holds non-member tasks: T008", self.gate())
+        (self.root / ".project/tasks/T008-task.md").unlink()
+        self.assertIn("the PR fix lane waves must be the last waves of the plan",
+                      self.gate({1: "full", 2: "full", 3: "delta", 4: "full"}))
+
+    def test_the_approval_freezes_the_membership_and_build_entry_checks_it(self) -> None:
+        pr_fix_lane.bind(self.root)
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "no approved membership"):
+            pr_fix_lane.require_approved_membership(self.root)
+        pr_fix_lane.record_patch_approval(self.root)
+        pr_fix_lane.require_approved_membership(self.root)
+        # A regrouping without a new approval is refused by bind.
+        self.write_task("T006", 3, "pending", lane=2, context="Closes P003, reworded.")
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "changed after the patch plan approval"):
+            pr_fix_lane.bind(self.root)
+        # A paired change of a task and the membership file is refused at build entry.
+        path = pr_fix_lane.membership_path(self.root, 2)
+        membership = json.loads(path.read_text(encoding="utf-8"))
+        membership["tasks"][1]["contract"] = pr_fix_lane.task_contract(
+            (self.root / ".project/tasks/T006-task.md").read_text(encoding="utf-8"))
+        path.write_text(json.dumps(membership), encoding="utf-8")
+        self.assertEqual(self.gate(), [])
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "differs from the approved one"):
+            pr_fix_lane.require_approved_membership(self.root)
+
+    def test_a_review_repair_is_appended_with_its_source_review(self) -> None:
+        pr_fix_lane.bind(self.root)
+        review = self.root / ".project/review/wave-3.cycle1.md"
+        review.write_text("# Wave 3 review\nWave verdict: blocked\n", encoding="utf-8")
+        self.write_task("T009", 4, "pending", lane=2, context="Repair.", suffix="fix-wave-3-cycle-1",
+                        findings="\n## Review findings\n\n### F1\nCriterion: x\n- fix it\n")
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "needs the round's approved patch plan"):
+            pr_fix_lane.bind(self.root)
+        pr_fix_lane.record_patch_approval(self.root)
+        result = pr_fix_lane.bind(self.root)
+        self.assertEqual(result["repairs"], ["T009"])
+        repair = json.loads(pr_fix_lane.membership_path(self.root, 2).read_text(encoding="utf-8"))["repairs"][0]
+        self.assertEqual((repair["source"], repair["wave"]), (".project/review/wave-3.cycle1.md", 4))
+        pr_fix_lane.require_approved_membership(self.root)  # repairs do not change the approved part
+        self.assertEqual(self.gate({1: "full", 2: "full", 3: "delta", 4: "delta"}), [])
+
+    def test_an_open_legacy_round_is_refused_with_the_fall_back_command(self) -> None:
+        del self.record["membership"]
+        errors = self.gate()
+        self.assertEqual(len(errors), 1)
+        self.assertIn('pr_fix_lane.py fall-back --repo <root> --reason "<why>"', errors[0])
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "earlier runtime"):
+            pr_fix_lane.bind(self.root)
+        with self.assertRaisesRegex(pr_fix_lane.LaneError, "earlier runtime"):
+            pr_fix_lane.require_approved_membership(self.root)
+
+    def test_after_a_fall_back_unfinished_delta_work_moves_to_ordinary_depth(self) -> None:
+        # A legacy round: its delta tasks carry no lane_round.
+        del self.record["membership"]
+        self.record["stage"] = "fell-back"
+        self.write_task("T005", 3, "done", context="Closes P001 and P002.")
+        self.write_task("T006", 3, "pending", context="Closes P003.")
+        self.assertEqual(self.gate(), ["T006 in delta wave 3 is pending; after a PR fix lane fallback the delta "
+                                       "waves are history: move it to a standard wave (`Review depth: full`) "
+                                       "through the ordinary plan route"])
+        self.write_task("T006", 4, "pending", context="Closes P003.")
+        self.assertEqual(self.gate({1: "full", 2: "full", 3: "delta", 4: "full"}), [])
+        self.write_task("T006", 3, "done", context="Closes P003.")
+        self.assertEqual(self.gate(), [])
+
+    def test_a_closed_round_member_must_be_finished(self) -> None:
+        pr_fix_lane.bind(self.root)
+        self.write_task("T002", 2, "pending", lane=1, context="Closes P001 of round 1.")
+        self.assertIn("T002 belongs to closed PR fix round 1 and is pending", self.gate())
+        self.write_task("T002", 2, "done", lane=1, context="Closes P001 of round 1.")
+        self.assertEqual(self.gate(), [])
+
+    def test_regression_exemption_is_limited_to_members_of_an_open_round(self) -> None:
         from scripts import build_state
-        task = mock.Mock(wave=2)
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / ".project/plan").mkdir(parents=True)
-            (root / ".project/plan/PLAN.md").write_text(
-                "## Wave 1 — a\n\nGoal: g\nReview depth: full\n\n## Wave 2 — b\n\nGoal: g\nReview depth: delta\n",
-                encoding="utf-8")
-            with mock.patch.object(pr_fix_lane, "active_round", return_value=None):
-                self.assertFalse(build_state._pr_fix_lane_task(root, task, ".project"))
-            with mock.patch.object(pr_fix_lane, "active_round", return_value={"stage": "opened"}):
-                self.assertTrue(build_state._pr_fix_lane_task(root, task, ".project"))
-                self.assertFalse(build_state._pr_fix_lane_task(root, mock.Mock(wave=1), ".project"))
+        pr_fix_lane.bind(self.root)
+        member, other = mock.Mock(task_id="T005"), mock.Mock(task_id="T001")
+        self.assertTrue(build_state._pr_fix_lane_task(self.root, member, ".project"))
+        self.assertFalse(build_state._pr_fix_lane_task(self.root, other, ".project"))
+        self.record["stage"] = "fell-back"
+        self.assertFalse(build_state._pr_fix_lane_task(self.root, member, ".project"))
 
 
 class FakeThreads:

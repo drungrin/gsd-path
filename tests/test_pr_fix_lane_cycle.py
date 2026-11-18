@@ -35,6 +35,7 @@ agent: null
 base: null
 worktree: null
 task_branch: null
+lane_round: {lane_round}
 repo: web
 files:
   - lib.py
@@ -317,9 +318,15 @@ class PrFixLaneCycleTests(unittest.TestCase):
         plan = plan.replace("## Intent coverage", "## Wave 2 — PR fix lane\n\nGoal: answer the PR change request\n"
                                                   "Review depth: delta\n\n## Intent coverage", 1)
         self.write(".project/plan/PLAN.md", plan)
-        self.write(".project/tasks/T002-scope.md", LANE_TASK.format(today=TODAY))
+        self.write(".project/tasks/T002-scope.md", LANE_TASK.format(today=TODAY, lane_round=1))
+        unbound = subprocess.run([cycle.sys.executable, str(cycle.SCRIPTS / "check_handoffs.py"), "plan",
+                                  "--repo", str(repo)], capture_output=True, text=True)
+        self.assertIn("run `pr_fix_lane.py bind --repo <root>`", unbound.stderr + unbound.stdout)
+        bound = self.gate("pr_fix_lane.py", "bind", "--repo", str(repo))
+        self.assertEqual((bound["tasks"], bound["membership"]), (["T002"], ".project/plan/pr-fix-round-1.json"))
         self.gate("check_handoffs.py", "plan", "--repo", str(repo))
         self.gate("pipeline_state.py", "approve", "--repo", str(repo), "--kind", "plan", "--patch")
+        pr_fix_lane.require_approved_membership(repo)
         self.transition("build started", "plan", "done", set_phase="build", set_status="active")
         restart = isolation.checkpoint(repo, git(repo, "rev-parse", "HEAD").stdout.strip(), "build: start milestone",
                                        "Why: patch wave for the PR change request", [".project"])
@@ -404,7 +411,7 @@ class PrFixLaneCycleTests(unittest.TestCase):
             self.gate("check_handoffs.py", "patch", "--repo", str(repo))
             self.assertTrue((repo / ".project/review/pr-review-2.md").is_file())
             self.assertFalse((repo / prepared2).exists())
-            self.assertEqual(pr_fix_lane.lane_round(repo)["first_wave"], 3)
+            self.assertEqual(pr_fix_lane.lane_round(repo)["membership"], pr_fix_lane.MEMBERSHIP_SCHEMA)
             self.second_round_cycle(repo, second["landing"])
             return
         self.fake.reviews.append({"id": 12, "state": "APPROVED", "user": {"login": "rev"},
@@ -436,18 +443,15 @@ class PrFixLaneCycleTests(unittest.TestCase):
         plan = plan.replace("## Intent coverage", "## Wave 3 — PR fix lane round 2\n\nGoal: answer the second "
                                                   "change request\nReview depth: delta\n\n## Intent coverage", 1)
         self.write(".project/plan/PLAN.md", plan)
-        task = LANE_TASK.format(today=TODAY).replace("id: T002", "id: T003").replace("wave: 2", "wave: 3") \
+        task = LANE_TASK.format(today=TODAY, lane_round=2).replace("id: T002", "id: T003").replace("wave: 2", "wave: 3") \
             .replace("# T002", "# T003").replace("Closes P001 and P002 from the PR change request",
                                                  "Closes P001 and P002 from the second PR change request")
         self.write(".project/tasks/T003-doc.md", task)
-        # A round opened by an earlier runtime has no first_wave: the gate finds and records it.
-        record_path = Path(pr_fix_lane.lane_round(repo)["directory"]) / "round.json"
-        record = json.loads(record_path.read_text(encoding="utf-8"))
-        record.pop("first_wave")
-        record_path.write_text(json.dumps(record), encoding="utf-8")
+        # Round 1's member T002 stays history: its round is closed and its task is done.
+        self.assertEqual(self.gate("pr_fix_lane.py", "bind", "--repo", str(repo))["tasks"], ["T003"])
         self.gate("check_handoffs.py", "plan", "--repo", str(repo))
-        self.assertEqual(pr_fix_lane.lane_round(repo)["first_wave"], 3)
         self.gate("pipeline_state.py", "approve", "--repo", str(repo), "--kind", "plan", "--patch")
+        pr_fix_lane.require_approved_membership(repo)
         self.transition("build started", "plan", "done", set_phase="build", set_status="active")
         restart = isolation.checkpoint(repo, git(repo, "rev-parse", "HEAD").stdout.strip(), "build: start milestone",
                                        "Why: patch wave for the second PR change request", [".project"])
@@ -488,9 +492,9 @@ class PrFixLaneCycleTests(unittest.TestCase):
         standard = ("## Wave 3 — final gap repair\n\nGoal: close the blocked final gap\nReview depth: full\n\n"
                     "## Intent coverage")
         self.write(".project/plan/PLAN.md", plan.replace("## Intent coverage", standard, 1))
-        task = LANE_TASK.format(today=TODAY).replace("id: T002", "id: T003").replace("wave: 2", "wave: 3") \
+        task = LANE_TASK.format(today=TODAY, lane_round=1).replace("id: T002", "id: T003").replace("wave: 2", "wave: 3") \
             .replace("# T002", "# T003").replace("Closes P001 and P002 from the PR change request",
-                                                 "Closes the final gap 3 finding")
+                                                 "Closes the final gap 3 finding").replace("lane_round: 1\n", "")
         self.write(".project/tasks/T003-gap.md", task)
         self.gate("check_handoffs.py", "plan", "--repo", str(repo))
         # New work never joins a delta wave once the round fell back.
@@ -499,7 +503,7 @@ class PrFixLaneCycleTests(unittest.TestCase):
         refused = subprocess.run([cycle.sys.executable, str(cycle.SCRIPTS / "check_handoffs.py"), "plan",
                                   "--repo", str(repo)], capture_output=True, text=True)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("delta waves are history", refused.stderr + refused.stdout)
+        self.assertIn("delta waves are history: move it to a standard wave", refused.stderr + refused.stdout)
         # The round can still answer the PR once the ordinary route republishes.
         self.assertEqual(pr_fix_lane.fall_back(repo, "again")["status"], pr_fix_lane.FELL_BACK)
 

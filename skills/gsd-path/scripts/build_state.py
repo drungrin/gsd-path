@@ -649,20 +649,21 @@ def retired_verifies(
 
 
 def _pr_fix_lane_task(repo: Path, task: "Task", project_dir: str) -> bool:
-    """Whether the task sits in the delta wave of the open PR fix lane round."""
+    """Whether the task is a member of the open PR fix lane round, before the round falls back."""
     import importlib
 
     if project_dir != DEFAULT_PROJECT_DIR:
         return False
     package = f"{__package__}." if __package__ else ""
-    review_findings = importlib.import_module(f"{package}review_findings")
     lane = importlib.import_module(f"{package}pr_fix_lane")
-    plan = Path(repo) / project_dir / "plan/PLAN.md"
-    try:
-        depth = review_findings.wave_depth(plan.read_text(encoding="utf-8"), int(task.wave))
-    except (OSError, ValueError, review_findings.ReviewFindingsError):
+    record = lane.lane_round(Path(repo))
+    if record is None or record.get("stage") not in lane.OPEN_STAGES:
         return False
-    return depth == "delta" and lane.lane_round(Path(repo)) is not None
+    try:
+        membership = lane.read_membership(Path(repo), int(record["round"]))
+    except (lane.LaneError, OSError, ValueError):
+        return False
+    return membership is not None and str(task.task_id) in lane.member_ids(membership)
 
 
 def regression_verifies(

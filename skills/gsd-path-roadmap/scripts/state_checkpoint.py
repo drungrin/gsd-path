@@ -735,6 +735,18 @@ def _checkpoint_deferral_error(repo: Path, kind: str, patch: bool) -> Optional[s
     )
 
 
+def _record_lane_approval(repo: Path) -> None:
+    """Record the approved PR fix round membership before STATE says approved (ADR 0008)."""
+    if __package__:
+        from . import pr_fix_lane
+    else:
+        import pr_fix_lane
+    try:
+        pr_fix_lane.record_patch_approval(repo)
+    except pr_fix_lane.LaneError as error:
+        raise PipelineStateError(str(error)) from error
+
+
 def defer_approval(
     repo: Path,
     kind: str,
@@ -770,6 +782,8 @@ def defer_approval(
         _validate_plan_briefs(resolved, kind, project_dir)
         if patch:
             event = "patch plan approved"
+            if project_dir == ".project" and kind == "plan":
+                _record_lane_approval(resolved)
         expected = {
             "phase": state.phase,
             "status": state.status,

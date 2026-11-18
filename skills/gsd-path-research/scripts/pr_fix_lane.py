@@ -182,14 +182,15 @@ def lane_round(repo: Path) -> Optional[dict]:
 def fall_back(repo: Path, reason: str) -> dict:
     """Hand the open lane round to the ordinary final review (idempotent)."""
     repo = repo.resolve()
-    record = lane_round(repo)
-    if record is None:
-        raise LaneError("no PR fix lane round is open")
-    if record.get("stage") not in {"opened", "built", "viewed", FELL_BACK}:
-        raise LaneError(f"PR fix lane round {record['round']} is {record.get('stage')}; it cannot fall back")
-    if record.get("stage") != FELL_BACK:
-        record.update(stage=FELL_BACK, fallback=one_line(reason) or "ordinary final review")
-        _save_round(repo, record)
+    with _LaneLock(repo):
+        record = lane_round(repo)
+        if record is None:
+            raise LaneError("no PR fix lane round is open")
+        if record.get("stage") not in {"opened", "built", "viewed", FELL_BACK}:
+            raise LaneError(f"PR fix lane round {record['round']} is {record.get('stage')}; it cannot fall back")
+        if record.get("stage") != FELL_BACK:
+            record.update(stage=FELL_BACK, fallback=one_line(reason) or "ordinary final review")
+            _save_round(repo, record)
     return {"schema": SCHEMA, "status": FELL_BACK, "round": record["round"], "reason": record.get("fallback")}
 
 
@@ -586,9 +587,8 @@ def start(repo: Path, ruling_path: Path) -> dict:
                 {"status": "blocked"},
                 f"{LANE_EVENT}: round {record['round']}; {record['pull_request']}; "
                 f"{len(fixes)} fix item(s); ruling: {one_line(ruling['verbatim'])}")
-        # The round's own waves start after every wave the plan already holds; earlier
-        # delta waves belong to earlier rounds of this milestone.
-        record["first_wave"] = max(_plan_depths(repo) or {0: ""}) + 1
+        # Round ownership is the membership file `bind` writes, never plan geometry (ADR 0008).
+        record["membership"] = MEMBERSHIP_SCHEMA
         record["stage"] = "opened"
         _save_round(repo, record)
     return {"schema": SCHEMA, "status": record["stage"], "round": record["round"],
@@ -653,86 +653,371 @@ def _plan_depths(repo: Path) -> Dict[int, str]:
     return _sibling("check_handoffs")._plan_waves(plan.read_text(encoding="utf-8"))[0]
 
 
-def _first_round_wave(repo: Path, record: Mapping[str, object], delta: Sequence[int],
-                      statuses: Mapping[int, Sequence[str]]) -> int:
-    """The first wave of the round's own delta waves.
+# --- round membership (ADR 0008) ---------------------------------------------------
 
-    `start` records it. A round opened by an earlier runtime has no record: its first delta
-    wave that still holds unfinished work is the round's, and the plan gate records it then.
+MEMBERSHIP_SCHEMA = "gsd-path/pr-fix-membership/v1"
+MEMBERSHIP_NAME = re.compile(r"^pr-fix-round-(?P<round>[1-9]\d*)\.json$")
+REPAIR_NAME = re.compile(r"-fix-wave-(?P<wave>[1-9]\d*)-cycle-(?P<cycle>[1-9]\d*)\.md$")
+OPEN_STAGES = ("opened", "built")
+
+
+def membership_path(repo: Path, round_number: int) -> Path:
+    return repo / ".project/plan" / f"pr-fix-round-{round_number}.json"
+
+
+def _lock_path(repo: Path) -> Path:
+    root = lane_root(repo)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+class _LaneLock:
+    """Serialize lane commands across the worktrees of one repository (the Git common dir)."""
+
+    def __init__(self, repo: Path) -> None:
+        self.path = _lock_path(repo) / ".lock"
+        self.handle = None
+
+    def __enter__(self) -> "_LaneLock":
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows has no flock; lane commands run in one worktree
+            return self
+        self.handle = open(self.path, "a+")
+        try:
+            fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            self.handle.close()
+            self.handle = None
+            raise LaneError("another PR fix lane command holds the lane lock; retry") from error
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        if self.handle is not None:
+            import fcntl
+            fcntl.flock(self.handle, fcntl.LOCK_UN)
+            self.handle.close()
+
+
+def task_contract(text: str) -> dict:
+    """The task contract as approved: immutable frontmatter and the body, recorded with its length.
+
+    Landing may change only the lifecycle fields and append to the body, so a later check
+    recomputes the digest over the same frontmatter and the first `body_length` bytes.
     """
-    recorded = record.get("first_wave")
-    if isinstance(recorded, int):
-        return recorded
-    for wave in delta:
-        if any(status not in ("done", "withdrawn") for status in statuses.get(wave, [])):
-            return wave
-    return delta[0]
+    isolation = _sibling("isolation")
+    head, body = isolation.split_frontmatter(text)
+    body_bytes = isolation._normalize_newlines(body).encode("utf-8")
+    return {"digest": _contract_digest(isolation._immutable_frontmatter(head), body_bytes),
+            "body_length": len(body_bytes)}
 
 
-def _record_first_wave(repo: Path, record: dict, wave: int) -> None:
-    if record.get("first_wave") is None and record.get("stage") in {"opened", "built"}:
-        saved = {key: value for key, value in record.items() if key != "directory"}
-        saved["first_wave"] = wave
-        _save_round(repo, saved)
+def _contract_digest(frontmatter: Sequence[str], body: bytes) -> str:
+    return _digest_bytes("\n".join(frontmatter).encode("utf-8") + b"\0" + body)
+
+
+def contract_matches(bound: Mapping[str, object], text: str) -> bool:
+    isolation = _sibling("isolation")
+    try:
+        head, body = isolation.split_frontmatter(text)
+    except isolation.IsolationError:
+        return False
+    body_bytes = isolation._normalize_newlines(body).encode("utf-8")
+    length = int(bound.get("body_length") or 0)
+    return len(body_bytes) >= length and _contract_digest(
+        isolation._immutable_frontmatter(head), body_bytes[:length]) == bound.get("digest")
+
+
+def _task_files(repo: Path) -> Dict[str, dict]:
+    """Every task file: id, wave, status, lane_round, Context, whether it is a review repair, and text."""
+    contracts = _sibling("check_handoffs")
+    tasks: Dict[str, dict] = {}
+    directory = repo / ".project/tasks"
+    for path in sorted(directory.glob("T*.md")) if directory.is_dir() else []:
+        text = path.read_text(encoding="utf-8")
+        try:
+            fields = contracts._strict_frontmatter(text, path.name)
+        except contracts.HandoffError as error:
+            raise LaneError(str(error)) from error
+        task_id = str(fields.get("id") or "")
+        if not re.fullmatch(r"T\d{3,}", task_id):
+            continue
+        context = re.search(r"(?ms)^## Context\s*$(.*?)^## ", text)
+        raw_round = str(fields.get("lane_round") or "")
+        tasks[task_id] = {
+            "id": task_id, "path": path.relative_to(repo).as_posix(), "text": text,
+            "wave": int(fields["wave"]) if str(fields.get("wave") or "").isdigit() else 0,
+            "status": str(fields.get("status") or ""),
+            "lane_round": int(raw_round) if raw_round.isdigit() else (raw_round or None),
+            "repair": "\n## Review findings" in text,
+            "context": context.group(1) if context else "",
+        }
+    return tasks
+
+
+def _ruling_findings(record: Mapping[str, object]) -> List[dict]:
+    """P### rows of the round in PATCH-FINDINGS order: id, item, group."""
+    directory = Path(str(record["directory"]))
+    snap = _read_json(directory / "snapshot.json")
+    fixes = _validate_ruling(_read_json(directory / "ruling.json"), snap)
+    return [{"finding": f"P{index:03d}", "item": row["id"], "group": one_line(row["group"])}
+            for index, row in enumerate(fixes, start=1)]
+
+
+def _initial_membership(repo: Path, record: Mapping[str, object], tasks: Mapping[str, dict]) -> dict:
+    """The approved grouping and initial task contracts, computed from the ruling and task files."""
+    number = int(record["round"])
+    findings = _ruling_findings(record)
+    known = {row["finding"] for row in findings}
+    initial = [task for task in tasks.values() if task["lane_round"] == number and not task["repair"]]
+    if not initial:
+        raise LaneError(f"no task carries `lane_round: {number}`; add it to each task that closes a P### item")
+    closed_by: Dict[str, str] = {}
+    for task in initial:
+        cited = sorted(set(re.findall(r"\bP\d{3}\b", task["context"])))
+        if not cited:
+            raise LaneError(f"{task['id']} must cite the P### items it closes in its Context")
+        for finding in cited:
+            if finding not in known:
+                raise LaneError(f"{task['id']} cites unknown finding {finding}")
+            if finding in closed_by:
+                raise LaneError(f"{finding} is closed by both {closed_by[finding]} and {task['id']}")
+            closed_by[finding] = task["id"]
+    missing = [row["finding"] for row in findings if row["finding"] not in closed_by]
+    if missing:
+        raise LaneError("every lane finding needs one task; uncovered: " + ", ".join(missing))
+    groups: Dict[str, dict] = {}
+    for row in findings:
+        group = groups.setdefault(row["group"], {"group": row["group"], "items": [], "findings": [],
+                                                 "task": closed_by[row["finding"]]})
+        if group["task"] != closed_by[row["finding"]]:
+            raise LaneError(f"ruling group {row['group']!r} is split across {group['task']} and "
+                            f"{closed_by[row['finding']]}; one task closes a group")
+        group["items"].append(row["item"])
+        group["findings"].append(row["finding"])
+    return {
+        "schema": MEMBERSHIP_SCHEMA, "round": number, "pull_request": record["pull_request"],
+        "snapshot_digest": record["snapshot_digest"], "ruling_digest": record["ruling_digest"],
+        "gaps": sorted(int(GAP_NAME.fullmatch(name).group("number")) for name in record.get("gaps") or []),
+        "groups": list(groups.values()),
+        "tasks": [{"id": task["id"], "wave": task["wave"], "contract": task_contract(task["text"])}
+                  for task in sorted(initial, key=lambda task: task["id"])],
+    }
+
+
+def _approval_digest(membership: Mapping[str, object]) -> str:
+    """What the patch plan approval covers: the membership without its later repairs."""
+    return _json_digest({key: value for key, value in membership.items() if key != "repairs"})
+
+
+def read_membership(repo: Path, round_number: int) -> Optional[dict]:
+    path = membership_path(repo, round_number)
+    if not path.is_file():
+        return None
+    value = _read_json(path)
+    if value.get("schema") != MEMBERSHIP_SCHEMA or value.get("round") != round_number:
+        raise LaneError(f"{path.relative_to(repo).as_posix()} is not the membership of PR fix round {round_number}")
+    return value
+
+
+def _approval_receipt(record: Mapping[str, object]) -> Optional[dict]:
+    path = Path(str(record["directory"])) / "approval.json"
+    return _read_json(path) if path.is_file() else None
+
+
+def _legacy_refusal(record: Mapping[str, object]) -> str:
+    return (f"PR fix lane round {record['round']} was opened by an earlier runtime without an explicit "
+            "membership; run `pr_fix_lane.py fall-back --repo <root> --reason \"<why>\"` and continue "
+            "on the ordinary route")
+
+
+def bind(repo: Path, source: Optional[str] = None) -> dict:
+    """Write the open round's membership file from the ruling, PATCH-FINDINGS.md, and the task files.
+
+    Idempotent. After the patch plan approval the initial part is frozen; only review repairs
+    (tasks with `lane_round` and `## Review findings`) are appended, each with its source review.
+    """
+    repo = repo.resolve()
+    with _LaneLock(repo):
+        record = lane_round(repo)
+        if record is None or record.get("stage") not in OPEN_STAGES:
+            raise LaneError("bind needs an opened or built PR fix lane round")
+        if record.get("membership") != MEMBERSHIP_SCHEMA:
+            raise LaneError(_legacy_refusal(record))
+        number = int(record["round"])
+        tasks = _task_files(repo)
+        computed = _initial_membership(repo, record, tasks)
+        existing = read_membership(repo, number)
+        approval = _approval_receipt(record)
+        if approval is not None and approval.get("membership_digest") != _approval_digest(computed):
+            raise LaneError(f"the lane tasks of round {number} changed after the patch plan approval; "
+                            "a changed lane plan needs a new patch plan approval")
+        repairs = list((existing or {}).get("repairs") or [])
+        recorded = {row["id"] for row in repairs}
+        for row in repairs:
+            task = tasks.get(row["id"])
+            if task is None or not contract_matches(row["contract"], task["text"]):
+                raise LaneError(f"repair {row['id']} of round {number} changed after it was bound")
+        initial_ids = {row["id"] for row in computed["tasks"]}
+        for task in sorted(tasks.values(), key=lambda task: task["id"]):
+            if task["lane_round"] != number or not task["repair"] or task["id"] in recorded:
+                continue
+            if approval is None:
+                raise LaneError(f"repair {task['id']} needs the round's approved patch plan first")
+            named = REPAIR_NAME.search(task["path"])
+            review = (f".project/review/wave-{named.group('wave')}.cycle{named.group('cycle')}.md"
+                      if named else source)
+            if not review:
+                raise LaneError(f"repair {task['id']} needs --source <review> naming the review that opened it")
+            review_path = repo / review
+            if not review_path.is_file():
+                raise LaneError(f"repair {task['id']} source review {review} is missing")
+            repairs.append({"id": task["id"], "wave": task["wave"], "contract": task_contract(task["text"]),
+                            "source": review, "source_sha256": _digest(review_path)})
+        stray = sorted(task["id"] for task in tasks.values() if task["lane_round"] not in (None, "")
+                       and task["lane_round"] == number and task["id"] not in initial_ids
+                       and task["id"] not in {row["id"] for row in repairs})
+        if stray:
+            raise LaneError("tasks carry the round but are not members: " + ", ".join(stray))
+        value = dict(computed, repairs=repairs)
+        path = membership_path(repo, number)
+        text = _canonical_json(value) + "\n"
+        if not path.is_file() or path.read_text(encoding="utf-8") != text:
+            _common.atomic_write(path, text)
+        return {"schema": SCHEMA, "status": "bound", "round": number,
+                "membership": path.relative_to(repo).as_posix(), "digest": _digest(path),
+                "tasks": [row["id"] for row in value["tasks"]], "repairs": [row["id"] for row in repairs]}
+
+
+def record_patch_approval(repo: Path) -> Optional[dict]:
+    """Called by the patch plan approval, under the state lock, before STATE is written.
+
+    Records the approved membership digest in the round directory (inside the Git common
+    dir). Build entry compares the membership file against it.
+    """
+    record = lane_round(repo)
+    if record is None or record.get("stage") not in OPEN_STAGES or record.get("membership") != MEMBERSHIP_SCHEMA:
+        return None
+    membership = read_membership(repo, int(record["round"]))
+    if membership is None:
+        raise LaneError(f"PR fix round {record['round']} has no membership file; run "
+                        "`pr_fix_lane.py bind --repo <root>` before the approval")
+    receipt = {"kind": "patch", "round": record["round"], "membership_digest": _approval_digest(membership)}
+    _write_json(Path(str(record["directory"])) / "approval.json", receipt)
+    return receipt
+
+
+def require_approved_membership(repo: Path) -> None:
+    """Build entry: the membership must be the one the patch plan approval recorded."""
+    record = lane_round(repo)
+    if record is None or record.get("stage") not in OPEN_STAGES:
+        return
+    if record.get("membership") != MEMBERSHIP_SCHEMA:
+        raise LaneError(_legacy_refusal(record))
+    membership = read_membership(repo, int(record["round"]))
+    approval = _approval_receipt(record)
+    if membership is None or approval is None:
+        raise LaneError(f"PR fix round {record['round']} has no approved membership; bind it and approve the patch plan")
+    if approval.get("membership_digest") != _approval_digest(membership):
+        raise LaneError(f"the membership of PR fix round {record['round']} differs from the approved one; "
+                        "a changed lane plan needs a new patch plan approval")
+
+
+def _round_records(repo: Path) -> Dict[int, dict]:
+    """Membership files in .project/plan, by round."""
+    directory = repo / ".project/plan"
+    found: Dict[int, dict] = {}
+    for path in sorted(directory.glob("pr-fix-round-*.json")) if directory.is_dir() else []:
+        match = MEMBERSHIP_NAME.fullmatch(path.name)
+        if match:
+            found[int(match.group("round"))] = read_membership(repo, int(match.group("round"))) or {}
+    return found
+
+
+def member_ids(membership: Mapping[str, object]) -> List[str]:
+    return [row["id"] for row in membership.get("tasks") or []] + [row["id"] for row in membership.get("repairs") or []]
 
 
 def lane_plan_errors(repo: Path, waves: Mapping[int, str], tasks: Sequence[Mapping[str, object]]) -> List[str]:
-    """Plan-gate checks for `Review depth: delta` waves.
+    """Plan-gate checks for PR fix lane rounds, read from their membership files (ADR 0008).
 
-    Only the open round's own delta waves are checked against PATCH-FINDINGS.md; delta waves
-    of an earlier round of this milestone, or of a round that fell back, are landed history.
+    The open round's members must match its membership in both directions and keep their
+    bound contracts; delta waves owned by no open round are landed history.
     """
     delta = sorted(number for number, depth in waves.items() if depth == "delta")
-    if not delta:
+    files = _task_files(repo)
+    fields = {task_id: task["lane_round"] for task_id, task in files.items() if task["lane_round"] not in (None, "")}
+    if not delta and not fields:
         return []
     errors: List[str] = []
     record = lane_round(repo)
-    statuses: Dict[int, List[str]] = {}
+    by_wave: Dict[int, List[Mapping[str, object]]] = {}
     for task in tasks:
-        statuses.setdefault(int(task.get("wave") or 0), []).append(str(task.get("status") or ""))
-
-    def unfinished_history(history: Sequence[int], note: str) -> List[str]:
-        return [f"{task['id']} in delta wave {task.get('wave')} is {task.get('status')}; {note}"
-                for task in tasks if int(task.get("wave") or 0) in history
-                and str(task.get("status") or "") not in ("done", "withdrawn")]
-
-    if record is not None and record.get("stage") == FELL_BACK:
-        # The ordinary final review took over: the delta waves are landed history, and the
-        # ordinary patch route adds standard waves after them.
-        return unfinished_history(delta, "after a PR fix lane fallback the delta waves are history and "
-                                         "new work goes in a standard wave")
-    if record is None or record.get("stage") not in {"opened", "built", "viewed"}:
-        # Landed delta waves of finished rounds are history for any later patch of this
-        # milestone; only new delta work needs an open lane round.
-        return unfinished_history(delta, "Review depth: delta is legal only in an open PR fix lane round")
-    wave = _first_round_wave(repo, record, delta, statuses)
-    current = [number for number in delta if number >= wave]
-    errors += unfinished_history([number for number in delta if number < wave],
-                                 "delta waves of an earlier PR fix round are landed history")
-    if not current or current != list(range(wave, max(waves) + 1)):
-        errors.append("the PR fix lane waves must be the last waves of the plan")
-    if not errors:
-        _record_first_wave(repo, record, wave)
-    # Later delta waves of this round are its repair waves (they inherit its depth).
-    findings = (repo / ".project/review/PATCH-FINDINGS.md")
-    ids = re.findall(r"(?m)^### (P\d{3}) — ", findings.read_text(encoding="utf-8")) if findings.is_file() else []
-    covered: Dict[str, str] = {}
-    for task in tasks:
-        if int(task.get("wave") or 0) != wave:
-            continue
-        cited = set(re.findall(r"\bP\d{3}\b", str(task.get("context") or "")))
-        if not cited:
-            errors.append(f"{task['id']} in the lane wave must cite the P### items it closes in its Context")
-        for finding in cited:
-            if finding not in ids:
-                errors.append(f"{task['id']} cites unknown finding {finding}")
-            elif finding in covered:
-                errors.append(f"{finding} is closed by both {covered[finding]} and {task['id']}")
-            else:
-                covered[finding] = str(task["id"])
-    missing = [finding for finding in ids if finding not in covered]
-    if missing:
-        errors.append("every lane finding needs one task; uncovered: " + ", ".join(missing))
+        by_wave.setdefault(int(task.get("wave") or 0), []).append(task)
+    unfinished = lambda task: str(task.get("status") or "") not in ("done", "withdrawn")
+    open_round = (int(record["round"]) if record is not None and record.get("stage") in (*OPEN_STAGES, "viewed")
+                  else None)
+    fell_back = record is not None and record.get("stage") == FELL_BACK
+    if open_round is not None and record.get("membership") != MEMBERSHIP_SCHEMA:
+        return [_legacy_refusal(record)]
+    for task_id, value in sorted(fields.items()):
+        if not isinstance(value, int):
+            errors.append(f"{task_id} lane_round must be a round number")
+        elif value != open_round and not (fell_back and value == int(record["round"])) and \
+                unfinished(files[task_id]):
+            errors.append(f"{task_id} belongs to closed PR fix round {value} and is {files[task_id]['status']}")
+    members: List[str] = []
+    if open_round is not None:
+        membership = read_membership(repo, open_round)
+        if membership is None:
+            return errors + [f"PR fix round {open_round} has no membership file; run "
+                             "`pr_fix_lane.py bind --repo <root>`"]
+        members = member_ids(membership)
+        if (membership.get("ruling_digest"), membership.get("snapshot_digest")) != \
+                (record.get("ruling_digest"), record.get("snapshot_digest")):
+            errors.append(f"the membership of round {open_round} is not bound to its recorded ruling")
+        findings = (repo / ".project/review/PATCH-FINDINGS.md")
+        ids = re.findall(r"(?m)^### (P\d{3}) — ", findings.read_text(encoding="utf-8")) if findings.is_file() else []
+        bound = [finding for group in membership.get("groups") or [] for finding in group["findings"]]
+        if sorted(ids) != sorted(bound):
+            errors.append("PATCH-FINDINGS.md and the round membership name different P### items")
+        carriers = sorted(task_id for task_id, value in fields.items() if value == open_round)
+        if carriers != sorted(members):
+            missing = sorted(set(members) - set(carriers))
+            extra = sorted(set(carriers) - set(members))
+            if missing:
+                errors.append(f"membership tasks without `lane_round: {open_round}`: " + ", ".join(missing))
+            if extra:
+                errors.append(f"tasks with `lane_round: {open_round}` outside the membership (run bind): "
+                              + ", ".join(extra))
+        for row in [*(membership.get("tasks") or []), *(membership.get("repairs") or [])]:
+            task = files.get(row["id"])
+            if task is None:
+                errors.append(f"membership task {row['id']} has no task file")
+            elif not contract_matches(row["contract"], task["text"]):
+                errors.append(f"{row['id']} changed after it was bound; a changed lane plan needs a new approval")
+            elif task["wave"] != row["wave"]:
+                errors.append(f"{row['id']} moved from wave {row['wave']} to wave {task['wave']}")
+        member_waves = sorted({files[task_id]["wave"] for task_id in members if task_id in files})
+        for wave in member_waves:
+            if waves.get(wave) != "delta":
+                errors.append(f"wave {wave} of PR fix round {open_round} must have Review depth: delta")
+            others = [str(task["id"]) for task in by_wave.get(wave, []) if str(task["id"]) not in members]
+            if others:
+                errors.append(f"wave {wave} of PR fix round {open_round} holds non-member tasks: " + ", ".join(others))
+        if member_waves and any(wave > min(member_waves) and wave not in member_waves for wave in waves):
+            errors.append("the PR fix lane waves must be the last waves of the plan")
+    for wave in delta:
+        for task in by_wave.get(wave, []):
+            if str(task["id"]) in members or not unfinished(task):
+                continue
+            if fell_back:
+                errors.append(f"{task['id']} in delta wave {wave} is {task.get('status')}; after a PR fix lane "
+                              "fallback the delta waves are history: move it to a standard wave "
+                              "(`Review depth: full`) through the ordinary plan route")
+            elif fields.get(str(task["id"])) is None:
+                errors.append(f"{task['id']} in delta wave {wave} is {task.get('status')}; Review depth: delta "
+                              "is legal only for a member task of an open PR fix lane round")
     return errors
 
 
@@ -980,30 +1265,16 @@ def build_gap_view(capsule_gap: str, row: dict, head: str, members: Mapping[str,
             f"- **Found**: {values['Found']}\n- **Fix direction**: {values['Fix direction']}\n")
 
 
-def _lane_waves(repo: Path, record: Mapping[str, object]) -> List[int]:
-    """The round's lane wave first, then its repair waves; all carry `Review depth: delta`."""
-    delta = sorted(number for number, depth in _plan_depths(repo).items() if depth == "delta")
-    first = record.get("first_wave")
-    current = [number for number in delta if not isinstance(first, int) or number >= first]
-    if not current:
-        raise LaneError("the plan has no PR fix lane wave for this round")
-    return current
-
-
-def _lane_tasks(repo: Path, lane_waves: Sequence[int]) -> Dict[str, dict]:
-    tasks: Dict[str, dict] = {}
-    for path in sorted((repo / ".project/tasks").glob("T*.md")):
-        text = path.read_text(encoding="utf-8")
-        wave_match = re.search(r"(?m)^wave:\s*(\d+)", text)
-        status = re.search(r"(?m)^status:\s*(\S+)", text)
-        task_id = re.search(r"(?m)^id:\s*(T\d{3})", text)
-        if not wave_match or int(wave_match.group(1)) not in lane_waves or not task_id:
-            continue
-        context = re.search(r"(?ms)^## Context\s*$(.*?)^## ", text)
-        tasks[task_id.group(1)] = {"path": path.relative_to(repo).as_posix(),
-                                   "status": status.group(1) if status else None,
-                                   "context": context.group(1) if context else ""}
-    return tasks
+def _lane_members(repo: Path, record: Mapping[str, object]) -> Tuple[dict, int, Dict[str, dict]]:
+    """The round's membership, its first lane wave, and its member task files (ADR 0008)."""
+    membership = read_membership(repo, int(record["round"]))
+    if membership is None:
+        raise LaneError(f"PR fix round {record['round']} has no membership file")
+    files = _task_files(repo)
+    tasks = {task_id: files[task_id] for task_id in member_ids(membership) if task_id in files}
+    if len(tasks) != len(member_ids(membership)) or not membership.get("tasks"):
+        raise LaneError("a member task of the round has no task file")
+    return membership, min(row["wave"] for row in membership["tasks"]), tasks
 
 
 def views(repo: Path, expected_head: str) -> dict:
@@ -1027,9 +1298,7 @@ def views(repo: Path, expected_head: str) -> dict:
             or contracts.member_reviewed_heads(gap_one, "final-gap-1.md") != members \
             or contracts._line_value(gap_one, "Gap verdict:") != "pass":
         raise LaneError("the project Verify gap must pass at the current head and member tips")
-    lane_waves = _lane_waves(repo, record)
-    wave = lane_waves[0]
-    tasks = _lane_tasks(repo, lane_waves)
+    membership, wave, tasks = _lane_members(repo, record)
     if not tasks or any(task["status"] != "done" for task in tasks.values()):
         raise LaneError("every lane task must be done before the views")
     proof = _sibling("build_state").verify_landed_tasks(str(repo), ".project", head)
@@ -1059,10 +1328,7 @@ def views(repo: Path, expected_head: str) -> dict:
     findings_text_value = (review / "PATCH-FINDINGS.md").read_text(encoding="utf-8")
     findings = dict(re.findall(r"(?m)^### (P\d{3}) — .*\n\n- \*\*Source\*\*: .*\n- \*\*Locator\*\*: Item (\S+)",
                                findings_text_value))
-    task_of: Dict[str, str] = {}
-    for task_id, task in tasks.items():
-        for finding in re.findall(r"\bP\d{3}\b", task["context"]):
-            task_of[finding] = task_id
+    task_of = {finding: str(group["task"]) for group in membership["groups"] for finding in group["findings"]}
     ruling = _read_json(directory / "ruling.json")
     relative_delta = delta_path.relative_to(repo).as_posix()
     final = build_final_view((capsule / "FINAL.md").read_text(encoding="utf-8"), delta, head, members,
@@ -1366,7 +1632,8 @@ def ship_check(repo: Path, api: Callable[..., object] = _default_api, override: 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("snapshot", "start", "rule", "regenerate", "views", "fall-back", "threads", "ship-check", "status"):
+    for name in ("snapshot", "start", "rule", "regenerate", "bind", "views", "fall-back", "threads", "ship-check",
+                 "status"):
         command = commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=name != "threads")
         if name == "snapshot":
@@ -1384,6 +1651,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             command.add_argument("--expected-head", required=True)
         if name == "ship-check":
             command.add_argument("--override", type=Path)
+        if name == "bind":
+            command.add_argument("--source", help="the review that opened a repair task outside fix-tasks")
         if name == "fall-back":
             command.add_argument("--reason", default="",
                                  help="why the ordinary final review replaces the lane views")
@@ -1406,6 +1675,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = views(args.repo, args.expected_head)
         elif args.command == "regenerate":
             result = regenerate(args.repo)
+        elif args.command == "bind":
+            result = bind(args.repo, args.source)
         elif args.command == "fall-back":
             result = fall_back(args.repo, args.reason)
         elif args.command == "ship-check":
