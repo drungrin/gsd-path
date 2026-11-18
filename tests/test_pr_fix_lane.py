@@ -53,6 +53,16 @@ class ReviewStateTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in pr_fix_lane.active_change_requests(reviews)], [11])
         self.assertEqual([item["id"] for item in pr_fix_lane.review_items(requests, comments)], ["R11", "C21"])
 
+    def test_a_reply_that_reopens_an_earlier_conversation_is_an_item(self) -> None:
+        # Round 2: the reviewer answers inside the round-1 thread instead of opening a new one.
+        requests = [review(31, "CHANGES_REQUESTED", body="Segunda rodada.")]
+        comments = [comment(21, 11, "Falta escopo"), comment(22, 12, "Corrigi em abc.", reply_to=21),
+                    comment(23, 31, "Ainda falta o prompt=login", reply_to=21),
+                    comment(24, 31, "Novo ponto"), comment(25, 31, "detalhe do novo ponto", reply_to=24)]
+        items = pr_fix_lane.review_items(requests, comments)
+        self.assertEqual([item["id"] for item in items], ["R31", "C23", "C24"])
+        self.assertEqual(pr_fix_lane.one_line(items[1]["text"]), "Ainda falta o prompt=login")
+
     def test_only_github_pull_requests(self) -> None:
         with self.assertRaisesRegex(pr_fix_lane.LaneError, "GitHub pull requests only"):
             pr_fix_lane.pull_parts("https://dev.azure.com/o/p/_git/r/pullrequest/3")
@@ -558,6 +568,18 @@ class PostThreadsTests(unittest.TestCase):
 
     def fake(self):
         return FakeThreads(self.head, [{"id": 21, "body": "Falta escopo"}, {"id": 22, "body": "Lento"}])
+
+    def test_a_reply_item_is_answered_and_resolved_in_its_conversation(self) -> None:
+        fake = self.fake()
+        fake.threads[0]["comments"]["nodes"] += [{"databaseId": 30, "body": "Corrigi em abc."},
+                                                 {"databaseId": 31, "body": "Ainda falta o prompt=login"}]
+        plan = dict(self.plan, round=2, items=[
+            {"id": "C31", "kind": "inline", "class": "fix", "note": "prompt=login em todo pedido", "link": "l4"}])
+        result = pr_fix_lane.post_threads(plan, fake.api)
+        self.assertEqual((result["replied"], result["resolved"], result["missing_threads"]), (["C31"], ["C31"], []))
+        replies = dict(next(review for review in fake.reviews if review["state"] == "COMMENTED")["replies"])
+        self.assertTrue(replies["T21"].startswith("Corrigi em `eeeeeeeeeeee`: prompt=login em todo pedido"))
+        self.assertEqual([thread["isResolved"] for thread in fake.threads], [True, False])
 
     def test_one_review_answers_every_item_and_resolves_only_the_fixes(self) -> None:
         fake = self.fake()

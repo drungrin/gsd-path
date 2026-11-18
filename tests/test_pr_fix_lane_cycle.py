@@ -372,15 +372,21 @@ class PrFixLaneCycleTests(unittest.TestCase):
             self.fake.reviews.append({"id": 13, "state": "CHANGES_REQUESTED", "user": {"login": "rev"},
                                       "submitted_at": "2026-11-16T05:00:00Z", "body": "Documente o escopo.",
                                       "commit_id": second["landing"], "html_url": PULL + "#pullrequestreview-13"})
+            # The reviewer also reopens the round-1 conversation inside its old thread.
+            self.fake.comments.append({"id": 23, "pull_request_review_id": 13, "body": "Ainda falta documentar.",
+                                       "path": "lib.py", "line": 1, "in_reply_to_id": 21,
+                                       "html_url": PULL + "#discussion_r23"})
             again = pr_fix_lane.snapshot(repo, api=self.fake.api)
-            self.assertEqual((again["round"], [item["id"] for item in again["items"]]), (2, ["R13"]))
+            self.assertEqual((again["round"], [item["id"] for item in again["items"]]), (2, ["R13", "C23"]))
             capsule = Path(again["directory"]) / "capsule/review"
             self.assertTrue((capsule / "pr-fix-1/provenance.json").is_file())
             self.assertIn("### Round 1", (capsule / "FINAL.md").read_text(encoding="utf-8"))
             ruling2 = base / "ruling-2.json"
             ruling2.write_text(json.dumps({"verbatim": "Documentar.", "items": [
                 {"id": "R13", "class": "fix", "group": "G1", "title": "Documentar o escopo",
-                 "fix_direction": "Explicar require_scope no docstring"}]}), encoding="utf-8")
+                 "fix_direction": "Explicar require_scope no docstring"},
+                {"id": "C23", "class": "fix", "group": "G1", "title": "Documentar na conversa antiga",
+                 "fix_direction": "O mesmo docstring responde a conversa reaberta"}]}), encoding="utf-8")
             self.assertEqual(pr_fix_lane.start(repo, ruling2)["status"], "opened")
             self.gate("check_handoffs.py", "patch", "--repo", str(repo))
             self.assertTrue((repo / ".project/review/pr-review-2.md").is_file())
@@ -419,7 +425,7 @@ class PrFixLaneCycleTests(unittest.TestCase):
         self.write(".project/plan/PLAN.md", plan)
         task = LANE_TASK.format(today=TODAY).replace("id: T002", "id: T003").replace("wave: 2", "wave: 3") \
             .replace("# T002", "# T003").replace("Closes P001 and P002 from the PR change request",
-                                                 "Closes P001 from the second PR change request")
+                                                 "Closes P001 and P002 from the second PR change request")
         self.write(".project/tasks/T003-doc.md", task)
         # A round opened by an earlier runtime has no first_wave: the gate finds and records it.
         record_path = Path(pr_fix_lane.lane_round(repo)["directory"]) / "round.json"
@@ -438,7 +444,8 @@ class PrFixLaneCycleTests(unittest.TestCase):
                           restart["commit"])
         review = (DELTA_REVIEW.replace("wave 2", "wave 3").replace("T002", "T003")
                   .replace("### Item R11: closed\n\n- **Evidence**: web lib.py require_scope\n\n", "")
-                  .replace("### Item C21: closed", "### Item R13: closed"))
+                  .replace("### Item C21: closed", "### Item C23: closed\n\n- **Evidence**: web lib.py docstring"
+                                                    "\n\n### Item R13: closed"))
         self.write(".project/review/wave-3.cycle1.md", review)
         self.gate("check_handoffs.py", "wave", "--repo", str(repo), "--review", ".project/review/wave-3.cycle1.md")
         wave3 = isolation.checkpoint(repo, third["commit"], "build: wave 3 reviewed",

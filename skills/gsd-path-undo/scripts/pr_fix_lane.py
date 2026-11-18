@@ -246,17 +246,26 @@ def active_change_requests(reviews: Sequence[dict]) -> List[dict]:
 
 
 def review_items(requests: Sequence[dict], comments: Sequence[dict]) -> List[dict]:
-    """One item per non-empty change-request body and per top-level inline comment."""
+    """One item per non-empty change-request body and per inline comment that needs an answer.
+
+    That is every top-level inline comment of an active change request, plus every reply the
+    request adds to a conversation an earlier round opened (a reviewer reopening a point
+    inside its old thread instead of opening a new one).
+    """
     items: List[dict] = []
     ids = {int(review["id"]) for review in requests}
+    top = {int(comment["id"]) for comment in comments
+           if not comment.get("in_reply_to_id") and int(comment.get("pull_request_review_id") or 0) in ids}
     for review in sorted(requests, key=lambda item: int(item["id"])):
         if one_line(review.get("body") or ""):
             items.append({"id": f"R{review['id']}", "kind": "review", "review": int(review["id"]),
                           "location": "none", "link": review.get("html_url") or "none",
                           "text": review.get("body") or ""})
     for comment in sorted(comments, key=lambda item: int(item["id"])):
-        if comment.get("in_reply_to_id") or int(comment.get("pull_request_review_id") or 0) not in ids:
+        if int(comment.get("pull_request_review_id") or 0) not in ids:
             continue
+        if comment.get("in_reply_to_id") and int(comment["in_reply_to_id"]) in top:
+            continue  # a reply inside this request's own new conversation is answered with it
         if not one_line(comment.get("body") or ""):
             continue
         line = comment.get("line") or comment.get("original_line")
@@ -1087,9 +1096,10 @@ def _pull_threads(api: Callable[..., object], repository: str, number: int) -> d
 
 
 def _thread_of(threads: Sequence[dict], comment_id: int) -> Optional[dict]:
+    """The conversation holding the comment, whether it opened the thread or replied in it."""
     for thread in threads:
         nodes = (thread.get("comments") or {}).get("nodes") or []
-        if nodes and nodes[0].get("databaseId") == comment_id:
+        if any(node.get("databaseId") == comment_id for node in nodes):
             return thread
     return None
 
