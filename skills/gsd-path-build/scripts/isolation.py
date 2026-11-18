@@ -6487,8 +6487,12 @@ def _validate_member_rebase(
         for key in ("ruling", "branch", "default_branch"):
             if not isinstance(adoption[key], str) or not adoption[key].strip():
                 raise IsolationError(f"{key} must be a non-empty string")
-        if adoption["published_from"] not in (None, adoption["old_tip"]):
+        # A PR fix round's unpublished landings ride on the head the open PR published:
+        # then the lease, the preserved close and its PR proof all name that published head.
+        prefix = adoption["published_from"] not in (None, adoption["old_tip"])
+        if prefix and (adoption["prior_close"] is None or not isinstance(adoption["published_from"], str)):
             raise IsolationError("published_from must be null or the old tip")
+        published_head = adoption["published_from"] if prefix else adoption["old_tip"]
         prior = adoption["prior_close"]
         if prior is not None:
             if not (isinstance(prior, dict) and set(prior) == {"archive", "row", "pull_request"}
@@ -6497,13 +6501,15 @@ def _validate_member_rebase(
                     and isinstance(prior["row"], dict) and prior["row"].get("name") == member
                     and prior["row"].get("status") == "pending"
                     and isinstance(prior["row"].get("reviewed_head"), str)
-                    and _resolve_member_adoptions(processed, member, prior["row"]["reviewed_head"]) == adoption["old_tip"]
+                    and _resolve_member_adoptions(processed, member, prior["row"]["reviewed_head"]) == published_head
                     and isinstance(prior["pull_request"], dict)
-                    and prior["pull_request"].get("source") == adoption["old_tip"]
+                    and prior["pull_request"].get("source") == published_head
                     and prior["pull_request"].get("url") == prior["row"].get("pull_request")
                     and prior["pull_request"].get("target") == adoption["default_branch"]):
                 raise IsolationError("prior_close must preserve the old pending row and its open-PR source proof")
         checkout, project = member_checkout(coordinator, member)
+        if prefix and _published_prefix(checkout, str(adoption["published_from"]), adoption["old_tip"]) is None:
+            raise IsolationError("published_from must be null, the old tip, or the PR head it extends")
         if (not re.fullmatch(r"feature/" + re.escape(_common.branch_slug(project)) + r"-milestone-\d{3,}",
                              adoption["branch"])
                 or adoption["default_branch"] != member_default_branch(coordinator, member)):
@@ -6704,9 +6710,14 @@ def _member_bound_holder(checkout: Path, branch: str) -> Optional[Path]:
 
 
 def _stale_member_close(
-    coordinator: Path, common: Path, milestone: int, member: str, old_tip: str
+    coordinator: Path, common: Path, milestone: int, member: str, old_tip: str,
+    published: Optional[str] = None,
 ) -> Optional[Dict[str, object]]:
-    """A pending close left by an undone archive; never erase or complete its live PR."""
+    """A pending close left by an undone archive; never erase or complete its live PR.
+
+    Its reviewed head is the local tip, or `published`: the head the open PR still
+    publishes while a PR fix round's landings sit on top of it, unpublished.
+    """
     members = _members_module()
     found = None
     for path in sorted((common / "gsd-path" / "member-close").glob(f"{milestone:03d}-*.json")):
@@ -6721,7 +6732,8 @@ def _stale_member_close(
                 raise MemberRebaseError("integrated", f"member {member} is already integrated by {path.name}")
             reviewed = row.get("reviewed_head")
             if (row.get("status") != "pending" or not isinstance(reviewed, str)
-                    or resolve_member_commit(coordinator, coordinator / ".project", member, reviewed) != old_tip
+                    or resolve_member_commit(coordinator, coordinator / ".project", member, reviewed)
+                    not in {old_tip, published or old_tip}
                     or found is not None):
                 raise MemberRebaseError("close-journal", f"member-close journal {path} names another head of {member}")
             if not isinstance(row.get("pull_request"), str) or not row["pull_request"]:
@@ -6729,6 +6741,13 @@ def _stale_member_close(
                                         "retain its journal and resolve that close transaction first")
             found = {"archive": path.stem, "row": row}
     return found
+
+
+def _published_prefix(checkout: Path, remote: Optional[str], tip: str) -> Optional[str]:
+    """The remote head when it is a strict ancestor of the local tip, else None."""
+    if remote is None or remote == tip:
+        return None
+    return remote if run_git(checkout, "merge-base", "--is-ancestor", remote, tip).returncode == 0 else None
 
 
 def _prove_open_member_pull_request(
@@ -6932,11 +6951,18 @@ def _member_rebase_plan(
         raise MemberRebaseError("onto-mismatch", f"--onto must be the current origin/{default} ({live}); "
                                 "preview again with that SHA")
     remote_bound = _remote_ref(checkout, f"refs/heads/{branch}")
-    if remote_bound not in (None, old_tip):
+    published = _published_prefix(checkout, remote_bound, old_tip)
+    if remote_bound not in (None, old_tip) and published is None:
         raise MemberRebaseError("remote-moved", f"origin/{branch} is at {remote_bound}, not the local tip {old_tip}")
-    close = _stale_member_close(coordinator, common, int(bound.group(1)), member, old_tip)
+    close = _stale_member_close(coordinator, common, int(bound.group(1)), member, old_tip, published)
+    if published is not None and (close is None or resolve_member_commit(
+            coordinator, coordinator / ".project", member, str(close["row"]["reviewed_head"])) != published):
+        # Unpublished landings may ride on a published head only under the pending close
+        # that published exactly that head (a PR fix round after an undone archive).
+        raise MemberRebaseError("remote-moved", f"origin/{branch} is at {remote_bound}, not the local tip {old_tip}, "
+                                "and no pending member close names that published head")
     if close is not None:
-        close["pull_request"] = _prove_open_member_pull_request(checkout, branch, default, old_tip,
+        close["pull_request"] = _prove_open_member_pull_request(checkout, branch, default, remote_bound or old_tip,
                                                                str(close["row"]["pull_request"]))
     authorization = members._authorization_ref(project, "push", f"refs/heads/{branch}")
     return {
@@ -7169,7 +7195,9 @@ def _validate_member_rebase_journal(
             raise MemberRebaseError("journal-invalid", "member rebase journal no longer matches its owned targets")
         for key in ("onto", "old_base", "old_tip", "contract_head"):
             require_full_sha(journal[key])
-        if journal["remote_before"] not in (None, journal["old_tip"]):
+        if journal["remote_before"] not in (None, journal["old_tip"]) and (
+                not journal.get("close") or _published_prefix(
+                    checkout, journal["remote_before"], journal["old_tip"]) is None):
             raise MemberRebaseError("journal-invalid", "invalid publication lease in member rebase journal")
         if (not isinstance(journal["ruling"], str) or not journal["ruling"].strip()
                 or journal["task_contracts"] != _member_rebase_contracts(coordinator, journal["contract_head"])):
@@ -7401,7 +7429,8 @@ def _publish_member_rebase(journal: Dict[str, object]) -> None:
         if holder is not None and uncommitted_paths(holder):
             raise MemberRebaseError("bound-dirty", f"member bound checkout became dirty before publication: {holder}")
         if journal["close"]:
-            _prove_open_member_pull_request(checkout, branch, str(journal["default_branch"]), old_tip,
+            _prove_open_member_pull_request(checkout, branch, str(journal["default_branch"]),
+                                             str(journal["remote_before"] or old_tip),
                                              str(journal["close"]["row"]["pull_request"]))
         # A later ref value cannot tell us whether an earlier push succeeded
         # and was advanced again. Persist intent before any push can be sent.

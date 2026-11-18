@@ -612,6 +612,34 @@ class MemberRebaseAdoptionTests(MemberRebaseFixture):
         self.assertEqual(receipt["adoptions"][0]["prior_close"],
                          {"archive": "001-demo", "row": row, "pull_request": proof})
 
+    def test_a_pr_fix_round_rebases_its_unpublished_landing_over_the_published_pr_head(self) -> None:
+        common = Path(git(self.coordinator, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        published = git(self.member, "rev-parse", f"{self.old_tip}^")
+        row = {"name": "web", "mode": "pull-request", "reviewed_head": published, "status": "pending",
+               "merge": None, "tag": None, "pull_request": "https://github.com/acme/web/pull/7"}
+        members.write_member_close(common, "001-demo", [row])
+        git(self.member, "push", "-q", "origin", f"{published}:refs/heads/{BOUND}")
+        proof = {"url": row["pull_request"], "number": 7, "source": published, "target": "main"}
+        with mock.patch.object(isolation, "_prove_open_member_pull_request", return_value=proof) as proved:
+            preview = isolation.preview_member_rebase(self.coordinator, "web", self.onto, RULING)
+            self.assertEqual(preview["preserve_close"], {"archive": "001-demo", "row": row, "pull_request": proof})
+            self.assertEqual(preview["lease"], published)
+            result = self.adopt()
+        self.assertTrue(all(call.args[3] == published for call in proved.call_args_list[:2]), proved.call_args_list)
+        self.assertEqual(result["published"]["lease"], published)
+        self.assertEqual(self.remote_ref(f"refs/heads/{BOUND}"), result["new_tip"])
+        self.assertEqual(members.read_member_close(common, "001-demo"), [row])
+        receipt = json.loads(self.receipt_path().read_text(encoding="utf-8"))
+        self.assertEqual(receipt["adoptions"][0]["published_from"], published)
+
+    def test_an_unpublished_landing_needs_the_pending_close_of_its_published_head(self) -> None:
+        published = git(self.member, "rev-parse", f"{self.old_tip}^")
+        git(self.member, "push", "-q", "origin", f"{published}:refs/heads/{BOUND}")
+        with self.assertRaises(isolation.MemberRebaseError) as refused:
+            isolation.preview_member_rebase(self.coordinator, "web", self.onto, RULING)
+        self.assertEqual(refused.exception.code, "remote-moved")
+        self.assertIn("no pending member close names that published head", str(refused.exception))
+
     def test_uncommitted_state_log_stays_out_of_the_adoption_commit(self) -> None:
         state = self.coordinator / ".project" / "STATE.md"
         state.write_text(state.read_text(encoding="utf-8") + "- 2026-10-19 — build — owner ruling recorded\n",
