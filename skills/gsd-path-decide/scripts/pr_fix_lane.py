@@ -664,6 +664,11 @@ def restore_lessons(repo: Path) -> dict:
 def start(repo: Path, ruling_path: Path) -> dict:
     """Record the ruling, undo the archive, write the hand-off, and block ship for patch mode."""
     repo = repo.resolve()
+    with _LaneLock(repo):
+        return _start(repo, ruling_path)
+
+
+def _start(repo: Path, ruling_path: Path) -> dict:
     record = lane_round(repo)
     if record is None:
         raise LaneError("no captured lane round; run snapshot first (a record-only round uses rule)")
@@ -1578,6 +1583,11 @@ def _lane_members(repo: Path, record: Mapping[str, object]) -> Tuple[dict, int, 
 def views(repo: Path, expected_head: str) -> dict:
     """Generate FINAL.md and gap views for the active lane round; refuse when anything is unproven."""
     repo = repo.resolve()
+    with _LaneLock(repo):
+        return _views(repo, expected_head)
+
+
+def _views(repo: Path, expected_head: str) -> dict:
     record = lane_round(repo)
     if record is None:
         raise LaneError("no PR fix lane round is open")

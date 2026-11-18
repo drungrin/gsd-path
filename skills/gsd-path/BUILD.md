@@ -156,11 +156,19 @@ Every recorded `full` or `deep` cycle owes its configured panel, including
 blocked cycles, focused re-checks, and repair waves. `review-panel-required`
 stops task dispatch and later review cycles until that evidence is present;
 run the panel step for the named wave and cycle before advancing.
-A `delta` wave belongs to the PR fix lane (ship contract, ADR 0006). It has
-one canonical reviewer and never a panel, and its tasks run only their own
-Verify at landing. The driver's review brief names the lane baseline and
-`templates/delta-review.md`. A natively dispatched reviewer gets the same two
-inputs and writes the same `## PR fix delta` section with `Depth: delta`.
+A `delta` wave belongs to the PR fix lane (ship contract, ADRs 0006 and 0008).
+It has one canonical reviewer and never a panel. Its member tasks (listed in
+`.project/plan/pr-fix-round-<n>.json`) run only their own Verify at landing
+while the round is open; after a fallback they run regression reruns again.
+Build entry refuses a membership that differs from the one the patch approval
+recorded. `fix-tasks` gives a repair of member tasks `lane_round: <n>` and
+binds it to the round. The driver's review brief names the lane baseline,
+`templates/delta-review.md`, and, for the round's first lane wave, the
+cumulative lines (round tasks, membership digest, judged heads) the review
+records. The wave gate renders the final views from a passing delta and
+refuses it when they would fail the final gate. A natively dispatched
+reviewer gets the same inputs and writes the same `## PR fix delta` section
+with `Depth: delta`.
 
 | Receipt | Next action |
 |---|---|

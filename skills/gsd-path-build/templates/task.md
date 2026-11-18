@@ -16,6 +16,7 @@ task_branch: null   # orchestrator-owned: chore/task-<id> while parallel; null w
 # effort: <advertised effort|inherit>
 # repo: <member>    # multi-repo only: the MEMBERS.md member this task changes; omit for the coordinator
 # supersedes: [<task id>]  # only when INTENT requires it: earlier-wave tasks whose behavior this task replaces; retires their Verify
+# lane_round: <n>   # PR fix lane only: the round this task answers; `pr_fix_lane.py bind` records it (ADR 0008)
 # Withdrawn — <YYYY-MM-DD>: "<owner ruling verbatim>"  # only in the Log, only
 #   after an owner ruling: status: withdrawn keeps the id in inventory with no
 #   dispatch and no landing; the citation line is mandatory or the gate fails (#483)

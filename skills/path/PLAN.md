@@ -478,11 +478,17 @@ first.
    `.project/review/pr-review-<n>.md`, written by `pr_fix_lane.py start`):
    dispatch no planner and no plan panel. Append wave W+1 yourself with
    `Review depth: delta`, one task per group of the recorded ruling. Each
-   task's Context cites the `P###` ids it closes and quotes their Evidence;
-   its Intent coverage is `- None`; it names a test that fails before the
-   fix unless the item is docs-only; its Verify names a path from its
-   `files`. Every lane finding has exactly one task. The `delta` depth is
-   legal only in an open lane round, and the plan gate checks this.
+   task carries `lane_round: <n>` in its frontmatter; its Context cites the
+   `P###` ids it closes and quotes their Evidence; its Intent coverage is
+   `- None`; it names a test that fails before the fix unless the item is
+   docs-only; its Verify names a path from its `files`. Every lane finding
+   has exactly one task, and one task closes each ruling group. Then run
+   `python3 <absolute pr_fix_lane.py> bind --repo <absolute root>`: it writes
+   `.project/plan/pr-fix-round-<n>.json`, the round membership the plan gate,
+   the build, and the views read (ADR 0008). Rerun it after any edit to a
+   lane task before the approval; after the approval a changed lane task
+   needs a new patch approval. The `delta` depth is legal only for members of
+   an open lane round, and the plan gate checks this.
 3. Gate exactly as in step 3 above, scoped to the new tasks plus one extra
    check: patch tasks must not touch a scope-out veto or contradict a
    SYNTHESIS decision — a finding that requires either goes back to the

@@ -697,7 +697,10 @@ step; do not reconstruct them in shell calls.
    ordinary route can still answer the conversations. Then use the ordinary
    route: undo the uncommitted archive with `$gsd-path-undo` and rerun final
    review. A success writes the baseline capsule and returns the review
-   items; nothing in `.project/` changes.
+   items; nothing in `.project/` changes. With no change request,
+   `--record-only` also captures the unanswered inline comments of an
+   approval or comment review on the published head: rule them (usually
+   `follow-up`) and answer them with `threads` on that same head.
 2. Read every item against the code at the PR head, and propose one class
    per item: `fix` (local: no change to a success criterion, interface
    contract, or design decision), `follow-up` (left for a later milestone;
@@ -742,7 +745,8 @@ step; do not reconstruct them in shell calls.
    not fixed.
 6. Before `record-shipment`, run `python3 <absolute pr_fix_lane.py>
    ship-check --repo <root>`. A still-active change request blocks: report it
-   and stop. Only an explicit owner ruling overrides it, passed as
+   and stop. A captured round whose items were never ruled also blocks: rule
+   and answer them first. Only an explicit owner ruling overrides it, passed as
    `--override <file>` holding `{"head", "reviews", "verbatim"}` for the
    published head and the exact outstanding review ids; record that ruling
    in the Log.

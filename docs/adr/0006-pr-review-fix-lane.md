@@ -4,6 +4,12 @@ Status: accepted (2026-11-16), revision 3 as implemented, after two rounds of a
 two-model design panel. Fork-only. Upstream `main` (`d5a30f5f`) has no route for a forge
 review that requests changes on a milestone PR.
 
+Partly superseded by [ADR 0008](0008-pr-fix-lane-ownership-and-early-validation.md)
+(revision 4): round ownership is an approved membership file, not the position
+of delta waves; the wave gate validates the views a delta produces; the
+continuation across the archive undo is kept by the lane; and approval
+comments are captured. The rest of this record stands.
+
 ## Context
 
 A member in `pull-request` integration closes through one PR per milestone.
@@ -153,7 +159,8 @@ covers regressions.
 
 The lane wave carries `Review depth: delta`, the wave-scoped policy. The plan
 gate accepts it only in an open lane round, and only for the last waves of the
-plan (repair waves inherit their source wave's depth). The panel rule already
+plan (repair waves inherit their source wave's depth). (Superseded by ADR 0008:
+the gate reads the round's membership file instead of wave positions.) The panel rule already
 applies only to `full` and `deep` cycles, so a delta cycle owes no panel in
 dispatch, readiness, or archive validation. A delta wave review is one
 **delta reviewer**, with no panel. Earlier waves keep their own policy and
