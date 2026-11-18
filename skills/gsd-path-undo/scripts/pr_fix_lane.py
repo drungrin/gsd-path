@@ -558,6 +558,77 @@ def _preflight_handoff(record: Mapping[str, object], snap: Mapping[str, object],
                         "correct the ruling text and run start again (nothing was recorded)") from error
 
 
+# --- continuation across the archive undo (ADR 0008) ------------------------------------
+
+CONTINUATION_NAME = "pr-fix-continuation-{round}.md"
+
+
+def _log_suffix(repo: Path) -> List[str]:
+    """STATE.md Log lines added since HEAD, verbatim."""
+    lines = lambda text: [line for line in text.split("\n## Log\n", 1)[-1].splitlines() if line.startswith("- ")] \
+        if "\n## Log\n" in text else []
+    head = lines(_git(repo, "show", "HEAD:.project/STATE.md", check=False))
+    current = lines((repo / ".project/STATE.md").read_text(encoding="utf-8"))
+    return current[len(head):] if current[:len(head)] == head else []
+
+
+def _write_continuation(repo: Path, directory: Path, archive: str) -> None:
+    """Before the archive undo: keep the Log lines and ship lessons it is about to drop.
+
+    Written once; a resumed start after a crash keeps the first receipt.
+    """
+    path = directory / "continuation.json"
+    if path.is_file():
+        return
+    lessons = _sibling("pipeline_undo")._ship_lessons(repo, archive) or []
+    value = {"log": _log_suffix(repo), "lessons": lessons}
+    _write_json(path, dict(value, sha256=_json_digest(value)))
+
+
+def _continuation(directory: Path) -> Optional[dict]:
+    path = directory / "continuation.json"
+    if not path.is_file():
+        return None
+    value = _read_json(path)
+    if _json_digest({"log": value.get("log"), "lessons": value.get("lessons")}) != value.get("sha256"):
+        raise LaneError("the PR fix round's continuation receipt changed after it was written")
+    return value
+
+
+def _restore_continuation_log(repo: Path, directory: Path, round_number: int) -> Optional[str]:
+    """After the undo: the dropped Log lines go, byte for byte, into a review file the archive keeps."""
+    value = _continuation(directory)
+    if not value or not value["log"]:
+        return None
+    relative = f".project/review/{CONTINUATION_NAME.format(round=round_number)}"
+    text = (f"# PR fix round {round_number} — continuation\n\nSTATE.md Log lines recorded before the "
+            "round's archive undo, verbatim:\n\n" + "\n".join(value["log"]) + "\n")
+    path = repo / relative
+    if not path.is_file() or path.read_text(encoding="utf-8") != text:
+        _common.atomic_write(path, text)
+    return f"{relative} sha256 {_digest(path)}"
+
+
+def restore_lessons(repo: Path) -> dict:
+    """Ship lessons step: re-append the lessons the round's archive undo dropped, each once.
+
+    Lines already in LESSONS.md are skipped, so a rerun or a later round appends nothing twice.
+    """
+    repo = repo.resolve()
+    record = active_round(repo)
+    value = _continuation(Path(str(record["directory"]))) if record else None
+    if not value or not value["lessons"]:
+        return {"schema": SCHEMA, "status": "none", "appended": []}
+    path = repo / ".project/LESSONS.md"
+    current = path.read_text(encoding="utf-8") if path.is_file() else ""
+    present = set(current.splitlines())
+    missing = [line for line in value["lessons"] if line not in present]
+    if missing:
+        prefix = current if not current or current.endswith("\n") else current + "\n"
+        _common.atomic_write(path, prefix + "\n".join(missing) + "\n")
+    return {"schema": SCHEMA, "status": "restored" if missing else "present", "appended": missing}
+
+
 def start(repo: Path, ruling_path: Path) -> dict:
     """Record the ruling, undo the archive, write the hand-off, and block ship for patch mode."""
     repo = repo.resolve()
@@ -584,6 +655,7 @@ def start(repo: Path, ruling_path: Path) -> dict:
         raise LaneError("HEAD moved after the capsule was written; the lane cannot continue")
     if record["stage"] == "ruled":
         if state.archive:
+            _write_continuation(repo, directory, state.archive)
             undo = _sibling("pipeline_undo")
             previewed = undo.preview(repo)
             if previewed["target"].get("kind") != "uncommitted-archive":
@@ -600,13 +672,15 @@ def start(repo: Path, ruling_path: Path) -> dict:
         review.mkdir(parents=True, exist_ok=True)
         _common.atomic_write(review / f"pr-review-{record['round']}.md", source_text(record, snap, fixes))
         _common.atomic_write(review / "PATCH-FINDINGS.md", findings_text(record, snap, fixes))
+        continued = _restore_continuation_log(repo, directory, int(record["round"]))
         state = _state(repo)
         if (state.phase, state.status) == ("ship", "active"):
             _sibling("pipeline_state").transition_state(
                 repo, {"phase": "ship", "status": "active", "branch": state.branch, "archive": None},
                 {"status": "blocked"},
                 f"{LANE_EVENT}: round {record['round']}; {record['pull_request']}; "
-                f"{len(fixes)} fix item(s); ruling: {one_line(ruling['verbatim'])}")
+                f"{len(fixes)} fix item(s); ruling: {one_line(ruling['verbatim'])}"
+                + (f"; continuation restored: {continued}" if continued else ""))
         # Round ownership is the membership file `bind` writes, never plan geometry (ADR 0008).
         record["membership"] = MEMBERSHIP_SCHEMA
         record["stage"] = "opened"
@@ -1916,7 +1990,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("snapshot", "start", "rule", "regenerate", "bind", "views", "fall-back", "threads", "ship-check",
-                 "status"):
+                 "restore-lessons", "status"):
         command = commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=name != "threads")
         if name == "snapshot":
@@ -1960,6 +2034,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = regenerate(args.repo)
         elif args.command == "bind":
             result = bind(args.repo, args.source)
+        elif args.command == "restore-lessons":
+            result = restore_lessons(args.repo)
         elif args.command == "fall-back":
             result = fall_back(args.repo, args.reason)
         elif args.command == "ship-check":

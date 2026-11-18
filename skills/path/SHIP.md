@@ -298,6 +298,9 @@ The persisted `STATE.archive` field is the transaction identity.
    missing): one line per repeat-offender criterion across this milestone's
    wave reviews and one per escalation in the STATE.md log, formatted
    `- <NNN>-<slug> — <lesson>`. Skip the file entirely when there are none.
+   When a PR fix lane round is recorded, first run `python3 <absolute
+   pr_fix_lane.py> restore-lessons --repo <root>`: it re-appends, once, the
+   lessons the round's archive undo dropped. Do not write them again by hand.
    LESSONS.md stays in the active root across milestones — it ships inside
    the ship commit but never archives — and the planner reads it. The same
    persistence applies to program artifacts when present: CHARTER.md,
@@ -714,14 +717,18 @@ step; do not reconstruct them in shell calls.
    run `python3 <absolute pr_fix_lane.py> start --repo <root>
    --ruling <file>`. It records the ruling, undoes the archive, writes
    `.project/review/pr-review-<n>.md` and PATCH-FINDINGS.md, and sets
-   `ship/blocked`. Route to plan patch mode; the plan contract writes the
-   lane wave without a planner.
+   `ship/blocked`. The STATE.md Log lines the undo drops are kept verbatim in
+   `.project/review/pr-fix-continuation-<n>.md`, and the lane event names it;
+   do not re-record them. Route to plan patch mode; the plan contract writes
+   the lane wave without a planner, then `python3 <absolute pr_fix_lane.py>
+   bind --repo <root>` records the round membership before the approval.
 4. After build, final review step 3 returns `lane: views` or `lane: fallback`
    as described above. The archive transaction and `close-members` run as
-   usual and publish the lane landings onto the same PR. A round that fell
-   back under a runtime before 1.7.1.57 is still marked open: run
-   `python3 <absolute pr_fix_lane.py> fall-back --repo <root> --reason <why>`
-   once before the ordinary patch route.
+   usual and publish the lane landings onto the same PR. A round opened by an
+   earlier runtime has no membership: the plan gate refuses it and names
+   `python3 <absolute pr_fix_lane.py> fall-back --repo <root> --reason <why>`;
+   run it once, then take the ordinary patch route, moving any unfinished
+   lane task to a standard wave.
 5. After `close-members` returns `awaiting-merge` with the new head, run
    `python3 <absolute pr_fix_lane.py> threads --repo <root>` once, in the lane
    and in a record-only round. It posts one COMMENT review that lists every

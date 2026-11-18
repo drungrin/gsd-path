@@ -319,8 +319,26 @@ class PrFixLaneCycleTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in snapshot["items"]], ["R11", "C21"])
         ruling = base / "ruling.json"
         ruling.write_text(json.dumps(RULING), encoding="utf-8")
+        # Ship already appended a lesson and Log lines; the archive undo drops both.
+        lesson = f"- {Path(prepared).name} — keep the scope check next to the call"
+        (repo / ".project/LESSONS.md").write_text(lesson + "\n", encoding="utf-8")
+        state_path = repo / ".project/STATE.md"
+        state_path.write_text(state_path.read_text(encoding="utf-8")
+                              + f"- {TODAY} — ship — close-members awaiting merge of {PULL}\n", encoding="utf-8")
+        dropped_log = pr_fix_lane._log_suffix(repo)
+        self.assertTrue(dropped_log, "the prepared archive left ship Log lines to carry")
         opened = pr_fix_lane.start(repo, ruling)
         self.assertEqual(opened["status"], "opened")
+        self.assertFalse((repo / ".project/LESSONS.md").exists())
+        continuation = repo / ".project/review/pr-fix-continuation-1.md"
+        if dropped_log:
+            self.assertTrue(continuation.read_text(encoding="utf-8").endswith("\n".join(dropped_log) + "\n"))
+            self.assertIn("continuation restored: .project/review/pr-fix-continuation-1.md sha256",
+                          (repo / ".project/STATE.md").read_text(encoding="utf-8"))
+        self.assertEqual(pr_fix_lane.restore_lessons(repo)["appended"], [lesson])
+        self.assertEqual(pr_fix_lane.restore_lessons(repo)["status"], "present")
+        self.assertEqual((repo / ".project/LESSONS.md").read_text(encoding="utf-8"), lesson + "\n")
+        (repo / ".project/LESSONS.md").unlink()  # the ship lessons step restores it at the next archive
         self.assertEqual(pipeline_state.load_state(repo)[0].status, "blocked")
         self.gate("check_handoffs.py", "patch", "--repo", str(repo))
         # A hand-off an earlier runtime wrote is rewritten from the recorded ruling.
