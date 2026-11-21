@@ -165,6 +165,32 @@ FAKE_PANELIST = textwrap.dedent(
 )
 
 
+# A captured-output panelist: it returns its report as its final message (stdout, or the {final}
+# file named in argv) and must not be told to write a file.
+FAKE_CAPTURED_PANELIST = textwrap.dedent(
+    """
+    import os, re, sys
+    from pathlib import Path
+    brief = sys.stdin.buffer.read().decode("utf-8")
+    if "Write exactly this output file" in brief or "Your report is your final message" not in brief:
+        sys.exit(9)
+    family = re.search(r"Family: (\\w+)\\.", brief).group(1)
+    model = re.search(r"Model: (\\S+)\\.", brief).group(1)
+    wave, cycle = re.search(r"wave (\\d+), cycle (\\d+)", brief).groups()
+    mode = os.environ.get("FAKE_CAPTURE", "ok")
+    if mode == "fail":
+        print("panel-cli: login: not signed in", file=sys.stderr)
+        sys.exit(3)
+    report = "" if mode == "empty" else (
+        f"# Panel — wave {wave}, cycle {cycle}\\n\\n- Family: {family}\\n- Model: {model}\\n- Depth: full\\n\\n"
+        "## Findings\\n\\n- none\\n\\n## Summary\\n\\nNo findings.\\n")
+    if len(sys.argv) > 2:
+        Path(sys.argv[2]).write_text(report, encoding="utf-8")
+    else:
+        sys.stdout.write(report)
+    """
+)
+
 class DispatchDriverTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -280,6 +306,7 @@ class DispatchDriverTests(unittest.TestCase):
         (root / "fake_coder.py").write_bytes(FAKE_CODER.encode("utf-8"))
         (root / "fake_reviewer.py").write_bytes(FAKE_REVIEWER.encode("utf-8"))
         (root / "fake_panelist.py").write_bytes(FAKE_PANELIST.encode("utf-8"))
+        (root / "fake_captured_panelist.py").write_bytes(FAKE_CAPTURED_PANELIST.encode("utf-8"))
         (root / "fake_skeptic.py").write_bytes(FAKE_SKEPTIC.encode("utf-8"))
         run_git(root, "add", ".")
         run_git(root, "commit", "-m", "fixture")
@@ -2983,6 +3010,104 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review")
         self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
         self.assertEqual(self.branches(root), ["feature/milestone-001"])
+
+    def captured_panel(self, root: Path, commands: dict, *extra: str, child: bool = False,
+                       advertised: str = "gpt-6-astra,claude-opus", **fake: str) -> dict:
+        path = root.parent / "family-commands.json"
+        path.write_text(json.dumps(commands), encoding="utf-8")
+        resources = ["--role-brief", str(PROJECT_ROOT / "skills/gsd-path-build/references/reviewer.md"),
+                     "--template", str(PROJECT_ROOT / "skills/gsd-path-build/templates/wave-panel.md")]
+        child_args = (["--child-command", f"{sys.executable} {root / 'fake_panelist.py'} {{model}}"]
+                      if child else [])
+        return self.driver(root, "panel", "--wave", "1", "--cycle", "1", "--family-commands", str(path),
+                           "--advertised", advertised, "--parent-slug", "gemini-pro", *child_args,
+                           *resources, *extra, **fake)
+
+    def captured(self, root: Path, output: str = "stdout") -> dict:
+        script = f"{sys.executable} {root / 'fake_captured_panelist.py'} {{model}}"
+        return {"command": script + (" {final}" if output == "file" else ""), "output": output}
+
+    def test_panel_captures_each_family_report_and_writes_the_family_file(self) -> None:
+        for output in ("stdout", "file"):
+            with self.subTest(output=output):
+                root = self.root / output
+                root.mkdir()
+                self.fixture(root)
+                self.set_panel(root, "gpt,claude")
+                self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+                self.assertEqual(self.review(root, "--wait", "60")["status"], "pass")
+                commands = {"gpt": self.captured(root, output), "claude": self.captured(root, output)}
+                receipt = self.captured_panel(root, commands, "--wait", "60")
+                self.assertEqual(receipt["status"], "pass", receipt)
+                self.assertEqual(receipt["transports"], {"gpt": "captured", "claude": "captured"})
+                report = (root / ".project/review/wave-1.cycle1.panel.gpt.md").read_text(encoding="utf-8")
+                self.assertTrue(report.startswith("# Panel — wave 1, cycle 1"), report)
+                self.assertIn("- Model: gpt-6-astra", report)
+                self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review")
+                self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
+
+    def test_panel_blocks_a_captured_family_that_fails_or_returns_nothing(self) -> None:
+        for mode, reason in (("fail", "child exited 3: panel-cli: login: not signed in"),
+                             ("empty", "child returned an empty report")):
+            with self.subTest(mode=mode):
+                root = self.root / mode
+                root.mkdir()
+                self.fixture(root)
+                self.set_panel(root, "gpt")
+                self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+                self.assertEqual(self.review(root, "--wait", "60")["status"], "pass")
+                head = self.head(root)
+                receipt = self.captured_panel(root, {"gpt": self.captured(root)}, "--wait", "60",
+                                              FAKE_CAPTURE=mode)
+                self.assertEqual(receipt["status"], "blocked", receipt)
+                self.assertEqual([item["reason"] for item in receipt["blocked"]], [reason])
+                self.assertNotIn("merge", receipt)
+                self.assertEqual(self.head(root), head)
+
+    def test_panel_mixes_a_captured_family_with_a_native_one_the_parent_collects(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.set_panel(root, "gpt,claude")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60")["status"], "pass")
+        commands = {"gpt": self.captured(root)}
+        receipt = self.captured_panel(root, commands, "--wait", "60")
+        self.assertEqual(receipt["status"], "native-pending", receipt)
+        self.assertEqual(receipt["transports"], {"gpt": "captured", "claude": "native"})
+        self.assertEqual([item["family"] for item in receipt["native"]], ["claude"])
+        relative = receipt["native"][0]["relative"]
+        self.assertEqual(relative, ".project/review/wave-1.cycle1.panel.claude.md")
+        refused = self.captured_panel(root, commands, "--wait", "60", "--native-collected", "claude")
+        self.assertEqual(refused["status"], "blocked", refused)
+        self.assertIn("native claude report is not a collected panel report", str(refused["blocked"]))
+        (root / relative).write_text(
+            "# Panel — wave 1, cycle 1\n\n- Family: claude\n- Model: claude-opus\n- Depth: full\n\n"
+            "## Findings\n\n- none\n\n## Summary\n\nNo findings.\n", encoding="utf-8")
+        receipt = self.captured_panel(root, commands, "--wait", "60", "--native-collected", "claude")
+        self.assertEqual(receipt["status"], "pass", receipt)
+        self.assertEqual(set(receipt["families"]), {"gpt", "claude"})
+        self.assertIn("claude", (root / receipt["panel"]).read_text(encoding="utf-8"))
+        self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
+
+    def test_panel_refuses_to_change_a_pinned_family_transport(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.set_panel(root, "gpt,claude")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60")["status"], "pass")
+        self.assertEqual(self.captured_panel(root, {"gpt": self.captured(root)}, "--wait", "60")["status"],
+                         "native-pending")
+        receipt = self.captured_panel(root, {"gpt": self.captured(root)}, "--wait", "60", child=True)
+        self.assertEqual(receipt["status"], "blocked", receipt)
+        self.assertIn("the persisted roster runs claude as native", str(receipt["blocked"]))
+
+    def test_review_and_skeptics_still_require_a_child_command(self) -> None:
+        for action in ("review", "skeptics"):
+            completed = subprocess.run(
+                [sys.executable, "-B", str(SCRIPT), action, "--wave", "1", "--cycle", "1", "--repo", str(self.root)],
+                capture_output=True, encoding="utf-8", errors="replace")
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            self.assertIn(f"{action} requires --child-command", completed.stderr)
 
     def test_missing_panel_blocks_dispatch_and_another_review_before_they_change_head(self) -> None:
         root = self.root

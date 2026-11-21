@@ -65,6 +65,16 @@ POLL_SECONDS = 1  # ponytail: fixed poll cadence; make it an owner value if it e
 
 ORPHANED = "child wrapper exited without recording a result"
 
+# Panel transports: a per-family command whose final report the driver captures and writes, the
+# owner's child command that writes its own file, or a native child the parent dispatches.
+CAPTURED, CHILD, NATIVE = "captured", "child", "native"
+CAPTURED_OUTPUTS = ("stdout", "file")
+CAPTURED_FINAL = "final.md"
+CAPTURED_RESULT = ("Your report is your final message: return the complete report in the template's "
+                   "format, and do not write it to any file.")
+CAPTURED_TERMINAL = ("Terminal result: your final message is the report itself, with nothing before its "
+                     "heading and nothing after it.")
+
 
 class DriverStop(RuntimeError):
     """A typed stop: the receipt carries the reason; the parent decides."""
@@ -480,9 +490,13 @@ def child_main(state_path: Path) -> int:
     """Run the owner's child command under the isolate; record its exit in a separate receipt."""
     state = load_state(state_path)
     attempt_dir = state_path.parent
+    argv = list(state["command"])
+    if state.get("transport") == CAPTURED:
+        # A captured-output child names its final-report file with the literal {final}.
+        argv = [part.replace("{final}", str(attempt_dir / CAPTURED_FINAL)) for part in argv]
     with open(attempt_dir / "brief.md", "rb") as brief, \
             open(attempt_dir / "stdout", "wb") as out, open(attempt_dir / "stderr", "wb") as err:
-        process = _common.popen_group(_common.resolve_argv(state["command"]), cwd=state["worktree"],
+        process = _common.popen_group(_common.resolve_argv(argv), cwd=state["worktree"],
                                       stdin=brief, stdout=out, stderr=err)
         try:
             exit_code: Optional[int] = process.wait(timeout=state.get("child_timeout"))
@@ -546,6 +560,9 @@ def advertised_capabilities(path: Path, host: Optional[str]) -> Dict[str, object
 
 def selected_command(state: Dict[str, object], options: argparse.Namespace, command: str):
     """Shared selection for every CLI child; legacy unconfigured commands remain unchanged."""
+    if state.get('transport') == CAPTURED:
+        # A per-family command names its own model; host model policy does not apply to it.
+        return _common.split_command(command), None
     primary = Path(getattr(options, 'repo', state['worktree']))
     project_dir = getattr(options, 'project_dir', '.project')
     overrides = (model_policy.task_settings(Path(str(state['worktree'])) / str(state['task_file']))
@@ -1882,6 +1899,96 @@ def helper_json(receipt: Dict[str, object], script: str, *arguments: str, cwd: P
     return result
 
 
+def load_family_commands(path: Optional[Path]) -> Dict[str, Dict[str, str]]:
+    """Per-family panel commands: {family: {"command": text, "output": "stdout"|"file"}}."""
+    if path is None:
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise DriverStop(f"--family-commands is not readable JSON: {error}") from error
+    if not isinstance(data, dict):
+        raise DriverStop("--family-commands must map families to commands")
+    for family, spec in data.items():
+        if family not in review_panel.KNOWN_FAMILIES:
+            raise DriverStop(f"--family-commands names an unknown family: {family}")
+        if (not isinstance(spec, dict) or set(spec) - {"command", "output"}
+                or not isinstance(spec.get("command"), str) or not spec["command"].strip()
+                or spec.get("output") not in CAPTURED_OUTPUTS):
+            raise DriverStop(f"--family-commands entry for {family} needs a command and an output "
+                             f"of {' or '.join(CAPTURED_OUTPUTS)}")
+        if spec["output"] == "file" and "{final}" not in spec["command"]:
+            raise DriverStop(f"--family-commands entry for {family} writes a file but has no {{final}}")
+    return data
+
+
+def panel_transport(family: str, commands: Dict[str, Dict[str, str]], child_command: Optional[str]) -> str:
+    """A family command wins; otherwise the owner's child command; otherwise the parent's native child."""
+    if family in commands:
+        return CAPTURED
+    return CHILD if child_command else NATIVE
+
+
+def panel_command(family: str, slug: str, commands: Dict[str, Dict[str, str]], options: argparse.Namespace) -> str:
+    command = commands[family]["command"] if family in commands else options.child_command
+    if family in commands or not getattr(options, 'model_capabilities', None):
+        command = command.replace('{model}', slug)
+    return command
+
+
+def stderr_tail(state: Dict[str, object]) -> str:
+    """The child's last nonempty stderr line, for a blocked reason."""
+    path = Path(str(state["_path"])).parent / "stderr"
+    try:
+        lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines()]
+    except OSError:
+        return ""
+    lines = [line for line in lines if line]
+    return lines[-1][:300] if lines else ""
+
+
+def captured_report(state: Dict[str, object]) -> str:
+    """The final report a captured-output child returned, exactly as it returned it."""
+    attempt = Path(str(state["_path"])).parent
+    if state.get("output") == "file":
+        path = attempt / CAPTURED_FINAL
+        return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    path = attempt / "stdout"
+    return final_message(path.read_text(encoding="utf-8", errors="replace")) if path.is_file() else ""
+
+
+def stage_captured_report(state: Dict[str, object], staged: Path) -> bool:
+    """Write a finished captured child's report to its staging path; False when it blocked."""
+    if state.get("validated") or state.get("captured_sha256"):
+        return True
+    if state.get("timed_out") or state.get("exit_code") != 0:
+        reason = "child timed out" if state.get("timed_out") else f"child exited {state.get('exit_code')}"
+        tail = stderr_tail(state)
+        update_state(state, outcome="blocked", reason=f"{reason}: {tail}" if tail else reason)
+        return False
+    text = captured_report(state)
+    if not text.strip():
+        update_state(state, outcome="blocked", reason="child returned an empty report")
+        return False
+    data = (text if text.endswith("\n") else text + "\n").encode("utf-8")
+    overwrote = staged.is_file()
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    _common.atomic_write(staged, data.decode("utf-8"))
+    update_state(state, captured_sha256=hashlib.sha256(data).hexdigest(), captured_overwrote_file=overwrote)
+    return True
+
+
+def open_native_record(root: Path, state: Dict[str, object]) -> Dict[str, object]:
+    """A dispatch record for a family the parent runs natively; it stays open until collected."""
+    task_dir = root / str(state["task_id"])
+    attempt = max((attempt_number(path) for path in task_dir.glob("attempt-*")), default=0) + 1
+    path = task_dir / f"attempt-{attempt}" / "state.json"
+    path.parent.mkdir(parents=True)
+    record = dict(state, attempt=attempt, transport=NATIVE, outcome=None, opened_at=now())
+    save_state(path, record)
+    return dict(record, _path=str(path))
+
+
 class Children:
     """One sidecar child per key of a wave cycle, each polled to a terminal outcome and its file
     collected; Panel and Skeptics differ only in what they dispatch and record."""
@@ -1916,7 +2023,9 @@ class Children:
         while True:
             rejected = [item for item in self.receipt['blocked'] if item.get('code') == 'model-selection']
             self.receipt["in_flight"], self.receipt["blocked"], self.receipt[self.results] = [], rejected, {}
-            for key, state in states.items():
+            # A native record has no process to poll: the parent collects it, then reruns the action.
+            live = {key: state for key, state in states.items() if not native_open(state)}
+            for key, state in live.items():
                 if not advance(state, self.collect):
                     self.receipt["in_flight"].append(summary(state))
                     continue
@@ -1928,13 +2037,17 @@ class Children:
                 elif state.get("outcome") == "blocked":
                     self.receipt["blocked"].append({**summary(state), "reason": state.get("reason"),
                                                     "helper": state.get("helper")})
-            if all(state.get("outcome") in ("collected", "blocked") for state in states.values()):
+            if all(state.get("outcome") in ("collected", "blocked") for state in live.values()):
                 return True
             if deadline is None or time.monotonic() >= deadline:
                 self.receipt["status"] = "in-flight"
                 return False
             time.sleep(POLL_SECONDS)
             states.update(self.states())  # an unreaped wrapper still looks alive; its exit receipt does not
+
+
+def native_open(state: Dict[str, object]) -> bool:
+    return state.get("transport") == NATIVE and state.get("outcome") is None
 
 
 def collect_file(primary: Path, receipt: Dict[str, object], state: Dict[str, object],
@@ -1986,6 +2099,29 @@ class Panel(Children):
     def relative(self, family: str) -> str:
         return f"{self.project_dir}/review/wave-{self.wave}.cycle{self.cycle}.panel.{family}.md"
 
+    def collect(self, state: Dict[str, object]) -> None:
+        if state.get("transport") == CAPTURED and state.get("outcome") != "collected":
+            if not stage_captured_report(state, Path(str(state["worktree"])) / str(state["relative"])):
+                return
+        collect_file(self.primary, self.receipt, state, self.validate)
+
+    def collect_native(self, states: Dict[str, Dict[str, object]], families: List[str]) -> None:
+        """Accept the parent's collected native reports at their canonical paths."""
+        for family in families:
+            state = states.get(family)
+            if state is None or state.get("transport") != NATIVE:
+                raise DriverStop(f"--native-collected names {family}, which is not a native panel family")
+            if state.get("outcome") == "collected":
+                continue
+            canonical = self.primary / str(state["relative"])
+            try:
+                review_panel.parse_family_artifact(canonical, "wave")
+            except review_panel.ReviewPanelError as error:
+                raise DriverStop(f"native {family} report is not a collected panel report: {error}",
+                                 path=str(canonical)) from error
+            update_state(state, outcome="collected", validated=True, cleanup_complete=True,
+                         validated_sha256=hashlib.sha256(canonical.read_bytes()).hexdigest())
+
     def brief(self, state: Dict[str, object], tasks: List[Dict[str, object]], depth: str, review: str) -> str:
         agents = self.primary / "AGENTS.md"
         lines = [
@@ -1999,7 +2135,8 @@ class Panel(Children):
             f"Canonical wave review, read-only: {self.primary / review}",
             f"Your verify sidecar root, the only place you may write or apply patches: {state['worktree']} "
             f"on branch {state['branch']} at the recorded review base {state['base']}.",
-            f"Write exactly this output file: {Path(str(state['worktree'])) / str(state['relative'])}",
+            (CAPTURED_RESULT if state.get("transport") == CAPTURED else
+             f"Write exactly this output file: {Path(str(state['worktree'])) / str(state['relative'])}"),
             f"INTENT.md: {self.primary / '.project/intent/INTENT.md'}",
             "Tasks in this wave, each with its recorded base and proven landing commit:",
         ]
@@ -2008,6 +2145,7 @@ class Panel(Children):
                          f"landing commit {task['commit']}")
         lines += ["Do not write a Wave verdict or edit the canonical review. Never edit the primary. "
                   "Never delegate. Never stage or commit.",
+                  CAPTURED_TERMINAL if state.get("transport") == CAPTURED else
                   "Terminal result: the file you wrote is your result; name its finding count in your final message."]
         return "\n".join(lines) + "\n"
 
@@ -2026,6 +2164,7 @@ class Panel(Children):
                 raise DriverStop("the canonical wave review must be collected before the panel")
             output = project / "review" / f"wave-{self.wave}.cycle{self.cycle}.panel.md"
             skipped = project / "review" / f"wave-{self.wave}.cycle{self.cycle}.panel.skipped.json"
+            commands = load_family_commands(getattr(self.options, "family_commands", None))
             states = self.states()
             roster_path = self.root / f"wave-{self.wave}-cycle-{self.cycle}" / "roster.json"
             if roster_path.is_file():
@@ -2034,6 +2173,7 @@ class Panel(Children):
                 if states:
                     raise DriverStop("panel records exist without a persisted roster")
                 excluded = {review_panel.family_of_slug(self.options.parent_slug or '')}
+                excluded |= set(getattr(self.options, "exclude_family", None) or [])
                 for canonical in latest_states(records_root(self.primary) / 'reviews'):
                     if canonical.get('wave') == self.wave and canonical.get('cycle') == self.cycle:
                         model = canonical.get('model_selection', {}).get('effective_model')
@@ -2082,14 +2222,17 @@ class Panel(Children):
                           "mode": resolved["mode"], "base": isolation.current_sha(self.primary)}
                 roster['excluded_families'] = sorted(family for family in excluded if family)
                 roster['selections'] = {}
+                roster['transports'] = {family: panel_transport(family, commands, self.options.child_command)
+                                        for family in roster['families']}
                 for family in roster['families']:
                     candidate = {'task_id': self.family_name(family), 'family': family,
                                  'slug': roster['slugs'][family], 'worktree': str(self.primary),
-                                 'excluded_families': roster['excluded_families']}
-                    command = self.options.child_command
-                    if not getattr(self.options, 'model_capabilities', None):
-                        command = command.replace('{model}', candidate['slug'])
-                    _, selection = selected_command(candidate, self.options, command)
+                                 'excluded_families': roster['excluded_families'],
+                                 'transport': roster['transports'][family]}
+                    selection = None
+                    if candidate['transport'] != NATIVE:  # the parent applies model policy to a native child
+                        command = panel_command(family, candidate['slug'], commands, self.options)
+                        _, selection = selected_command(candidate, self.options, command)
                     model_policy.validate_panel(selection or {'effective_model': candidate['slug']},
                                                 family, roster['excluded_families'])
                     if selection is not None:
@@ -2097,9 +2240,15 @@ class Panel(Children):
                         roster['slugs'][family] = candidate['slug']
                 save_state(roster_path, roster)
             self.receipt["mode"] = roster["mode"]
+            transports = roster.get("transports") or {family: CHILD for family in roster["families"]}
+            self.receipt["transports"] = transports
             if set(states) - set(roster["families"]) or any(
                     state["base"] != roster["base"] for state in states.values()):
                 raise DriverStop("panel records disagree with the persisted roster")
+            for family, transport in transports.items():
+                if panel_transport(family, commands, self.options.child_command) != transport:
+                    raise DriverStop(f"the persisted roster runs {family} as {transport}; rerun the panel "
+                                     "with the same family commands and child command")
             missing = [family for family in roster["families"] if family not in states]
             if missing:
                 base = roster["base"]
@@ -2114,18 +2263,31 @@ class Panel(Children):
                     if roster.get('selections', {}).get(family):
                         state['model_selection'] = roster['selections'][family]
                     state['excluded_families'] = roster.get('excluded_families', [])
-                    command = self.options.child_command
-                    if not getattr(self.options, 'model_capabilities', None):
-                        command = command.replace('{model}', slug)
+                    state['transport'] = transports[family]
+                    if state['transport'] == NATIVE:
+                        open_native_record(self.root, state)
+                        continue
+                    if state['transport'] == CAPTURED:
+                        state['output'] = commands[family]['output']
                     spawn_in_sidecar(self.root, self.primary, self.receipt, self.options,
                                      f"wave-{self.wave}-cycle-{self.cycle}-panel-{family}", state,
                                      lambda fresh: self.brief(fresh, tasks, depth, review),
-                                     command=command)
+                                     command=panel_command(family, slug, commands, self.options))
                 states = self.states()
+            self.collect_native(states, list(getattr(self.options, "native_collected", None) or []))
             if not self.poll(states, deadline):
                 return self.receipt
             if self.receipt["blocked"]:
                 self.receipt["status"] = "blocked"
+                return self.receipt
+            pending = [state for state in states.values() if native_open(state)]
+            if pending:
+                # The parent dispatches these natively, collects each report at its canonical path, and
+                # reruns this action with --native-collected.
+                self.receipt["native"] = [{"family": state["family"], "task_id": state["task_id"],
+                                           "slug": state["slug"], "relative": state["relative"],
+                                           "base": state["base"]} for state in pending]
+                self.receipt["status"] = "native-pending"
                 return self.receipt
             if set(states) != set(roster["families"]) or not all(
                     state.get("outcome") == "collected" for state in states.values()):
@@ -2605,6 +2767,16 @@ def reassign_model(root: Path, task_id: str, options: argparse.Namespace) -> Dic
     return {'status': 'reassigned', 'task': task_id, 'selection': selection, 'record': str(path)}
 
 
+def add_panel_transport_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--family-commands", type=Path,
+                        help='JSON {family: {"command": ..., "output": "stdout"|"file"}}: the driver captures '
+                             "each family's final report; a file output names it with a literal {final}")
+    parser.add_argument("--exclude-family", action="append", choices=review_panel.KNOWN_FAMILIES, default=[],
+                        help="a parent or canonical-reviewer family the driver cannot see; repeat")
+    parser.add_argument("--native-collected", action="append", default=[],
+                        help="a native family whose report the parent collected at its canonical path; repeat")
+
+
 def require_files(parser: argparse.ArgumentParser, arguments: argparse.Namespace, *names: str) -> None:
     for name in names:
         value = getattr(arguments, name)
@@ -2655,9 +2827,9 @@ def main(argv=None) -> int:
     cycle_child.add_argument("--project-dir", default=".project")
     cycle_child.add_argument("--wave", type=int, required=True)
     cycle_child.add_argument("--cycle", type=positive_int, required=True)
-    cycle_child.add_argument("--child-command", required=True,
-                             help="owner-supplied command that reads the brief on stdin; "
-                                  "for panel, a literal {model} is replaced by the family slug")
+    cycle_child.add_argument("--child-command",
+                             help="owner-supplied command that reads the brief on stdin; required except "
+                                  "for panel; for panel, a literal {model} is replaced by the family slug")
     cycle_child.add_argument("--wait", type=float, help="seconds to keep polling before returning")
     cycle_child.add_argument("--child-timeout", type=float, help="per-child wall clock in seconds")
     cycle_child.add_argument("--role-brief", type=Path, default=default_resource("references/reviewer.md"))
@@ -2684,6 +2856,7 @@ def main(argv=None) -> int:
     panel_parser.add_argument("--advertised", required=True, help="comma-separated model slugs the host advertises")
     panel_parser.add_argument("--parent-slug", help="the parent's model slug when known")
     panel_parser.add_argument("--template", type=Path, default=default_resource("templates/wave-panel.md"))
+    add_panel_transport_arguments(panel_parser)
     skeptic_parser = commands.add_parser("skeptics", parents=[cycle_child],
                                          help="run one finding skeptic per needs-skeptic locator")
     skeptic_parser.add_argument("--template", type=Path, default=default_resource("templates/skeptic.md"))
@@ -2723,6 +2896,8 @@ def main(argv=None) -> int:
 
     if arguments.action == "_child":
         return child_main(arguments.state)
+    if arguments.action in ("review", "skeptics") and not arguments.child_command:
+        parser.error(f"{arguments.action} requires --child-command")
     primary = arguments.repo.resolve()
     _activate_pinned_runtime(primary)
     lock = None
