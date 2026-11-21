@@ -1,0 +1,3248 @@
+#!/usr/bin/env python3
+"""Deterministic dispatch driver for one build wave.
+
+Composes the canonical helpers in the build contract's order: recover, ready,
+brief lint, task isolation, child dispatch, Verify, landing, verify ledger,
+retire. Every action re-derives its state from Git, the task files, and the
+dispatch records under the Git common directory, so a call may be repeated
+after a crash or a tool timeout. The driver never edits task frontmatter,
+commits, or creates a checkout itself: isolation.py and build_state.py own
+those. Children are spawned through an owner-supplied command that reads the
+brief on stdin; the owner therefore owns the child's permission posture.
+"""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import hashlib
+import importlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import BinaryIO, Callable, Dict, List, Optional, Tuple
+
+try:
+    from scripts import (_common, archive_milestone, build_state, discussion_validate, isolation,
+                         pipeline_state, review_findings, review_panel, workflow_run, task_context, model_policy,
+                         pr_fix_lane)
+    from scripts import check_handoffs as contracts
+    from scripts.pipeline_git import is_bound_branch
+except ImportError:  # bundled copy inside a skill's scripts directory
+    import _common
+    import archive_milestone
+    import build_state
+    import check_handoffs as contracts
+    import task_context
+    import discussion_validate
+    import isolation
+    import pipeline_state
+    import review_findings
+    import review_panel
+    import workflow_run
+    import model_policy
+    import pr_fix_lane
+    from pipeline_git import is_bound_branch
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
+RESULT_LINE = re.compile(r"(?im)^RESULT:\s*(?P<task>\S+)\s+(?P<verdict>ready|blocked)\s*$")
+QUESTION_MARK = "NEEDS-ORCHESTRATOR:"
+ANSWER_MARK = "Orchestrator answer:"
+OUTPUT_TAIL_LINES = 20
+POLL_SECONDS = 1  # ponytail: fixed poll cadence; make it an owner value if it ever matters
+
+
+ORPHANED = "child wrapper exited without recording a result"
+
+# Panel transports: a per-family command whose final report the driver captures and writes, the
+# owner's child command that writes its own file, or a native child the parent dispatches.
+CAPTURED, CHILD, NATIVE = "captured", "child", "native"
+CAPTURED_OUTPUTS = ("stdout", "file")
+CAPTURED_FINAL = "final.md"
+CAPTURED_RESULT = ("Your report is your final message: return the complete report in the template's "
+                   "format, and do not write it to any file.")
+CAPTURED_TERMINAL = ("Terminal result: your final message is the report itself, with nothing before its "
+                     "heading and nothing after it.")
+
+
+class DriverStop(RuntimeError):
+    """A typed stop: the receipt carries the reason; the parent decides."""
+
+    def __init__(self, reason: str, **details: object) -> None:
+        super().__init__(reason)
+        self.details = details
+
+
+# Blocks that hold one task while the round dispatches and settles the others.
+TASK_HOLDS = ("model-selection", "repair-ruling")
+STOP_ERRORS = (DriverStop, isolation.IsolationError, build_state.BuildStateError,
+               contracts.HandoffError, review_findings.ReviewFindingsError,
+               pipeline_state.PipelineStateError, archive_milestone.ArchiveError, model_policy.PolicyError)
+_RUNTIME_ACTIVATION_ORDER = (
+    "_common",
+    "azure_repos",
+    "roadmap",
+    "review_panel",
+    "loop_run",
+    "pipeline_git",
+    "worktree_paths",
+    "build_recovery",
+    "isolation",
+    "pipeline_state",
+    "state_checkpoint",
+    "check_task_briefs",
+    "build_state",
+    "check_handoffs",
+    "task_context",
+    # discussion_validate and archive_milestone import each other: the second
+    # reload binds the reloaded ArchiveError that STOP_ERRORS catches.
+    "discussion_validate",
+    "archive_milestone",
+    "discussion_validate",
+    "review_findings",
+    "path_config",
+    "model_policy",
+    "pr_fix_lane",
+    "parking",
+)
+RECOVERY_BLOCKED = "recovery blocked"
+LEFTOVER_ISOLATE = "task {} is landed; remove its leftover isolate: {}"
+# The stops the build contract answers with build/blocked when the round raises them (steps 1 and 2);
+# the same stops from review, panel, or skeptics stay with the parent.
+BLOCKING_STOPS = {"dependency-deadlock": "dependency deadlock", RECOVERY_BLOCKED: "blocked recovery"}
+
+
+def _bundled_helpers() -> bool:
+    return "scripts.isolation" not in sys.modules
+
+
+def _refresh_stop_errors() -> None:
+    global STOP_ERRORS
+    STOP_ERRORS = (DriverStop, isolation.IsolationError, build_state.BuildStateError,
+                   contracts.HandoffError, review_findings.ReviewFindingsError,
+                   pipeline_state.PipelineStateError, archive_milestone.ArchiveError,
+                   model_policy.PolicyError)
+
+
+# The selected Project runtime directory once _reload_pinned_modules ran; None keeps bundled helpers.
+_RUNTIME_ROOT: Optional[Path] = None
+
+
+def helper_script(name: str) -> Path:
+    """A subprocess helper from the selected runtime when it ships one, else the bundled sibling."""
+    if _RUNTIME_ROOT is not None and (_RUNTIME_ROOT / name).is_file():
+        return _RUNTIME_ROOT / name
+    return Path(__file__).resolve().parent / name
+
+
+def _reload_pinned_modules(runtime_root: Path) -> None:
+    global isolation, build_state, task_context, contracts, pipeline_state
+    global archive_milestone, review_findings, model_policy, pr_fix_lane, _RUNTIME_ROOT
+    _RUNTIME_ROOT = runtime_root
+    if _bundled_helpers():
+        path = str(runtime_root)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+        for name in _RUNTIME_ACTIVATION_ORDER:
+            module = sys.modules.get(name)
+            if module is not None:
+                importlib.reload(module)
+        isolation = sys.modules["isolation"]
+        build_state = sys.modules["build_state"]
+        task_context = sys.modules["task_context"]
+        contracts = sys.modules["check_handoffs"]
+        pipeline_state = sys.modules["pipeline_state"]
+        archive_milestone = sys.modules["archive_milestone"]
+        review_findings = sys.modules["review_findings"]
+        model_policy = sys.modules["model_policy"]
+        pr_fix_lane = sys.modules.get("pr_fix_lane", pr_fix_lane)
+    else:
+        import scripts
+        path = str(runtime_root)
+        if path not in scripts.__path__:
+            scripts.__path__ = [path, *[entry for entry in scripts.__path__ if entry != path]]
+        for name in _RUNTIME_ACTIVATION_ORDER:
+            module = sys.modules.get(f"scripts.{name}")
+            if module is not None:
+                importlib.reload(module)
+        isolation = scripts.isolation
+        build_state = scripts.build_state
+        task_context = scripts.task_context
+        contracts = scripts.check_handoffs
+        pipeline_state = scripts.pipeline_state
+        archive_milestone = scripts.archive_milestone
+        review_findings = scripts.review_findings
+        model_policy = scripts.model_policy
+        pr_fix_lane = getattr(scripts, "pr_fix_lane", pr_fix_lane)
+    _refresh_stop_errors()
+
+
+def _activate_pinned_runtime(repo: Path) -> None:
+    if not os.path.lexists(repo / ".gsd-path/runtime.json"):
+        return
+    resolved = subprocess.run(
+        [sys.executable, "-B", str(repo / ".gsd-path/status_runtime.py"),
+         "--repo", str(repo), "--runtime-path"],
+        cwd=repo, capture_output=True, encoding="utf-8", errors="replace")
+    if resolved.returncode:
+        raise DriverStop(resolved.stderr.strip() or "pinned runtime resolution failed")
+    _reload_pinned_modules(Path(resolved.stdout.strip()))
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def tail(text: str) -> str:
+    return "\n".join(text.splitlines()[-OUTPUT_TAIL_LINES:])
+
+
+# --- dispatch records ------------------------------------------------------
+
+
+def milestone_slug(primary: Path) -> str:
+    """The bound branch as a path segment; every record and ledger is scoped to one milestone."""
+    return isolation.require_bound(primary).replace("/", "-")
+
+
+def records_root(primary: Path) -> Path:
+    return pipeline_state._build_recovery().records_root(primary)
+
+
+def budget_ledger(primary: Path) -> Path:
+    return isolation.common_git_dir(primary) / "gsd-path" / "budget" / f"{milestone_slug(primary)}.json"
+
+
+def attempts_used(root: Path, task_id: str) -> int:
+    """Dispatches of this task in this milestone, excluding question redispatches."""
+    return sum(1 for path in (root / task_id).glob("attempt-*/state.json")
+               if load_state(path).get("origin") == "dispatch")
+
+
+def dispatch_primary(worktree: Path) -> Path:
+    """The bound-branch primary that owns dispatch records for a task checkout."""
+    worktree = worktree.resolve()
+    if is_bound_branch(isolation.require_attached(worktree)):
+        return worktree
+    matches = [
+        path.resolve()
+        for path, branch in isolation._registered_worktrees(worktree).items()
+        if branch and is_bound_branch(branch.removeprefix("refs/heads/"))
+    ]
+    if len(matches) != 1:
+        raise isolation.IsolationError(
+            "dispatch records require exactly one primary worktree for the bound branch")
+    return matches[0]
+
+
+def should_open_native_shell(root: Path, task_id: str, base: str) -> bool:
+    """Whether activate-task should append a native dispatch attempt record."""
+    task_dir = root / task_id
+    if not task_dir.is_dir():
+        return True
+    attempts = sorted(task_dir.glob("attempt-*/state.json"),
+                      key=lambda path: attempt_number(path.parent))
+    if not attempts:
+        return True
+    latest = read_attempt(attempts[-1])
+    if latest.get("outcome") is None and not latest.get("command"):
+        return False
+    if latest.get("outcome") == "blocked" and str(latest.get("base")) == base:
+        return False
+    return True
+
+
+def open_native_shell(primary: Path, *, task_id: str, base: str, worktree: str, task_file: str,
+                      task_branch: Optional[str], mode: str, wave: Optional[int] = None,
+                      title: Optional[str] = None, files: Optional[List[str]] = None,
+                      sidecar: Optional[object] = None, member: Optional[str] = None,
+                      member_base: Optional[str] = None, contract_file: Optional[str] = None,
+                      agent: Optional[str] = None) -> None:
+    """Open a dispatch attempt record for a host-spawned coder before it runs."""
+    root = records_root(primary)
+    root.mkdir(parents=True, exist_ok=True)
+    record: Dict[str, object] = {
+        "task_id": task_id,
+        "base": base,
+        "worktree": worktree,
+        "task_file": task_file,
+        "task_branch": task_branch,
+        "mode": mode,
+        "origin": "dispatch",
+        "outcome": None,
+        "dispatched_at": now(),
+        "native": True,
+    }
+    if wave is not None:
+        record["wave"] = wave
+    if title is not None:
+        record["title"] = title
+    if files is not None:
+        record["files"] = files
+    if sidecar is not None:
+        record["sidecar"] = sidecar
+    if member is not None:
+        record["member"] = member
+    if member_base is not None:
+        record["member_base"] = member_base
+    if contract_file is not None:
+        record["contract_file"] = contract_file
+    if agent is not None:
+        record["agent"] = agent
+    task_dir = root / task_id
+    if not should_open_native_shell(root, task_id, base):
+        attempts = sorted(task_dir.glob("attempt-*/state.json"),
+                          key=lambda path: attempt_number(path.parent))
+        if not attempts:
+            return
+        state_path = attempts[-1]
+        state = load_state(state_path)
+        if state.get("outcome") is not None or state.get("command"):
+            return
+        attempt = state.get("attempt")
+        state.update(record)
+        if attempt is not None:
+            state["attempt"] = attempt
+        state["outcome"] = None
+        for key in ("pid", "finished_at", "exit_code", "timed_out", "reason", "question", "commit",
+                    "answer", "command", "usage_recorded"):
+            state.pop(key, None)
+        save_state(state_path, state)
+        exit_path = state_path.with_name("exit.json")
+        if exit_path.is_file():
+            exit_path.unlink()
+        return
+    attempt = max((attempt_number(path) for path in task_dir.glob("attempt-*")), default=0) + 1
+    attempt_dir = task_dir / f"attempt-{attempt}"
+    attempt_dir.mkdir(parents=True)
+    record["attempt"] = attempt
+    save_state(attempt_dir / "state.json", record)
+
+
+def record_native_activation(worktree: Path, activation: Dict[str, object]) -> None:
+    """Record a native task activation in the milestone dispatch ledger."""
+    primary = dispatch_primary(worktree)
+    task_file = str(activation["task_file"])
+    task_path = worktree / task_file
+    fields, _ = isolation.task_frontmatter(task_path.read_text(encoding="utf-8"))
+    task_id = str(activation.get("task_id") or (fields or {}).get("id"))
+    wave = None
+    if fields and fields.get("wave") is not None:
+        wave = int(fields["wave"])
+    open_native_shell(
+        primary,
+        task_id=task_id,
+        base=str(activation["base"]),
+        worktree=str(activation["worktree"]),
+        task_file=task_file,
+        task_branch=activation.get("task_branch"),
+        mode="parallel" if activation.get("task_branch") else "serial",
+        wave=wave,
+        title=str(fields.get("title")) if fields else None,
+        files=list(fields.get("files") or []) if fields else None,
+    )
+
+
+def record_native_member_activation(coordinator: Path, activation: Dict[str, object]) -> None:
+    """Record a native member-task activation in the coordinator dispatch ledger."""
+    task_file = str(activation["task_file"])
+    sidecar = Path(str(activation["worktree"]))
+    copy = Path(str(activation["copy"]))
+    fields, _ = isolation.task_frontmatter(copy.read_text(encoding="utf-8"))
+    task_id = str(activation.get("task_id") or (fields or {}).get("id"))
+    wave = None
+    if fields and fields.get("wave") is not None:
+        wave = int(fields["wave"])
+    open_native_shell(
+        coordinator,
+        task_id=task_id,
+        base=str(activation["base"]),
+        worktree=str(sidecar),
+        task_file=copy.relative_to(sidecar).as_posix(),
+        task_branch=str(activation["task_branch"]),
+        mode="member",
+        wave=wave,
+        title=str(fields.get("title")) if fields else None,
+        files=list(fields.get("files") or []) if fields else None,
+        member=str(activation["member"]),
+        member_base=str(activation["member_base"]),
+        contract_file=task_file,
+        agent=str(activation["agent"]),
+    )
+
+
+def reusable_shell_attempt(root: Path, state: Dict[str, object]) -> Optional[Path]:
+    """A native activation shell the driver can attach its child wrapper to."""
+    task_dir = root / str(state["task_id"])
+    attempts = sorted(task_dir.glob("attempt-*/state.json"),
+                      key=lambda path: attempt_number(path.parent))
+    if not attempts:
+        return None
+    prior = read_attempt(attempts[-1])
+    if prior.get("outcome") is not None or prior.get("command") or prior.get("pid"):
+        return None
+    if str(prior.get("base")) != str(state.get("base")):
+        return None
+    return attempts[-1].parent
+
+
+def acquire_lock(primary: Path) -> BinaryIO:
+    root = records_root(primary)
+    root.mkdir(parents=True, exist_ok=True)
+    handle = open(root / "driver.lock", "a+b")
+    try:
+        if os.name == "nt":
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as error:
+        handle.close()
+        if error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+            raise DriverStop("another dispatch_driver invocation holds the lock") from error
+        raise
+    return handle
+
+
+def attempt_number(path: Path) -> int:
+    return int(path.name.split("-")[1])
+
+
+def load_state(path: Path) -> Dict[str, object]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_state(path: Path, state: Dict[str, object]) -> None:
+    _common.atomic_write(path, json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+
+def update_state(state: Dict[str, object], **changes: object) -> None:
+    path = Path(str(state["_path"]))
+    save_state(path, dict(load_state(path), **changes))
+    state.update(changes)
+
+
+def latest_states(root: Path) -> List[Dict[str, object]]:
+    """The newest attempt record of every task, in task-id order."""
+    states = []
+    if root.is_dir():
+        for task_dir in sorted(root.iterdir()):
+            attempts = sorted(task_dir.glob("attempt-*/state.json"),
+                              key=lambda path: attempt_number(path.parent))
+            if attempts:
+                states.append(read_attempt(attempts[-1]))
+    return states
+
+
+def read_attempt(path: Path) -> Dict[str, object]:
+    """One attempt's state.json merged with the exit receipt its child wrapper writes."""
+    state = dict(load_state(path), _path=str(path))
+    exit_path = path.with_name("exit.json")
+    if exit_path.is_file():
+        state.update(load_state(exit_path))
+    return state
+
+
+def child_running(state: Dict[str, object]) -> bool:
+    return state.get("finished_at") is None and bool(state.get("pid")) and process_alive(int(state["pid"]))
+
+
+process_alive = _common.process_alive
+
+
+# --- child process ---------------------------------------------------------
+
+
+def final_message(stdout: str) -> str:
+    """The child's final text from Claude JSON, Codex JSONL, or plain text."""
+    try:
+        document = json.loads(stdout)
+        if isinstance(document, dict):
+            return str(document.get("result", ""))
+    except json.JSONDecodeError:
+        pass
+    text = None
+    # Codex JSONL carries U+2028, U+2029 and U+0085 raw inside strings; only LF ends a record.
+    for line in stdout.split("\n"):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item") if isinstance(event, dict) else None
+        if isinstance(item, dict) and event.get("type") == "item.completed" \
+                and item.get("type") == "agent_message":
+            text = str(item.get("text", ""))
+    return stdout if text is None else text
+
+
+def child_main(state_path: Path) -> int:
+    """Run the owner's child command under the isolate; record its exit in a separate receipt."""
+    state = load_state(state_path)
+    attempt_dir = state_path.parent
+    argv = list(state["command"])
+    if state.get("transport") == CAPTURED:
+        # A captured-output child names its final-report file with the literal {final}.
+        argv = [part.replace("{final}", str(attempt_dir / CAPTURED_FINAL)) for part in argv]
+    with open(attempt_dir / "brief.md", "rb") as brief, \
+            open(attempt_dir / "stdout", "wb") as out, open(attempt_dir / "stderr", "wb") as err:
+        process = _common.popen_group(_common.resolve_argv(argv), cwd=state["worktree"],
+                                      stdin=brief, stdout=out, stderr=err)
+        try:
+            exit_code: Optional[int] = process.wait(timeout=state.get("child_timeout"))
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            _common.kill_tree(process)
+            process.wait()
+            exit_code, timed_out = None, True
+    save_state(attempt_dir / "exit.json",
+               dict(finished_at=now(), exit_code=exit_code, timed_out=timed_out))
+    return 0
+
+
+def brief_text(state: Dict[str, object], role_brief: Path, task_template: Path) -> str:
+    worktree = Path(str(state["worktree"]))
+    project_root = Path(str(state.get("project_root") or worktree))
+    task_id = state["task_id"]
+    agents = worktree / "AGENTS.md"
+    workflow = worktree / "WORKFLOW.md"
+    lines = [
+        f"You are the coder for GSD Path task {task_id}.",
+        f"Read the coder role brief first and follow it exactly, including its terminal "
+        f"`RESULT: {task_id} ready|blocked` line: {role_brief}",
+        f"Work only in this worktree root: {worktree}",
+        f"Task file: {worktree / str(state['task_file'])}",
+        f"Task template: {task_template}",
+        f"INTENT.md: {project_root / '.project/intent/INTENT.md'}",
+        f"AGENTS.md: {agents if agents.exists() else 'absent'}",
+        f"WORKFLOW.md: {workflow if workflow.exists() else 'absent'}",
+        f"Recorded base: {state['base']}",
+        f"Dispatch mode: {state['mode']} ("
+        + ("the primary worktree on the bound branch" if state["mode"] == "serial"
+           else f"an isolated worktree of member {state['member']}; never touch the member team's "
+                "checkout or the coordinator" if state["mode"] == "member"
+           else "an isolated task worktree; never touch the primary") + ").",
+        "Next consumer: the build orchestrator reruns Verify in an isolated checkout and lands "
+        "the task. Gate: Verify passes and only the task's declared files plus its Log changed.",
+        "Never delegate to another agent. Never stage, commit, or otherwise mutate Git.",
+    ]
+    if state.get("answered"):
+        lines.append(f"The task Log now records an `{ANSWER_MARK}` to your earlier question; "
+                     "continue from it.")
+    lines.append(task_context.render(project_root, worktree / str(state['task_file'])))
+    return "\n".join(lines) + "\n"
+
+
+def advertised_capabilities(path: Path, host: Optional[str]) -> Dict[str, object]:
+    """Advertised controls with the host id from --host.
+
+    A pinned runtime older than the --host contract keeps its own: it reads the host from the
+    capability file, so the flag only fills a missing field and never overrides a recorded one.
+    """
+    load = getattr(model_policy, "load_capabilities", None)
+    if load is not None:
+        return load(path, host)
+    capabilities = model_policy.read_json(path)
+    if host is not None:
+        capabilities.setdefault("host", host)
+    return capabilities
+
+
+def selected_command(state: Dict[str, object], options: argparse.Namespace, command: str):
+    """Shared selection for every CLI child; legacy unconfigured commands remain unchanged."""
+    if state.get('transport') == CAPTURED:
+        # A per-family command names its own model; host model policy does not apply to it.
+        return _common.split_command(command), None
+    primary = Path(getattr(options, 'repo', state['worktree']))
+    project_dir = getattr(options, 'project_dir', '.project')
+    overrides = (model_policy.task_settings(Path(str(state['worktree'])) / str(state['task_file']))
+                 if state.get('task_file') else {})
+    for field in model_policy.FIELDS:
+        value = getattr(options, field, None)
+        if value is not None:
+            if field in overrides and overrides[field] != value:
+                raise model_policy.PolicyError('dispatch choice conflicts with the task contract')
+            overrides[field] = value
+    overrides_path = getattr(options, 'model_overrides', None)
+    if overrides_path:
+        assignments = model_policy.read_json(overrides_path)
+        for assignment, values in assignments.items():
+            model_policy.settings(values, f'assignment {assignment}')
+        for field, value in assignments.get(str(state['task_id']), {}).items():
+            if field in overrides and overrides[field] != value:
+                raise model_policy.PolicyError('assignment overrides conflict with explicit task/dispatch settings')
+            overrides[field] = value
+    caps_path = getattr(options, 'model_capabilities', None)
+    previous = state.get('model_selection')
+    if previous is None and state.get('command'):
+        if overrides:
+            raise model_policy.PolicyError('legacy assignment requires a new explicit assignment for model controls')
+        return list(state['command']), None
+    if caps_path is None:
+        if overrides or previous or model_policy.policy_path(primary, project_dir).exists():
+            raise model_policy.PolicyError('model policy requires --model-capabilities for this dispatch')
+        return _common.split_command(command), None
+    caps = advertised_capabilities(caps_path, getattr(options, 'host', None))
+    action = getattr(options, 'action', 'round')
+    role = {'round': 'coder', 'review': 'reviewer', 'panel': 'review_panel',
+            'skeptics': 'skeptic'}.get(action, action)
+    if state.get('family'):
+        role = 'review_panel'
+    selection = model_policy.resolve(primary, project_dir, role, caps, overrides, previous)
+    if state.get('family'):
+        if selection['selected']['model'] == 'inherit' and selection['sources']['model'] == 'default':
+            # The panel roster owns the default model, not parent inheritance.
+            selection = model_policy.resolve(primary, project_dir, role, caps,
+                                              dict(overrides, model=state['slug']), previous)
+        model_policy.validate_panel(selection, state['family'], state.get('excluded_families', []))
+        state['slug'] = selection['selected']['model']
+    return model_policy.command_args(_common.split_command(command), selection), selection
+
+
+def retain_selection(root: Path, state: Dict[str, object]) -> Dict[str, object]:
+    state = dict(state)
+    task_dir = root / str(state['task_id'])
+    if not state.get('model_selection'):
+        attempts = sorted(task_dir.glob('attempt-*/state.json'), key=lambda path: attempt_number(path.parent))
+        if attempts:
+            prior = read_attempt(attempts[-1])
+            if child_running(prior):
+                raise DriverStop('cannot redispatch while the previous child is active')
+            if prior.get('model_selection'):
+                state['model_selection'] = prior['model_selection']
+            elif prior.get('command'):
+                state['command'] = prior['command']
+    reassignment = task_dir / 'model-reassignment.json'
+    if reassignment.exists():
+        state['model_selection'] = load_state(reassignment)['selection']
+    return state
+
+
+def spawn(root: Path, state: Dict[str, object], options: argparse.Namespace,
+          brief: Callable[[Dict[str, object]], str], command: Optional[str] = None) -> Dict[str, object]:
+    """Create the next attempt record, write the brief the callback builds, and start the wrapper."""
+    if child_running(state):
+        raise DriverStop('cannot redispatch while the previous child is active')
+    state = retain_selection(root, state)
+    task_dir = root / str(state["task_id"])
+    argv, selection = selected_command(state, options, command or options.child_command)
+    attempt_dir = reusable_shell_attempt(root, state)
+    if attempt_dir is None:
+        attempt = max((attempt_number(path) for path in task_dir.glob("attempt-*")), default=0) + 1
+        attempt_dir = task_dir / f"attempt-{attempt}"
+        attempt_dir.mkdir(parents=True)
+    else:
+        attempt = attempt_number(attempt_dir)
+    stale = ("pid", "finished_at", "exit_code", "timed_out", "reason", "question", "commit", "answer",
+             "usage_recorded")
+    incoming = {key: value for key, value in state.items()
+                if not key.startswith("_") and key not in stale}
+    if (attempt_dir / "state.json").is_file():
+        preserved = {key: value for key, value in read_attempt(attempt_dir / "state.json").items()
+                     if not key.startswith("_") and key not in stale}
+        state = {**preserved, **incoming}
+    else:
+        state = incoming
+    if selection is not None:
+        state['model_selection'] = selection
+    state.update({"attempt": attempt, "command": argv,
+                  "child_timeout": options.child_timeout, "outcome": None,
+                  "dispatched_at": now(), "origin": "question" if state.get("answered") else "dispatch"})
+    state_path = attempt_dir / "state.json"
+    (attempt_dir / "brief.md").write_bytes(brief(state).encode("utf-8"))
+    save_state(state_path, state)
+    wrapper = _common.popen_detached(
+        [sys.executable, "-B", str(Path(__file__).resolve()), "_child", "--state", str(state_path)],
+        cwd=state["worktree"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    state["_path"] = str(state_path)
+    update_state(state, pid=wrapper.pid)
+    return state
+
+
+# --- finishing a task ------------------------------------------------------
+
+
+def log_delta(primary: Path, state: Dict[str, object]) -> str:
+    contract_file = state.get("contract_file") or state["task_file"]
+    base_text = isolation.git_text(primary, "show", f"{state['base']}:{contract_file}")
+    text = (Path(str(state["worktree"])) / str(state["task_file"])).read_text(encoding="utf-8")
+    if state["mode"] == "member":
+        return isolation.member_log_delta(base_text, text)
+    return isolation.task_log_delta(base_text, text)
+
+
+def append_log(task_path: Path, line: str) -> None:
+    text = task_path.read_text(encoding="utf-8")
+    if not text.endswith("\n"):
+        text += "\n"
+    _common.atomic_write(task_path, text + line + "\n")
+
+
+def snapshot_tree(primary: Path) -> str:
+    """Tree of the primary's complete working tree via a temporary index; the real index is untouched."""
+    with tempfile.TemporaryDirectory() as temporary:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
+        for arguments in (("read-tree", "HEAD"), ("add", "-A"), ("write-tree",)):
+            completed = subprocess.run(("git", "-C", str(primary), *arguments), env=env,
+                                       encoding="utf-8", errors="replace", capture_output=True)
+            if completed.returncode:
+                raise DriverStop(f"git {' '.join(arguments)} failed: {completed.stderr.strip()}")
+        return completed.stdout.strip()
+
+
+def run_verify(command: str, cwd: Path) -> Dict[str, object]:
+    completed = _common.run_command(*_common.bash_argv(command), cwd=cwd)
+    return {"exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
+
+
+def landing_verify(command: str, regressions: List[Dict[str, object]],
+                   cwd: Path) -> Tuple[Dict[str, object], List[Dict[str, object]]]:
+    """The task's own Verify, then every regression Verify when the own one passes."""
+    execution = run_verify(command, cwd)
+    if execution["exit_code"]:
+        return execution, []
+    return execution, [{**item, **run_verify(str(item["command"]), cwd)} for item in regressions]
+
+
+def state_from_task(primary: Path, task_id: str) -> Dict[str, object]:
+    """A finish-able state derived from the task frontmatter alone, for coders dispatched by hand."""
+    tasks_dir = primary / ".project/tasks"
+    for task_path in sorted(tasks_dir.glob("*.md")):
+        fields, _ = isolation.task_frontmatter(task_path.read_text(encoding="utf-8"))
+        if fields and str(fields.get("id")) == task_id:
+            break
+    else:
+        raise DriverStop(f"task {task_id} has no task file")
+    member = fields.get("repo")
+    if member:
+        # A member activation lives in the live copy inside its member sidecar.
+        try:
+            checkout, project, _ = isolation._member_context(primary, str(member))
+        except isolation.IsolationError as error:
+            raise DriverStop(str(error), task=task_id) from error
+        task_file = task_path.relative_to(primary).as_posix()
+        sidecar = isolation.sidecar_root(checkout, "task", f"{project}-{task_id}").resolve()
+        copy = isolation.member_task_copy(sidecar, task_file)
+        live, _ = isolation.task_frontmatter(copy.read_text(encoding="utf-8")) if copy.is_file() else ({}, None)
+        if not live or live.get("status") != "in-progress" or not live.get("base") or not live.get("member_base"):
+            raise DriverStop(f"member task {task_id} has no activated live copy in {sidecar}", task=task_id)
+        return {"task_id": task_id, "title": str(live.get("title")), "task_file": copy.relative_to(sidecar).as_posix(),
+                "contract_file": task_file, "files": list(live.get("files") or []), "base": str(live["base"]),
+                "worktree": str(sidecar), "task_branch": isolation.member_task_branch_name(project, task_id),
+                "mode": "member", "member": str(member), "member_base": str(live["member_base"]),
+                "project_root": str(primary), "sidecar": None}
+    if fields.get("status") != "in-progress" or not fields.get("base"):
+        # A parallel activation lives only in its isolate; the primary copy stays pending.
+        isolate = isolation.sidecar_root(primary, "task", task_id).resolve()
+        if isolation.authorized_task_worktree(isolate, isolation.require_bound(primary)):
+            fields, _ = isolation.task_frontmatter(
+                (isolate / task_path.relative_to(primary)).read_text(encoding="utf-8"))
+    if fields.get("status") != "in-progress" or not fields.get("base"):
+        raise DriverStop(f"task {task_id} is not an in-progress task with a recorded base")
+    def value(key: str) -> Optional[str]:
+        raw = fields.get(key)
+        return None if raw in (None, "", "null") else str(raw)
+
+    task_branch = value("task_branch")
+    name = f"task-{task_id.lower()}-verify"
+    sidecar = None if task_branch else {
+        "worktree": str(isolation.sidecar_root(primary, "verify", name)),
+        "branch": isolation.verify_branch_name(name)}
+    return {"task_id": task_id, "title": str(fields.get("title")),
+            "task_file": task_path.relative_to(primary).as_posix(), "files": list(fields.get("files") or []),
+            "base": str(fields.get("base")), "worktree": value("worktree") or str(primary),
+            "task_branch": task_branch, "mode": "parallel" if task_branch else "serial",
+            "sidecar": sidecar}
+
+
+def finish_receipt(receipt: Dict[str, object]) -> Dict[str, object]:
+    """The finish result: landed, question, or blocked — always with a visible cause (#469)."""
+    if receipt.get("landed"):
+        return {**receipt, "status": "landed"}
+    if receipt.get("questions"):
+        return {**receipt, "status": "question"}
+    result = {**receipt, "status": "blocked"}
+    if not receipt.get("blocked"):
+        result["reason"] = (
+            "task did not land and no blocked entry was recorded; inspect the task Log")
+    return result
+
+
+def finish_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
+    """Verify in the isolate, land, record the ledger, retire. Returns the landing receipt."""
+    landing = land_task(primary, state)
+    try:
+        if state["mode"] == "member":
+            isolation.retire_member_task(primary, str(state["member"]), str(state["task_id"]))
+        else:
+            isolation.retire(primary, Path(str(state["worktree"])), state.get("task_branch") or None, False)
+    except isolation.IsolationError as error:
+        # The landing is proven, so a failed removal is a warning; Round.recover checks the isolate again.
+        landing["cleanup_warning"] = (f"{error}; the task is landed, but its isolate was not removed. The next "
+                                      "round or finish checks the isolate again and stops if the isolate is "
+                                      "still there")
+    return landing
+
+
+def land_task(primary: Path, state: Dict[str, object]) -> Dict[str, object]:
+    """Verify in the isolate, land, record the ledger. Returns the landing receipt."""
+    worktree = Path(str(state["worktree"]))
+    task_id = str(state["task_id"])
+    task_file = str(state["task_file"])
+    base = str(state["base"])
+    task_path = worktree / task_file
+    command = _common.task_verify_command(task_path.read_text(encoding="utf-8"))
+    if not command:
+        raise DriverStop("task has no Verify command", task=task_id)
+    # A later task can break an earlier task that shares a file; that task's Verify also decides this landing.
+    regressions = build_state.regression_verifies(primary, task_id, command)
+    # A plan-approved `supersedes` retires an earlier Verify; the receipt and the Log show each one.
+    retired = build_state.retired_verifies(primary, task_id)
+    superseded = {"retired": retired} if retired else {}
+    if state["mode"] == "serial":
+        sidecar = state["sidecar"]
+        ensured = isolation.ensure_verify_sidecar(primary, base, str(sidecar["branch"]))
+        sidecar_path = Path(str(ensured["worktree"]))
+        tree = snapshot_tree(primary)
+        try:
+            isolation.reproduce_verify_sidecar(sidecar_path, tree)
+        except isolation.IsolationError as error:
+            raise DriverStop(str(error), task=task_id) from error
+        execution, reruns = landing_verify(command, regressions, sidecar_path)
+        # The serial Verify runs in the sidecar, not the task checkout; `cwd` names the
+        # directory the command saw, `worktree` the task checkout it will land on.
+        execution_dir = sidecar_path
+        execution_base = base
+        location = f"sidecar {sidecar['branch']}"
+        isolation.clean_verify(primary, sidecar_path, base, str(sidecar["branch"]))
+        isolation.retire(primary, sidecar_path, str(sidecar["branch"]), False)
+    else:
+        if state["mode"] == "parallel":
+            # The Verify must see the task's changes whatever the round size;
+            # the isolate's index still equals the base, and coders never
+            # stage (#547). Reproduce the isolate's working tree into a
+            # verify sidecar at the task base — the same construction the
+            # serial branch uses — so a Verify that reads git's index gets
+            # the same answer a serial round gives it. The primary may have
+            # moved past the base, so the sidecar is retired without the
+            # serial cleanup's HEAD gate.
+            branch = isolation.verify_branch_name(f"task-{task_id.lower()}-verify")
+            ensured = isolation.ensure_verify_sidecar(primary, base, branch)
+            sidecar_path = Path(str(ensured["worktree"]))
+            # A retry may find a sidecar an interrupted finish left; reproduction
+            # resets tracked files, but Verify leftovers that are untracked must
+            # not leak into the next attempt's result.
+            isolation.git_output(sidecar_path, "restore", "--source=HEAD", "--staged", "--worktree", "--", ".")
+            isolation.git_output(sidecar_path, "clean", "-fdx", "--", ".")
+            tree = snapshot_tree(worktree)
+            try:
+                isolation.reproduce_verify_sidecar(sidecar_path, tree)
+            except isolation.IsolationError as error:
+                raise DriverStop(str(error), task=task_id) from error
+            execution, reruns = landing_verify(command, regressions, sidecar_path)
+            if isolation.current_sha(sidecar_path) != base:
+                # The serial cleanup refuses a moved HEAD for the same reason:
+                # the recorded pass would not describe the reproduced tree.
+                raise DriverStop("parallel verify sidecar HEAD changed", task=task_id)
+            execution_dir = sidecar_path
+            execution_base = base
+            location = f"sidecar {branch}"
+            isolation.git_output(sidecar_path, "restore", "--source=HEAD", "--staged", "--worktree", "--", ".")
+            isolation.git_output(sidecar_path, "clean", "-fdx", "--", ".")
+            isolation.retire(primary, sidecar_path, branch, False)
+        else:
+            execution, reruns = landing_verify(command, regressions, worktree)
+            execution_dir = worktree
+            # A member Verify starts from the member repository's base, not the coordinator's.
+            execution_base = str(state["member_base"]) if state["mode"] == "member" else base
+            location = f"isolate {state['task_branch']}"
+    passed = execution["exit_code"] == 0
+    broken = [item for item in reruns if item["exit_code"]]
+    execution.update({"worktree": str(worktree), "cwd": str(execution_dir),
+                      "base": execution_base, "location": location})
+    evidence_dir = (Path(str(state["_path"])).parent if state.get("_path")
+                    else records_root(primary) / task_id / f"manual-{now().replace(':', '')}")
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    _common.atomic_write(evidence_dir / "verify.json",
+                         json.dumps({**execution, "regressions": reruns, **superseded},
+                                    indent=2, sort_keys=True) + "\n")
+    execution["evidence"] = str(evidence_dir / "verify.json")
+    # The Verify of a superseding task runs in the place of the retired Verify: the label names both.
+    for label, run in [("Verify", execution),
+                       *((f"regression Verify of {', '.join(item['tasks'])}"
+                          + (f" (supersedes {', '.join(item['supersedes'])})" if item.get("supersedes") else ""),
+                          item) for item in reruns)]:
+        output = "\n".join(f"  {line}" for line in tail(run["stdout"] + run["stderr"]).splitlines())
+        append_log(task_path, f"- {now()[:10]} — orchestrator {label} ({location}): "
+                              f"{'fail' if run['exit_code'] else 'pass'}, exit {run['exit_code']}"
+                              + (f"; output tail:\n  ```\n{output}\n  ```" if output else ""))
+    for item in retired:
+        part = f": part of {item['part']}" if item.get("part") else ""
+        append_log(task_path, f"- {now()[:10]} — orchestrator regression Verify of {item['task']}{part} retired: "
+                              f"superseded by {item['superseded_by']}")
+    if not passed or broken:
+        if state["mode"] == "parallel":
+            isolation.deactivate_task(worktree, task_id, str(state["task_branch"]))
+        elif state["mode"] == "member":
+            isolation.deactivate_member_task(primary, str(state["member"]), task_id)
+        if passed:
+            names = ", ".join(name for item in broken for name in item["tasks"])
+            raise DriverStop(f"regression Verify of {names} failed in the isolate", task=task_id,
+                             execution=execution, regressions=broken)
+        raise DriverStop("Verify failed in the isolate", task=task_id, execution=execution)
+    if state["mode"] == "member":
+        member = str(state["member"])
+        landed = isolation.land_member(primary, member, task_id, str(state["title"]),
+                                       str(state["contract_file"]), base, str(state["member_base"]))
+        landing = str(landed["landing"])
+        # Only a landing whose parent is the member base proves the verified member tree.
+        ledger = isolation.git_output(worktree, "rev-parse", f"{landing}^") == str(state["member_base"])
+        if ledger:
+            build_state.verify_record(str(primary), command, landing, "pass", execution=execution, member=member)
+        return {"task": task_id, "commit": str(landed["commit"]), "mode": "member",
+                "landing": landing, "verify": execution, "regressions": reruns, **superseded,
+                "ledger": ledger}
+    landed = isolation.land(primary, worktree, base, task_id, str(state["title"]), task_file,
+                            list(state["files"]))
+    commit = str(landed["commit"])
+    # Only a landing whose parent is the recorded base proves the verified tree.
+    ledger = isolation.git_output(primary, "rev-parse", f"{commit}^") == base
+    if ledger:
+        build_state.verify_record(str(primary), command, commit, "pass", execution=execution)
+    return {"task": task_id, "commit": commit, "mode": landed["mode"], "verify": execution,
+            "regressions": reruns, **superseded, "ledger": ledger}
+
+
+# --- shared by round and review --------------------------------------------
+
+
+def summary(state: Dict[str, object]) -> Dict[str, object]:
+    return {key: state.get(key) for key in
+            ("task_id", "attempt", "mode", "worktree", "wave", "cycle", "verify_heavy", "dispatched_at",
+             "model_selection")}
+
+
+def recover_report(primary: Path, project_dir: str, receipt: Dict[str, object]) -> Dict[str, object]:
+    report = isolation.recover(primary, Path(project_dir) / "tasks")
+    receipt["steps"].append({"script": "isolation.py recover", "result": report})
+    if report["verdict"] == "block":
+        blocked = [task for task in report["tasks"] if task["verdict"] == "block"]
+        if blocked and all(task.get("leftover") for task in blocked):
+            # Every blocked task is landed: the stop names only the isolates to remove, and the build stays active.
+            raise DriverStop("; ".join(LEFTOVER_ISOLATE.format(task["task_id"], task["leftover"])
+                                       for task in blocked), recover=blocked)
+        raise DriverStop(RECOVERY_BLOCKED, recover=report)
+    return report
+
+
+def checkpoint_project(primary: Path, receipt: Dict[str, object], subject: str, body: str) -> Optional[str]:
+    """Commit .project bookkeeping through the canonical checkpoint; None when nothing is dirty."""
+    if not any(path.startswith(".project/") for path in isolation.uncommitted_paths(primary)) \
+            and not isolation.ignored_legacy_ledger(primary):
+        return None
+    result = isolation.checkpoint(primary, isolation.current_sha(primary), subject, body, [".project"])
+    receipt["steps"].append({"script": "isolation.py checkpoint", "result": result})
+    return str(result.get("commit"))
+
+
+def transition(primary: Path, project_dir: str, receipt: Dict[str, object], state: pipeline_state.PipelineState,
+               changes: Dict[str, str], event: str) -> None:
+    """Move STATE.md through pipeline_state, expecting exactly the state the caller inspected."""
+    result = pipeline_state.transition_state(primary, state.json(), changes, event, project_dir)
+    receipt["steps"].append({"script": "pipeline_state.py transition", "result": result})
+
+
+def run_step(primary: Path, project_dir: str, receipt: Dict[str, object], action: str, head: str,
+             task_id: Optional[str] = None, round_size: Optional[int] = None) -> List[Dict[str, object]]:
+    """One workflow_run action; its steps join the receipt and a blocked result is a stop."""
+    result = workflow_run.run_workflow(primary, action, project_dir, head, task_id, round_size)
+    receipt["steps"].extend(result["steps"])
+    if result["status"] != "complete":
+        raise DriverStop(f"{action} {task_id or ''}: {result['reason']}".rstrip())
+    return result["steps"]
+
+
+def wave_tasks(primary: Path, project_dir: str, wave: int, receipt: Dict[str, object]) -> List[Dict[str, object]]:
+    """The wave's tasks with proven landings; an unproven task is a stop."""
+    tasks = []
+    for task in recover_report(primary, project_dir, receipt)["tasks"]:
+        text = (primary / str(task["task"])).read_text(encoding="utf-8")
+        if contracts._task_wave(text, str(task.get("task_id"))) != wave:
+            continue
+        if task["verdict"] not in ("recovered", "attested"):
+            raise DriverStop(f"task {task.get('task_id')} has no proven landing: {task['verdict']}", recover=task)
+        tasks.append(task)
+    if not tasks:
+        raise DriverStop(f"wave {wave} has no tasks")
+    return tasks
+
+
+def stop(receipt: Dict[str, object], error: BaseException) -> Dict[str, object]:
+    receipt["status"] = "blocked"
+    receipt["blocked"].append({"reason": str(error), "code": getattr(error, "code", None),
+                               **getattr(error, "details", {})})
+    receipt["next"] = "$gsd-path-forensics"
+    return receipt
+
+
+# --- the round -------------------------------------------------------------
+
+
+class Round:
+    def __init__(self, primary: Path, options: argparse.Namespace) -> None:
+        self.primary = primary
+        self.options = options
+        self.project_dir = options.project_dir
+        self.root = records_root(primary)
+        self.proven: Dict[str, str] = {}  # task id -> landing commit proven by recover
+        self.budgeted = (getattr(options, "task_limit", None) is not None
+                         or budget_ledger(primary).is_file())
+        self.receipt: Dict[str, object] = {
+            "status": None, "wave": getattr(options, "wave", None), "landed": [],
+            "dispatched": [], "in_flight": [], "questions": [], "blocked": [], "steps": [],
+        }
+
+    # state transitions ----------------------------------------------------
+
+    def enter(self) -> None:
+        """The contract's checkpointed entry from plan/done, or recovery from build/blocked."""
+        state, _, _ = pipeline_state.load_state(self.primary, self.project_dir)
+        reentry = (state.phase, state.status) == ("build", "active") and isolation._patch_reentry(self.primary)
+        if (state.phase, state.status) not in (("plan", "done"), ("build", "blocked")) and not reentry:
+            return
+        if self.project_dir == ".project":
+            try:
+                pr_fix_lane.require_approved_membership(self.primary)
+            except pr_fix_lane.LaneError as error:
+                raise DriverStop(str(error)) from error
+        if not reentry:  # a crash after the transition left the patch artifacts uncommitted
+            transition(self.primary, self.project_dir, self.receipt, state, {"phase": "build", "status": "active"},
+                       "build started")
+        checkpoint_project(self.primary, self.receipt, "build: start milestone",
+                           f"Why: enter build from {state.phase}/{state.status} with the initial .project artifacts")
+
+    def block(self) -> None:
+        """Set build/blocked when the stop just recorded is one the contract names, and checkpoint it."""
+        last = self.receipt["blocked"][-1]
+        cause = BLOCKING_STOPS.get(last.get("code")) or BLOCKING_STOPS.get(last["reason"])
+        if cause is None:
+            return
+        try:
+            state, _, _ = pipeline_state.load_state(self.primary, self.project_dir)
+            transition(self.primary, self.project_dir, self.receipt, state, {"status": "blocked"},
+                       f"build blocked: {cause}")
+            self.receipt["checkpoint"] = checkpoint_project(
+                self.primary, self.receipt, f"build: record {cause}", f"Why: {last['reason']}")
+        except STOP_ERRORS as inner:
+            self.receipt["blocked"].append({"reason": str(inner), "helper": "pipeline_state.py transition"})
+
+    # token budget ---------------------------------------------------------
+
+    def budget(self, action: str, *arguments: str) -> Dict[str, object]:
+        """Run the bundled token_budget.py against this milestone's ledger; blocked is a stop."""
+        command = [sys.executable, "-B", str(Path(__file__).resolve().parent / "token_budget.py"),
+                   action, "--ledger", str(budget_ledger(self.primary)), *arguments]
+        completed = subprocess.run(command, cwd=self.primary, capture_output=True, encoding="utf-8", errors="replace")
+        result = json.loads(completed.stdout) if completed.stdout.strip() else {}
+        self.receipt["steps"].append({"script": f"token_budget.py {action}", "command": command,
+                                      "exit_code": completed.returncode, "result": result,
+                                      "stderr": completed.stderr})
+        if completed.returncode:
+            raise DriverStop(f"token budget {action}: {result.get('reason', completed.stderr.strip())}",
+                             budget=result)
+        return result
+
+    def admit(self, task_id: str) -> None:
+        if self.budgeted:
+            self.budget("admit", "--task", task_id)
+
+    def configure_budget(self) -> None:
+        if getattr(self.options, "task_limit", None) is not None:
+            self.budget("configure", "--task-limit", str(getattr(self.options, "task_limit", None)),
+                        "--session-limit", str(getattr(self.options, "session_limit", None)),
+                        "--authority", getattr(self.options, "budget_authority", None))
+
+    # recovery -------------------------------------------------------------
+
+    def recover(self) -> None:
+        # A journaled member landing is safe to finish; it never lands the same work twice.
+        journals = isolation.common_git_dir(self.primary).joinpath(*isolation.MEMBER_LANDING_DIR)
+        retired_members = set()
+        for journal in sorted(journals.glob("*.json")) if journals.is_dir() else []:
+            result = isolation.recover_member_landing(self.primary, journal.stem)
+            self.receipt["steps"].append({"script": "isolation.recover_member_landing", "task": journal.stem,
+                                          "result": result})
+            if result["state"] == "landed":
+                self.retire_member(str(result["member"]), journal.stem, str(result["landing"]))
+                retired_members.add(journal.stem)
+        report = recover_report(self.primary, self.project_dir, self.receipt)
+        for task in report["tasks"]:
+            worktree = task.get("worktree")
+            verdict = task["verdict"]
+            if verdict in ("recovered", "attested"):
+                self.proven[str(task.get("task_id"))] = str(task.get("commit"))
+            if (verdict == "reconcile" and task.get("status") == "in-progress"
+                    and task.get("task_branch") is None):
+                task_id = str(task.get("task_id"))
+                verify_name = f"task-{task_id.lower()}-verify"
+                verify_path = isolation.sidecar_root(self.primary, "verify", verify_name)
+                verify_branch = isolation.verify_branch_name(verify_name)
+                diagnose = shlex.join([
+                    sys.executable,
+                    "-B",
+                    str(helper_script("pipeline_diagnose.py")),
+                    "diagnose",
+                    "--repo",
+                    str(self.primary),
+                ])
+                raise DriverStop(
+                    f"task {task_id} needs recovery: {task.get('reason')}; inspect Verify "
+                    f"sidecar {verify_path} ({verify_branch}) before resetting it to pending; "
+                    f"inventory it with `{diagnose}`",
+                    recover=task,
+                )
+            if verdict == "recovered" and task.get("member") and task.get("task_id") not in retired_members:
+                self.retire_member(str(task["member"]), str(task["task_id"]), str(task["landing"]))
+            if verdict == "recovered" and worktree and worktree["clean"] and task.get("task_branch"):
+                isolation.retire(self.primary, Path(str(worktree["path"])),
+                                 str(task["task_branch"]), False)
+            elif verdict == "recovered" and worktree is None and task.get("task_branch"):
+                # The isolate is gone and the landing is proven: retire proves the branch, then deletes it.
+                isolation.retire(self.primary, None, str(task["task_branch"]), True, str(task["commit"]))
+            elif verdict == "resume" and (task.get("landing_retry") or task.get("dispatch_retry")):
+                # ponytail: interrupted retries stay with the parent's documented
+                # procedure; failed/blocked reconciliation surfaces through ready's typed error.
+                raise DriverStop(f"task {task.get('task_id')} needs recovery: {verdict}", recover=task)
+
+    def retire_member(self, member: str, task_id: str, landing: str) -> None:
+        """Retire a landed member task's sidecar; a proven leftover of it is a stop that names only its path."""
+        checkout, project, _ = isolation._member_context(self.primary, member)
+        sidecar = isolation.sidecar_root(checkout, "task", f"{project}-{task_id}")
+        branch = f"refs/heads/{isolation.TASK_BRANCH_PREFIX}{project}-{task_id}"
+        tip = isolation.run_git(checkout, "rev-parse", "--verify", "--quiet", branch)
+        commits = [landing, *tip.stdout.split()]
+        try:
+            isolation.retire_member_task(self.primary, member, task_id)
+        except isolation.RemovalError as error:
+            # Missing files are a removal that stopped part way; every other state keeps the refusal.
+            if not (isolation.only_missing_files(sidecar)
+                    or isolation.holds_only_landed_files(checkout, sidecar, commits)):
+                raise
+            raise DriverStop(LEFTOVER_ISOLATE.format(task_id, sidecar), cleanup_error=str(error))
+        if isolation.holds_only_landed_files(checkout, sidecar, commits):
+            raise DriverStop(LEFTOVER_ISOLATE.format(task_id, sidecar))
+
+    # settle exited children ---------------------------------------------
+
+    def isolate_live(self, state: Dict[str, object]) -> bool:
+        """Keep blocked attempts reportable until the corresponding task is reset."""
+        task_path = Path(str(state["worktree"])) / str(state["task_file"])
+        if not task_path.is_file():
+            return False
+        fields, _ = isolation.task_frontmatter(task_path.read_text(encoding="utf-8"))
+        if fields is None:
+            return False
+        if fields.get("status") == "in-progress":
+            return True
+        return (
+            state.get("mode") == "serial"
+            and fields.get("status") == "blocked"
+            and fields.get("id") == state.get("task_id")
+            and fields.get("base") == state.get("base")
+            and fields.get("task_branch") == "null"
+        )
+
+    def settle(self) -> bool:
+        """Classify every exited child. Returns True when a landing or redispatch changed the round."""
+        changed = False
+        rejected = {item['task_id'] for item in self.receipt['blocked']
+                    if item.get('code') == 'model-selection'}
+        for state in latest_states(self.root):
+            if state.get("wave") != self.receipt["wave"]:
+                continue
+            outcome = state.get("outcome")
+            if outcome == "question":
+                if state.get("answered"):
+                    if state['task_id'] in rejected:
+                        continue
+                    self.admit(str(state["task_id"]))
+                    try:
+                        self.launch(dict(state, answered=True))
+                    except model_policy.PolicyError as error:
+                        self.receipt['blocked'].append({'task_id': state['task_id'], 'reason': str(error),
+                                                       'code': 'model-selection'})
+                        continue
+                    update_state(state, outcome="redispatched")
+                    changed = True
+                else:
+                    self.receipt["questions"].append({**self.summary(state),
+                                                      "question": state.get("question")})
+            elif outcome == "blocked":
+                if self.isolate_live(state):
+                    self.receipt["blocked"].append({**self.summary(state),
+                                                    "reason": state.get("reason"), "reported": True})
+                else:
+                    update_state(state, outcome="resolved")
+            elif outcome is None:
+                if str(state["task_id"]) in self.proven:  # landed, then interrupted before recording
+                    update_state(state, outcome="landed", commit=self.proven[str(state["task_id"])])
+                elif state.get("finished_at") is None:
+                    if child_running(state):
+                        self.receipt["in_flight"].append(self.summary(state))
+                    elif (state.get("native") and not state.get("command") and not state.get("pid")
+                          and self.isolate_live(state)):
+                        continue
+                    else:
+                        state.update(read_attempt(Path(str(state["_path"]))))
+                        if state.get("finished_at") is not None:
+                            changed = self.classify(state) or changed
+                        else:
+                            self.fail(state, ORPHANED)
+                else:
+                    changed = self.classify(state) or changed
+        return changed
+
+    summary = staticmethod(summary)
+
+    def fail(self, state: Dict[str, object], reason: str, **details: object) -> None:
+        update_state(state, outcome="blocked", reason=reason)
+        self.receipt["blocked"].append({**self.summary(state), "reason": reason, **details})
+
+    def blocked_result(self, state: Dict[str, object], **diagnostics: object) -> bool:
+        """Record an explicit serial block and retire only its untouched Verify sidecar."""
+        reason = "child returned blocked"
+        details: Dict[str, object] = dict(diagnostics)
+        if state.get("mode") == "serial":
+            try:
+                task = isolation.block_serial_task(
+                    self.primary,
+                    str(state["task_file"]),
+                    str(state["task_id"]),
+                    str(state["base"]),
+                )
+            except STOP_ERRORS as error:
+                self.fail(state, f"{reason}; could not record blocked task: {error}")
+                return False
+            details["task"] = task
+            sidecar = state.get("sidecar")
+            if isinstance(sidecar, dict):
+                worktree = Path(str(sidecar["worktree"]))
+                branch = str(sidecar["branch"])
+                try:
+                    details["verify_cleanup"] = isolation.retire_unused_verify(
+                        self.primary, worktree, str(state["base"]), branch
+                    )
+                except STOP_ERRORS as error:
+                    reason += f"; Verify sidecar retained at {worktree}: {error}"
+        self.fail(state, reason, **details)
+        return False
+
+    def classify(self, state: Dict[str, object]) -> bool:
+        attempt_dir = Path(str(state["_path"])).parent
+        if self.budgeted and not state.get("usage_recorded"):
+            self.budget("record", "--task", str(state["task_id"]), "--events", str(attempt_dir / "stdout"))
+            update_state(state, usage_recorded=True)
+        message = final_message((attempt_dir / "stdout").read_text(encoding="utf-8", errors="replace"))
+        stderr = (attempt_dir / "stderr").read_text(encoding="utf-8", errors="replace")
+        try:
+            delta = log_delta(self.primary, state)
+        except (isolation.IsolationError, FileNotFoundError) as error:
+            self.fail(state, str(error), stdout_tail=tail(message), stderr_tail=tail(stderr))
+            return False
+        entries = [line for line in delta.splitlines() if line.strip()]
+        answered_at = max((index for index, line in enumerate(entries) if ANSWER_MARK in line), default=-1)
+        unanswered = entries[answered_at + 1:]
+        matches = list(RESULT_LINE.finditer(message))
+        verdict = matches[-1].group("verdict").lower() if matches else None
+        named = matches[-1].group("task").lower() if matches else None
+        if state.get("timed_out"):  # a failed child is a failure even when it wrote a question
+            self.fail(state, "child exceeded the configured timeout", log_delta=delta.strip())
+        elif state.get("exit_code") != 0:
+            self.fail(state, f"child exited {state.get('exit_code')}", stderr_tail=tail(stderr),
+                      stdout_tail=tail(message), log_delta=delta.strip())
+        elif unanswered and QUESTION_MARK in unanswered[0]:
+            update_state(state, outcome="question", question=unanswered[0], answered=False)
+            self.receipt["questions"].append({**self.summary(state), "question": unanswered[0],
+                                              "log_delta": delta.strip()})
+        elif verdict == "blocked" and named == str(state["task_id"]).lower():
+            return self.blocked_result(
+                state, stdout_tail=tail(message), log_delta=delta.strip()
+            )
+        elif verdict != "ready" or named != str(state["task_id"]).lower():
+            self.fail(state, "child returned blocked" if verdict == "blocked"
+                      else "child returned no RESULT line", stdout_tail=tail(message),
+                      log_delta=delta.strip())
+        else:
+            return self.finish(state)
+        return False
+
+    def finish(self, state: Dict[str, object]) -> bool:
+        try:
+            landing = finish_task(self.primary, state)
+        except STOP_ERRORS as error:
+            details = getattr(error, "details", {})
+            self.fail(state, str(error), **{key: value for key, value in details.items()
+                                             if key != "task"})
+            return False
+        update_state(state, outcome="landed", commit=landing["commit"])
+        self.receipt["landed"].append(landing)
+        return True
+
+    def launch(self, state: Dict[str, object]) -> None:
+        if state.get("wave") != self.receipt["wave"]:
+            raise DriverStop("task is outside the requested wave", task=state["task_id"],
+                             wave=state.get("wave"), requested_wave=self.receipt["wave"])
+        if state.get("mode") == "member":
+            isolation.ensure_member_hooks(self.primary, str(state["member"]), str(state["task_id"]))
+        fresh = spawn(self.root, state, self.options,
+                      lambda fresh: brief_text(fresh, self.options.role_brief, self.options.task_template))
+        self.receipt["dispatched"].append(self.summary(fresh))
+        self.receipt["in_flight"].append(self.summary(fresh))
+
+    # dispatch -------------------------------------------------------------
+
+    def in_flight_states(self) -> List[Dict[str, object]]:
+        states = []
+        for state in latest_states(self.root):
+            if state.get("outcome") is not None or state.get("wave") != self.receipt["wave"]:
+                continue
+            if state.get("native") and not state.get("command") and not state.get("pid"):
+                continue
+            states.append(state)
+        return states
+
+    def checkpoint_bookkeeping(self) -> None:
+        open_ids = {state["task_id"] for state in latest_states(self.root)
+                    if state.get("outcome") in (None, "question", "blocked")}
+        orphaned = []
+        for task_path in sorted((self.primary / ".project/tasks").glob("*.md")):
+            fields, _ = isolation.task_frontmatter(task_path.read_text(encoding="utf-8"))
+            if fields and fields.get("status") == "in-progress" and fields.get("id") not in open_ids:
+                orphaned.append(str(fields.get("id")))
+        if orphaned:
+            raise DriverStop("in-progress tasks have no open dispatch record", tasks=orphaned)
+        checkpoint_project(self.primary, self.receipt, "build: record dispatch bookkeeping",
+                           "Why: commit the verify ledger and task state before the next dispatch round\n"
+                           f"Base: {isolation.current_sha(self.primary)}")
+
+    def dispatch_ready(self) -> bool:
+        """Dispatch every selectable task. Returns True when the wave is complete."""
+        in_flight = self.in_flight_states()
+        if any(state["mode"] == "serial" for state in in_flight):
+            return False
+        ready = build_state.ready(str(self.primary), self.project_dir)
+        self.receipt["steps"].append({"script": "build_state.py ready", "result": ready})
+        wave = ready["current_wave"]
+        blocked_review = ready.get("blocked_review")
+        if blocked_review:
+            waiting_waves = blocked_review["waiting_waves"]
+            if self.receipt["wave"] in waiting_waves:
+                raise DriverStop(
+                    f"wave {self.receipt['wave']} has unfinished tasks but wave "
+                    f"{blocked_review['wave']} review cycle {blocked_review['cycle']} "
+                    "is blocked; it must pass before dispatch")
+            self.checkpoint_bookkeeping()
+            return not in_flight
+        repair_for_wave = ready.get("repair_for_wave")
+        if repair_for_wave is not None and self.receipt["wave"] != wave:
+            if self.receipt["wave"] > repair_for_wave:
+                raise DriverStop(
+                    f"wave {self.receipt['wave']} is waiting on blocked wave {repair_for_wave}; "
+                    f"dispatch repair wave {wave} first")
+            self.checkpoint_bookkeeping()
+            return not in_flight
+        if wave is not None and wave < self.receipt["wave"]:
+            raise DriverStop(f"wave {wave} is still unfinished; run round --wave {wave} first")
+        self.checkpoint_bookkeeping()
+        if wave is None or wave > self.receipt["wave"]:
+            return not in_flight
+        active_ids = {state["task_id"] for state in in_flight}
+        # ponytail: the one-heavy-Verify-at-a-time rule lives here; move it into
+        # build_state.ready if the hand-dispatch path ever needs it too.
+        heavy_busy = any(state.get("verify_heavy") for state in in_flight)
+        capacity = self.options.capacity
+        selected = []
+        rejected = {item["task_id"] for item in self.receipt["blocked"]
+                    if item.get("code") in TASK_HOLDS}
+        for task in ready["ready"]:
+            if capacity is not None and len(in_flight) + len(selected) >= capacity:
+                break
+            if task["wave"] != self.receipt["wave"]:
+                continue
+            if task["id"] in active_ids | rejected or (task["verify_heavy"] and heavy_busy):
+                continue
+            used = attempts_used(self.root, task["id"])
+            if used >= self.options.max_attempts:
+                raise DriverStop(f"task {task['id']} reached the attempt limit ({self.options.max_attempts}) "
+                                 "for this milestone; a person must rule", task=task["id"], attempts=used)
+            release = getattr(review_findings, "repair_release", None)
+            if release is None:
+                warning = "the pinned runtime predates the repair-count hold; repairs dispatch without it"
+                if warning not in self.receipt.setdefault("warnings", []):
+                    self.receipt["warnings"].append(warning)
+            hold = release(self.primary, self.project_dir, task["id"]) if release else None
+            if hold:
+                # Only this repair waits for the owner's ruling; other ready tasks still dispatch.
+                self.receipt["blocked"].append({"task_id": task["id"], "reason": hold, "code": "repair-ruling"})
+                continue
+            self.admit(task["id"])
+            candidate = retain_selection(self.root, {'task_id': task['id'], 'task_file': task['task_file'],
+                                                     'worktree': str(self.primary)})
+            try:
+                _, selection = selected_command(candidate, self.options, self.options.child_command)
+            except model_policy.PolicyError as error:
+                self.receipt['blocked'].append({'task_id': task['id'], 'reason': str(error),
+                                                'code': 'model-selection'})
+                continue
+            task['model_selection'] = selection
+            heavy_busy = heavy_busy or task['verify_heavy']
+            selected.append(task)
+        if not selected:
+            return False
+        head = isolation.current_sha(self.primary)
+        self.runner("lint-round", head)
+        round_size = len(selected) + len(in_flight)
+        for task in selected:
+            if task.get("repo"):
+                member = str(task["repo"])
+                retained = isolation.retained_member_task(self.primary, member, task["id"],
+                                                          task["task_file"], head)
+                if retained and retained["state"] == "unused":
+                    isolation.retire_member_task(self.primary, member, task["id"])
+                    retained = None
+                if retained:
+                    isolate, active = retained["isolate"], retained["active"]
+                else:
+                    isolate = isolation.isolate_member_task(self.primary, member, task["id"])
+                    active = isolation.activate_member_task(self.primary, member, task["id"],
+                                                            f"build_{task['id'].lower()}", task["task_file"], head)
+                sidecar_path = Path(str(active["worktree"]))
+                self.launch({"task_id": task["id"], "title": task["title"],
+                             "task_file": Path(str(active["copy"])).relative_to(sidecar_path).as_posix(),
+                             "contract_file": task["task_file"], "files": task["files"], "wave": task["wave"],
+                             "verify_heavy": task["verify_heavy"], "base": head, "worktree": str(sidecar_path),
+                             "task_branch": isolate["task_branch"], "mode": "member", "member": member,
+                             "member_base": isolate["member_base"], "project_root": str(self.primary),
+                             "sidecar": None, "answered": False, "model_selection": task['model_selection']})
+                continue
+            prepared = self.runner("prepare-task", head, task["id"], round_size)
+            isolate = prepared[0]["result"]
+            sidecar = prepared[-1]["result"] if len(prepared) > 1 else None  # the isolate-verify step is last
+            worktree = Path(str(isolate["worktree"]))
+            isolation.activate_task(worktree, head, task["id"], f"build_{task['id'].lower()}",
+                                    task["task_file"], isolate["task_branch"])
+            self.launch({"task_id": task["id"], "title": task["title"], "task_file": task["task_file"],
+                         "files": task["files"], "wave": task["wave"],
+                         "verify_heavy": task["verify_heavy"], "base": head, "worktree": str(worktree),
+                         "task_branch": isolate["task_branch"], "mode": isolate["mode"],
+                         "sidecar": sidecar, "answered": False,
+                         "model_selection": task['model_selection']})
+        return False
+
+    def runner(self, action: str, head: str, task_id: Optional[str] = None,
+               round_size: Optional[int] = None) -> List[Dict[str, object]]:
+        return run_step(self.primary, self.project_dir, self.receipt, action, head, task_id, round_size)
+
+    def run(self) -> Dict[str, object]:
+        deadline = time.monotonic() + self.options.wait if self.options.wait else None
+        try:
+            self.enter()
+            self.configure_budget()
+            self.recover()
+            changed = True
+            while True:
+                self.receipt["in_flight"] = []
+                changed = self.settle() or changed
+                if self.receipt["questions"] or any(
+                        item.get("code") not in TASK_HOLDS for item in self.receipt["blocked"]):
+                    self.receipt["status"] = "question" if self.receipt["questions"] else "blocked"
+                    return self.receipt
+                # ready is expensive and its inputs only move when a landing or redispatch happened
+                if changed and self.dispatch_ready():
+                    self.receipt["status"] = "done"
+                    return self.receipt
+                changed = False
+                live = self.in_flight_states()
+                if deadline is None or time.monotonic() >= deadline or not live:
+                    self.receipt["status"] = ("blocked" if self.receipt["blocked"]
+                                              else "in-flight" if live else "done")
+                    return self.receipt
+                time.sleep(POLL_SECONDS)
+        except STOP_ERRORS as error:
+            stop(self.receipt, error)
+            self.block()
+            return self.receipt
+
+
+# --- the wave review -------------------------------------------------------
+
+
+def advance(state: Dict[str, object], collect: Callable[[Dict[str, object]], None]) -> bool:
+    """Move one sidecar child toward a terminal outcome, in place. False while it still runs."""
+    if state.get("outcome") == "collected" and (
+            state.get("cleanup_pending") or not state.get("cleanup_complete")):
+        collect(state)
+    if state.get("outcome") is None:
+        if state.get("finished_at") is None:
+            if child_running(state):
+                return False
+            state.update(read_attempt(Path(str(state["_path"]))))  # the wrapper may have just recorded its result
+        if state.get("finished_at") is not None:
+            collect(state)
+        else:
+            update_state(state, outcome="blocked", reason=ORPHANED)
+    return True
+
+
+def retire_sidecar(primary: Path, state: Dict[str, object]) -> None:
+    """Clean and retire a collected child's sidecar; a failure stays pending for the next run."""
+    sidecar = Path(str(state["worktree"]))
+    try:
+        if sidecar.exists():
+            isolation.clean_verify(primary, sidecar, str(state["base"]), str(state["branch"]))
+        isolation.retire(primary, sidecar, str(state["branch"]), False)
+    except isolation.IsolationError as error:
+        update_state(state, cleanup_pending=True, cleanup_error=str(error))
+        return
+    update_state(state, cleanup_complete=True, cleanup_pending=False, cleanup_error=None)
+
+
+def review_base(records: Path, wave: int, cycle: int) -> str:
+    """The clean base the cycle's review recorded; a stop when no review ran."""
+    base = next((state["base"] for state in latest_states(records / "reviews")
+                 if state.get("wave") == wave and state.get("cycle") == cycle), None)
+    if base is None:
+        raise DriverStop("review base is not recorded; run review first")
+    return str(base)
+
+
+def recurrence_diagnostic(primary: Path, project_dir: str, wave: int, cycle: int,
+                          base: Optional[object]) -> Dict[str, object]:
+    """Repair-line attribution for the user's existing choice; never a driver failure."""
+    try:
+        return review_findings.recurrence(primary, project_dir, wave, cycle, str(base) if base else None)
+    except Exception as error:  # diagnostic only; gates use their own evidence
+        return {"status": "error", "error": str(error)}
+
+
+def spawn_in_sidecar(root: Path, primary: Path, receipt: Dict[str, object], options: argparse.Namespace,
+                     name: str, state: Dict[str, object], brief: Callable[[Dict[str, object]], str],
+                     command: Optional[str] = None) -> None:
+    """Cut a verify sidecar at the state's base and start one child in it."""
+    candidate = retain_selection(root, dict(state, worktree=str(primary)))
+    try:
+        _, selection = selected_command(candidate, options, command or options.child_command)
+    except model_policy.PolicyError as error:
+        receipt['blocked'].append({'task_id': state['task_id'], 'reason': str(error),
+                                   'code': 'model-selection'})
+        return
+    if selection is not None:
+        state = dict(state, model_selection=selection)
+    sidecar = isolation.isolate_verify(primary, str(state["base"]), name)
+    receipt["steps"].append({"script": "isolation.py isolate-verify", "result": sidecar})
+    spawn(root, dict(state, worktree=str(sidecar["worktree"]), branch=str(sidecar["branch"])), options, brief,
+          command=command)
+
+
+def review_brief(state: Dict[str, object], options: argparse.Namespace, primary: Path,
+                 tasks: List[Dict[str, object]], final_scope: bool, previous: Optional[Path]) -> str:
+    wave, cycle, lens = state["wave"], state["cycle"], state.get("lens")
+    agents = primary / "AGENTS.md"
+    lines = [
+        f"You are the reviewer for GSD Path wave {wave}, cycle {cycle}; logical task name "
+        f"{state['task_id']}. Mode: wave" + (f"; lens: {lens}." if lens else "."),
+        f"Read the reviewer role brief first and follow it exactly: {options.role_brief}",
+        "Validate the agreed acceptance contract. "
+        "Block only on a named unmet requirement or missing required evidence. "
+        "Do not search for improvements or expand the agreed contract.",
+        f"Template (use only this): {options.template}",
+        f"AGENTS.md: {agents if agents.exists() else 'absent'}",
+        f"Repository root, read-only: {primary}",
+        f"Your verify sidecar root, the only place you may write or apply patches: {state['worktree']} "
+        f"on branch {state['branch']} at the recorded review base {state['base']}.",
+        f"Write exactly this output file: {Path(str(state['worktree'])) / str(state['relative'])}",
+        f"Canonical path after the orchestrator collects it: {state['relative']}",
+        f"INTENT.md: {primary / '.project/intent/INTENT.md'}",
+        f"PLAN.md: {primary / '.project/plan/PLAN.md'}",
+        "Tasks in this wave, each with its recorded base and proven landing commit; the "
+        "orchestrator's recorded isolated Verify result is the `orchestrator Verify` entry in each Log:",
+    ]
+    for task in tasks:
+        lines.append(f"- {task['task_id']}: {primary / str(task['task'])} — base {task['base']}, "
+                     f"landing commit {task['commit']}")
+    if previous is not None:
+        lines.append(f"Previous cycle review to re-check: {previous}")
+        lines.append("Re-check repaired failures and affected passes only. "
+                     "Reuse settled evidence for unaffected criteria.")
+    if options.repair_evidence:
+        lines.append(f"Repair evidence receipt (re-review after a proven repair): {options.repair_evidence}")
+    if state.get("product_scope") == "current":
+        lines += [
+            "Current-product scope explicitly assigned: inspect the complete pinned product, not each historical task isolate.",
+            f"Record `Product scope: current` and `Reviewed HEAD: {state['base']}` in your report.",
+            *[f"Member {name}: inspect pinned commit {sha}; record `Reviewed member: {name} {sha}`."
+              for name, sha in sorted(state.get("member_heads", {}).items())],
+            "Judge every task and owned INTENT criterion against that pinned product, reusing recorded Verify evidence.",
+        ]
+    if state.get("depth") == "delta":
+        lane = pr_fix_lane.lane_round(primary)
+        capsule = Path(str(lane["directory"])) / "capsule/review" if lane else None
+        lines += [
+            "PR fix lane delta review (ADR 0006): this wave answers a PR change request. Record `Depth: delta` "
+            f"and add the `## {pr_fix_lane.DELTA_SECTION}` section of the delta template: {options.delta_template}",
+            f"Change-request items and the owner's ruling: {primary / '.project/review/PATCH-FINDINGS.md'}",
+            f"Previously approved FINAL.md and gap reports (baseline): {capsule}",
+            "Judge four things: each fix item closed or not; whether the landed diff stays local (no change to "
+            "a success criterion, interface contract, or design decision); for every success criterion and "
+            "every numbered gap risk from 2, affected or unaffected with the reason, and a full verdict for each "
+            "affected one; and whether the baseline risk list is still complete.",
+        ]
+        membership = pr_fix_lane.read_membership(primary, int(lane["round"])) if lane else None
+        if membership is not None and state.get("wave") == min(row["wave"] for row in membership["tasks"]):
+            membership_file = pr_fix_lane.membership_path(primary, int(lane["round"]))
+            lines += [
+                "This is the round's cumulative assessment: judge the whole round as landed, repairs included, "
+                "and record these lines in the delta section exactly:",
+                "Round tasks: " + ", ".join(pr_fix_lane.member_ids(membership)),
+                f"Membership: {pr_fix_lane._digest(membership_file)}",
+                f"Product HEAD: {state['base']}",
+                *[f"Member product HEAD: {name} {sha}" for name, sha in sorted(contracts._member_tips(primary).items())],
+            ]
+    if final_scope:
+        lines.append(f"Final scope applies: record `Review scope: final` and `Reviewed HEAD: {state['base']}`, "
+                     "check every INTENT success criterion and PLAN.md's Surface contract, and add "
+                     "Surface, Check, and Observed fields to each surface criterion block.")
+    lines += [
+        "Do not re-run task Verify or PLAN.md's project Verify. Never edit the primary worktree. "
+        "Never delegate to another agent. Never stage or commit.",
+        "Terminal result: the `Wave verdict:` line of the file you wrote is your result; the "
+        "orchestrator validates the file and reads it from there. Name that verdict in your final message.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+class Review:
+    """Step 6 of the build contract at `full` or `deep` depth: one reviewer per lens in its own
+    verify sidecar, validated, collected, retired; findings grouped on blocked."""
+
+    def __init__(self, primary: Path, options: argparse.Namespace) -> None:
+        self.primary = primary
+        self.options = options
+        self.project_dir = options.project_dir
+        self.wave, self.cycle = options.wave, options.cycle
+        self.root = records_root(primary) / "reviews"
+        self.receipt: Dict[str, object] = {"status": None, "wave": self.wave, "cycle": self.cycle,
+                                           "lenses": {}, "in_flight": [], "blocked": [], "steps": []}
+
+    def lens_name(self, key: str) -> str:
+        return f"review_wave_{self.wave}_cycle_{self.cycle}" + ("" if key == "canonical" else f"_{key}")
+
+    def current_states(self, keys: List[str]) -> Dict[str, Dict[str, object]]:
+        names = {self.lens_name(key): key for key in keys}
+        return {names[str(state["task_id"])]: state for state in latest_states(self.root)
+                if str(state["task_id"]) in names}
+
+    def wave_tasks(self) -> List[Dict[str, object]]:
+        return wave_tasks(self.primary, self.project_dir, self.wave, self.receipt)
+
+    def dispatch(self, lenses: Dict[str, str], depth: str, base: Optional[str] = None) -> None:
+        dirty = isolation.uncommitted_paths(self.primary)
+        if base is not None:
+            paths = review_findings.review_paths(self.primary / self.project_dir, self.wave, self.cycle, depth)
+            for key, state in self.current_states(list(paths)).items():
+                if state.get('outcome') != 'collected':
+                    continue
+                path = paths[key]
+                relative = path.relative_to(self.primary).as_posix()
+                if (state.get('base') != base or state.get('relative') != relative
+                        or not path.is_file()
+                        or hashlib.sha256(path.read_bytes()).hexdigest() != state.get('validated_sha256')):
+                    raise DriverStop('canonical review artifact changed after collection', path=relative)
+                dirty.discard(relative)
+        if dirty:
+            raise DriverStop("review collection base requires a clean primary", paths=sorted(dirty))
+        tasks = self.wave_tasks()
+        plan_text = (self.primary / self.project_dir / "plan/PLAN.md").read_text(encoding="utf-8")
+        intent = (self.primary / self.project_dir / "intent/INTENT.md").read_text(encoding="utf-8")
+        try:
+            lane = contracts._line_value(intent, "Lane:")
+        except contracts.HandoffError:
+            lane = None  # an INTENT without a lane line is never quick
+        final_scope = depth == "full" and lane == "quick" and contracts._plan_waves(plan_text)[1] == [1]
+        earlier = (review_findings.review_paths(self.primary / self.project_dir, self.wave, self.cycle - 1, depth)
+                   if self.cycle > 1 else {})
+        for previous in earlier.values():
+            if not previous.is_file():
+                raise DriverStop(f"previous cycle review is missing: {previous}")
+        base = base or isolation.current_sha(self.primary)
+        self.receipt["base"] = base
+        current_product = bool(getattr(self.options, "current_product", False))
+        if current_product and self.options.repair_evidence:
+            raise DriverStop("current-product scope cannot use a focused repair receipt")
+        member_heads = {}
+        if current_product:
+            if not hasattr(review_findings, "current_product_scope"):
+                raise DriverStop("selected runtime does not support current-product review; upgrade it explicitly")
+            git, commit = review_findings._git_reader()
+            snapshots, missing = review_findings.review_snapshots(
+                self.primary, self.project_dir, base, None, git, commit)
+            if missing:
+                raise DriverStop("current-product member snapshots are missing", members=missing)
+            member_heads = {name: sha for name, _, sha in snapshots if name}
+        for key, relative in lenses.items():
+            name = f"wave-{self.wave}-cycle-{self.cycle}" + ("" if key == "canonical" else f"-{key}")
+            previous = earlier.get(key)
+            state = {"task_id": self.lens_name(key), "lens": None if key == "canonical" else key,
+                     "wave": self.wave, "cycle": self.cycle, "base": base, "relative": relative,
+                     "product_scope": "current" if current_product else "isolated", "member_heads": member_heads,
+                     "depth": depth}
+            spawn_in_sidecar(self.root, self.primary, self.receipt, self.options, name, state,
+                             lambda fresh, previous=previous: review_brief(fresh, self.options, self.primary, tasks,
+                                                                            final_scope, previous))
+
+    def collect(self, state: Dict[str, object]) -> None:
+        """Validate in the sidecar, then copy to the canonical path, then retire: the contract's order."""
+        sidecar = Path(str(state["worktree"]))
+        relative = str(state["relative"])
+        stderr = (Path(str(state["_path"])).parent / "stderr").read_text(encoding="utf-8", errors="replace")
+        if state.get("timed_out") or state.get("exit_code") != 0:
+            update_state(state, outcome="blocked", reason=f"reviewer child exited {state.get('exit_code')}",
+                         stderr_tail=tail(stderr))
+            return
+        staged = sidecar / relative
+        canonical = self.primary / relative
+        if state.get("outcome") != "collected":
+            if not staged.is_file():
+                if (state.get("validated") and canonical.is_file()
+                        and hashlib.sha256(canonical.read_bytes()).hexdigest() == state.get("validated_sha256")):
+                    update_state(state, outcome="collected")
+                else:
+                    update_state(state, outcome="blocked", reason="reviewer wrote no review file", stderr_tail=tail(stderr))
+                    return
+            else:
+                try:
+                    validated = contracts.validate_wave_evidence(sidecar, self.project_dir, relative)
+                    if state.get("product_scope") == "current":
+                        scope = review_findings.current_product_scope(staged.read_text(encoding="utf-8"))
+                        if scope != {"base": state["base"], "member_heads": state.get("member_heads", {})}:
+                            raise contracts.HandoffError("current-product report does not match assigned snapshots")
+                except (contracts.HandoffError, review_findings.ReviewFindingsError) as error:
+                    update_state(state, outcome="blocked", reason=str(error), helper="check_handoffs.py wave")
+                    return
+                update_state(state, verdict=validated["verdict"], owned=validated.get("owned"), validated=True,
+                             validated_sha256=hashlib.sha256(staged.read_bytes()).hexdigest())
+                try:
+                    collected = isolation.collect_artifact(self.primary, sidecar, str(state["base"]),
+                                                           str(state["branch"]), relative, relative, None)
+                except isolation.IsolationError as error:
+                    update_state(state, outcome="blocked", reason=str(error), helper="isolation.py")
+                    return
+                update_state(state, outcome="collected")
+                self.receipt["steps"].append({"script": "isolation.py collect-artifact", "result": collected})
+        retire_sidecar(self.primary, state)
+
+    def input_failure(self, base: str) -> Optional[Dict[str, str]]:
+        paths = review_findings.review_paths(self.primary / self.project_dir, self.wave,
+                                            self.cycle, self.receipt["depth"])
+        allowed = {path.relative_to(self.primary).as_posix() for path in paths.values()}
+        head = isolation.current_sha(self.primary)
+        committed = set(filter(None, isolation.git_text(
+            self.primary, "diff", "--no-renames", "--name-only", "-z", base, head, "--").split("\0")))
+        changed = committed | isolation.uncommitted_paths(self.primary)
+        checkpoint = f"build: record wave {self.wave} cycle {self.cycle} review"
+        history_matches = head == base or (
+            isolation.git_output(self.primary, "show", "-s", "--format=%P", head) == base
+            and isolation.git_output(self.primary, "show", "-s", "--format=%s", head) == checkpoint)
+        if changed - allowed or not history_matches:
+            return {"reason": "inputs changed after the review base; run a new cycle",
+                    "helper": "dispatch_driver.py review"}
+        return None
+
+    def settle(self, states: Dict[str, Dict[str, object]]) -> None:
+        """Advance every lens and render the receipt from the records; settle is their only writer."""
+        rejected = [item for item in self.receipt['blocked'] if item.get('code') == 'model-selection']
+        self.receipt["in_flight"], self.receipt["blocked"], self.receipt["lenses"] = [], rejected, {}
+        for key, state in states.items():
+            if not advance(state, self.collect):
+                self.receipt["in_flight"].append(summary(state))
+                continue
+            self.receipt["base"] = state.get("base")
+            if state.get("outcome") == "collected":
+                failure = self.input_failure(str(state["base"]))
+                if failure:
+                    self.receipt["blocked"].append({**summary(state), **failure})
+                    continue
+                canonical = self.primary / str(state["relative"])
+                if (not canonical.is_file()
+                        or hashlib.sha256(canonical.read_bytes()).hexdigest() != state.get("validated_sha256")):
+                    self.receipt["blocked"].append({**summary(state),
+                        "reason": "canonical review artifact changed after collection",
+                        "helper": "isolation.py collect-artifact"})
+                    continue
+                if state.get("cleanup_pending"):
+                    self.receipt["blocked"].append({**summary(state), "reason": state.get("cleanup_error"),
+                                                    "helper": "isolation.py retire"})
+                self.receipt["lenses"][key] = {"verdict": state.get("verdict"), "owned": state.get("owned"),
+                                               "path": state.get("relative")}
+            elif state.get("outcome") == "blocked":
+                self.receipt["blocked"].append({**summary(state), "reason": state.get("reason"),
+                                                "helper": state.get("helper"), "stderr_tail": state.get("stderr_tail")})
+
+    def conclude(self) -> None:
+        self.receipt["recurrence"] = recurrence_diagnostic(
+            self.primary, self.project_dir, self.wave, self.cycle, self.receipt.get("base"))
+        lenses: Dict[str, Dict[str, object]] = self.receipt["lenses"]
+        passing = not self.receipt["blocked"] and all(entry.get("verdict") == "pass" for entry in lenses.values())
+        failure = self.input_failure(str(self.receipt["base"])) if passing else None
+        if passing and failure is None:
+            if not self.receipt["panel_required"]:  # with a panel, the parent's single checkpoint follows it
+                self.receipt["checkpoint"] = checkpoint_project(
+                    self.primary, self.receipt, f"build: record wave {self.wave} cycle {self.cycle} review",
+                    f"Why: persist the passing wave review verdict\nWave: {self.wave}")
+            self.receipt["status"] = "pass"
+            return
+        helper_failures = [f"{item['helper']}: {item['reason']}" for item in self.receipt["blocked"]
+                           if item.get("helper")]
+        if failure:
+            self.receipt.update(failure)
+            helper_failures.append(f"{failure['helper']}: {failure['reason']}")
+        try:
+            self.receipt["findings"] = review_findings.compute(self.primary, self.project_dir, self.wave,
+                                                               self.cycle, helper_failures)
+        except review_findings.ReviewFindingsError as error:
+            self.receipt["findings"] = {"status": "error", "error": str(error)}
+        self.receipt["status"] = "blocked"
+
+    def run(self) -> Dict[str, object]:
+        deadline = time.monotonic() + self.options.wait if self.options.wait else None
+        try:
+            project = self.primary / self.project_dir
+            plan_text = (project / "plan/PLAN.md").read_text(encoding="utf-8")
+            depth = review_findings.wave_depth(plan_text, self.wave)
+            self.receipt["depth"] = depth
+            # Older pinned runtimes keep their own readiness contract.
+            panel_gate = getattr(build_state, "require_review_panels", None)
+            if panel_gate is not None:
+                panel_gate(self.primary, self.project_dir, wave=self.wave, before_cycle=self.cycle)
+            if depth == "verify-only":
+                # ponytail: verify-only files are orchestrator-written judgment; the parent owns them.
+                self.receipt.update(status="not-applicable",
+                                    reason="verify-only reviews are orchestrator-written; the driver does not run them")
+                return self.receipt
+            # A PR fix lane delta wave has one reviewer and never a panel (ADR 0006).
+            self.receipt["panel_required"] = depth != "delta" and review_panel.plan_review_panel_enabled(plan_text)
+            lenses = {key: path.relative_to(self.primary).as_posix() for key, path in
+                      review_findings.review_paths(project, self.wave, self.cycle, depth).items()}
+            states = self.current_states(list(lenses))
+            requested_scope = "current" if getattr(self.options, "current_product", False) else "isolated"
+            if any(state.get("product_scope", "isolated") != requested_scope for state in states.values()):
+                raise DriverStop("review scope differs from the recorded assignment; use a new cycle")
+            missing = {key: relative for key, relative in lenses.items() if key not in states}
+            if missing:
+                base = None
+                if states:
+                    bases = {state["base"] for state in states.values()}
+                    head = isolation.current_sha(self.primary)
+                    if bases != {head}:
+                        raise DriverStop(f"missing review lenses {', '.join(missing)}: HEAD moved to {head}; "
+                                         f"recorded bases: {', '.join(sorted(bases))}")
+                    base = head
+                self.dispatch(missing, depth, base)
+                states = self.current_states(list(lenses))
+            while True:
+                self.settle(states)
+                settled = {state['task_id'] for state in states.values()}
+                settled.update(item['task_id'] for item in self.receipt['blocked']
+                               if item.get('code') == 'model-selection')
+                if settled == {self.lens_name(key) for key in lenses} and all(
+                        state.get("outcome") in ("collected", "blocked") for state in states.values()):
+                    self.conclude()
+                    return self.receipt
+                if deadline is None or time.monotonic() >= deadline:
+                    self.receipt["status"] = "in-flight"
+                    return self.receipt
+                time.sleep(POLL_SECONDS)
+                states = self.current_states(list(lenses))
+        except STOP_ERRORS as error:
+            return stop(self.receipt, error)
+
+
+# --- the review panel and fix tasks ----------------------------------------
+
+
+def helper_json(receipt: Dict[str, object], script: str, *arguments: str, cwd: Path) -> Dict[str, object]:
+    """Run a helper (runtime-selected, else bundled) and return its JSON stdout; a non-zero exit is a typed stop."""
+    command = [sys.executable, "-B", str(helper_script(script)), *arguments]
+    completed = subprocess.run(command, cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
+    step = {"script": script, "command": command, "exit_code": completed.returncode,
+            "stdout": completed.stdout, "stderr": completed.stderr}
+    receipt["steps"].append(step)
+    try:
+        result = json.loads(completed.stdout) if completed.stdout.strip() else {}
+    except json.JSONDecodeError:
+        result = {}
+    if completed.returncode:
+        raise DriverStop(f"{script} failed: {result.get('error') or completed.stderr.strip()}", result=result)
+    result["_stdout"] = completed.stdout
+    return result
+
+
+def load_family_commands(path: Optional[Path]) -> Dict[str, Dict[str, str]]:
+    """Per-family panel commands: {family: {"command": text, "output": "stdout"|"file"}}."""
+    if path is None:
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise DriverStop(f"--family-commands is not readable JSON: {error}") from error
+    if not isinstance(data, dict):
+        raise DriverStop("--family-commands must map families to commands")
+    for family, spec in data.items():
+        if family not in review_panel.KNOWN_FAMILIES:
+            raise DriverStop(f"--family-commands names an unknown family: {family}")
+        if (not isinstance(spec, dict) or set(spec) - {"command", "output"}
+                or not isinstance(spec.get("command"), str) or not spec["command"].strip()
+                or spec.get("output") not in CAPTURED_OUTPUTS):
+            raise DriverStop(f"--family-commands entry for {family} needs a command and an output "
+                             f"of {' or '.join(CAPTURED_OUTPUTS)}")
+        if spec["output"] == "file" and "{final}" not in spec["command"]:
+            raise DriverStop(f"--family-commands entry for {family} writes a file but has no {{final}}")
+    return data
+
+
+def panel_transport(family: str, commands: Dict[str, Dict[str, str]], child_command: Optional[str]) -> str:
+    """A family command wins; otherwise the owner's child command; otherwise the parent's native child."""
+    if family in commands:
+        return CAPTURED
+    return CHILD if child_command else NATIVE
+
+
+def panel_command(family: str, slug: str, commands: Dict[str, Dict[str, str]], options: argparse.Namespace) -> str:
+    command = commands[family]["command"] if family in commands else options.child_command
+    if family in commands or not getattr(options, 'model_capabilities', None):
+        command = command.replace('{model}', slug)
+    return command
+
+
+def stderr_tail(state: Dict[str, object]) -> str:
+    """The child's last nonempty stderr line, for a blocked reason."""
+    path = Path(str(state["_path"])).parent / "stderr"
+    try:
+        lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines()]
+    except OSError:
+        return ""
+    lines = [line for line in lines if line]
+    return lines[-1][:300] if lines else ""
+
+
+def captured_report(state: Dict[str, object]) -> str:
+    """The final report a captured-output child returned, exactly as it returned it."""
+    attempt = Path(str(state["_path"])).parent
+    if state.get("output") == "file":
+        path = attempt / CAPTURED_FINAL
+        return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    path = attempt / "stdout"
+    return final_message(path.read_text(encoding="utf-8", errors="replace")) if path.is_file() else ""
+
+
+def stage_captured_report(state: Dict[str, object], staged: Path) -> bool:
+    """Write a finished captured child's report to its staging path; False when it blocked."""
+    if state.get("validated") or state.get("captured_sha256"):
+        return True
+    if state.get("timed_out") or state.get("exit_code") != 0:
+        reason = "child timed out" if state.get("timed_out") else f"child exited {state.get('exit_code')}"
+        tail = stderr_tail(state)
+        update_state(state, outcome="blocked", reason=f"{reason}: {tail}" if tail else reason)
+        return False
+    text = captured_report(state)
+    if not text.strip():
+        update_state(state, outcome="blocked", reason="child returned an empty report")
+        return False
+    data = (text if text.endswith("\n") else text + "\n").encode("utf-8")
+    overwrote = staged.is_file()
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    _common.atomic_write(staged, data.decode("utf-8"))
+    update_state(state, captured_sha256=hashlib.sha256(data).hexdigest(), captured_overwrote_file=overwrote)
+    return True
+
+
+def retry_blocked(primary: Path, states: Dict[str, Dict[str, object]], families: Optional[List[str]],
+                  base: str) -> List[str]:
+    """Families the owner asked to run again: each must be blocked, and HEAD must still be the base."""
+    families = list(families or [])
+    for family in families:
+        state = states.get(family)
+        if state is None or state.get("outcome") != "blocked":
+            raise DriverStop(f"--retry-family {family}: only a blocked panel family can run again")
+    if families and isolation.current_sha(primary) != base:
+        raise DriverStop("cannot retry panel families: HEAD moved from the recorded base")
+    for family in families:
+        state = states[family]
+        if state.get("transport") != NATIVE and state.get("branch") and Path(str(state["worktree"])) != primary:
+            retire_sidecar(primary, state)
+    return families
+
+
+def open_native_record(root: Path, state: Dict[str, object]) -> Dict[str, object]:
+    """A dispatch record for a family the parent runs natively; it stays open until collected."""
+    task_dir = root / str(state["task_id"])
+    attempt = max((attempt_number(path) for path in task_dir.glob("attempt-*")), default=0) + 1
+    path = task_dir / f"attempt-{attempt}" / "state.json"
+    path.parent.mkdir(parents=True)
+    record = dict(state, attempt=attempt, transport=NATIVE, outcome=None, opened_at=now())
+    save_state(path, record)
+    return dict(record, _path=str(path))
+
+
+class Children:
+    """One sidecar child per key of a wave cycle, each polled to a terminal outcome and its file
+    collected; Panel and Skeptics differ only in what they dispatch and record."""
+
+    records = ""  # dispatch records subdirectory
+    field = ""  # the state key naming a child
+    results = ""  # the receipt key holding collected entries
+
+    def __init__(self, primary: Path, options: argparse.Namespace) -> None:
+        self.primary, self.options = primary, options
+        self.project_dir, self.wave, self.cycle = options.project_dir, options.wave, options.cycle
+        self.root = records_root(primary) / self.records
+        self.receipt: Dict[str, object] = {"status": None, "wave": self.wave, "cycle": self.cycle,
+                                           self.results: {}, "in_flight": [], "blocked": [], "steps": []}
+
+    def states(self) -> Dict[str, Dict[str, object]]:
+        return {str(state[self.field]): state for state in latest_states(self.root)
+                if state.get("wave") == self.wave and state.get("cycle") == self.cycle}
+
+    def validate(self, staged: Path) -> Dict[str, object]:
+        """State fields read from the staged file; raises review_findings.ReviewFindingsError."""
+        return {}
+
+    def entry(self, state: Dict[str, object]) -> Dict[str, object]:
+        raise NotImplementedError
+
+    def collect(self, state: Dict[str, object]) -> None:
+        collect_file(self.primary, self.receipt, state, self.validate)
+
+    def poll(self, states: Dict[str, Dict[str, object]], deadline: Optional[float]) -> bool:
+        """Advance every child; True once all are terminal, False when the deadline passes first."""
+        while True:
+            rejected = [item for item in self.receipt['blocked'] if item.get('code') == 'model-selection']
+            self.receipt["in_flight"], self.receipt["blocked"], self.receipt[self.results] = [], rejected, {}
+            # A native record has no process to poll: the parent collects it, then reruns the action.
+            live = {key: state for key, state in states.items() if not native_open(state)}
+            for key, state in live.items():
+                if not advance(state, self.collect):
+                    self.receipt["in_flight"].append(summary(state))
+                    continue
+                if state.get("cleanup_pending"):
+                    self.receipt["blocked"].append({**summary(state), "reason": state.get("cleanup_error"),
+                                                    "helper": "isolation.py retire"})
+                if state.get("outcome") == "collected":
+                    self.receipt[self.results][key] = self.entry(state)
+                elif state.get("outcome") == "blocked":
+                    self.receipt["blocked"].append({**summary(state), "reason": state.get("reason"),
+                                                    "helper": state.get("helper")})
+            if all(state.get("outcome") in ("collected", "blocked") for state in live.values()):
+                return True
+            if deadline is None or time.monotonic() >= deadline:
+                self.receipt["status"] = "in-flight"
+                return False
+            time.sleep(POLL_SECONDS)
+            states.update(self.states())  # an unreaped wrapper still looks alive; its exit receipt does not
+
+
+def native_open(state: Dict[str, object]) -> bool:
+    return state.get("transport") == NATIVE and state.get("outcome") is None
+
+
+def collect_file(primary: Path, receipt: Dict[str, object], state: Dict[str, object],
+                 validate: Callable[[Path], Dict[str, object]]) -> None:
+    """Validate a child's staged file in its sidecar, copy it to the canonical path, then retire."""
+    sidecar, relative = Path(str(state["worktree"])), str(state["relative"])
+    if state.get("outcome") != "collected":
+        if state.get("timed_out") or state.get("exit_code") != 0:
+            update_state(state, outcome="blocked", reason=f"child exited {state.get('exit_code')}")
+            return
+        staged = sidecar / relative
+        if staged.is_file():
+            try:
+                fields = validate(staged)
+            except review_findings.ReviewFindingsError as error:
+                update_state(state, outcome="blocked", reason=str(error), helper="review_findings.py")
+                return
+            update_state(state, validated=True,
+                         validated_sha256=hashlib.sha256(staged.read_bytes()).hexdigest(), **fields)
+        else:
+            canonical = primary / relative
+            if (not state.get("validated") or not canonical.is_file()
+                    or hashlib.sha256(canonical.read_bytes()).hexdigest() != state.get("validated_sha256")):
+                update_state(state, outcome="blocked", reason="child wrote no file or collected file changed")
+                return
+        try:
+            collected = isolation.collect_artifact(primary, sidecar, str(state["base"]), str(state["branch"]),
+                                                   relative, relative, None)
+        except isolation.IsolationError as error:
+            update_state(state, outcome="blocked", reason=str(error), helper="isolation.py")
+            return
+        receipt["steps"].append({"script": "isolation.py collect-artifact", "result": collected})
+        update_state(state, outcome="collected")
+    retire_sidecar(primary, state)
+
+
+class Panel(Children):
+    """Step 6's optional review panel: resolve, one panelist per family in its own sidecar,
+    collect, merge, then the single on-pass checkpoint with the canonical review."""
+
+    records, field, results = "panels", "family", "families"
+
+    def family_name(self, family: str) -> str:
+        return f"review_wave_{self.wave}_cycle_{self.cycle}_panel_{family}"
+
+    def entry(self, state: Dict[str, object]) -> Dict[str, object]:
+        return {"slug": state.get("slug"), "path": state.get("relative")}
+
+    def relative(self, family: str) -> str:
+        return f"{self.project_dir}/review/wave-{self.wave}.cycle{self.cycle}.panel.{family}.md"
+
+    def collect(self, state: Dict[str, object]) -> None:
+        if state.get("transport") == CAPTURED and state.get("outcome") != "collected":
+            if not stage_captured_report(state, Path(str(state["worktree"])) / str(state["relative"])):
+                return
+        collect_file(self.primary, self.receipt, state, self.validate)
+
+    def collect_native(self, states: Dict[str, Dict[str, object]], families: List[str]) -> None:
+        """Accept the parent's collected native reports at their canonical paths."""
+        for family in families:
+            state = states.get(family)
+            if state is None or state.get("transport") != NATIVE:
+                raise DriverStop(f"--native-collected names {family}, which is not a native panel family")
+            if state.get("outcome") == "collected":
+                continue
+            canonical = self.primary / str(state["relative"])
+            try:
+                review_panel.parse_family_artifact(canonical, "wave")
+            except review_panel.ReviewPanelError as error:
+                raise DriverStop(f"native {family} report is not a collected panel report: {error}",
+                                 path=str(canonical)) from error
+            update_state(state, outcome="collected", validated=True, cleanup_complete=True,
+                         validated_sha256=hashlib.sha256(canonical.read_bytes()).hexdigest())
+
+    def brief(self, state: Dict[str, object], tasks: List[Dict[str, object]], depth: str, review: str) -> str:
+        agents = self.primary / "AGENTS.md"
+        lines = [
+            f"You are one review-panel child for GSD Path wave {self.wave}, cycle {self.cycle}; logical task "
+            f"name {state['task_id']}. Mode: wave panel. Family: {state['family']}. Model: {state['slug']}.",
+            f"Read the reviewer role brief first and follow its Wave panel mode exactly: {self.options.role_brief}",
+            f"Template (use only this): {self.options.template}",
+            f"AGENTS.md: {agents if agents.exists() else 'absent'}",
+            f"Depth for this brief: {'adversarial' if depth == 'deep' else 'full'}.",
+            f"Repository root, read-only: {self.primary}",
+            f"Canonical wave review, read-only: {self.primary / review}",
+            f"Your verify sidecar root, the only place you may write or apply patches: {state['worktree']} "
+            f"on branch {state['branch']} at the recorded review base {state['base']}.",
+            (CAPTURED_RESULT if state.get("transport") == CAPTURED else
+             f"Write exactly this output file: {Path(str(state['worktree'])) / str(state['relative'])}"),
+            f"INTENT.md: {self.primary / '.project/intent/INTENT.md'}",
+            "Tasks in this wave, each with its recorded base and proven landing commit:",
+        ]
+        for task in tasks:
+            lines.append(f"- {task['task_id']}: {self.primary / str(task['task'])} — base {task['base']}, "
+                         f"landing commit {task['commit']}")
+        lines += ["Do not write a Wave verdict or edit the canonical review. Never edit the primary. "
+                  "Never delegate. Never stage or commit.",
+                  CAPTURED_TERMINAL if state.get("transport") == CAPTURED else
+                  "Terminal result: the file you wrote is your result; name its finding count in your final message."]
+        return "\n".join(lines) + "\n"
+
+    def run(self) -> Dict[str, object]:
+        deadline = time.monotonic() + self.options.wait if self.options.wait else None
+        try:
+            project = self.primary / self.project_dir
+            plan_text = (project / "plan/PLAN.md").read_text(encoding="utf-8")
+            depth = review_findings.wave_depth(plan_text, self.wave)
+            self.receipt["depth"] = depth
+            if depth in {"verify-only", "delta"}:
+                raise DriverStop(f"never spawn a review panel at {depth}")
+            paths = review_findings.review_paths(project, self.wave, self.cycle, depth)
+            review = next(iter(paths.values())).relative_to(self.primary).as_posix()
+            if not all(path.is_file() for path in paths.values()):
+                raise DriverStop("the canonical wave review must be collected before the panel")
+            output = project / "review" / f"wave-{self.wave}.cycle{self.cycle}.panel.md"
+            skipped = project / "review" / f"wave-{self.wave}.cycle{self.cycle}.panel.skipped.json"
+            commands = load_family_commands(getattr(self.options, "family_commands", None))
+            states = self.states()
+            roster_path = self.root / f"wave-{self.wave}-cycle-{self.cycle}" / "roster.json"
+            if roster_path.is_file():
+                roster = load_state(roster_path)
+            else:
+                if states:
+                    raise DriverStop("panel records exist without a persisted roster")
+                excluded = {review_panel.family_of_slug(self.options.parent_slug or '')}
+                excluded |= set(getattr(self.options, "exclude_family", None) or [])
+                for canonical in latest_states(records_root(self.primary) / 'reviews'):
+                    if canonical.get('wave') == self.wave and canonical.get('cycle') == self.cycle:
+                        model = canonical.get('model_selection', {}).get('effective_model')
+                        if model:
+                            excluded.add(review_panel.family_of_slug(model))
+                arguments = ["resolve", "--plan", str(project / "plan/PLAN.md"),
+                             "--intent", str(project / "intent/INTENT.md"),
+                             "--advertised", self.options.advertised]
+                if self.options.parent_slug:
+                    arguments += ["--parent-slug", self.options.parent_slug]
+                if (project / "CHARTER.md").exists():
+                    arguments += ["--charter", str(project / "CHARTER.md")]
+                for family in sorted(family for family in excluded if family):
+                    arguments += ['--exclude-family', family]
+                resolved = helper_json(self.receipt, "review_panel.py", *arguments, cwd=self.primary)
+                self.receipt["resolve"] = resolved
+                if resolved["status"] == "off":
+                    self.receipt["status"] = "off"
+                    return self.receipt
+                if resolved["status"] == "skipped":
+                    base = review_base(self.root.parent, self.wave, self.cycle)
+                    failure = self.input_failure(base, paths)
+                    if failure:
+                        raise DriverStop(failure)
+                    if skipped.exists():  # an interrupted checkpoint left a valid receipt: reuse it
+                        try:
+                            saved = json.loads(skipped.read_text(encoding="utf-8"))
+                        except (OSError, json.JSONDecodeError):
+                            saved = {}
+                        if not isinstance(saved, dict) or saved.get("status") != "skipped":
+                            raise DriverStop("panel skipped receipt exists but is not a skipped receipt",
+                                             path=str(skipped))
+                    else:
+                        _common.atomic_write(skipped, str(resolved.pop("_stdout")))
+                    self.receipt["skipped_receipt"] = str(skipped)
+                    failure = self.input_failure(base, paths)
+                    if failure:
+                        raise DriverStop(failure)
+                    self.checkpoint(paths, "persist the wave review and the skipped panel receipt")
+                    self.receipt["status"] = "skipped"
+                    return self.receipt
+                if skipped.exists():
+                    raise DriverStop("a skipped-panel receipt exists for this cycle", path=str(skipped))
+                roster = {"families": [item["family"] for item in resolved["selected"]],
+                          "slugs": {item["family"]: item["slug"] for item in resolved["selected"]},
+                          "mode": resolved["mode"], "base": isolation.current_sha(self.primary)}
+                roster['excluded_families'] = sorted(family for family in excluded if family)
+                roster['selections'] = {}
+                roster['transports'] = {family: panel_transport(family, commands, self.options.child_command)
+                                        for family in roster['families']}
+                for family in roster['families']:
+                    candidate = {'task_id': self.family_name(family), 'family': family,
+                                 'slug': roster['slugs'][family], 'worktree': str(self.primary),
+                                 'excluded_families': roster['excluded_families'],
+                                 'transport': roster['transports'][family]}
+                    selection = None
+                    if candidate['transport'] != NATIVE:  # the parent applies model policy to a native child
+                        command = panel_command(family, candidate['slug'], commands, self.options)
+                        _, selection = selected_command(candidate, self.options, command)
+                    model_policy.validate_panel(selection or {'effective_model': candidate['slug']},
+                                                family, roster['excluded_families'])
+                    if selection is not None:
+                        roster['selections'][family] = selection
+                        roster['slugs'][family] = candidate['slug']
+                save_state(roster_path, roster)
+            self.receipt["mode"] = roster["mode"]
+            transports = roster.get("transports") or {family: CHILD for family in roster["families"]}
+            self.receipt["transports"] = transports
+            if set(states) - set(roster["families"]) or any(
+                    state["base"] != roster["base"] for state in states.values()):
+                raise DriverStop("panel records disagree with the persisted roster")
+            for family, transport in transports.items():
+                if panel_transport(family, commands, self.options.child_command) != transport:
+                    raise DriverStop(f"the persisted roster runs {family} as {transport}; rerun the panel "
+                                     "with the same family commands and child command")
+            for family in retry_blocked(self.primary, states, getattr(self.options, "retry_family", None),
+                                        str(roster["base"])):
+                states.pop(family)
+            missing = [family for family in roster["families"] if family not in states]
+            if missing:
+                base = roster["base"]
+                if isolation.current_sha(self.primary) != base:
+                    raise DriverStop("cannot resume missing panel families: HEAD moved from the recorded base")
+                tasks = wave_tasks(self.primary, self.project_dir, self.wave, self.receipt)
+                for family in missing:
+                    slug = roster["slugs"][family]
+                    state = {"task_id": self.family_name(family), "family": family, "slug": slug,
+                             "wave": self.wave, "cycle": self.cycle, "base": base, "mode": roster["mode"],
+                             "relative": self.relative(family)}
+                    if roster.get('selections', {}).get(family):
+                        state['model_selection'] = roster['selections'][family]
+                    state['excluded_families'] = roster.get('excluded_families', [])
+                    state['transport'] = transports[family]
+                    if state['transport'] == NATIVE:
+                        open_native_record(self.root, state)
+                        continue
+                    if state['transport'] == CAPTURED:
+                        state['output'] = commands[family]['output']
+                    spawn_in_sidecar(self.root, self.primary, self.receipt, self.options,
+                                     f"wave-{self.wave}-cycle-{self.cycle}-panel-{family}", state,
+                                     lambda fresh: self.brief(fresh, tasks, depth, review),
+                                     command=panel_command(family, slug, commands, self.options))
+                states = self.states()
+            self.collect_native(states, list(getattr(self.options, "native_collected", None) or []))
+            if not self.poll(states, deadline):
+                return self.receipt
+            if self.receipt["blocked"]:
+                self.receipt["status"] = "blocked"
+                return self.receipt
+            pending = [state for state in states.values() if native_open(state)]
+            if pending:
+                # The parent dispatches these natively, collects each report at its canonical path, and
+                # reruns this action with --native-collected.
+                self.receipt["native"] = [{"family": state["family"], "task_id": state["task_id"],
+                                           "slug": state["slug"], "relative": state["relative"],
+                                           "base": state["base"]} for state in pending]
+                self.receipt["status"] = "native-pending"
+                return self.receipt
+            if set(states) != set(roster["families"]) or not all(
+                    state.get("outcome") == "collected" for state in states.values()):
+                raise DriverStop("the complete panel roster must be collected before merge")
+            mode = roster["mode"]
+            inputs = ",".join(str(self.primary / entry["path"]) for entry in self.receipt["families"].values())
+            failure = self.input_failure(str(roster["base"]), paths)
+            if failure:
+                raise DriverStop(failure)
+            merged = helper_json(self.receipt, "review_panel.py", "merge", "--kind", "wave", "--wave", str(self.wave),
+                                 "--cycle", str(self.cycle), "--inputs", inputs, "--output", str(output),
+                                 "--mode", str(mode), cwd=self.primary)
+            self.receipt["merge"] = merged
+            self.receipt["panel"] = output.relative_to(self.primary).as_posix()
+            failure = self.input_failure(str(roster["base"]), paths)
+            if failure:
+                raise DriverStop(failure)
+            self.receipt["recurrence"] = recurrence_diagnostic(
+                self.primary, self.project_dir, self.wave, self.cycle, roster.get("base"))
+            self.checkpoint(paths, "persist the wave review and its review panel")
+            self.receipt["status"] = "pass"
+            return self.receipt
+        except STOP_ERRORS as error:
+            return stop(self.receipt, error)
+
+    def input_failure(self, base: str, paths: Dict[str, Path]) -> Optional[str]:
+        """Only this cycle's review and panel artifacts may differ from the recorded base."""
+        review_dir = self.primary / self.project_dir / "review"
+        allowed = {path.relative_to(self.primary).as_posix() for path in paths.values()}
+        allowed |= {(review_dir / name).relative_to(self.primary).as_posix() for name in (
+            f"wave-{self.wave}.cycle{self.cycle}.panel.md", f"wave-{self.wave}.cycle{self.cycle}.panel.skipped.json")}
+        allowed |= {relative for relative in (state.get("relative") for state in self.states().values()) if relative}
+        head = isolation.current_sha(self.primary)
+        committed = set(filter(None, isolation.git_text(
+            self.primary, "diff", "--no-renames", "--name-only", "-z", base, head, "--").split("\0")))
+        if head != base or (committed | isolation.uncommitted_paths(self.primary)) - allowed:
+            return "inputs changed after the review base; run a new cycle"
+        return None
+
+    def checkpoint(self, paths: Dict[str, Path], reason: str) -> None:
+        verdicts = [contracts.validate_wave_evidence(
+            self.primary, self.project_dir, path.relative_to(self.primary).as_posix())["verdict"]
+            for path in paths.values()]
+        self.receipt["review_verdict"] = "pass" if all(verdict == "pass" for verdict in verdicts) else "blocked"
+        self.receipt["checkpoint"] = None
+        if self.receipt["review_verdict"] == "pass":
+            self.receipt["checkpoint"] = checkpoint_project(
+                self.primary, self.receipt, f"build: record wave {self.wave} cycle {self.cycle} review",
+                f"Why: {reason}\nWave: {self.wave}")
+
+
+class PlanPanel(Children):
+    """The plan's optional review panel: resolve, one member per family, merge PLAN-PANEL.md.
+
+    Members read the primary checkout and write nothing in it; their reports live in the dispatch
+    records until the merge. The plan phase owns the state transitions and the approval question."""
+
+    records, field, results = "plan-panels", "family", "families"
+
+    def __init__(self, primary: Path, options: argparse.Namespace) -> None:
+        options.wave = options.cycle = None
+        super().__init__(primary, options)
+        self.track = (primary / options.track).resolve()
+        if self.track != primary and primary not in self.track.parents:
+            raise DriverStop("--track must name a directory inside the repository")
+        self.digest = self.plan_digest()
+        name = self.track.relative_to(primary).as_posix().replace("/", "-").lstrip(".") or "root"
+        self.root = records_root(primary) / self.records / f"{name}-{self.digest[:16]}"
+        self.receipt.pop("wave"), self.receipt.pop("cycle")
+        self.receipt.update(track=str(self.track), plan_digest=self.digest)
+
+    def plan_digest(self) -> str:
+        """The reviewed plan: PLAN.md plus every task file, by content."""
+        digest = hashlib.sha256()
+        files = [self.track / "plan/PLAN.md", *sorted((self.track / "tasks").glob("*.md"))]
+        if not files[0].is_file():
+            raise DriverStop(f"{files[0]} is missing")
+        for path in files:
+            digest.update(path.relative_to(self.track).as_posix().encode("utf-8") + b"\0")
+            digest.update(path.read_bytes() + b"\0")
+        return digest.hexdigest()
+
+    def family_name(self, family: str) -> str:
+        return f"review_plan_panel_{family}"
+
+    def report(self, family: str) -> Path:
+        return self.root / self.family_name(family) / "report.md"
+
+    def entry(self, state: Dict[str, object]) -> Dict[str, object]:
+        return {"slug": state.get("slug"), "path": state.get("report")}
+
+    def collect(self, state: Dict[str, object]) -> None:
+        if state.get("outcome") == "collected":
+            return
+        report = Path(str(state["report"]))
+        if state.get("transport") == CAPTURED:
+            if not stage_captured_report(state, report):
+                return
+        elif state.get("timed_out") or state.get("exit_code") != 0:
+            update_state(state, outcome="blocked", reason=f"child exited {state.get('exit_code')}")
+            return
+        try:
+            review_panel.parse_family_artifact(report, "plan")
+        except review_panel.ReviewPanelError as error:
+            update_state(state, outcome="blocked", reason=str(error), helper="review_panel.py")
+            return
+        update_state(state, outcome="collected", validated=True, cleanup_complete=True,
+                     validated_sha256=hashlib.sha256(report.read_bytes()).hexdigest())
+
+    def collect_native(self, states: Dict[str, Dict[str, object]], reports: List[str]) -> None:
+        """Copy the parent's validated native reports (family=path) into the dispatch records."""
+        for item in reports:
+            family, separator, source = item.partition("=")
+            state = states.get(family)
+            if not separator or state is None or state.get("transport") != NATIVE:
+                raise DriverStop(f"--native-report {item}: name a native panel family as family=path")
+            if state.get("outcome") == "collected":
+                continue
+            try:
+                review_panel.parse_family_artifact(Path(source), "plan")
+            except review_panel.ReviewPanelError as error:
+                raise DriverStop(f"native {family} report is not a plan panel report: {error}") from error
+            data = Path(source).read_bytes()
+            _common.atomic_write(Path(str(state["report"])), data.decode("utf-8"))
+            update_state(state, outcome="collected", validated=True, cleanup_complete=True,
+                         validated_sha256=hashlib.sha256(data).hexdigest(), native_source=source)
+
+    def brief(self, state: Dict[str, object]) -> str:
+        project = self.primary / ".project"
+        agents = self.primary / "AGENTS.md"
+        synthesis = next((path for path in (self.track / "research/SYNTHESIS.md", project / "SYNTHESIS.md")
+                          if path.is_file()), None)
+        lines = [
+            f"You are one review-panel child for the GSD Path plan review; logical task name "
+            f"{state['task_id']}. Mode: plan panel. Family: {state['family']}. Model: {state['slug']}.",
+            f"Read the reviewer role brief first and follow its Plan panel mode exactly: {self.options.role_brief}",
+            f"Template (use only this): {self.options.template}",
+            f"AGENTS.md: {agents if agents.exists() else 'absent'}",
+            f"Repository root, read-only: {self.primary}",
+            f"PLAN.md: {self.track / 'plan/PLAN.md'}",
+            f"Task files: {self.track / 'tasks'}",
+            f"INTENT.md: {self.track / 'intent/INTENT.md'}",
+            f"SYNTHESIS.md: {synthesis or 'absent'}",
+            f"CHARTER.md: {project / 'CHARTER.md' if (project / 'CHARTER.md').is_file() else 'absent'}",
+            "Do not edit any file in the repository. Never delegate. Never stage or commit.",
+        ]
+        if state.get("transport") == CAPTURED:
+            lines += [CAPTURED_RESULT, CAPTURED_TERMINAL]
+        else:
+            lines += [f"Write exactly this output file: {state['report']}",
+                      "Terminal result: the file you wrote is your result; name its finding count in your "
+                      "final message."]
+        return "\n".join(lines) + "\n"
+
+    def run(self) -> Dict[str, object]:
+        deadline = time.monotonic() + self.options.wait if self.options.wait else None
+        review = self.track / "review"
+        merged, skipped = review / "PLAN-PANEL.md", review / "PLAN-PANEL.skipped.json"
+        try:
+            commands = load_family_commands(getattr(self.options, "family_commands", None))
+            states = self.states()
+            roster_path = self.root / "roster.json"
+            if roster_path.is_file():
+                roster = load_state(roster_path)
+            else:
+                if states:
+                    raise DriverStop("plan panel records exist without a persisted roster")
+                excluded = {review_panel.family_of_slug(self.options.parent_slug or '')}
+                excluded |= set(self.options.exclude_family or [])
+                arguments = ["resolve", "--plan", str(self.track / "plan/PLAN.md"),
+                             "--intent", str(self.track / "intent/INTENT.md"),
+                             "--advertised", self.options.advertised]
+                if self.options.parent_slug:
+                    arguments += ["--parent-slug", self.options.parent_slug]
+                charter = self.primary / ".project/CHARTER.md"
+                if charter.exists():
+                    arguments += ["--charter", str(charter)]
+                for family in sorted(family for family in excluded if family):
+                    arguments += ["--exclude-family", family]
+                resolved = helper_json(self.receipt, "review_panel.py", *arguments, cwd=self.primary)
+                self.receipt["resolve"] = resolved
+                if resolved["status"] == "off":
+                    self.receipt["status"] = "off"
+                    return self.receipt
+                if resolved["status"] == "skipped":
+                    if merged.exists():
+                        merged.unlink()
+                    _common.atomic_write(skipped, str(resolved.pop("_stdout")))
+                    self.receipt.update(status="skipped", skipped_receipt=str(skipped))
+                    return self.receipt
+                roster = {"families": [item["family"] for item in resolved["selected"]],
+                          "slugs": {item["family"]: item["slug"] for item in resolved["selected"]},
+                          "mode": resolved["mode"], "digest": self.digest,
+                          "excluded_families": sorted(family for family in excluded if family)}
+                roster["transports"] = {family: panel_transport(family, commands, self.options.child_command)
+                                        for family in roster["families"]}
+                for family in roster["families"]:
+                    model_policy.validate_panel({'effective_model': roster['slugs'][family]},
+                                                family, roster['excluded_families'])
+                save_state(roster_path, roster)
+            self.receipt.update(mode=roster["mode"], transports=roster["transports"])
+            if set(states) - set(roster["families"]):
+                raise DriverStop("plan panel records disagree with the persisted roster")
+            for family, transport in roster["transports"].items():
+                if panel_transport(family, commands, self.options.child_command) != transport:
+                    raise DriverStop(f"the persisted roster runs {family} as {transport}; rerun the panel "
+                                     "with the same family commands and child command")
+            for family in self.options.retry_family or []:
+                if states.get(family, {}).get("outcome") != "blocked":
+                    raise DriverStop(f"--retry-family {family}: only a blocked panel family can run again")
+                states.pop(family)
+            for family in [family for family in roster["families"] if family not in states]:
+                slug = roster["slugs"][family]
+                state = {"task_id": self.family_name(family), "family": family, "slug": slug,
+                         "wave": None, "cycle": None, "base": isolation.current_sha(self.primary),
+                         "mode": roster["mode"], "report": str(self.report(family)),
+                         "worktree": str(self.primary), "transport": roster["transports"][family],
+                         "excluded_families": roster["excluded_families"]}
+                if state["transport"] == NATIVE:
+                    open_native_record(self.root, state)
+                    continue
+                if state["transport"] == CAPTURED:
+                    state["output"] = commands[family]["output"]
+                spawn(self.root, state, self.options, self.brief,
+                      command=panel_command(family, slug, commands, self.options))
+            states = self.states()
+            self.collect_native(states, list(self.options.native_report or []))
+            if not self.poll(states, deadline):
+                return self.receipt
+            if self.receipt["blocked"]:
+                self.receipt["status"] = "blocked"
+                return self.receipt
+            pending = [state for state in states.values() if native_open(state)]
+            if pending:
+                self.receipt["native"] = [{"family": state["family"], "task_id": state["task_id"],
+                                           "slug": state["slug"]} for state in pending]
+                self.receipt["status"] = "native-pending"
+                return self.receipt
+            if self.plan_digest() != roster["digest"]:
+                raise DriverStop("the plan changed after the panel was dispatched; run the panel again")
+            inputs = ",".join(str(entry["path"]) for entry in self.receipt["families"].values())
+            if skipped.exists():
+                skipped.unlink()
+            merge = helper_json(self.receipt, "review_panel.py", "merge", "--kind", "plan", "--inputs", inputs,
+                                "--output", str(merged), "--mode", str(roster["mode"]), cwd=self.primary)
+            self.receipt.update(merge=merge, panel=str(merged), status="pass")
+            return self.receipt
+        except STOP_ERRORS as error:
+            return stop(self.receipt, error)
+
+
+class Skeptics(Children):
+    """Step 7's skeptic branch: one read-only skeptic per `needs-skeptic` locator in its own sidecar at
+    the review base, validated, collected, retired, then the findings helper rerun. The skeptic files
+    stay uncommitted for the fix-task or ruling checkpoint."""
+
+    records, field, results = "skeptics", "locator", "skeptics"
+
+    def compute(self) -> Dict[str, object]:
+        try:
+            return review_findings.compute(self.primary, self.project_dir, self.wave, self.cycle)
+        except review_findings.ReviewFindingsError as error:
+            raise DriverStop(str(error), helper="review_findings.py collect")
+
+    def validate(self, staged: Path) -> Dict[str, object]:
+        group = next(group for group in self.compute()["groups"]
+                     if staged.name == f"wave-{self.wave}.cycle{self.cycle}.skeptic-{group['locator']}.md")
+        return {"verdict": review_findings.parse_skeptic(
+            staged, self.wave, [item["text"] for item in group["observations"]])["verdict"]}
+
+    def entry(self, state: Dict[str, object]) -> Dict[str, object]:
+        return {"verdict": state.get("verdict"), "path": state.get("relative")}
+
+    def brief(self, state: Dict[str, object], group: Dict[str, object], tasks: List[Dict[str, object]]) -> str:
+        worktree = Path(str(state["worktree"]))
+        cited = [task for task in tasks if task["task_id"] in group["tasks"]]
+        lines = [
+            f"You are one finding-skeptic child for GSD Path wave {self.wave}, cycle {self.cycle}; logical task "
+            f"name {state['task_id']}. Mode: skeptic.",
+            f"Read the reviewer role brief first and follow its Skeptic mode exactly: {self.options.role_brief}",
+            f"Template (use only this): {self.options.template}",
+            f"Criterion locator: {group['locator']}",
+            f"Criterion: {group['criterion']}",
+            f"Lenses: {', '.join(group['lenses'])}",
+            "Observations to refute, verbatim, one per line:",
+            *[f"- [{item['lens']}] {item['text']}" for item in group["observations"]],
+            f"Repository root, read-only: {self.primary}",
+            f"Your verify sidecar root, the only place you may write or apply patches: {worktree} "
+            f"on branch {state['branch']} at the recorded review base {state['base']}.",
+            f"Write exactly this output file: {worktree / str(state['relative'])}",
+            f"INTENT.md: {self.primary / self.project_dir / 'intent/INTENT.md'}",
+            "Tasks the observations cite, each with its recorded base and proven landing commit:",
+            *[f"- {task['task_id']}: {self.primary / str(task['task'])} — base {task['base']}, "
+              f"landing commit {task['commit']}" for task in cited],
+            "Do not write a Wave verdict. Never edit the primary. Never delegate. Never stage or commit.",
+            "Terminal result: the `## Verdict` of the file you wrote is your result; name it in your final message.",
+        ]
+        return "\n".join(lines) + "\n"
+
+    def run(self) -> Dict[str, object]:
+        deadline = time.monotonic() + self.options.wait if self.options.wait else None
+        try:
+            findings = self.compute()
+            self.receipt["findings"] = findings
+            escalation = [key for key in ("structural_blockers", "cap_reached") if findings.get(key)]
+            if escalation:
+                self.receipt.update(status="escalate", escalation=escalation)
+                return self.receipt
+            states = self.states()
+            missing = [locator for locator in findings["skeptic_groups"] if locator not in states]
+            if not states and not missing:
+                self.receipt.update(status="none", reason="no skeptic groups")
+                return self.receipt
+            if missing:
+                base = review_base(self.root.parent, self.wave, self.cycle)
+                if isolation.current_sha(self.primary) != base:
+                    raise DriverStop("cannot dispatch skeptics: HEAD moved from the recorded review base")
+                groups = {group["locator"]: group for group in findings["groups"]}
+                tasks = wave_tasks(self.primary, self.project_dir, self.wave, self.receipt)
+                for locator in missing:
+                    state = {"task_id": f"review_wave_{self.wave}_cycle_{self.cycle}_skeptic_{locator}",
+                             "locator": locator, "wave": self.wave, "cycle": self.cycle, "base": base,
+                             "relative": f"{self.project_dir}/review/wave-{self.wave}.cycle{self.cycle}.skeptic-{locator}.md"}
+                    spawn_in_sidecar(self.root, self.primary, self.receipt, self.options,
+                                     f"wave-{self.wave}-cycle-{self.cycle}-skeptic-{locator}", state,
+                                     lambda fresh, group=groups[locator]: self.brief(fresh, group, tasks))
+                states = self.states()
+            if not self.poll(states, deadline):
+                return self.receipt
+            if self.receipt["blocked"]:
+                self.receipt["status"] = "blocked"
+                return self.receipt
+            self.receipt["findings"] = self.compute()  # the helper routes refutations and fix groups
+            self.receipt["status"] = "done"
+            return self.receipt
+        except STOP_ERRORS as error:
+            return stop(self.receipt, error)
+
+
+def next_task_id(tasks_dir: Path) -> str:
+    numbers = []
+    for path in tasks_dir.glob("*.md"):
+        fields, _ = isolation.task_frontmatter(path.read_text(encoding="utf-8"))
+        match = re.fullmatch(r"T(\d+)", str((fields or {}).get("id", "")))
+        if match:
+            numbers.append(int(match.group(1)))
+    return f"T{max(numbers, default=0) + 1:03d}"
+
+
+def replaced_review_base(primary: Path, project_dir: str, wave: int, cycle: int) -> Optional[str]:
+    """The recovery base when this cycle's review replaces the one a build recovery set aside, else None."""
+    recovery = pipeline_state._build_recovery().context(primary)
+    if not recovery:
+        return None
+    relative = f"{project_dir}/review/wave-{wave}.cycle{cycle}.md"
+    before = isolation.run_git(primary, "show", f"{recovery['base']}:{relative}")
+    current = primary / relative
+    # Plan approval restores the review of an unchanged wave before its checkpoint, so no commit
+    # since the base touches that file. A set-aside review is deleted by that checkpoint.
+    rewritten = isolation.run_git(primary, "log", "-1", "--format=%H", f"{recovery['base']}..HEAD", "--", relative)
+    if (not rewritten.stdout.strip() and before.returncode == 0 and current.is_file()
+            and current.read_text(encoding="utf-8") == before.stdout):
+        return None  # the restored review keeps its repairs
+    return recovery["base"]
+
+
+def fix_tasks(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
+    """Step 7: one fix task per findings batch, carrying failed criteria and observations verbatim."""
+    receipt: Dict[str, object] = {"status": None, "wave": options.wave, "cycle": options.cycle,
+                                  "created": [], "existing": [], "carried": [], "blocked": [], "steps": []}
+    try:
+        project = primary / options.project_dir
+        tasks_dir = project / "tasks"
+        repairs = []
+        pending = []
+        for path in sorted(tasks_dir.glob("*-fix-wave-*-cycle-*.md")):
+            text = path.read_text(encoding="utf-8")
+            fields, _ = isolation.task_frontmatter(text)
+            repairs.append({"task": fields["id"], "path": path.relative_to(primary).as_posix(),
+                            "wave": int(fields["wave"]), "locators": re.findall(r"(?m)^### (.+)$", _common.section_body(text, "Review findings") or ""),
+                            **({"repo": fields["repo"]} if fields.get("repo") else {})})
+            if fields["status"] != "done":
+                pending.append(repairs[-1])
+        suffix = f"-fix-wave-{options.wave}-cycle-{options.cycle}.md"
+        # A build recovery restarts a changed wave at cycle 1, so the repairs and the PLAN heading
+        # of the review it set aside carry the same names. They belong to that review, not this one.
+        replaced = replaced_review_base(primary, options.project_dir, options.wave, options.cycle)
+
+        def of_replaced_review(relative: str) -> bool:
+            if not replaced or isolation.run_git(primary, "show", f"{replaced}:{relative}").returncode != 0:
+                return False
+            return not isolation.run_git(primary, "log", "--diff-filter=AD", "--format=%H",
+                                         f"{replaced}..HEAD", "--", relative).stdout.strip()
+
+        stale = [item for item in repairs if item["path"].endswith(suffix) and of_replaced_review(item["path"])]
+        existing = [item for item in repairs if item["path"].endswith(suffix) and item not in stale]
+        # A landed repair no longer carries its finding: a repeat proves that fix failed and needs the next one.
+        # Two repos can carry the same locator, so a repair carries a finding only in its own repo.
+        carried = {(item.get("repo"), locator) for item in pending if not item["path"].endswith(suffix)
+                   for locator in item["locators"]}
+        findings = review_findings.compute(primary, options.project_dir, options.wave, options.cycle)
+        receipt["findings"] = findings
+        escalation = [key for key in ("structural_blockers", "skeptic_groups", "cap_reached", "all_refuted",
+                                      "redesign_pending", "lens_redesign_pending") if findings.get(key)]
+        if escalation:  # step 7's branch table for these stays with the parent and the user
+            receipt.update(status="escalate", escalation=escalation)
+            return receipt
+        if not findings.get("fix_batches"):
+            receipt.update(status="none", reason="no fix batches")
+            return receipt
+        if _common.lens_enforced_for(project, "fix-routing"):
+            state_path = project / "STATE.md"
+            events = pipeline_state._log_events(state_path.read_text(encoding="utf-8")) if state_path.is_file() else []
+            requirement = _common.lens_requirement(
+                events, "fix-routing", _common.lens_scope_wave(options.wave, options.cycle), after_recovery=True)
+            if requirement:
+                raise DriverStop(requirement)
+        texts = contracts._task_texts(primary, options.project_dir)
+        groups = {group["locator"]: group for group in findings["groups"]}
+        today = now()[:10]
+        # Unordered same-wave file overlap is rejected, so repairs land in a newly appended wave.
+        plan_path = project / "plan/PLAN.md"
+        plan_text = plan_path.read_text(encoding="utf-8")
+        depths, waves = contracts._plan_waves(plan_text)
+        repair_waves = {item["wave"] for item in existing}
+        if len(repair_waves) > 1:
+            raise DriverStop("repair tasks for this cycle disagree on their wave")
+        stale_waves = {item["wave"] for item in stale}
+        repair_heading = next((heading for heading in re.finditer(
+            rf"(?m)^## Wave (\d+) — fix wave {options.wave} cycle {options.cycle} review findings$", plan_text)
+            if int(heading.group(1)) not in stale_waves), None)
+        if repair_waves:
+            fix_wave = next(iter(repair_waves))
+        elif repair_heading:
+            fix_wave = int(repair_heading.group(1))
+        else:
+            fix_wave = max(waves) + 1
+        if repair_heading and int(repair_heading.group(1)) != fix_wave:
+            raise DriverStop("repair tasks disagree with the PLAN repair wave")
+        receipt["existing"] = existing
+        # Repairs of a PR fix round's members belong to that round (ADR 0008).
+        lane_record = pr_fix_lane.lane_round(primary) if options.project_dir == ".project" else None
+        lane_members: List[str] = []
+        if lane_record is not None and lane_record.get("stage") in pr_fix_lane.OPEN_STAGES:
+            membership = pr_fix_lane.read_membership(primary, int(lane_record["round"]))
+            lane_members = pr_fix_lane.member_ids(membership) if membership else []
+        for batch in findings["fix_batches"]:
+            repo = batch.get("repo")  # a member name, or None for the coordinator
+            if any(item.get("repo") == repo and set(batch["locators"]) <= set(item["locators"]) for item in existing):
+                continue
+            if all((repo, locator) in carried for locator in batch["locators"]):
+                receipt["carried"].append(batch)
+                continue
+            batch_groups = [groups[locator] for locator in batch["locators"]]
+            sources = sorted({task for group in batch_groups for task in group["tasks"]})
+            for source in sources:
+                if source not in texts:
+                    raise DriverStop(f"fix batch names unknown task {source}")
+            # One task changes one repo: the fix depends on, and runs the Verify of, the source tasks of its repo.
+            sources = [source for source in sources if _common.effective_task_repo(
+                primary, source, isolation.task_frontmatter(texts[source])[0].get("repo"), options.project_dir) == repo]
+            # A repeat builds on the landed repairs of its finding: repair-evidence links them by this dependency.
+            deps = sources + [item["task"] for item in repairs
+                              if item not in pending and item.get("repo") == repo
+                              and f"-fix-wave-{options.wave}-cycle-" in item["path"] and not item["path"].endswith(suffix)
+                              and set(item["locators"]) & set(batch["locators"])]
+            task_id = next_task_id(tasks_dir)
+            verify = _common.fix_verify(_common.task_verify_command(texts[source]) for source in sources)
+            heavy = any(re.search(r"(?m)^Heavy:\s*yes", texts[source]) for source in sources)
+            criteria = "\n".join(f"{index}. {criterion}" for index, criterion in
+                                 enumerate(dict.fromkeys(group["criterion"] for group in batch_groups), 1))
+            blocks = "\n\n".join(
+                f"### {group['locator']}\nCriterion: {group['criterion']}\n"
+                + "\n".join(f"- {item['text']}" for item in group["observations"]) for group in batch_groups)
+            files = "\n".join(f"  - {path}" for path in batch["files"])
+            member = f"repo: {repo}\n" if repo else ""  # the task template puts `repo:` before `files:`
+            if lane_members and all(source in lane_members for source in sources):
+                member = f"lane_round: {lane_record['round']}\n" + member
+            title = f"Fix wave {options.wave} cycle {options.cycle} review findings in {', '.join(sources)}"
+            text = f"""---
+id: {task_id}
+title: {title}
+wave: {fix_wave}
+deps: [{', '.join(deps)}]
+status: pending
+agent: null
+base: null
+worktree: null
+task_branch: null
+{member}files:
+{files}
+---
+
+# {task_id} — {title}
+
+## Context
+
+Repair task created from the wave {options.wave} cycle {options.cycle} review of {', '.join(sources)}.
+The failed criteria and every reviewer observation are recorded verbatim under Review findings.
+The source task contracts are unchanged; read them and .project/intent/INTENT.md before editing.
+
+## Approach
+
+- Fix only what the Review findings name, inside the listed files; do not change the source
+  tasks' acceptance criteria or interface contracts.
+- Re-run the source tasks' Verify commands after the fix and record the result in the Log.
+
+## Interface contract
+
+- None
+
+## Intent coverage
+
+- None
+
+## Acceptance criteria
+
+{criteria}
+
+## Verify
+
+```bash
+{verify}
+```
+
+Heavy: {'yes' if heavy else 'no'}
+
+## Review findings
+
+{blocks}
+
+## Log
+
+- {today} — created by dispatch_driver.py fix-tasks from wave {options.wave} cycle {options.cycle}
+"""
+            path = tasks_dir / f"{task_id}-fix-wave-{options.wave}-cycle-{options.cycle}.md"
+            _common.atomic_write(path, text)
+            receipt["created"].append({"task": task_id, "path": path.relative_to(primary).as_posix(),
+                                       "wave": fix_wave, "deps": deps, "files": batch["files"],
+                                       "locators": batch["locators"], **({"repo": repo} if repo else {})})
+        rows = []
+        for item in [*existing, *receipt["created"]]:
+            fields, _ = isolation.task_frontmatter((primary / item["path"]).read_text(encoding="utf-8"))
+            rows.append(f"| {item['task']} | {fields['title']} | {', '.join(fields['deps'])} | "
+                        f"{', '.join(fields['files'])} |")
+        if not rows:
+            receipt.update(status="none", reason="all fix batches already carried")
+            return receipt
+        block = (f"## Wave {fix_wave} — fix wave {options.wave} cycle {options.cycle} review findings\n\n"
+                 f"Goal: Repair the blocking findings of the wave {options.wave} cycle {options.cycle} review "
+                 "without changing source task contracts.\n"
+                 f"Review depth: {depths[options.wave]}\n\n| Task | Title | Deps | Files |\n|------|-------|------|-------|\n"
+                 + "\n".join(rows) + "\n\n")
+        if repair_heading:
+            start = repair_heading.start()
+            following = re.search(r"(?m)^## ", plan_text[repair_heading.end():])
+            end = repair_heading.end() + following.start() if following else len(plan_text)
+            current = plan_text[start:end]
+            present = set(re.findall(r"(?m)^\|\s*(T\d+)\s*\|", current))
+            missing_rows = [row for row in rows if row.split("|")[1].strip() not in present]
+            updated = plan_text
+            if missing_rows:
+                updated = plan_text[:end].rstrip() + "\n" + "\n".join(missing_rows) + "\n\n" + plan_text[end:]
+        else:
+            marker = "## Intent coverage"
+            index = plan_text.index(marker) if marker in plan_text else len(plan_text)
+            updated = plan_text[:index] + block + plan_text[index:]
+        plan_changed = updated != plan_text
+        if plan_changed:
+            _common.atomic_write(plan_path, updated)
+        receipt["plan_wave"] = fix_wave
+        if lane_members:
+            try:
+                receipt["lane"] = pr_fix_lane.bind(primary)
+            except pr_fix_lane.LaneError as error:
+                raise DriverStop(f"PR fix lane repair binding: {error}") from error
+        lint = subprocess.run([sys.executable, "-B", str(helper_script("check_task_briefs.py")),
+                               "--repo", str(primary), "--base", isolation.current_sha(primary),
+                               "--tasks-dir", f"{options.project_dir}/tasks",
+                               "--project-dir", options.project_dir], capture_output=True, encoding="utf-8", errors="replace")
+        receipt["steps"].append({"script": "check_task_briefs.py", "exit_code": lint.returncode,
+                                 "stdout": lint.stdout, "stderr": lint.stderr})
+        if lint.returncode:
+            raise DriverStop("fix task briefs failed lint", stderr=lint.stderr.strip())
+        # The blocked review and its fix tasks land in one bookkeeping checkpoint, as step 7 requires.
+        dirty = any(path.startswith(".project/") for path in isolation.uncommitted_paths(primary))
+        receipt["checkpoint"] = checkpoint_project(
+            primary, receipt, f"build: record wave {options.wave} cycle {options.cycle} review and fix tasks",
+            f"Why: persist the blocked review verdict with the fix tasks it batched\nWave: {options.wave}\n"
+            f"Tasks: {', '.join(item['task'] for item in [*existing, *receipt['created']])}")
+        receipt["status"] = "created" if receipt["created"] or plan_changed or dirty else "exists"
+        return receipt
+    except STOP_ERRORS as error:
+        return stop(receipt, error)
+
+
+def complete(primary: Path, options: argparse.Namespace) -> Dict[str, object]:
+    """Completion: every wave landed and its last review cycle passed; landing proof; ship/active; checkpoint."""
+    receipt: Dict[str, object] = {"status": None, "blocked": [], "steps": []}
+    try:
+        dirty = sorted(isolation.uncommitted_paths(primary))
+        if dirty:
+            raise DriverStop("completion requires a clean primary", paths=dirty)
+        state, _, _ = pipeline_state.load_state(primary, options.project_dir)
+        if (state.phase, state.status) not in (("build", "active"), ("build", "done")):
+            raise DriverStop(f"completion requires build/active, not {state.phase}/{state.status}")
+        ready = build_state.ready(str(primary), options.project_dir, allow_done=True)
+        receipt["steps"].append({"script": "build_state.py ready", "result": ready})
+        if ready["current_wave"] is not None:
+            raise DriverStop(f"wave {ready['current_wave']} is still unfinished")
+        # The archive-time check is the one definition of "every wave passed": contiguous cycles,
+        # passing last-cycle wave and task verdicts, and the panel and skeptic artifacts each cycle owes.
+        receipt["review_cycles"] = list(discussion_validate.review_cycle_counts(primary / options.project_dir))
+        head = isolation.current_sha(primary)
+        run_step(primary, options.project_dir, receipt, "build-evidence", head)
+        transition(primary, options.project_dir, receipt, state, {"phase": "ship", "status": "active"},
+                   "build done; final review pending")
+        receipt["checkpoint"] = checkpoint_project(
+            primary, receipt, "build: complete milestone",
+            f"Why: every wave landed and its latest review passed; landing proof recorded\nBase: {head}")
+        receipt["status"] = "done"
+        return receipt
+    except STOP_ERRORS as error:
+        return stop(receipt, error)
+
+
+# --- other actions ---------------------------------------------------------
+
+
+def answer(primary: Path, task_id: str, text: str) -> Dict[str, object]:
+    states = [state for state in latest_states(records_root(primary)) if state["task_id"] == task_id]
+    if not states or states[0].get("outcome") != "question":
+        raise DriverStop(f"task {task_id} has no open question")
+    state = states[0]
+    task_path = Path(str(state["worktree"])) / str(state["task_file"])
+    append_log(task_path, f"- {now()[:10]} — {ANSWER_MARK} {text}")
+    update_state(state, answered=True, answer=text)
+    return {"status": "answered", "task": task_id, "task_file": str(task_path),
+            "next": "run `round` to redispatch the retained isolate"}
+
+
+def reassign_model(root: Path, task_id: str, options: argparse.Namespace) -> Dict[str, object]:
+    states = [state for state in latest_states(root) if state['task_id'] == task_id]
+    if not states:
+        raise DriverStop('assignment has no recorded attempt')
+    state = states[0]
+    if child_running(state) or state.get('finished_at') is None:
+        raise DriverStop('cannot reassign an active or unproven child; reconcile its lifecycle first')
+    if state.get('family') or state.get('outcome') in ('landed', 'collected'):
+        raise DriverStop('completed work or a pinned panel roster requires a new legal review/task assignment')
+    if not options.ruling or not options.ruling.strip() or not options.model_capabilities:
+        raise DriverStop('reassignment requires an owner ruling and advertised capabilities')
+    old = state.get('model_selection')
+    if old is None:
+        raise DriverStop('legacy assignment has no proven model selection to reassign')
+    path = root / task_id / 'model-reassignment.json'
+    history = load_state(path).get('history', []) if path.exists() else []
+    if path.exists():
+        old = load_state(path)['selection']
+    changes = {field: getattr(options, field) for field in model_policy.FIELDS
+               if getattr(options, field) is not None}
+    if not changes:
+        raise DriverStop('reassignment requires an explicit model or effort')
+    task = (model_policy.task_settings(Path(state['worktree']) / state['task_file'])
+            if state.get('task_file') else {})
+    if any(field in task and task[field] != value for field, value in changes.items()):
+        raise DriverStop('reassignment conflicts with the approved task contract')
+    selection = model_policy.resolve(options.repo, options.project_dir, old['role'],
+                                     advertised_capabilities(options.model_capabilities,
+                                                             getattr(options, 'host', None)),
+                                     dict(old['selected'], **changes))
+    for field in model_policy.FIELDS:
+        if field not in changes:
+            selection['sources'][field] = old['sources'][field]
+    save_state(path, {'selection': selection, 'history': [*history, {
+        'selection': old, 'ruling': options.ruling, 'attempt': state['attempt']} ]})
+    return {'status': 'reassigned', 'task': task_id, 'selection': selection, 'record': str(path)}
+
+
+def add_panel_transport_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--family-commands", type=Path,
+                        help='JSON {family: {"command": ..., "output": "stdout"|"file"}}: the driver captures '
+                             "each family's final report; a file output names it with a literal {final}")
+    parser.add_argument("--exclude-family", action="append", choices=review_panel.KNOWN_FAMILIES, default=[],
+                        help="a parent or canonical-reviewer family the driver cannot see; repeat")
+    parser.add_argument("--native-collected", action="append", default=[],
+                        help="a native family whose report the parent collected at its canonical path; repeat")
+    parser.add_argument("--retry-family", action="append", default=[],
+                        help="run a blocked family again in a new attempt; repeat")
+
+
+def require_files(parser: argparse.ArgumentParser, arguments: argparse.Namespace, *names: str) -> None:
+    for name in names:
+        value = getattr(arguments, name)
+        if value is None or not Path(value).is_file():
+            parser.error(f"--{name.replace('_', '-')} must name an existing file")
+        setattr(arguments, name, Path(value).resolve())
+
+
+def positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("value must be at least 1")
+    return number
+
+
+def default_resource(name: str) -> Optional[Path]:
+    script_root = Path(__file__).resolve().parent.parent
+    candidate = script_root / name
+    if candidate.is_file():
+        return candidate
+    candidate = script_root / "skills" / "gsd-path" / name
+    return candidate if candidate.is_file() else None
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="action", required=True)
+    round_parser = commands.add_parser("round", help="settle, land, and dispatch the current wave")
+    round_parser.add_argument("--repo", type=Path, required=True)
+    round_parser.add_argument("--project-dir", default=".project")
+    round_parser.add_argument("--child-command", required=True,
+                              help="owner-supplied command that reads the brief on stdin")
+    round_parser.add_argument("--wait", type=float, help="seconds to keep polling before returning")
+    round_parser.add_argument("--wave", type=int, required=True, help="wave selected by the parent")
+    round_parser.add_argument("--child-timeout", type=float, help="per-child wall clock in seconds")
+    round_parser.add_argument("--capacity", type=positive_int, help="owner's concurrent-child limit")
+    round_parser.add_argument("--max-attempts", type=positive_int, default=2,
+                              help="dispatches per task per milestone before a person must rule; "
+                                   "default 2 is the build contract's one logged redispatch")
+    round_parser.add_argument("--task-limit", type=positive_int, help="owner output-token limit per task")
+    round_parser.add_argument("--session-limit", type=positive_int,
+                              help="owner output-token limit for the milestone")
+    round_parser.add_argument("--budget-authority", help="quoted owner policy for the limits")
+    round_parser.add_argument("--role-brief", type=Path, default=default_resource("references/coder.md"))
+    round_parser.add_argument("--task-template", type=Path, default=default_resource("templates/task.md"))
+    cycle_child = argparse.ArgumentParser(add_help=False)  # shared by the review-cycle child runners
+    cycle_child.add_argument("--repo", type=Path, required=True)
+    cycle_child.add_argument("--project-dir", default=".project")
+    cycle_child.add_argument("--wave", type=int, required=True)
+    cycle_child.add_argument("--cycle", type=positive_int, required=True)
+    cycle_child.add_argument("--child-command",
+                             help="owner-supplied command that reads the brief on stdin; required except "
+                                  "for panel; for panel, a literal {model} is replaced by the family slug")
+    cycle_child.add_argument("--wait", type=float, help="seconds to keep polling before returning")
+    cycle_child.add_argument("--child-timeout", type=float, help="per-child wall clock in seconds")
+    cycle_child.add_argument("--role-brief", type=Path, default=default_resource("references/reviewer.md"))
+    for child in (round_parser, cycle_child):
+        child.add_argument('--model-capabilities', type=Path,
+                           help='advertised model/effort controls; required with project model policy')
+        child.add_argument('--host', choices=model_policy.HOSTS,
+                           help='id of the host that runs the child; required with --model-capabilities')
+    cycle_child.add_argument('--model', help='explicit model override for this review assignment')
+    cycle_child.add_argument('--effort', help='explicit effort override for this review assignment')
+    cycle_child.add_argument('--model-overrides', type=Path,
+                             help='JSON mapping logical assignment names to explicit model/effort overrides')
+    review_parser = commands.add_parser("review", parents=[cycle_child],
+                                        help="run one wave review cycle at full or deep depth")
+    review_parser.add_argument("--repair-evidence", type=Path,
+                               help="review_findings.py repair-evidence receipt for a re-review")
+    review_parser.add_argument("--template", type=Path, default=default_resource("templates/wave-review.md"))
+    review_parser.add_argument("--delta-template", type=Path, default=default_resource("templates/delta-review.md"),
+                               help="PR fix lane delta section template, used only by a delta wave")
+    review_parser.add_argument("--current-product", action="store_true",
+                               help="review the pinned combined product instead of historical task isolates")
+    panel_parser = commands.add_parser("panel", parents=[cycle_child],
+                                       help="run the optional review panel for a collected wave review")
+    panel_parser.add_argument("--advertised", required=True, help="comma-separated model slugs the host advertises")
+    panel_parser.add_argument("--parent-slug", help="the parent's model slug when known")
+    panel_parser.add_argument("--template", type=Path, default=default_resource("templates/wave-panel.md"))
+    add_panel_transport_arguments(panel_parser)
+    plan_panel_parser = commands.add_parser(
+        "plan-panel", help="run the optional plan review panel and merge PLAN-PANEL.md")
+    plan_panel_parser.add_argument("--repo", type=Path, required=True)
+    plan_panel_parser.add_argument("--project-dir", default=".project")
+    plan_panel_parser.add_argument("--track", default=".project",
+                                   help="the plan track directory, relative to the repository")
+    plan_panel_parser.add_argument("--advertised", required=True, help="comma-separated model slugs on offer")
+    plan_panel_parser.add_argument("--parent-slug", help="the parent's model slug when known")
+    plan_panel_parser.add_argument("--child-command",
+                                   help="owner-supplied command for families without a family command")
+    plan_panel_parser.add_argument("--wait", type=float, help="seconds to keep polling before returning")
+    plan_panel_parser.add_argument("--child-timeout", type=float, help="per-child wall clock in seconds")
+    plan_panel_parser.add_argument("--role-brief", type=Path, default=default_resource("references/reviewer.md"))
+    plan_panel_parser.add_argument("--template", type=Path, default=default_resource("templates/plan-panel.md"))
+    plan_panel_parser.add_argument("--native-report", action="append", default=[],
+                                   help="family=path of a native family report the parent validated; repeat")
+    add_panel_transport_arguments(plan_panel_parser)
+    skeptic_parser = commands.add_parser("skeptics", parents=[cycle_child],
+                                         help="run one finding skeptic per needs-skeptic locator")
+    skeptic_parser.add_argument("--template", type=Path, default=default_resource("templates/skeptic.md"))
+    fix_parser = commands.add_parser("fix-tasks", help="write one fix task per findings batch of a blocked cycle")
+    fix_parser.add_argument("--repo", type=Path, required=True)
+    fix_parser.add_argument("--project-dir", default=".project")
+    fix_parser.add_argument("--wave", type=int, required=True)
+    fix_parser.add_argument("--cycle", type=positive_int, required=True)
+    complete_parser = commands.add_parser(
+        "complete", help="prove every wave landed and passed review, record landing evidence, enter ship")
+    complete_parser.add_argument("--repo", type=Path, required=True)
+    complete_parser.add_argument("--project-dir", default=".project")
+    finish_parser = commands.add_parser(
+        "finish", help="verify, land, record, and retire one in-progress task whose coder has returned")
+    finish_parser.add_argument("--repo", type=Path, required=True)
+    finish_parser.add_argument("--task-id", required=True)
+    finish_parser.add_argument("--project-dir", default=".project")
+    answer_parser = commands.add_parser("answer", help="record an orchestrator answer for a question")
+    answer_parser.add_argument("--repo", type=Path, required=True)
+    answer_parser.add_argument("--task-id", required=True)
+    answer_parser.add_argument("--answer", required=True)
+    status_parser = commands.add_parser("status", help="list dispatch records")
+    status_parser.add_argument("--repo", type=Path, required=True)
+    model_parser = commands.add_parser('reassign-model', help='record an explicit model reassignment')
+    model_parser.add_argument('--repo', type=Path, required=True)
+    model_parser.add_argument('--project-dir', default='.project')
+    model_parser.add_argument('--task-id', required=True)
+    model_parser.add_argument('--model-capabilities', type=Path, required=True)
+    model_parser.add_argument('--host', choices=model_policy.HOSTS, required=True,
+                              help='id of the host that runs the child')
+    model_parser.add_argument('--model')
+    model_parser.add_argument('--effort')
+    model_parser.add_argument('--ruling', required=True)
+    child_parser = commands.add_parser("_child", help=argparse.SUPPRESS)
+    child_parser.add_argument("--state", type=Path, required=True)
+    arguments = parser.parse_args(argv)
+
+    if arguments.action == "_child":
+        return child_main(arguments.state)
+    if arguments.action in ("review", "skeptics") and not arguments.child_command:
+        parser.error(f"{arguments.action} requires --child-command")
+    primary = arguments.repo.resolve()
+    _activate_pinned_runtime(primary)
+    lock = None
+    try:
+        if arguments.action != "status":
+            lock = acquire_lock(primary)
+        if arguments.action == "panel":
+            require_files(parser, arguments, "role_brief", "template")
+            result = Panel(primary, arguments).run()
+        elif arguments.action == "plan-panel":
+            require_files(parser, arguments, "role_brief", "template")
+            try:
+                result = PlanPanel(primary, arguments).run()
+            except STOP_ERRORS as error:
+                result = stop({"status": None, "blocked": [], "steps": []}, error)
+        elif arguments.action == "skeptics":
+            require_files(parser, arguments, "role_brief", "template")
+            result = Skeptics(primary, arguments).run()
+        elif arguments.action == "fix-tasks":
+            result = fix_tasks(primary, arguments)
+        elif arguments.action == "complete":
+            result = complete(primary, arguments)
+        elif arguments.action == "review":
+            require_files(parser, arguments, "role_brief", "template",
+                          *(["repair_evidence"] if arguments.repair_evidence is not None else []))
+            result = Review(primary, arguments).run()
+        elif arguments.action == "round":
+            budget_values = (arguments.task_limit, arguments.session_limit, arguments.budget_authority)
+            if any(value is not None for value in budget_values) and None in budget_values:
+                parser.error("--task-limit, --session-limit, and --budget-authority go together")
+            require_files(parser, arguments, "role_brief", "task_template")
+            result = Round(primary, arguments).run()
+        elif arguments.action == "finish":
+            current = Round(primary, arguments)
+            current.recover()
+            records = [state for state in latest_states(current.root)
+                       if state["task_id"] == arguments.task_id]
+            native = None
+            if records and records[0].get("outcome") is not None:
+                # A settled driver record at an older base is superseded by a native retry.
+                try:
+                    native = state_from_task(primary, arguments.task_id)
+                except DriverStop:
+                    pass
+                if native and native["base"] != records[0].get("base"):
+                    records = []
+                else:
+                    if (native and records[0]["outcome"] == "blocked" and records[0].get("native")
+                            and not records[0].get("command")):
+                        # A failed finish leaves a host-dispatched task active at its base: finish may run again.
+                        update_state(records[0], outcome=None, reason=None)
+                    native = None
+            if arguments.task_id in current.proven:
+                commit = current.proven[arguments.task_id]
+                if records and records[0].get("outcome") is None:
+                    update_state(records[0], outcome="landed", commit=commit)
+                current.receipt["landed"].append(
+                    {"task": arguments.task_id, "commit": commit, "recovered": True})
+            elif records:
+                record = records[0]
+                if record.get("outcome") is not None:
+                    raise DriverStop(f"task {arguments.task_id} dispatch record is {record['outcome']}; "
+                                     "use round")
+                if record.get("finished_at") is None:
+                    if child_running(record):
+                        raise DriverStop(f"task {arguments.task_id} still has a running child")
+                    if record.get("command"):
+                        raise DriverStop(f"task {arguments.task_id} still has a running child")
+                    try:
+                        # A retired or reset isolate still settles its record, so recovery can enter.
+                        live = state_from_task(primary, arguments.task_id)
+                        merged = dict(record, **live)
+                        merged["_path"] = record["_path"]
+                        landing = finish_task(primary, merged)
+                    except STOP_ERRORS as error:
+                        update_state(record, outcome="blocked", reason=str(error))
+                        raise
+                    update_state(record, outcome="landed", commit=landing["commit"])
+                    current.receipt["landed"].append(landing)
+                else:
+                    current.classify(record)
+            else:  # a coder dispatched by hand: derive the isolate from the task frontmatter
+                current.receipt["landed"].append(
+                    finish_task(primary, native or state_from_task(primary, arguments.task_id)))
+            result = finish_receipt(current.receipt)
+        elif arguments.action == "answer":
+            result = answer(primary, arguments.task_id, arguments.answer)
+        elif arguments.action == 'reassign-model':
+            roots = [records_root(primary), *(records_root(primary) / name
+                      for name in ('reviews', 'panels', 'skeptics'))]
+            root = next((root for root in roots if (root / arguments.task_id).is_dir()), roots[0])
+            result = reassign_model(root, arguments.task_id, arguments)
+        else:
+            result = {"status": "ok", "dispatches": [
+                {key: value for key, value in state.items() if key not in ("_path", "command")}
+                for state in latest_states(records_root(primary))]}
+    except STOP_ERRORS as error:
+        result = {"status": "blocked", "reason": str(error), **getattr(error, "details", {})}
+    finally:
+        if lock is not None:
+            lock.close()
+    print(json.dumps(result, sort_keys=True, default=str))
+    return 0 if result["status"] != "blocked" else 1
+
+
+if __name__ == "__main__":
+    from _common import cli_receipt
+
+    raise SystemExit(cli_receipt(main))

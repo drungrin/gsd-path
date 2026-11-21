@@ -89,6 +89,21 @@ def validate_value(key, value):
         model_key(key)
 
 
+def panel_cli_key(key):
+    """review_panel_cli.<family>[.<field>]: the fork's CLI panel members (Docker Sandboxes only)."""
+    bits = key.split('.')
+    if bits[0] != 'review_panel_cli' or len(bits) not in (2, 3):
+        raise ValueError(f'unknown setting: {key}')
+    if len(bits) == 3 and bits[2] not in sibling('panel_cli').CONFIG_FIELDS:
+        raise ValueError(f'unknown setting: {key}')
+    return bits
+
+
+def validate_value_word(key, value):
+    if not isinstance(value, str) or not value or any(char.isspace() for char in value):
+        raise ValueError(f'{key} requires a nonempty word')
+
+
 def validate_models(data):
     if not isinstance(data, dict) or set(data) - {'roles', 'hosts'}:
         raise ValueError('models must contain roles and/or hosts')
@@ -109,13 +124,16 @@ def validate_models(data):
 
 def preferences(path, user=False):
     data = read_object(path)
-    allowed = ({'integration', 'review_panel', 'models', 'editorial_language', 'pr_fix_lane'} if user
-               else {'review_panel', 'editorial_language', 'pr_fix_lane'})
+    allowed = ({'integration', 'review_panel', 'models', 'editorial_language', 'pr_fix_lane',
+                'review_panel_cli'} if user
+               else {'review_panel', 'editorial_language', 'pr_fix_lane', 'review_panel_cli'})
     if set(data) - allowed:
         raise ValueError(f'{path}: unknown setting')
     for key, value in data.items():
         if key == 'models':
             validate_models(value)
+        elif key == 'review_panel_cli':
+            sibling('panel_cli').validate_config(value, f'{path}: review_panel_cli', partial=True)
         else:
             validate_value(key, value)
     return data
@@ -146,6 +164,8 @@ def show(repo, scope='project'):
                                     'source': str(user_path()) if 'editorial_language' in defaults else 'built-in'}
     values['pr_fix_lane'] = {'value': defaults.get('pr_fix_lane', 'off'),
                              'source': str(user_path()) if 'pr_fix_lane' in defaults else 'built-in'}
+    values['review_panel_cli'] = {'value': defaults.get('review_panel_cli', {}),
+                                  'source': str(user_path()) if 'review_panel_cli' in defaults else 'built-in'}
     if scope == 'project':
         state_api = sibling('pipeline_state')
         repo = state_api._repo_root(repo)
@@ -158,6 +178,8 @@ def show(repo, scope='project'):
             values['editorial_language'] = {'value': local['editorial_language'], 'source': str(config)}
         if 'pr_fix_lane' in local:
             values['pr_fix_lane'] = {'value': local['pr_fix_lane'], 'source': str(config)}
+        if 'review_panel_cli' in local:
+            values['review_panel_cli'] = {'value': local['review_panel_cli'], 'source': str(config)}
         policy_path = repo / '.project/model-policy.json'
         policy = validate_models(read_object(policy_path))
         models.update({key: {'value': value, 'source': str(policy_path)}
@@ -179,7 +201,13 @@ def show(repo, scope='project'):
 
 def set_value(repo, scope, key, value, reset=False):
     repo = repo.resolve()
-    if not reset:
+    if key.startswith('review_panel_cli.'):
+        bits = panel_cli_key(key)
+        if not reset and len(bits) != 3:
+            raise ValueError('set review_panel_cli.<family>.<profile|model|effort> VALUE')
+        if not reset:
+            validate_value_word(key, value)
+    elif not reset:
         validate_value(key, value)
     elif key not in ('integration', 'review_panel', 'editorial_language', 'pr_fix_lane'):
         model_key(key)
@@ -221,8 +249,13 @@ def set_value(repo, scope, key, value, reset=False):
             node = node.setdefault(bit, {})
         if reset:
             node.pop(bits[-1], None)
+            if bits[0] == 'review_panel_cli' and not data.get('review_panel_cli'):
+                data.pop('review_panel_cli', None)
         else:
             node[bits[-1]] = value
+        if bits[0] == 'review_panel_cli' and 'review_panel_cli' in data:
+            # Entries are written a field at a time; each must stay valid so far.
+            sibling('panel_cli').validate_config(data['review_panel_cli'], partial=True)
         safe_path(path)
         safe_path(path.with_name(f'.{path.name}.gsd-path-tmp'))
         sibling('_common').atomic_write(path, json.dumps(data, indent=2, sort_keys=True) + '\n')
