@@ -425,16 +425,32 @@ def render_finding(finding: dict) -> str:
     )
 
 
+def parse_absent(values: Sequence[str]) -> list[tuple[str, str]]:
+    """family=ruling pairs: a member the owner ruled to continue without, with the ruling verbatim."""
+    absent = []
+    for value in values:
+        family, separator, ruling = value.partition("=")
+        family = family.strip().casefold()
+        if not separator or family not in KNOWN_FAMILIES or not ruling.strip():
+            raise ReviewPanelError(f"--absent needs family=ruling with a known family: {value}")
+        absent.append((family, " ".join(ruling.split())))
+    return absent
+
+
 def merge_artifacts(
     kind: str,
     inputs: Sequence[Path],
     output: Path,
     header_fields: Sequence[tuple[str, str]],
+    absent: Sequence[tuple[str, str]] = (),
 ) -> dict:
     artifacts = [parse_family_artifact(path, kind) for path in inputs]
     families = [artifact["family"] for artifact in artifacts]
-    if len(families) != len(set(families)):
+    missing = [family for family, _ in absent]
+    if len(families + missing) != len(set(families + missing)):
         raise ReviewPanelError("panel merge repeats a family")
+    if not artifacts and not absent:
+        raise ReviewPanelError("merge requires --inputs")
     findings = [finding for artifact in artifacts for finding in artifact["findings"]]
     action = [finding for finding in findings if actionable(finding)]
     warnings = [finding for finding in findings if not actionable(finding)]
@@ -445,7 +461,8 @@ def merge_artifacts(
         lines.append(f"{key}: {value}")
     lines.extend(
         [
-            f"Families: {', '.join(families)}",
+            f"Families: {', '.join(families) or 'none'}",
+            *([f"Absent: {', '.join(missing)}"] if absent else []),
             f"Actionable: {len(action)}",
             f"Warnings: {len(warnings)}",
             f"Conflicts: {len(conflicts)}",
@@ -476,6 +493,10 @@ def merge_artifacts(
     else:
         lines.append("- none")
         lines.append("")
+    if absent:
+        lines.extend(["## Absent members", ""])
+        lines.extend(f"- {family} — owner ruling: {ruling}" for family, ruling in absent)
+        lines.append("")
     lines.extend(["## By family", ""])
     for artifact in artifacts:
         lines.append(artifact["text"].rstrip())
@@ -485,6 +506,7 @@ def merge_artifacts(
     return {
         "output": str(output.resolve()),
         "families": families,
+        "absent": missing,
         "actionable": len(action),
         "warnings": len(warnings),
         "conflicts": len(conflicts),
@@ -515,6 +537,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--wave")
     result.add_argument("--cycle")
     result.add_argument("--mode")
+    result.add_argument("--absent", action="append", default=[],
+                        help="family=ruling for a member the owner ruled to continue without; repeat")
     return result
 
 
@@ -535,7 +559,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if arguments.kind is None or arguments.output is None:
                 raise ReviewPanelError("merge requires --kind and --output")
             inputs = [Path(part) for part in split_csv(arguments.inputs)]
-            if not inputs:
+            absent = parse_absent(arguments.absent)
+            if not inputs and not absent:
                 raise ReviewPanelError("merge requires --inputs")
             header = []
             if arguments.mode:
@@ -546,7 +571,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 header.extend(
                     (("Wave", arguments.wave), ("Cycle", arguments.cycle))
                 )
-            return emit(merge_artifacts(arguments.kind, inputs, arguments.output, header))
+            return emit(merge_artifacts(arguments.kind, inputs, arguments.output, header, absent))
         if arguments.plan is None and arguments.command in {"parse", "resolve", "validate-plan"}:
             if arguments.command != "parse" or (
                 arguments.intent is None and arguments.charter is None

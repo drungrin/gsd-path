@@ -3156,6 +3156,38 @@ class DispatchDriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "pass", receipt)
         self.assertEqual(set(receipt["families"]), {"gpt", "claude"})
 
+    def test_panel_continues_without_a_blocked_family_only_with_the_owner_ruling(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.set_panel(root, "gpt")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60")["status"], "pass")
+        commands = {"gpt": self.captured(root)}
+        self.assertEqual(self.captured_panel(root, commands, "--wait", "60", FAKE_CAPTURE="fail")["status"],
+                         "blocked")
+        refused = self.captured_panel(root, commands, "--wait", "60", "--accept-absent", "gpt")
+        self.assertIn("needs the owner's --ruling", str(refused["blocked"]))
+        ruling = "Continue without gpt; its login expired."
+        receipt = self.captured_panel(root, commands, "--wait", "60", "--accept-absent", "gpt", "--ruling", ruling)
+        self.assertEqual(receipt["status"], "pass", receipt)
+        self.assertEqual(receipt["absent"], [{"family": "gpt", "ruling": ruling}])
+        text = (root / receipt["panel"]).read_text(encoding="utf-8")
+        self.assertIn("Absent: gpt", text)
+        self.assertIn(f"- gpt — owner ruling: {ruling}", text)
+        self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review")
+
+    def test_plan_panel_continues_without_a_blocked_family_with_the_owner_ruling(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.set_panel(root, "gpt,claude")
+        commands = {"gpt": self.captured(root), "claude": self.captured(root)}
+        self.assertEqual(self.plan_panel(root, commands, FAKE_CAPTURE="fail")["status"], "blocked")
+        self.assertEqual(self.plan_panel(root, commands, "--retry-family", "claude")["status"], "blocked")
+        receipt = self.plan_panel(root, commands, "--accept-absent", "gpt", "--ruling", "Seguir sem o gpt.")
+        self.assertEqual(receipt["status"], "pass", receipt)
+        text = (root / ".project/review/PLAN-PANEL.md").read_text(encoding="utf-8")
+        self.assertIn("Families: claude\nAbsent: gpt\n", text)
+
     def test_review_and_skeptics_still_require_a_child_command(self) -> None:
         for action in ("review", "skeptics"):
             completed = subprocess.run(

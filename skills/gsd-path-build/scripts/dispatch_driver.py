@@ -1995,6 +1995,29 @@ def retry_blocked(primary: Path, states: Dict[str, Dict[str, object]], families:
     return families
 
 
+def accept_absent(states: Dict[str, Dict[str, object]], families: Optional[List[str]],
+                  ruling: Optional[str]) -> None:
+    """Record the owner's ruling to continue without each named blocked family."""
+    families = list(families or [])
+    if families and not (ruling or "").strip():
+        raise DriverStop("--accept-absent needs the owner's --ruling, verbatim")
+    for family in families:
+        state = states.get(family)
+        if state is None or state.get("outcome") not in ("blocked", "absent"):
+            raise DriverStop(f"--accept-absent {family}: only a blocked panel family can be left out")
+        if state.get("outcome") == "blocked":
+            update_state(state, outcome="absent", ruling=" ".join(str(ruling).split()), absent_at=now(),
+                         blocked_reason=state.get("reason"))
+
+
+def absent_arguments(states: Dict[str, Dict[str, object]]) -> List[str]:
+    arguments = []
+    for family, state in sorted(states.items()):
+        if state.get("outcome") == "absent":
+            arguments += ["--absent", f"{family}={state['ruling']}"]
+    return arguments
+
+
 def open_native_record(root: Path, state: Dict[str, object]) -> Dict[str, object]:
     """A dispatch record for a family the parent runs natively; it stays open until collected."""
     task_dir = root / str(state["task_id"])
@@ -2054,7 +2077,7 @@ class Children:
                 elif state.get("outcome") == "blocked":
                     self.receipt["blocked"].append({**summary(state), "reason": state.get("reason"),
                                                     "helper": state.get("helper")})
-            if all(state.get("outcome") in ("collected", "blocked") for state in live.values()):
+            if all(state.get("outcome") in ("collected", "blocked", "absent") for state in live.values()):
                 return True
             if deadline is None or time.monotonic() >= deadline:
                 self.receipt["status"] = "in-flight"
@@ -2295,6 +2318,7 @@ class Panel(Children):
                                      command=panel_command(family, slug, commands, self.options))
                 states = self.states()
             self.collect_native(states, list(getattr(self.options, "native_collected", None) or []))
+            accept_absent(states, getattr(self.options, "accept_absent", None), getattr(self.options, "ruling", None))
             if not self.poll(states, deadline):
                 return self.receipt
             if self.receipt["blocked"]:
@@ -2310,16 +2334,18 @@ class Panel(Children):
                 self.receipt["status"] = "native-pending"
                 return self.receipt
             if set(states) != set(roster["families"]) or not all(
-                    state.get("outcome") == "collected" for state in states.values()):
+                    state.get("outcome") in ("collected", "absent") for state in states.values()):
                 raise DriverStop("the complete panel roster must be collected before merge")
             mode = roster["mode"]
+            self.receipt["absent"] = [{"family": family, "ruling": state["ruling"]}
+                                      for family, state in sorted(states.items()) if state.get("outcome") == "absent"]
             inputs = ",".join(str(self.primary / entry["path"]) for entry in self.receipt["families"].values())
             failure = self.input_failure(str(roster["base"]), paths)
             if failure:
                 raise DriverStop(failure)
             merged = helper_json(self.receipt, "review_panel.py", "merge", "--kind", "wave", "--wave", str(self.wave),
                                  "--cycle", str(self.cycle), "--inputs", inputs, "--output", str(output),
-                                 "--mode", str(mode), cwd=self.primary)
+                                 "--mode", str(mode), *absent_arguments(states), cwd=self.primary)
             self.receipt["merge"] = merged
             self.receipt["panel"] = output.relative_to(self.primary).as_posix()
             failure = self.input_failure(str(roster["base"]), paths)
@@ -2535,6 +2561,7 @@ class PlanPanel(Children):
                       command=panel_command(family, slug, commands, self.options))
             states = self.states()
             self.collect_native(states, list(self.options.native_report or []))
+            accept_absent(states, self.options.accept_absent, self.options.ruling)
             if not self.poll(states, deadline):
                 return self.receipt
             if self.receipt["blocked"]:
@@ -2549,10 +2576,13 @@ class PlanPanel(Children):
             if self.plan_digest() != roster["digest"]:
                 raise DriverStop("the plan changed after the panel was dispatched; run the panel again")
             inputs = ",".join(str(entry["path"]) for entry in self.receipt["families"].values())
+            self.receipt["absent"] = [{"family": family, "ruling": state["ruling"]}
+                                      for family, state in sorted(states.items()) if state.get("outcome") == "absent"]
             if skipped.exists():
                 skipped.unlink()
             merge = helper_json(self.receipt, "review_panel.py", "merge", "--kind", "plan", "--inputs", inputs,
-                                "--output", str(merged), "--mode", str(roster["mode"]), cwd=self.primary)
+                                "--output", str(merged), "--mode", str(roster["mode"]), *absent_arguments(states),
+                                cwd=self.primary)
             self.receipt.update(merge=merge, panel=str(merged), status="pass")
             return self.receipt
         except STOP_ERRORS as error:
@@ -2997,6 +3027,9 @@ def add_panel_transport_arguments(parser: argparse.ArgumentParser) -> None:
                         help="a native family whose report the parent collected at its canonical path; repeat")
     parser.add_argument("--retry-family", action="append", default=[],
                         help="run a blocked family again in a new attempt; repeat")
+    parser.add_argument("--accept-absent", action="append", default=[],
+                        help="continue without a blocked family, recording --ruling; repeat")
+    parser.add_argument("--ruling", help="the owner's ruling, verbatim, for --accept-absent")
 
 
 def require_files(parser: argparse.ArgumentParser, arguments: argparse.Namespace, *names: str) -> None:

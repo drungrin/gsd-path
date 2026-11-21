@@ -301,6 +301,25 @@ class ReviewPanelMergeTests(unittest.TestCase):
                     self.assertEqual(result["conflicts"], 0)
                     self.assertIn("- Family: muse", output.read_text(encoding="utf-8"))
 
+    def test_merge_records_an_owner_ruled_absent_family(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.write(root, "gpt.md", family_artifact("gpt", "gpt-6-astra", "- none\n", "wave"))
+            output = root / "panel.md"
+            absent = review_panel.parse_absent(["muse=Continue without muse:   quota ends Friday"])
+            result = review_panel.merge_artifacts("wave", (source,), output, (), absent)
+            self.assertEqual(result["absent"], ["muse"])
+            text = output.read_text(encoding="utf-8")
+            self.assertIn("Families: gpt\nAbsent: muse\n", text)
+            self.assertIn("- muse — owner ruling: Continue without muse: quota ends Friday", text)
+            alone = review_panel.merge_artifacts("wave", (), root / "alone.md", (), absent)
+            self.assertEqual(alone["families"], [])
+            for bad in (["muse"], ["unknown=x"], ["muse= "]):
+                with self.subTest(bad=bad), self.assertRaises(review_panel.ReviewPanelError):
+                    review_panel.parse_absent(bad)
+            with self.assertRaisesRegex(review_panel.ReviewPanelError, "repeats a family"):
+                review_panel.merge_artifacts("wave", (source,), output, (), [("gpt", "x")])
+
     def test_agreeing_families_with_different_wording_are_not_a_conflict(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
