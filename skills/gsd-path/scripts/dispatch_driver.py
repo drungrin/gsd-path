@@ -1978,6 +1978,23 @@ def stage_captured_report(state: Dict[str, object], staged: Path) -> bool:
     return True
 
 
+def retry_blocked(primary: Path, states: Dict[str, Dict[str, object]], families: Optional[List[str]],
+                  base: str) -> List[str]:
+    """Families the owner asked to run again: each must be blocked, and HEAD must still be the base."""
+    families = list(families or [])
+    for family in families:
+        state = states.get(family)
+        if state is None or state.get("outcome") != "blocked":
+            raise DriverStop(f"--retry-family {family}: only a blocked panel family can run again")
+    if families and isolation.current_sha(primary) != base:
+        raise DriverStop("cannot retry panel families: HEAD moved from the recorded base")
+    for family in families:
+        state = states[family]
+        if state.get("transport") != NATIVE and state.get("branch") and Path(str(state["worktree"])) != primary:
+            retire_sidecar(primary, state)
+    return families
+
+
 def open_native_record(root: Path, state: Dict[str, object]) -> Dict[str, object]:
     """A dispatch record for a family the parent runs natively; it stays open until collected."""
     task_dir = root / str(state["task_id"])
@@ -2249,6 +2266,9 @@ class Panel(Children):
                 if panel_transport(family, commands, self.options.child_command) != transport:
                     raise DriverStop(f"the persisted roster runs {family} as {transport}; rerun the panel "
                                      "with the same family commands and child command")
+            for family in retry_blocked(self.primary, states, getattr(self.options, "retry_family", None),
+                                        str(roster["base"])):
+                states.pop(family)
             missing = [family for family in roster["families"] if family not in states]
             if missing:
                 base = roster["base"]
@@ -2337,6 +2357,206 @@ class Panel(Children):
             self.receipt["checkpoint"] = checkpoint_project(
                 self.primary, self.receipt, f"build: record wave {self.wave} cycle {self.cycle} review",
                 f"Why: {reason}\nWave: {self.wave}")
+
+
+class PlanPanel(Children):
+    """The plan's optional review panel: resolve, one member per family, merge PLAN-PANEL.md.
+
+    Members read the primary checkout and write nothing in it; their reports live in the dispatch
+    records until the merge. The plan phase owns the state transitions and the approval question."""
+
+    records, field, results = "plan-panels", "family", "families"
+
+    def __init__(self, primary: Path, options: argparse.Namespace) -> None:
+        options.wave = options.cycle = None
+        super().__init__(primary, options)
+        self.track = (primary / options.track).resolve()
+        if self.track != primary and primary not in self.track.parents:
+            raise DriverStop("--track must name a directory inside the repository")
+        self.digest = self.plan_digest()
+        name = self.track.relative_to(primary).as_posix().replace("/", "-").lstrip(".") or "root"
+        self.root = records_root(primary) / self.records / f"{name}-{self.digest[:16]}"
+        self.receipt.pop("wave"), self.receipt.pop("cycle")
+        self.receipt.update(track=str(self.track), plan_digest=self.digest)
+
+    def plan_digest(self) -> str:
+        """The reviewed plan: PLAN.md plus every task file, by content."""
+        digest = hashlib.sha256()
+        files = [self.track / "plan/PLAN.md", *sorted((self.track / "tasks").glob("*.md"))]
+        if not files[0].is_file():
+            raise DriverStop(f"{files[0]} is missing")
+        for path in files:
+            digest.update(path.relative_to(self.track).as_posix().encode("utf-8") + b"\0")
+            digest.update(path.read_bytes() + b"\0")
+        return digest.hexdigest()
+
+    def family_name(self, family: str) -> str:
+        return f"review_plan_panel_{family}"
+
+    def report(self, family: str) -> Path:
+        return self.root / self.family_name(family) / "report.md"
+
+    def entry(self, state: Dict[str, object]) -> Dict[str, object]:
+        return {"slug": state.get("slug"), "path": state.get("report")}
+
+    def collect(self, state: Dict[str, object]) -> None:
+        if state.get("outcome") == "collected":
+            return
+        report = Path(str(state["report"]))
+        if state.get("transport") == CAPTURED:
+            if not stage_captured_report(state, report):
+                return
+        elif state.get("timed_out") or state.get("exit_code") != 0:
+            update_state(state, outcome="blocked", reason=f"child exited {state.get('exit_code')}")
+            return
+        try:
+            review_panel.parse_family_artifact(report, "plan")
+        except review_panel.ReviewPanelError as error:
+            update_state(state, outcome="blocked", reason=str(error), helper="review_panel.py")
+            return
+        update_state(state, outcome="collected", validated=True, cleanup_complete=True,
+                     validated_sha256=hashlib.sha256(report.read_bytes()).hexdigest())
+
+    def collect_native(self, states: Dict[str, Dict[str, object]], reports: List[str]) -> None:
+        """Copy the parent's validated native reports (family=path) into the dispatch records."""
+        for item in reports:
+            family, separator, source = item.partition("=")
+            state = states.get(family)
+            if not separator or state is None or state.get("transport") != NATIVE:
+                raise DriverStop(f"--native-report {item}: name a native panel family as family=path")
+            if state.get("outcome") == "collected":
+                continue
+            try:
+                review_panel.parse_family_artifact(Path(source), "plan")
+            except review_panel.ReviewPanelError as error:
+                raise DriverStop(f"native {family} report is not a plan panel report: {error}") from error
+            data = Path(source).read_bytes()
+            _common.atomic_write(Path(str(state["report"])), data.decode("utf-8"))
+            update_state(state, outcome="collected", validated=True, cleanup_complete=True,
+                         validated_sha256=hashlib.sha256(data).hexdigest(), native_source=source)
+
+    def brief(self, state: Dict[str, object]) -> str:
+        project = self.primary / ".project"
+        agents = self.primary / "AGENTS.md"
+        synthesis = next((path for path in (self.track / "research/SYNTHESIS.md", project / "SYNTHESIS.md")
+                          if path.is_file()), None)
+        lines = [
+            f"You are one review-panel child for the GSD Path plan review; logical task name "
+            f"{state['task_id']}. Mode: plan panel. Family: {state['family']}. Model: {state['slug']}.",
+            f"Read the reviewer role brief first and follow its Plan panel mode exactly: {self.options.role_brief}",
+            f"Template (use only this): {self.options.template}",
+            f"AGENTS.md: {agents if agents.exists() else 'absent'}",
+            f"Repository root, read-only: {self.primary}",
+            f"PLAN.md: {self.track / 'plan/PLAN.md'}",
+            f"Task files: {self.track / 'tasks'}",
+            f"INTENT.md: {self.track / 'intent/INTENT.md'}",
+            f"SYNTHESIS.md: {synthesis or 'absent'}",
+            f"CHARTER.md: {project / 'CHARTER.md' if (project / 'CHARTER.md').is_file() else 'absent'}",
+            "Do not edit any file in the repository. Never delegate. Never stage or commit.",
+        ]
+        if state.get("transport") == CAPTURED:
+            lines += [CAPTURED_RESULT, CAPTURED_TERMINAL]
+        else:
+            lines += [f"Write exactly this output file: {state['report']}",
+                      "Terminal result: the file you wrote is your result; name its finding count in your "
+                      "final message."]
+        return "\n".join(lines) + "\n"
+
+    def run(self) -> Dict[str, object]:
+        deadline = time.monotonic() + self.options.wait if self.options.wait else None
+        review = self.track / "review"
+        merged, skipped = review / "PLAN-PANEL.md", review / "PLAN-PANEL.skipped.json"
+        try:
+            commands = load_family_commands(getattr(self.options, "family_commands", None))
+            states = self.states()
+            roster_path = self.root / "roster.json"
+            if roster_path.is_file():
+                roster = load_state(roster_path)
+            else:
+                if states:
+                    raise DriverStop("plan panel records exist without a persisted roster")
+                excluded = {review_panel.family_of_slug(self.options.parent_slug or '')}
+                excluded |= set(self.options.exclude_family or [])
+                arguments = ["resolve", "--plan", str(self.track / "plan/PLAN.md"),
+                             "--intent", str(self.track / "intent/INTENT.md"),
+                             "--advertised", self.options.advertised]
+                if self.options.parent_slug:
+                    arguments += ["--parent-slug", self.options.parent_slug]
+                charter = self.primary / ".project/CHARTER.md"
+                if charter.exists():
+                    arguments += ["--charter", str(charter)]
+                for family in sorted(family for family in excluded if family):
+                    arguments += ["--exclude-family", family]
+                resolved = helper_json(self.receipt, "review_panel.py", *arguments, cwd=self.primary)
+                self.receipt["resolve"] = resolved
+                if resolved["status"] == "off":
+                    self.receipt["status"] = "off"
+                    return self.receipt
+                if resolved["status"] == "skipped":
+                    if merged.exists():
+                        merged.unlink()
+                    _common.atomic_write(skipped, str(resolved.pop("_stdout")))
+                    self.receipt.update(status="skipped", skipped_receipt=str(skipped))
+                    return self.receipt
+                roster = {"families": [item["family"] for item in resolved["selected"]],
+                          "slugs": {item["family"]: item["slug"] for item in resolved["selected"]},
+                          "mode": resolved["mode"], "digest": self.digest,
+                          "excluded_families": sorted(family for family in excluded if family)}
+                roster["transports"] = {family: panel_transport(family, commands, self.options.child_command)
+                                        for family in roster["families"]}
+                for family in roster["families"]:
+                    model_policy.validate_panel({'effective_model': roster['slugs'][family]},
+                                                family, roster['excluded_families'])
+                save_state(roster_path, roster)
+            self.receipt.update(mode=roster["mode"], transports=roster["transports"])
+            if set(states) - set(roster["families"]):
+                raise DriverStop("plan panel records disagree with the persisted roster")
+            for family, transport in roster["transports"].items():
+                if panel_transport(family, commands, self.options.child_command) != transport:
+                    raise DriverStop(f"the persisted roster runs {family} as {transport}; rerun the panel "
+                                     "with the same family commands and child command")
+            for family in self.options.retry_family or []:
+                if states.get(family, {}).get("outcome") != "blocked":
+                    raise DriverStop(f"--retry-family {family}: only a blocked panel family can run again")
+                states.pop(family)
+            for family in [family for family in roster["families"] if family not in states]:
+                slug = roster["slugs"][family]
+                state = {"task_id": self.family_name(family), "family": family, "slug": slug,
+                         "wave": None, "cycle": None, "base": isolation.current_sha(self.primary),
+                         "mode": roster["mode"], "report": str(self.report(family)),
+                         "worktree": str(self.primary), "transport": roster["transports"][family],
+                         "excluded_families": roster["excluded_families"]}
+                if state["transport"] == NATIVE:
+                    open_native_record(self.root, state)
+                    continue
+                if state["transport"] == CAPTURED:
+                    state["output"] = commands[family]["output"]
+                spawn(self.root, state, self.options, self.brief,
+                      command=panel_command(family, slug, commands, self.options))
+            states = self.states()
+            self.collect_native(states, list(self.options.native_report or []))
+            if not self.poll(states, deadline):
+                return self.receipt
+            if self.receipt["blocked"]:
+                self.receipt["status"] = "blocked"
+                return self.receipt
+            pending = [state for state in states.values() if native_open(state)]
+            if pending:
+                self.receipt["native"] = [{"family": state["family"], "task_id": state["task_id"],
+                                           "slug": state["slug"]} for state in pending]
+                self.receipt["status"] = "native-pending"
+                return self.receipt
+            if self.plan_digest() != roster["digest"]:
+                raise DriverStop("the plan changed after the panel was dispatched; run the panel again")
+            inputs = ",".join(str(entry["path"]) for entry in self.receipt["families"].values())
+            if skipped.exists():
+                skipped.unlink()
+            merge = helper_json(self.receipt, "review_panel.py", "merge", "--kind", "plan", "--inputs", inputs,
+                                "--output", str(merged), "--mode", str(roster["mode"]), cwd=self.primary)
+            self.receipt.update(merge=merge, panel=str(merged), status="pass")
+            return self.receipt
+        except STOP_ERRORS as error:
+            return stop(self.receipt, error)
 
 
 class Skeptics(Children):
@@ -2775,6 +2995,8 @@ def add_panel_transport_arguments(parser: argparse.ArgumentParser) -> None:
                         help="a parent or canonical-reviewer family the driver cannot see; repeat")
     parser.add_argument("--native-collected", action="append", default=[],
                         help="a native family whose report the parent collected at its canonical path; repeat")
+    parser.add_argument("--retry-family", action="append", default=[],
+                        help="run a blocked family again in a new attempt; repeat")
 
 
 def require_files(parser: argparse.ArgumentParser, arguments: argparse.Namespace, *names: str) -> None:
@@ -2857,6 +3079,23 @@ def main(argv=None) -> int:
     panel_parser.add_argument("--parent-slug", help="the parent's model slug when known")
     panel_parser.add_argument("--template", type=Path, default=default_resource("templates/wave-panel.md"))
     add_panel_transport_arguments(panel_parser)
+    plan_panel_parser = commands.add_parser(
+        "plan-panel", help="run the optional plan review panel and merge PLAN-PANEL.md")
+    plan_panel_parser.add_argument("--repo", type=Path, required=True)
+    plan_panel_parser.add_argument("--project-dir", default=".project")
+    plan_panel_parser.add_argument("--track", default=".project",
+                                   help="the plan track directory, relative to the repository")
+    plan_panel_parser.add_argument("--advertised", required=True, help="comma-separated model slugs on offer")
+    plan_panel_parser.add_argument("--parent-slug", help="the parent's model slug when known")
+    plan_panel_parser.add_argument("--child-command",
+                                   help="owner-supplied command for families without a family command")
+    plan_panel_parser.add_argument("--wait", type=float, help="seconds to keep polling before returning")
+    plan_panel_parser.add_argument("--child-timeout", type=float, help="per-child wall clock in seconds")
+    plan_panel_parser.add_argument("--role-brief", type=Path, default=default_resource("references/reviewer.md"))
+    plan_panel_parser.add_argument("--template", type=Path, default=default_resource("templates/plan-panel.md"))
+    plan_panel_parser.add_argument("--native-report", action="append", default=[],
+                                   help="family=path of a native family report the parent validated; repeat")
+    add_panel_transport_arguments(plan_panel_parser)
     skeptic_parser = commands.add_parser("skeptics", parents=[cycle_child],
                                          help="run one finding skeptic per needs-skeptic locator")
     skeptic_parser.add_argument("--template", type=Path, default=default_resource("templates/skeptic.md"))
@@ -2907,6 +3146,12 @@ def main(argv=None) -> int:
         if arguments.action == "panel":
             require_files(parser, arguments, "role_brief", "template")
             result = Panel(primary, arguments).run()
+        elif arguments.action == "plan-panel":
+            require_files(parser, arguments, "role_brief", "template")
+            try:
+                result = PlanPanel(primary, arguments).run()
+            except STOP_ERRORS as error:
+                result = stop({"status": None, "blocked": [], "steps": []}, error)
         elif arguments.action == "skeptics":
             require_files(parser, arguments, "role_brief", "template")
             result = Skeptics(primary, arguments).run()

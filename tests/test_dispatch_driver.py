@@ -176,13 +176,15 @@ FAKE_CAPTURED_PANELIST = textwrap.dedent(
         sys.exit(9)
     family = re.search(r"Family: (\\w+)\\.", brief).group(1)
     model = re.search(r"Model: (\\S+)\\.", brief).group(1)
-    wave, cycle = re.search(r"wave (\\d+), cycle (\\d+)", brief).groups()
+    planned = "Mode: plan panel" in brief
+    wave, cycle = (None, None) if planned else re.search(r"wave (\\d+), cycle (\\d+)", brief).groups()
+    heading = f"# Plan panel — {family}" if planned else f"# Panel — wave {wave}, cycle {cycle}"
     mode = os.environ.get("FAKE_CAPTURE", "ok")
     if mode == "fail":
         print("panel-cli: login: not signed in", file=sys.stderr)
         sys.exit(3)
     report = "" if mode == "empty" else (
-        f"# Panel — wave {wave}, cycle {cycle}\\n\\n- Family: {family}\\n- Model: {model}\\n- Depth: full\\n\\n"
+        f"{heading}\\n\\n- Family: {family}\\n- Model: {model}\\n- Depth: full\\n\\n"
         "## Findings\\n\\n- none\\n\\n## Summary\\n\\nNo findings.\\n")
     if len(sys.argv) > 2:
         Path(sys.argv[2]).write_text(report, encoding="utf-8")
@@ -3100,6 +3102,59 @@ class DispatchDriverTests(unittest.TestCase):
         receipt = self.captured_panel(root, {"gpt": self.captured(root)}, "--wait", "60", child=True)
         self.assertEqual(receipt["status"], "blocked", receipt)
         self.assertIn("the persisted roster runs claude as native", str(receipt["blocked"]))
+
+    def test_panel_retries_a_blocked_family_in_a_new_attempt(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.set_panel(root, "gpt")
+        self.assertEqual(self.round(root, "--wait", "60")["status"], "done")
+        self.assertEqual(self.review(root, "--wait", "60")["status"], "pass")
+        commands = {"gpt": self.captured(root)}
+        self.assertEqual(self.captured_panel(root, commands, "--wait", "60", FAKE_CAPTURE="fail")["status"],
+                         "blocked")
+        refused = self.captured_panel(root, commands, "--wait", "60", "--retry-family", "claude")
+        self.assertIn("only a blocked panel family can run again", str(refused["blocked"]))
+        receipt = self.captured_panel(root, commands, "--wait", "60", "--retry-family", "gpt")
+        self.assertEqual(receipt["status"], "pass", receipt)
+        self.assertEqual(self.branches(root), ["feature/milestone-001"])
+
+    def plan_panel(self, root: Path, commands: dict, *extra: str, **fake: str) -> dict:
+        path = root.parent / "family-commands.json"
+        path.write_text(json.dumps(commands), encoding="utf-8")
+        return self.driver(root, "plan-panel", "--family-commands", str(path),
+                           "--advertised", "gpt-6-astra,claude-opus", "--parent-slug", "gemini-pro",
+                           "--wait", "60", *extra, **fake)
+
+    def test_plan_panel_captures_members_and_merges_plan_panel(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.set_panel(root, "gpt,claude")
+        commands = {"gpt": self.captured(root), "claude": self.captured(root, "file")}
+        receipt = self.plan_panel(root, commands)
+        self.assertEqual(receipt["status"], "pass", receipt)
+        merged = root / ".project/review/PLAN-PANEL.md"
+        text = merged.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("# Plan panel"), text)
+        self.assertIn("Families: ", text)
+        self.assertEqual(run_git(root, "status", "--porcelain", "-uall").stdout.split(), ["??", ".project/review/PLAN-PANEL.md"])
+
+    def test_plan_panel_blocks_retries_and_accepts_a_native_report(self) -> None:
+        root = self.root
+        self.fixture(root)
+        self.set_panel(root, "gpt,claude")
+        commands = {"gpt": self.captured(root)}
+        blocked = self.plan_panel(root, commands, FAKE_CAPTURE="fail")
+        self.assertEqual(blocked["status"], "blocked", blocked)
+        self.assertIn("panel-cli: login: not signed in", blocked["blocked"][0]["reason"])
+        pending = self.plan_panel(root, commands, "--retry-family", "gpt")
+        self.assertEqual(pending["status"], "native-pending", pending)
+        self.assertEqual([item["family"] for item in pending["native"]], ["claude"])
+        native = root.parent / "claude-plan-panel.md"
+        native.write_text("# Plan panel — claude\n\n- Family: claude\n- Model: claude-opus\n\n"
+                          "## Findings\n\n- none\n", encoding="utf-8")
+        receipt = self.plan_panel(root, commands, "--native-report", f"claude={native}")
+        self.assertEqual(receipt["status"], "pass", receipt)
+        self.assertEqual(set(receipt["families"]), {"gpt", "claude"})
 
     def test_review_and_skeptics_still_require_a_child_command(self) -> None:
         for action in ("review", "skeptics"):
