@@ -608,7 +608,10 @@ dispatch contract and perform steps 1–5 by hand.
      <absolute .project/review/wave-N.cycleC.panel.md> --mode
      <detected|named>`. The canonical reviewer remains the only Wave verdict.
      Do not average panel findings into that verdict or auto-create fix
-     tasks from preference findings.
+     tasks from preference findings. When `review_panel_cli` configures
+     families, follow [CLI panel members](panel-cli.md) instead: the
+     driver's panel action runs those families and returns any native
+     ones to you.
    - After the canonical reviewer file (and each deep lens file) is
      on the primary path, run
      `python3 <absolute check_handoffs.py> wave --repo <absolute primary>

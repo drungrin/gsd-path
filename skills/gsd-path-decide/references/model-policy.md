@@ -124,7 +124,10 @@ excluded families; explicitly named conflicts block. Pass its selected model thr
 `--exclude-family` for known parent and
 canonical-reviewer families. Persist and reuse the panel roster. Policy cannot
 waive family independence or change canonical review authority. A changed
-panel roster requires a new legal review assignment.
+panel roster requires a new legal review assignment. A family run as a CLI
+panel member (fork only; see `references/panel-cli.md` in the build skill) takes its model
+and effort from `review_panel_cli`, not from this policy; family checks still
+apply.
 
 Requested controls are durable evidence. When the host hides the inherited
 model identity, exact effective-model continuity across fresh children remains

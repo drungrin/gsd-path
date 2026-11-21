@@ -248,6 +248,10 @@ as stated in Lookahead mode.
    - `status: error` or exit 2 — use the same guarded transition to set
      `plan/blocked` with an event naming the helper error, link PLAN.md, and stop.
      A named family that is not advertised is an assertion failure.
+   - When `review_panel_cli` configures families, run the plan panel
+     through the driver as [CLI panel members](references/panel-cli.md)
+     says, instead of the resolve and spawn steps here; its statuses map to
+     the ones below.
    - `status: ready` — resolve the local
      [plan-panel template](templates/plan-panel.md) for the reviewers; other
      statuses do not load this template. For each selected family, spawn one independent child

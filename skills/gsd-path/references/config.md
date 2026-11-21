@@ -26,6 +26,12 @@ set models.hosts.codex.plan.effort high --scope project --repo <absolute-root>
 reset models.roles.coder.model --scope project --repo <absolute-root>
 ```
 
+`review_panel_cli.<family>.<profile|model|effort>` (fork only, Docker Sandboxes) runs that
+panel family in a vendor CLI: profile `codex` for `gpt`, `muse` for `muse`, `agy` for `gemini`,
+with a model of that family. Set it per project, or as a user default that a project setting
+replaces whole. Write one field per `set`; `reset review_panel_cli.<family>` removes a family.
+See [CLI panel members](panel-cli.md).
+
 Write only the user's explicit selection. Use exact host-advertised model/effort
 values; unavailable values block dispatch. `inherit` clears a control override;
 `reset` removes this scope's setting and exposes defaults. Project shipping needs

@@ -175,7 +175,7 @@ with `Depth: delta`.
 | `in-flight` | Resume the same action to collect its existing children. |
 | `done` from round | Run `review` with the same repo, wave, child command, and the current cycle. |
 | Passing review, no panel required | Continue with the next wave or Completion. |
-| `panel_required: true` | Read the panel procedure in [native build](references/build-native.md), then use the driver's `panel` action. |
+| `panel_required: true` | Read the panel procedure in [native build](references/build-native.md), then use the driver's `panel` action. With `review_panel_cli` families, follow [CLI panel members](references/panel-cli.md). |
 | Blocked review with findings | Read step 7 in [native build](references/build-native.md); use `skeptics` or `fix-tasks` only as the finding receipt directs. |
 | `question` | Answer from approved artifacts or escalate; record with `answer --task-id <id> --answer '<answer> — <citation>'`, then resume round. |
 | Task/recovery `blocked` or structural escalation | Read the matching recovery or plan-defect branch in [native build](references/build-native.md). |

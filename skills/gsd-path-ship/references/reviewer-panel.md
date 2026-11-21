@@ -25,6 +25,16 @@ findings on lines written by earlier completed repair Task landings can signal
 recurrence; original lines in the same file and preferences do not count.
 Recurrence is informational, not a criterion or an architectural diagnosis.
 
+## CLI members
+
+When your brief says your report is your final message, return the complete
+family report in the template's format as that message, with nothing before
+its heading. Do not write it to a file. When the brief ends with an access
+receipt section, end the message with its `Inspected:` list and
+`Access receipt:` line exactly as it asks; the runtime removes them before
+the report is recorded. Cite repository-relative paths, never absolute paths
+or `file://` links.
+
 ## Muse family
 
 Use `muse` in a named panel (for example, `gpt,muse`) or let `detected`
