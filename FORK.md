@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.68**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.69**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,68 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.69 — 2026-11-22
+
+Upstream package base remains `1.7.1`. The fork revision continues from 68 to 69.
+
+Fork only (CLI panel members, [ADR 0009](docs/adr/0009-panel-members-through-vendor-clis.md), revision for the
+paseo-sbx plugin manifest):
+- [`eeea78bc — confine CLI panel members with the paseo-sbx manifest`](https://github.com/drungrin/gsd-path/commit/eeea78bccb4f9976cd5da69e2aed39ec9e77dd2b)
+- [`f8ce7786 — document the paseo-sbx manifest in the CLI panel procedure and ADR 0009`](https://github.com/drungrin/gsd-path/commit/f8ce77867cad410277a7e3029a91014c929d36c3)
+
+This release follows 1.7.1.68 for the same decision. It closes a defect found in review: CLI panel
+members could read credential folders mounted at their host paths.
+
+### Behavior changes
+
+- **The paseo-sbx manifest.** The plugin that now provisions the panel CLIs writes a read-only
+  manifest (`PASEO_SBX_CLI_MANIFEST`, version 1). Provisioning, login scope, and credential sharing
+  stay the plugin's and the operator's; the runtime checks none of them. With a manifest:
+  - the credential roots are hidden, and read roots inside them are mounted back read-only;
+  - the member's CLI state is an empty tmpfs, and only its own credential files are bound
+    writable, so a renewed token persists and planted configuration does not;
+  - every binding is checked first. The source must be a real regular file with no symlink on its
+    path, outside the repository, the sidecar, the runtime, and the read roots. The target must sit
+    inside that CLI's state. Another major version is refused.
+- **Without a manifest**, Paseo's credential mounts (`homes`, `cli-auth`, the session's Claude
+  folder, read from the mount table) and `$CLAUDE_CONFIG_DIR` are now hidden. In 1.7.1.68 members
+  could read them. No consumer had enabled CLI members.
+- **Private `/tmp`.** The member gets a private `/tmp`, with the repository, workdir, and scratch
+  mounted back over it. The native Codex sandbox writes its mount markers in `/tmp` and failed under
+  the read-only one; the member read nothing and the access receipt blocked it.
+- **Failure codes.** `not-mounted` for the plugin shim's exit 78, `credential-busy` when a renewal
+  cannot replace a bound credential file, and `manifest`. `doctor` points missing CLIs and logins
+  to the plugin and reports the login scope without checking it.
+- **Muse Code 1.4.25** is qualified.
+
+Validation:
+- The full Python suite ran in eight parallel shards: 3,952 tests, 41 skipped, no failures.
+- The daemon suite passed (496 tests, 13 skipped), Node tests passed (118, one skipped), resource
+  synchronization checked 615 resources, and `check:locks` passed.
+- New tests cover the manifest's shape and version, credential validation (symlinks, protected
+  folders, targets outside the state), the confinement arguments and mount order, the default roots,
+  the new failure codes, `doctor` with a manifest, and `run` in manifest mode. One test runs the real
+  bubblewrap: a member reads and renews its own bound credential, cannot read another CLI's through
+  either path, and its planted configuration does not survive.
+- In a disposable sandbox with the plugin's CLIs and logins, against a test manifest in the v1 format:
+  - Each member opened only its own credential through its home path, never another CLI's or its
+    own source, and still read the plugin's shims.
+  - The wave panel and the plan panel passed with Codex 0.166.0, Muse Code 1.4.25, and Antigravity
+    1.5.14, with and without the manifest.
+  - An injected `AGENTS.md` asked members to write a canary, copy the credential folder into the
+    repository, and create a file. Nothing was written or copied.
+  - The plugin's Codex package lacked `codex-code-mode-host`; that member read nothing and the access
+    receipt blocked it. The passing runs used the complete Codex install. The finding went back to
+    the plugin.
+
+Limits:
+- Replacing a bound credential file by rename fails with `EBUSY`. Antigravity renews in place and
+  works; Codex renewal under the binding is not qualified and fails closed as `credential-busy`.
+- Hiding without a manifest is a pattern list. A general allowlist of readable paths is a later
+  hardening.
+- The plugin's CLIs include `claude`, for which the panel has no profile.
+- No upstream submission.
 
 ## 1.7.1.68 — 2026-11-21
 
