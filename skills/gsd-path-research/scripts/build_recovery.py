@@ -18,6 +18,7 @@ EVENTS = {
     "plan": "build plan repair requested",
 }
 PLAN_INTENT_EVENT = "plan intent corrections requested"
+PLAN_INTENT_CHECKPOINT = "build: checkpoint plan before intent corrections"
 MARKER = "build recovery: "
 RECOVERY_KEYS = frozenset({"base", "branch", "kind", "source"})
 
@@ -169,6 +170,15 @@ def _begin_common(repo: Path, before, event: str) -> str:
     if before.archive is not None or before.branch != state._current_branch(repo):
         raise state.PipelineStateError("build recovery requires the active bound branch")
     if state._worktree_changes(repo):
+        if event == PLAN_INTENT_EVENT:
+            # Unapproved plan artifacts are uncommitted until approval, so this
+            # path always needs one checkpoint first; name it instead of
+            # pointing at a build that does not exist.
+            raise state.PipelineStateError(
+                "checkpoint the plan before intent corrections: commit the pending "
+                ".project/ artifacts with isolation.py checkpoint --allow-path .project "
+                f'--subject "{PLAN_INTENT_CHECKPOINT}" --body "Why: <reason>"'
+            )
         raise state.PipelineStateError("checkpoint the blocked build before recovery")
     if any(state.transaction_journals(repo).values()):
         raise state.PipelineStateError("finish pending transactions before build recovery")

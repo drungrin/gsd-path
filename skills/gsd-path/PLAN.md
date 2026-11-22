@@ -33,6 +33,9 @@ Before dispatch, enter from `decide/done` or `define/done` with
 `plan/blocked` through the same helper with event `planning resumed`. Require
 the returned track state to be `plan/active`; never edit STATE directly.
 For a blocked build, use the [build recovery contract](references/build-recovery.md).
+Before approval, when a finding or user ruling must change INTENT.md, follow
+its "Plan: checkpoint and return to Define" section instead of approving a
+plan that fails a criterion.
 The runtime's `build-repair` mode owns structural changes to the remaining task
 inventory and the normal approval checkpoint; it is distinct from append-only
 patch mode. Otherwise later phases block instead of replacing an approved plan.

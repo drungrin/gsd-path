@@ -40,7 +40,8 @@ ROADMAP.md exists), `roadmap/done`
 lookahead track at `define/active|blocked` also requires both current-track
 inspection artifacts and a Log entry proving `inspect/done` for the same
 milestone after its latest activation; otherwise route to inspect.
-The sole later-phase exception is a blocked build entered through the
+The sole later-phase exceptions are a blocked build, or an unapproved plan that
+needs an intent correction, entered through the
 [build recovery contract](references/build-recovery.md). Follow its preparation
 and corrections procedure when the runtime returns mode `corrections`; keep
 the existing milestone identity and approval gate. Otherwise

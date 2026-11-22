@@ -2,9 +2,12 @@
 
 Use this contract only for an active milestone at `build/blocked`: a documented
 structural plan defect, or an explicit user ruling that changes approved intent.
-It does not reopen ship, archived milestones, or lookahead. Build owns entry;
-Define owns intent corrections; Plan owns the replacement task inventory and
-approval. Routing remains a caller handoff under AGENTS.md.
+It also covers an unapproved plan at `plan/active` or `plan/blocked` whose
+finding or user ruling changes approved intent (see Plan: checkpoint and
+return to Define). It does not reopen ship, archived milestones, or lookahead.
+Build owns entry from a blocked build; Plan owns entry before approval; Define
+owns intent corrections; Plan owns the replacement task inventory and approval.
+Routing remains a caller handoff under AGENTS.md.
 
 ## Build: checkpoint and enter
 
@@ -38,6 +41,38 @@ approval. Routing remains a caller handoff under AGENTS.md.
 3. Return to the router or name the selected explicit skill. The route names
    `corrections` for Define and `build-repair` for Plan. Other blocked-build
    failures continue through ordinary Build recovery.
+
+## Plan: checkpoint and return to Define
+
+Use this before plan approval, when a planner finding, gate, panel, or user
+ruling shows that an INTENT.md criterion, constraint, or veto must change.
+Plan cannot waive a criterion, and a Build-time ruling cannot either; approving
+a plan that is known to fail a criterion only defers the same correction to a
+blocked build, where every reviewed wave pays for it. Correct it now.
+
+1. Record the finding, the user ruling verbatim, and any other ruling given
+   for this plan, so they land in the checkpoint.
+2. The unapproved artifacts (intent, research, synthesis, plan, task briefs,
+   reviews) are uncommitted until approval, and recovery requires a clean
+   primary. Commit them once with the bundled helper, not with plain Git:
+
+   ```
+   isolation.py checkpoint --repo <absolute-root> --expected-head <HEAD> \
+     --subject "build: checkpoint plan before intent corrections" \
+     --body "Why: <one-line reason>" --allow-path .project
+   ```
+
+   This is the only extra commit Plan makes before approval. Its committed
+   STATE shows `plan/active` or `plan/blocked`, which is what proves the
+   recovery base.
+3. Run `pipeline_state.py transition` with the complete current state
+   expected, `--set-phase define --set-status active`, and event
+   `plan intent corrections requested`. The helper records the recovery base
+   with `source: plan`; the route names `corrections` for Define.
+4. Define then follows "Define and Plan: prepare before editing" below. After
+   the corrected intent is approved, the lane re-enters its normal phases and
+   Plan approves with the normal checkpoint, which closes the recovery. There
+   is no `build-repair` mode on this path.
 
 ## Define and Plan: prepare before editing
 

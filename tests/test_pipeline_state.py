@@ -1389,6 +1389,41 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(route["phase"], "define")
         self.assertEqual(route["mode"], "corrections")
 
+    def test_plan_intent_correction_names_its_checkpoint_and_accepts_it(self) -> None:
+        # Unapproved plan artifacts stay uncommitted until approval, so the
+        # documented checkpoint must come first and must prove the base.
+        from scripts import build_recovery, isolation
+
+        repo = self._plan_intent_correction_repo()
+        project = repo / ".project"
+        (project / "plan/PLAN.md").write_bytes(PLAN_WAVE.format(title="revised").encode("utf-8"))
+        (project / "research").mkdir()
+        (project / "research/SYNTHESIS.md").write_bytes(b"# Synthesis\n")
+        expected = {"phase": "plan", "status": "active", "branch": "feature/milestone-001", "archive": None}
+        with self.assertRaisesRegex(
+            pipeline_state.PipelineStateError,
+            "checkpoint the plan before intent corrections.*"
+            + re.escape(build_recovery.PLAN_INTENT_CHECKPOINT),
+        ):
+            pipeline_state.transition_state(
+                repo, expected, {"phase": "define", "status": "active"},
+                "plan intent corrections requested",
+            )
+        head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+        result = isolation.checkpoint(
+            repo, head, build_recovery.PLAN_INTENT_CHECKPOINT,
+            "Why: planner finding requires an SC1 correction before approval", [".project"],
+        )
+        self.assertEqual(result["status"], "committed")
+        base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+        pipeline_state.transition_state(
+            repo, expected, {"phase": "define", "status": "active"},
+            "plan intent corrections requested",
+        )
+        recovery = pipeline_state._build_recovery().context(repo)
+        self.assertEqual((recovery["base"], recovery["source"]), (base, "plan"))
+        self.assertEqual(pipeline_state.route_state(repo)["route"]["mode"], "corrections")
+
     def test_plan_intent_correction_transitions_to_define_from_blocked(self) -> None:
         repo = self._plan_intent_correction_repo(status="blocked")
         result = pipeline_state.transition_state(
