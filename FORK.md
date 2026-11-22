@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.69**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.70**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,44 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.70 — 2026-11-22
+
+Upstream package base remains `1.7.1`. The fork revision continues from 69 to 70.
+
+Applies upstream (fixes the undocumented checkpoint of the plan intent correction path from
+upstream #304; no fork-only code):
+- [`ba0f3241 — name the checkpoint a plan intent correction needs before returning to define`](https://github.com/drungrin/gsd-path/commit/ba0f3241b251a707e9cba8cacc725ec9a19a870c)
+
+### A plan that needs an intent correction no longer looks stuck
+
+- A consumer's planner found, before approval, that a success criterion could not hold. The owner
+  ruled to correct it. The `plan/active → define/active` transition refused with "checkpoint the
+  blocked build before recovery": it needs a clean primary whose committed STATE proves the plan
+  state, and unapproved plan artifacts stay uncommitted until approval. No skill described that
+  checkpoint, so the orchestrator recommended approving the plan as written and ruling during the
+  build. That would only have moved the same correction to a blocked build, after production
+  deploys, with every reviewed wave going back to review. The same consumer had passed this path in
+  its first milestone with a hand-made `build:` checkpoint.
+- On this path the refusal now names the `isolation.py checkpoint` command and the subject
+  `build: checkpoint plan before intent corrections`. The blocked-build refusal is unchanged.
+- `build-recovery.md` has a "Plan: checkpoint and return to Define" section: record the rulings,
+  checkpoint once through the helper, transition with `plan intent corrections requested`, then
+  follow Define corrections. It says not to approve a plan that is known to fail a criterion. The
+  plan and define skills point to it.
+
+Validation:
+- A new test changes plan artifacts at `plan/active`, gets the new refusal, runs the documented
+  checkpoint, and transitions to Define with the checkpoint as the recovery base and route mode
+  `corrections`. Without the change, it fails.
+- The commit applies cleanly on `upstream/main`.
+- The full Python suite ran in eight parallel shards: 3,953 tests, 41 skipped, no failures.
+- The daemon suite passed (496 tests, 13 skipped), Node tests passed (118, one skipped), resource
+  synchronization checked 615 resources, and `check:locks` passed.
+
+Limits:
+- The checkpoint stays a separate step that the agent runs; the transition does not commit for it.
+- No upstream submission.
 
 ## 1.7.1.69 — 2026-11-22
 
