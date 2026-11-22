@@ -7,6 +7,24 @@ captures each member's final report and writes the family file; the member needs
 access. Coders, canonical reviewers, and skeptics are unchanged. Outside a sandbox the runtime
 refuses, and the panel stays native.
 
+## With the paseo-sbx plugin
+
+When the paseo-sbx plugin provisions the CLIs, it sets `PASEO_SBX_CLI_MANIFEST` to a read-only JSON
+manifest. Provisioning, login scope, and credential sharing stay the plugin's and the operator's;
+the runtime checks none of them. It reads the manifest only to confine a member:
+
+- the manifest's credential roots are hidden, and its read roots inside them are mounted back
+  read-only;
+- the member's CLI state is an empty tmpfs, and only that CLI's credential files are bound
+  writable, so a renewed token persists and nothing else the member writes does;
+- every credential binding is checked first: the source must be a real regular file outside the
+  repository, the sidecar, the runtime, and the read roots, and the target must sit inside that
+  CLI's state.
+
+Without a manifest, Paseo's credential mounts (`homes`, `cli-auth`, the session's Claude folder)
+are hidden by pattern, and the member's CLI state is bound writable as before. A manifest whose
+major version this runtime does not read is refused (`manifest`).
+
 ## When it applies
 
 Run `python3 -B <absolute panel_cli.py> commands --repo <absolute root> --kind <wave|plan>
@@ -16,7 +34,9 @@ use the native panel procedure unchanged. Otherwise:
 
 - Run `python3 -B <absolute panel_cli.py> doctor --repo <absolute root>` before the first panel
   of the phase. `ok: false` is a member failure for the families it names: stop as below and
-  show its `fixes` (the exact `sbx exec` install or login commands the owner runs on the host).
+  show its `fixes`. With the plugin they point to its workspace panel and to the CLI's login
+  command in the Sandbox terminal; without it, to the exact `sbx exec` commands the owner runs on
+  the host. The plugin's login scope is reported, never checked.
 - Pass `--advertised` the command's `advertised` slugs plus the host-advertised slugs of any
   family without a CLI profile. Such a family stays native.
 - Model policy does not apply to a CLI family: its model and effort come from
@@ -64,13 +84,15 @@ python3 <absolute dispatch_driver.py> plan-panel --repo <absolute root> --track 
 ## Member failure
 
 A failed member's blocked `reason` reads `child exited 3: panel-cli: <code>: <detail>`. The codes
-are: `not-sandboxed`, `no-bwrap`, `cli-missing`, `cli-version`, `login`, `quota`,
-`exit-nonzero`, `tool-denied`, `empty-output`, `no-access-receipt`, `malformed-report`, plus
-`child timed out`. Stop and present **Outcome** (family, code, detail), **Review** (the member's
+are: `not-sandboxed`, `no-bwrap`, `manifest`, `cli-missing`, `cli-version`, `not-mounted` (the
+plugin's shim found the CLI's state unmounted), `login`, `credential-busy` (a renewal could not
+replace the bound credential file), `quota`, `exit-nonzero`, `tool-denied`, `empty-output`,
+`no-access-receipt`, `malformed-report`, plus `child timed out`. Stop and present **Outcome** (family, code, detail), **Review** (the member's
 `panel-cli/raw.md` and `stderr` in its dispatch attempt), and **Next** with two options:
 
 1. Wait: fix the cause and rerun the same command with `--retry-family <family>`. For `login`,
-   `cli-missing`, and `cli-version`, recommend this option: the fix is one `doctor` command.
+   `cli-missing`, `cli-version`, `not-mounted`, and `credential-busy`, recommend this option: the
+   fix is one `doctor` command, a plugin setting, or one run of the CLI in the Sandbox terminal.
 2. Continue without it: rerun with `--accept-absent <family> --ruling '<the owner's words>'`. The
    merged panel lists the family as absent with the ruling.
 
@@ -79,6 +101,11 @@ the owner's call: offer both without a recommendation. Never accept an absence w
 owner's ruling, and never replace a failed CLI member with a native child.
 
 ## Limits
+
+- A CLI that renews its token by replacing the credential file cannot do so on a single-file
+  binding; the member blocks with `credential-busy` and the owner renews outside the panel.
+  Codex renewal under the binding is not qualified.
+- The plugin's CLIs do not include a panel profile for `claude`.
 
 - The model that answered is the CLI's claim; Codex's event stream does not name it.
 - The sandbox network stays open; confinement covers files, not egress.

@@ -95,3 +95,27 @@ runtime directory:
 - **Free-form command templates in the owner's configuration.** Rejected in favor of pinned
   profiles: failure classification and the receipt depend on each CLI's output, and that logic
   would move into untested configuration.
+
+## Revision: the paseo-sbx plugin manifest (fork 1.7.1.69)
+
+The paseo-sbx plugin now installs, updates, and logs in the CLIs inside sandboxes, and writes a
+read-only manifest (`PASEO_SBX_CLI_MANIFEST`) with each CLI's state folders and credential files,
+the folders a member must read, and the folders that hold credentials. Provisioning, login scope,
+and credential sharing are the plugin's and the operator's; the runtime checks none of them.
+
+- **Confinement with a manifest.** The credential roots are hidden; read roots inside them are
+  mounted back read-only. The member's state is an empty tmpfs, and only its own credential files
+  are bound writable. A renewed token persists; configuration a member plants does not.
+- **The manifest is not trusted.** It decides what becomes writable, so each binding is checked:
+  a real regular file outside the repository, the sidecar, the runtime, and the read roots, bound
+  inside that CLI's state. An unknown major version is refused.
+- **Without a manifest** the defect found in review is closed by pattern: Paseo's credential
+  mounts (`homes`, `cli-auth`, the session's Claude folder) are hidden, read from the mount table.
+  A general allowlist of readable paths remains a later hardening.
+- **New failure codes.** `not-mounted` for the plugin shim's exit 78, `credential-busy` when a
+  renewal cannot replace the bound credential file, and `manifest`.
+- **Evidence.** On the host, with the real bubblewrap, a member reads and renews its own bound
+  credential, cannot read another CLI's credential through its home path or its source, and its
+  planted configuration does not survive. Replacing a bound file by rename fails with `EBUSY`;
+  Codex renewal under the binding remains unqualified and fails closed.
+
