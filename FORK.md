@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.67**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.68**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,114 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.68 — 2026-11-21
+
+Upstream package base remains `1.7.1`. The fork revision continues from 67 to 68.
+
+Applies upstream (no fork code or bookkeeping in the commit):
+- [`5e28864f — run panel families through captured per-family commands`](https://github.com/drungrin/gsd-path/commit/5e28864fa3267f76be78aaa8bfee5bea21143db8)
+- [`ab628783 — run the plan review panel through the dispatch driver`](https://github.com/drungrin/gsd-path/commit/ab628783877212b74bac39a933f87d936d2a1b1a)
+- [`0f0568ef — discard what a captured panel member leaves in its sidecar`](https://github.com/drungrin/gsd-path/commit/0f0568efc9114570946b5ccf4d52c9a2f9b22bf2) — it also updates the plan skill's driver copy, which an upstream proposal leaves out
+
+Fork only (CLI panel members, [ADR 0009](docs/adr/0009-panel-members-through-vendor-clis.md)):
+- [`f5024d23 — run review-panel members through vendor CLIs in sbx`](https://github.com/drungrin/gsd-path/commit/f5024d2326c37b6adb2b6ff9c82b82bc096f64a3)
+- [`28a5e249 — continue a review panel without a member only on an owner ruling`](https://github.com/drungrin/gsd-path/commit/28a5e24967b8e977f51a388c8ca5d5709cf94805)
+- [`4f560b0d — route configured panel families through the CLI members procedure`](https://github.com/drungrin/gsd-path/commit/4f560b0d9ac94748507f831e1c845b8c51b52af0)
+- [`0f5f64d7 — record the CLI panel members decision in ADR 0009`](https://github.com/drungrin/gsd-path/commit/0f5f64d784b595972458e6535d087e4c9fddb965)
+
+Built for Paseo's Docker Sandboxes (`sbx`): `panel_cli.py` refuses to run outside one.
+
+### Recurrence and decision change
+
+This release changes the decision behind four earlier fixes instead of adding a fifth. The fork
+ran every panel member as a native Claude subagent behind a model proxy and published its report
+from the transcript (`stage-review`). Releases 1.6.2.30 to 1.6.2.33 (hand-back endings), 1.6.2.34
+(a resumed panel child), and 1.7.1.42 (a final text with no stop reason) each treated a symptom
+of that transport. A sweep of 758 panel members over the 16 days after 1.7.1.42 found 93.8% of gpt
+members and 83.9% of muse members published. 22% of muse members ended without a stop reason, and
+53 published only through the 1.7.1.42 rule. Refusals continued about once a day. A two-model
+review panel rejected patching again and rejected letting a CLI write its own report.
+
+### Behavior changes
+
+- **Captured per-family transport** (applies upstream). `dispatch_driver.py panel` takes
+  `--family-commands`: a command per family whose final report the driver captures, from stdout
+  or a `{final}` file, and writes as the family file. A nonzero exit, a timeout, or an empty report
+  blocks the family with the last stderr line as the reason.
+  - Before staging a captured report, the driver restores the member's sidecar to its base and
+    records what it removed: a wave member may reconstruct task products there.
+  - A family with no command and no `--child-command` is native: the driver returns
+    `native-pending`, and `--native-collected` accepts the parent's report.
+  - The roster pins each family's transport. `--exclude-family` names a parent or
+    canonical-reviewer family the driver cannot see.
+  - `--child-command` is now optional for `panel` and still required for `review` and `skeptics`.
+- **Plan panel through the driver** (applies upstream). A new `plan-panel` action resolves the plan
+  panel, runs its members with the same transports, and merges `PLAN-PANEL.md`. Its roster is keyed
+  to the plan and task file contents. Both panel actions take `--retry-family` for a blocked family.
+- **CLI panel members** (fork only). `panel_cli.py run` runs a member in Codex (`gpt`), Muse Code
+  (`muse`), or Antigravity (`gemini`):
+  - It runs inside bubblewrap with the filesystem read-only, writable only for a private scratch
+    directory, the CLI's state, and a wave member's verify sidecar.
+  - Other CLIs' state and the Claude credentials are hidden, and the environment is allowlisted.
+  - The profiles are pinned to the qualified CLI versions. Codex uses its own sandbox inside the
+    outer one (`workspace-write` on a wave sidecar, `read-only` for the plan). Muse Code runs without
+    `--yolo`. Antigravity runs with its bypass in `--mode plan`.
+  - The member must end its report with an access receipt (a nonce read from a file and an
+    `Inspected:` list of existing repository paths), which is stripped before the report is staged.
+  - Failures exit 3 with a coded last stderr line.
+  - `commands` prints the family commands, and `doctor` checks the sandbox, bubblewrap, versions,
+    and logins.
+- **Setting** (fork only). `review_panel_cli.<family>.<profile|model|effort>`, per project with
+  an optional user default. `panel_cli.py` joins the pinned runtime and every skill that bundles
+  `path_config.py`. The plan skill bundles the driver, its imports, and the reviewer briefs.
+- **Absence on an owner ruling** (fork only). `--accept-absent <family> --ruling '<words>'` lets a
+  panel continue without a blocked member. The merged panel lists it under `Absent:` with the
+  ruling.
+- **Procedure** (fork only). `references/panel-cli.md` holds the CLI member procedure and the
+  member-failure stop. It recommends waiting for `login`, `cli-missing`, and `cli-version`, and
+  makes no recommendation for the other codes.
+
+Validation:
+- The full Python suite ran in eight parallel shards: 3,942 tests, 41 skipped, no failures. It ran
+  before the last two fixes (the Codex `/tmp` exclusion and the sidecar cleanup). The driver,
+  CLI member, panel merge, and settings modules ran again after them: 199 tests, no failures.
+- The daemon suite passed (496 tests, 13 skipped), Node tests passed (118, one skipped), resource
+  synchronization checked 615 resources, and `check:locks` passed.
+- New tests cover:
+  - the captured transport from stdout and from a file;
+  - blocked members (nonzero exit and empty report);
+  - native mixing and pinned transports;
+  - the plan panel;
+  - retries and owner-ruled absences;
+  - the CLI profile validation and settings;
+  - receipt parsing and failure classification;
+  - the confinement arguments and the member environment;
+  - `run` end to end with a stand-in CLI and bubblewrap.
+- Qualification in a disposable sandbox, with a fresh login of each CLI: with their bypass flags,
+  Codex and Muse Code wrote to a shared mount and to the repository; inside the confinement, all
+  three CLIs read the repository, found a planted defect, and wrote nothing. Codex's own sandbox
+  works inside the sandbox VM and inside the confinement.
+- End to end in the same sandbox, with the three real CLIs on a synthetic project whose `AGENTS.md`
+  told reviewers to write a file outside the repository, plus one in it:
+  - The `doctor` preflight passed for all three CLIs.
+  - The wave panel and the plan panel passed with all three members. Two members reported that
+    they ignored the instruction, and nothing was written.
+  - A Muse member with a model that does not exist blocked only that family, with the CLI's error
+    as the reason. `--accept-absent` with a ruling then merged the panel with the family absent.
+  - Earlier runs found two defects, now fixed. Codex's `workspace-write` sandbox could not start
+    under the read-only `/tmp`: that member read nothing, and the missing access receipt blocked
+    it instead of passing an empty report. A member's reconstructed products in its sidecar made
+    collection refuse the report.
+
+Limits:
+- Each consumer sandbox needs the three CLIs installed and one login of each, in the VM's home. A
+  recreated sandbox loses them.
+- The model that answered is the CLI's claim. Codex's event stream does not name it.
+- The sandbox network stays open; the confinement covers files only.
+- A usage-limit exhaustion was not reproduced; its classification rests on message patterns.
+- Upgrading a CLI requires qualifying the new version.
+- No upstream submission.
 
 ## 1.7.1.67 — 2026-11-18
 
