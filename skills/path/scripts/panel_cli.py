@@ -2,7 +2,9 @@
 # gsd-path project runtime
 """Review-panel members through vendor CLIs, inside Paseo's Docker Sandboxes (fork only).
 
-Built for the Docker Sandboxes (`sbx`) that Paseo runs GSD Path orchestrators in. Each member runs
+Built for the Docker Sandboxes (`sbx`) that Paseo runs GSD Path orchestrators in. When the paseo-sbx
+plugin provisions the CLIs, its manifest (PASEO_SBX_CLI_MANIFEST) names each CLI's state, credential
+files, and the credential roots to hide. Each member runs
 in its vendor's headless CLI (Codex, Muse Code, Antigravity) inside a bubblewrap mount namespace
 where everything is read-only except a private scratch directory, the CLI's own state, and, for a
 wave panel, the member's verify sidecar. Outside a sandbox the runtime refuses.
@@ -43,7 +45,7 @@ PROFILES: Dict[str, Dict[str, object]] = {
     },
     "muse": {
         "binary": "muse",
-        "versions": ("1.4.24",),
+        "versions": ("1.4.24", "1.4.25"),
         "state": (".config/muse", ".local/share/muse"),
         "output": "stdout",
         "env": {"MUSE_NO_AUTO_UPDATE": "1"},
@@ -62,6 +64,15 @@ PROFILES: Dict[str, Dict[str, object]] = {
 # Credential files of other tools that a member never needs to read.
 HIDDEN_FILES = (".claude/.credentials.json",)
 
+# The paseo-sbx plugin's CLI manifest: provisioning stays the plugin's and the operator's; the
+# runtime only reads where each CLI keeps its state and credential, and what to hide.
+MANIFEST_ENV = "PASEO_SBX_CLI_MANIFEST"
+MANIFEST_VERSION = 1
+SHIM_UNMOUNTED_EXIT = 78
+SHIM_PREFIX = "paseo-sbx-cli: "
+# Without a manifest, Paseo's host-path mounts that hold other credentials are hidden by pattern.
+DEFAULT_CREDENTIAL_MOUNT = re.compile(r"/\.local/state/paseo-sbx/(homes|cli-auth|claude/[^/]+)$")
+
 # Only these variables reach a member: no tokens, keys, or the parent's agent settings.
 PASSED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "TZ",
               "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
@@ -74,6 +85,9 @@ LOGIN = re.compile(r"\b(401|unauthori[sz]ed|missing (meta )?credentials|not (sig
 QUOTA = re.compile(r"(usage limit|rate limit|weekly limit|hit your (weekly |daily )?limit|quota|"
                    r"rate_limit_reached|insufficient_quota|too many requests|\b429\b)", re.I)
 DENIED = re.compile(r"auto-denied|cannot prompt for", re.I)
+# A credential bound as a single file cannot be replaced by rename (EBUSY): a CLI that renews its token
+# that way fails inside the member, and the operator renews it outside the panel.
+BUSY = re.compile(r"os error 16|resource busy|EBUSY", re.I)
 SECRET = re.compile(r"(eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,})|((sk|rt|ya29|ghp|gho|1//)[-\w.]{16,})")
 
 
@@ -153,14 +167,18 @@ def require_sandbox() -> None:
         raise PanelCliError("no-bwrap", "bubblewrap (bwrap) is not installed in this sandbox")
 
 
-def cli_version(profile: str) -> str:
+def cli_version(profile: str, manifest: Optional[Dict[str, object]] = None) -> str:
     spec = PROFILES[profile]
+    if manifest is not None and profile not in manifest["clis"]:  # type: ignore[operator]
+        raise PanelCliError("cli-missing", f"{profile} is not enabled in this sandbox. {fix_hint(manifest)}".strip())
     binary = shutil.which(str(spec["binary"]))
     if binary is None:
-        raise PanelCliError("cli-missing", f"{spec['binary']} is not installed in this sandbox")
+        where = fix_hint(manifest) if manifest is not None else "install it in this sandbox"
+        raise PanelCliError("cli-missing", f"{spec['binary']} is not on PATH; {where}")
     env = dict(os.environ, **spec["env"])  # type: ignore[arg-type]
     completed = subprocess.run([binary, "--version"], capture_output=True, encoding="utf-8",
                                errors="replace", env=env, timeout=60, stdin=subprocess.DEVNULL)
+    shim_unmounted(completed.returncode, completed.stderr, fix_hint(manifest))
     found = re.findall(r"\d+\.\d+\.\d+", completed.stdout + completed.stderr)
     if not found:
         raise PanelCliError("cli-version", f"{spec['binary']} --version printed no version")
@@ -169,6 +187,108 @@ def cli_version(profile: str) -> str:
         raise PanelCliError("cli-version", f"{spec['binary']} {version} is not a qualified version "
                                            f"({', '.join(spec['versions'])})")  # type: ignore[arg-type]
     return version
+
+
+# --- the plugin's manifest ------------------------------------------------------
+
+
+def _absolute(value: object, label: str) -> Path:
+    if not isinstance(value, str) or not value.startswith("/") or "\0" in value:
+        raise PanelCliError("manifest", f"{label} must be an absolute path")
+    return Path(value)
+
+
+def load_manifest() -> Optional[Dict[str, object]]:
+    """The plugin's CLI manifest, checked for shape; None when the plugin did not provide one."""
+    location = os.environ.get(MANIFEST_ENV)
+    if not location:
+        return None
+    try:
+        data = json.loads(Path(location).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise PanelCliError("manifest", f"{MANIFEST_ENV} names an unreadable manifest: {error}") from error
+    version = data.get("version") if isinstance(data, dict) else None
+    if version != MANIFEST_VERSION or isinstance(version, bool):
+        raise PanelCliError("manifest", f"paseo-sbx CLI manifest version {version!r} is not supported; "
+                                        f"this runtime reads version {MANIFEST_VERSION}")
+    if not isinstance(data.get("clis"), dict):
+        raise PanelCliError("manifest", "the manifest's clis must be an object")
+    for key in ("read_roots", "credential_roots"):
+        if not isinstance(data.get(key, []), list):
+            raise PanelCliError("manifest", f"the manifest's {key} must be a list")
+        for item in data.get(key, []):
+            _absolute(item, key)
+    if not isinstance(data.get("fix_hint", ""), str):
+        raise PanelCliError("manifest", "the manifest's fix_hint must be text")
+    for name, entry in data["clis"].items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("state"), list) or not entry["state"] \
+                or not isinstance(entry.get("credentials", []), list):
+            raise PanelCliError("manifest", f"manifest CLI {name} needs a state list and a credentials list")
+        for item in entry["state"]:
+            _absolute(item, f"{name} state")
+        for item in entry.get("credentials", []):
+            if not isinstance(item, dict):
+                raise PanelCliError("manifest", f"manifest CLI {name} has a malformed credential")
+            _absolute(item.get("path"), f"{name} credential path")
+            _absolute(item.get("source"), f"{name} credential source")
+    return data
+
+
+def fix_hint(manifest: Optional[Dict[str, object]]) -> str:
+    return str((manifest or {}).get("fix_hint") or "")
+
+
+def _inside(path: Path, roots: Sequence[Path]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
+
+
+def member_credentials(manifest: Dict[str, object], profile: str, forbidden: Sequence[Path]) -> List[tuple]:
+    """(source, path) pairs the member may write: each a real regular file bound into its own state.
+
+    The manifest decides what becomes writable inside the member, so nothing in it is trusted: a
+    source must be a regular file with no symlink on its path, outside the repository, the sidecar,
+    the runtime, and the read roots, and its target must sit inside one of the CLI's state folders."""
+    entry = manifest["clis"].get(profile)  # type: ignore[union-attr]
+    if entry is None:
+        raise PanelCliError("cli-missing", f"{profile} is not enabled in this sandbox. {fix_hint(manifest)}".strip())
+    states = [Path(item) for item in entry["state"]]
+    home = Path.home()
+    for state in states:
+        if home not in state.parents:
+            raise PanelCliError("manifest", f"{profile} state {state} is not inside {home}")
+    blocked = [*forbidden, *(Path(item) for item in manifest.get("read_roots", []))]  # type: ignore[union-attr]
+    pairs = []
+    for item in entry.get("credentials", []):
+        source, path = Path(item["source"]), Path(item["path"])
+        if not any(state in path.parents for state in states):
+            raise PanelCliError("manifest", f"{profile} credential {path} is not inside its state folders")
+        if os.path.realpath(source) != str(source) or not source.is_file():
+            raise PanelCliError("manifest", f"{profile} credential source {source} is not a real regular file")
+        if _inside(source, blocked):
+            raise PanelCliError("manifest", f"{profile} credential source {source} is inside a protected folder")
+        pairs.append((source, path))
+    return pairs
+
+
+def default_credential_roots(mountinfo: Optional[str] = None) -> List[Path]:
+    """Without a manifest: Paseo's mounted credential folders, read from the mount table."""
+    roots = set()
+    if mountinfo is None:
+        try:
+            mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            mountinfo = ""
+    lines = mountinfo.splitlines()
+    for line in lines:
+        fields = line.split()
+        if len(fields) > 4:
+            point = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
+            if DEFAULT_CREDENTIAL_MOUNT.search(point):
+                roots.add(Path(point))
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    if config and Path(config).is_dir():
+        roots.add(Path(config))
+    return sorted(root for root in roots if root.is_dir())
 
 
 # --- one member ----------------------------------------------------------------
@@ -195,26 +315,54 @@ def receipt_instructions(nonce_file: Path, profile: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def confine(argv: Sequence[str], profile: str, scratch: Path, workdir: Path, writable_workdir: bool) -> List[str]:
-    """Everything read-only except the scratch, this CLI's state, and an optional workdir."""
+def confine(argv: Sequence[str], profile: str, scratch: Path, workdir: Path, writable_workdir: bool,
+            manifest: Optional[Dict[str, object]] = None, credentials: Sequence[tuple] = (),
+            repo: Optional[Path] = None) -> List[str]:
+    """Everything read-only except the scratch, this CLI's state or credential, and an optional workdir.
+
+    With the plugin's manifest the member's state is an empty tmpfs and only its credential files
+    are bound writable, so nothing it writes outlives the run except a renewed token. Credential
+    roots are hidden in both modes; bubblewrap resolves bind sources in the original root, so a
+    credential under a hidden root still binds.
+
+    /tmp is private: the native Codex sandbox writes its mount markers there (qualified in a
+    sandbox), and the VM's /tmp may hold other sessions' files. The repository, the workdir, and
+    the scratch are mounted back over it, parents first."""
     home = Path.home()
     command = ["bwrap", "--ro-bind", "/", "/", "--unshare-pid", "--die-with-parent",
-               "--dev", "/dev", "--proc", "/proc", "--bind", str(scratch), str(scratch)]
-    for relative in PROFILES[profile]["state"]:  # type: ignore[union-attr]
-        path = home / str(relative)
-        path.mkdir(parents=True, exist_ok=True)
-        command += ["--bind", str(path), str(path)]
+               "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
+    if repo is not None:
+        command += ["--ro-bind", str(repo), str(repo)]
+    roots = ([Path(item) for item in manifest.get("credential_roots", []) if Path(item).is_dir()]  # type: ignore[union-attr]
+             if manifest is not None else default_credential_roots())
+    for root in roots:
+        command += ["--tmpfs", str(root)]
+    if manifest is not None:
+        for item in manifest.get("read_roots", []):  # type: ignore[union-attr]
+            if Path(item).exists() and _inside(Path(item), roots):
+                command += ["--ro-bind", str(item), str(item)]
+        for item in manifest["clis"][profile]["state"]:  # type: ignore[index]
+            Path(item).mkdir(parents=True, exist_ok=True)
+            command += ["--tmpfs", str(item)]
+        for source, path in credentials:
+            command += ["--bind", str(source), str(path)]
+    else:
+        for relative in PROFILES[profile]["state"]:  # type: ignore[union-attr]
+            path = home / str(relative)
+            path.mkdir(parents=True, exist_ok=True)
+            command += ["--bind", str(path), str(path)]
     for other, spec in PROFILES.items():
         if other == profile:
             continue
-        for relative in spec["state"]:  # type: ignore[union-attr]
-            if (home / str(relative)).is_dir():
-                command += ["--tmpfs", str(home / str(relative))]
+        listed = ((manifest or {}).get("clis") or {}).get(other, {}).get("state")  # type: ignore[union-attr]
+        for state in (listed or [str(home / str(relative)) for relative in spec["state"]]):  # type: ignore[union-attr]
+            if Path(state).is_dir():
+                command += ["--tmpfs", str(state)]
     for relative in HIDDEN_FILES:
         if (home / relative).is_file():
             command += ["--ro-bind", "/dev/null", str(home / relative)]
-    if writable_workdir:
-        command += ["--bind", str(workdir), str(workdir)]
+    command += ["--bind" if writable_workdir else "--ro-bind", str(workdir), str(workdir),
+                "--bind", str(scratch), str(scratch)]
     return [*command, "--chdir", str(workdir), "--", *argv]
 
 
@@ -280,9 +428,21 @@ def split_receipt(text: str, nonce: str, repo: Path) -> tuple:
     return report, existing
 
 
-def classify(profile: str, code: Optional[int], raw: str, stderr: str) -> None:
+def shim_unmounted(code: Optional[int], stderr: str, hint: str) -> None:
+    """The plugin's shim exits 78 with a `paseo-sbx-cli: ` line when the CLI's state is not mounted."""
+    if code == SHIM_UNMOUNTED_EXIT and SHIM_PREFIX in stderr:
+        lines = [line.strip() for line in stderr.splitlines() if line.strip().startswith(SHIM_PREFIX)]
+        raise PanelCliError("not-mounted", f"{SECRET.sub('****', lines[-1])[:300]} {hint}".strip())
+
+
+def classify(profile: str, code: Optional[int], raw: str, stderr: str, hint: str = "") -> None:
     """Raise the member failure its exit, output, and messages show; return when the run is usable."""
+    shim_unmounted(code, stderr, hint)
     signals = f"{raw[-2000:]}\n{stderr[-4000:]}"
+    if code != 0 and BUSY.search(signals) and re.search(r"auth|token|credential", signals, re.I):
+        raise PanelCliError("credential-busy", f"{profile} could not replace its bound credential file while "
+                                               f"renewing it; run {profile} once in the Sandbox terminal to renew "
+                                               f"the login: {masked_tail(stderr or raw)}")
     if code != 0:
         if LOGIN.search(signals):
             raise PanelCliError("login", f"{profile} is not signed in: {masked_tail(stderr or raw)}")
@@ -300,7 +460,8 @@ def classify(profile: str, code: Optional[int], raw: str, stderr: str) -> None:
 def run_member(arguments: argparse.Namespace, brief_text: str) -> Dict[str, object]:
     require_sandbox()
     profile = arguments.profile
-    version = cli_version(profile)
+    manifest = load_manifest()
+    version = cli_version(profile, manifest)
     final = Path(arguments.final).resolve()
     scratch = final.parent / "panel-cli"
     scratch.mkdir(parents=True, exist_ok=True)
@@ -312,9 +473,13 @@ def run_member(arguments: argparse.Namespace, brief_text: str) -> Dict[str, obje
     brief.write_text(full_brief, encoding="utf-8")
     raw_file = scratch / "raw.md"
     workdir = Path.cwd().resolve()
+    repo = Path(arguments.repo).resolve()
+    credentials = (member_credentials(manifest, profile, [repo, workdir, Path(__file__).resolve().parent,
+                                                          Path.home() / ".gsd-path"])
+                   if manifest is not None else [])
     argv = confine(cli_argv(profile, arguments.model, arguments.effort, workdir, brief, full_brief, raw_file,
                             arguments.writable_workdir),
-                   profile, scratch, workdir, arguments.writable_workdir)
+                   profile, scratch, workdir, arguments.writable_workdir, manifest, credentials, repo)
     (scratch / "command.json").write_text(json.dumps([part if part != full_brief else "<brief>" for part in argv],
                                                      indent=1) + "\n", encoding="utf-8")
     with open(scratch / "stdout", "wb") as out, open(scratch / "stderr", "wb") as err:
@@ -327,7 +492,8 @@ def run_member(arguments: argparse.Namespace, brief_text: str) -> Dict[str, obje
         and raw_file.is_file() else (stdout if PROFILES[profile]["output"] == "stdout" else "")
     if PROFILES[profile]["output"] == "stdout":
         raw_file.write_text(raw, encoding="utf-8")
-    classify(profile, completed.returncode, raw, stderr if profile != "codex" else stderr + stdout)
+    classify(profile, completed.returncode, raw, stderr if profile != "codex" else stderr + stdout,
+             fix_hint(manifest))
     report, inspected = split_receipt(raw, nonce, Path(arguments.repo).resolve())
     final.write_text(report, encoding="utf-8")
     receipt = {"profile": profile, "version": version, "model": arguments.model, "effort": arguments.effort,
@@ -379,6 +545,14 @@ def doctor(repo: Path) -> Dict[str, object]:
     report: Dict[str, object] = {"sandbox": in_sandbox(), "sandbox_name": os.environ.get("SANDBOX_NAME"),
                                  "bwrap": None, "families": {}, "fixes": []}
     name = os.environ.get("SANDBOX_NAME") or "<sandbox>"
+    try:
+        manifest = load_manifest()
+    except PanelCliError as error:
+        report["manifest_error"] = str(error)
+        manifest = None
+    if manifest is not None:
+        # Provisioning is the plugin's and the operator's: the scope is reported, never checked.
+        report["manifest"] = {"scope": manifest.get("scope"), "clis": sorted(manifest["clis"])}  # type: ignore[arg-type]
     if shutil.which("bwrap"):
         probe = subprocess.run(["bwrap", "--ro-bind", "/", "/", "--unshare-pid", "--dev", "/dev", "--proc", "/proc",
                                 "true"], capture_output=True, encoding="utf-8", errors="replace")
@@ -393,7 +567,7 @@ def doctor(repo: Path) -> Dict[str, object]:
     for family, entry in sorted(config.items()):
         profile, item = entry["profile"], {"profile": entry["profile"], "model": entry["model"]}
         try:
-            item["version"] = cli_version(profile)
+            item["version"] = cli_version(profile, manifest)
             spec = PROFILES[profile]
             probe = subprocess.run(list(spec["login"]), capture_output=True, encoding="utf-8",  # type: ignore[arg-type]
                                    errors="replace", timeout=45, stdin=subprocess.DEVNULL,
@@ -404,13 +578,18 @@ def doctor(repo: Path) -> Dict[str, object]:
             item["login"] = "missing"
         except PanelCliError as error:
             item["error"] = str(error)
-        if item.get("login") == "missing":
+        if item.get("login") == "missing" and manifest is not None:
+            login = manifest["clis"][profile].get("login") or LOGIN_COMMANDS[profile]  # type: ignore[index]
+            report["fixes"].append(f"{profile}: run `{login}` in the workspace's Sandbox terminal. "
+                                   f"{fix_hint(manifest)}".strip())
+        elif item.get("login") == "missing":
             report["fixes"].append(f"XDG_STATE_HOME=~/.local/state/paseo-sbx/sbx sbx exec -it {name} "
                                    f"{LOGIN_COMMANDS[profile]}")
         elif "error" in item:
             report["fixes"].append(f"{profile}: {item['error']}")
         report["families"][family] = item
     report["ok"] = (report["sandbox"] and report["bwrap"] == "ok" and not report.get("config_error")
+                    and not report.get("manifest_error")
                     and all(item.get("login") == "ok" for item in report["families"].values()))
     return report
 
