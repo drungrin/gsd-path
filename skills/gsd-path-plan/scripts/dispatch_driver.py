@@ -2141,7 +2141,14 @@ class Panel(Children):
 
     def collect(self, state: Dict[str, object]) -> None:
         if state.get("transport") == CAPTURED and state.get("outcome") != "collected":
-            if not stage_captured_report(state, Path(str(state["worktree"])) / str(state["relative"])):
+            sidecar = Path(str(state["worktree"]))
+            if (not state.get("captured_sha256") and not state.get("timed_out")
+                    and state.get("exit_code") == 0 and sidecar.is_dir()):
+                # The member's final message is its report; anything it left in the sidecar while
+                # reconstructing products is scratch, discarded before the report is staged.
+                cleaned = isolation.clean_verify(self.primary, sidecar, str(state["base"]), str(state["branch"]))
+                update_state(state, sidecar_scratch_removed=cleaned.get("removed"))
+            if not stage_captured_report(state, sidecar / str(state["relative"])):
                 return
         collect_file(self.primary, self.receipt, state, self.validate)
 

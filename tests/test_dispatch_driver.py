@@ -186,6 +186,8 @@ FAKE_CAPTURED_PANELIST = textwrap.dedent(
     report = "" if mode == "empty" else (
         f"{heading}\\n\\n- Family: {family}\\n- Model: {model}\\n- Depth: full\\n\\n"
         "## Findings\\n\\n- none\\n\\n## Summary\\n\\nNo findings.\\n")
+    if not planned:
+        Path("scratch-product.py").write_text("reconstructed\\n", encoding="utf-8")  # sidecar scratch
     if len(sys.argv) > 2:
         Path(sys.argv[2]).write_text(report, encoding="utf-8")
     else:
@@ -3045,6 +3047,9 @@ class DispatchDriverTests(unittest.TestCase):
                 report = (root / ".project/review/wave-1.cycle1.panel.gpt.md").read_text(encoding="utf-8")
                 self.assertTrue(report.startswith("# Panel — wave 1, cycle 1"), report)
                 self.assertIn("- Model: gpt-6-astra", report)
+                records = dispatch_driver.latest_states(dispatch_driver.records_root(root) / "panels")
+                self.assertTrue(all("scratch-product.py" in str(state.get("sidecar_scratch_removed"))
+                                    for state in records), records)
                 self.assertEqual(self.subjects(root)[0], "build: record wave 1 cycle 1 review")
                 self.assertEqual(run_git(root, "status", "--porcelain").stdout, "")
 
