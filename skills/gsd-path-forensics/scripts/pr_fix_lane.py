@@ -56,6 +56,9 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 CLASSES = ("fix", "follow-up", "redesign")
 DECISIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
 REPLY_MARKER = "<!-- gsd-path-pr-fix: {key} -->"
+REPLY_MARKER_PREFIX = "<!-- gsd-path-pr-fix:"
+# Azure thread states that still wait for the author (the others are resolved or closed).
+AZURE_OPEN_THREADS = {"active", "pending"}
 FINISHED_STAGES = {"viewed", "replied"}
 # The lane's views could not stand in for the final review: the ordinary final review and,
 # when it blocks, the ordinary patch route continue the round. The round stays active so its
@@ -220,10 +223,35 @@ def _save_round(repo: Path, record: dict) -> None:
     _write_json(directory / "round.json", {key: value for key, value in record.items() if key != "directory"})
 
 
-# --- forge reads (GitHub) ----------------------------------------------------------
+# --- forge reads (GitHub and Azure DevOps) ---------------------------------------------
 
 def _default_api(*arguments: str) -> object:
     return _sibling("integration").github_api_json(*arguments)
+
+
+def _default_azure(*arguments: str) -> object:
+    return _sibling("integration").azure_cli_json(*arguments)
+
+
+def forge_provider(url: str) -> str:
+    """`github` or `azure` for a member pull request URL; anything else takes the ordinary route."""
+    if PULL_URL.fullmatch(url or ""):
+        return "github"
+    if _sibling("azure_repos").pull_request_parts(url or "") is not None:
+        return "azure"
+    raise LaneError(f"the PR fix lane supports GitHub and Azure DevOps pull requests only, not {url!r}")
+
+
+def _forge_api(url: str, api: Optional[Callable[..., object]]) -> Tuple[str, Callable[..., object]]:
+    provider = forge_provider(url)
+    if api is not None:
+        return provider, api
+    return provider, (_default_azure if provider == "azure" else _default_api)
+
+
+def _review_id(value: object):
+    """GitHub review ids are integers; an Azure change request is a reviewer identity id."""
+    return value if isinstance(value, str) else int(value)
 
 
 def _pages(value: object) -> list:
@@ -241,15 +269,116 @@ def pull_parts(url: str) -> Tuple[str, int]:
     return match.group("repo"), int(match.group("number"))
 
 
-def read_forge(url: str, api: Callable[..., object] = _default_api) -> dict:
+def read_forge(url: str, api: Optional[Callable[..., object]] = None) -> dict:
+    provider, api = _forge_api(url, api)
+    if provider == "azure":
+        return _read_azure(url, api)
     repository, number = pull_parts(url)
     pull = api(f"repos/{repository}/pulls/{number}")
     reviews = _pages(api(f"repos/{repository}/pulls/{number}/reviews", "--paginate", "--slurp"))
     comments = _pages(api(f"repos/{repository}/pulls/{number}/comments", "--paginate", "--slurp"))
     if not isinstance(pull, dict):
         raise LaneError("GitHub returned an unexpected pull request")
-    return {"repository": repository, "number": number, "pull": pull, "reviews": reviews,
-            "comments": comments}
+    return {"provider": "github", "repository": repository, "number": number, "pull": pull,
+            "reviews": reviews, "comments": comments}
+
+
+def _read_azure(url: str, call: Callable[..., object]) -> dict:
+    """An Azure PR in the lane's shape: each individual reviewer's current vote is its review.
+
+    Azure keeps one vote per reviewer instead of a review history: -5 (waiting for the
+    author) and -10 (rejected) are change requests. Group reviewers only mirror a member's
+    vote (`votedFor`) and are skipped. The items live in the PR threads.
+    """
+    azure = _sibling("azure_repos")
+    repository, number = azure.pull_request_parts(url)
+    try:
+        pull = azure.show(repository, number, call)
+        threads = azure.pull_request_threads(repository, number, call)
+    except azure.AzureError as error:
+        raise LaneError(str(error)) from error
+    raw = pull["azure"]
+    reviews = []
+    for reviewer in raw.get("reviewers") or []:
+        if not isinstance(reviewer, dict) or reviewer.get("isContainer"):
+            continue
+        vote = reviewer.get("vote")
+        if not isinstance(reviewer.get("id"), str) or not isinstance(vote, int) or isinstance(vote, bool):
+            continue
+        state = "CHANGES_REQUESTED" if vote < 0 else "APPROVED" if vote > 0 else "NONE"
+        reviews.append({"id": reviewer["id"], "state": state, "vote": vote,
+                        "user": {"login": reviewer.get("uniqueName") or reviewer.get("displayName")},
+                        "submitted_at": None, "commit_id": None, "body": ""})
+    return {"provider": "azure", "url": url, "repository": repository.key, "number": number, "pull": pull,
+            "reviews": reviews, "comments": [], "threads": threads,
+            "author": (raw.get("createdBy") or {}).get("id")}
+
+
+def change_requests(read: Mapping[str, object]) -> List[dict]:
+    if read.get("provider") == "azure":
+        return [review for review in read["reviews"] if review["state"] == "CHANGES_REQUESTED"]
+    return active_change_requests(read["reviews"])
+
+
+def azure_thread_items(read: Mapping[str, object], authors: Optional[set]) -> List[dict]:
+    """One item per open Azure thread that waits for an answer.
+
+    A thread waits when a counted author (a requesting reviewer, or anyone but the PR author
+    when `authors` is None) wrote in it after the last lane reply. So a follow-up the lane
+    answered stays out of the next round until the reviewer writes again, and a reviewer who
+    reopens a resolved thread with a reply brings it back.
+    """
+    items: List[dict] = []
+    for thread in sorted(read["threads"], key=lambda item: int(item["id"])):
+        if thread.get("isDeleted") or thread.get("status") not in AZURE_OPEN_THREADS:
+            continue
+        comments = sorted((comment for comment in thread.get("comments") or []
+                           if isinstance(comment, dict) and not comment.get("isDeleted")
+                           and comment.get("commentType") == "text"),
+                          key=lambda comment: int(comment.get("id") or 0))
+        answered = [index for index, comment in enumerate(comments)
+                    if REPLY_MARKER_PREFIX in str(comment.get("content") or "")]
+        if answered:
+            comments = comments[answered[-1] + 1:]
+        waiting = []
+        for comment in comments:
+            author = (comment.get("author") or {}).get("id")
+            if author == read.get("author") or (authors is not None and author not in authors):
+                continue
+            if one_line(comment.get("content") or ""):
+                waiting.append(comment)
+        if not waiting:
+            continue
+        context = thread.get("threadContext") or {}
+        path = str(context.get("filePath") or "").lstrip("/")
+        start = context.get("rightFileStart") or context.get("leftFileStart") or {}
+        location = (f"{path}:{start['line']}" if start.get("line") else path) if path else "none"
+        items.append({"id": f"T{thread['id']}", "kind": "inline" if path else "thread",
+                      "review": (waiting[0].get("author") or {}).get("id"), "location": location,
+                      # The first waiting comment makes the link unique per round: parking.py keys
+                      # imported follow-ups by link, and a thread can be ruled again later.
+                      "link": f"{read['url']}?discussionId={thread['id']}&commentId={waiting[0].get('id')}",
+                      "text": "\n\n".join(str(comment.get("content") or "") for comment in waiting)})
+    return items
+
+
+def request_items(read: Mapping[str, object], requests: Sequence[dict]) -> List[dict]:
+    if read.get("provider") == "azure":
+        return azure_thread_items(read, {review["id"] for review in requests})
+    return review_items(requests, read["comments"])
+
+
+def approval_items(read: Mapping[str, object], head: str) -> Tuple[List[dict], List[dict]]:
+    """Without a change request: the reviews and the unanswered remarks they left (ADR 0008)."""
+    if read.get("provider") == "azure":
+        items = azure_thread_items(read, None)
+        known = {review["id"]: review for review in read["reviews"]}
+        authors = sorted({str(item["review"]) for item in items})
+        return [dict(known.get(author) or {"id": author, "state": "COMMENTED", "user": {"login": author},
+                                           "submitted_at": None, "commit_id": None}, body="")
+                for author in authors], items
+    requests, comments = approval_comments(read["reviews"], read["comments"], head)
+    return requests, review_items(requests, comments)
 
 
 def active_change_requests(reviews: Sequence[dict]) -> List[dict]:
@@ -336,7 +465,7 @@ def _count_rounds(review: Path) -> int:
         if review.is_dir() else 0
 
 
-def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_rounds: bool = False,
+def snapshot(repo: Path, api: Optional[Callable[..., object]] = None, allow_more_rounds: bool = False,
              record_only: bool = False) -> dict:
     """Check entry, read the change request, and write the baseline capsule (no mutation of .project/).
 
@@ -385,7 +514,7 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
     selected = None
     forge = None
     for row in candidates:
-        pull_parts(str(row["pull_request"]))
+        forge_provider(str(row["pull_request"]))
         read = read_forge(str(row["pull_request"]), api)
         pull = read["pull"]
         if pull.get("state") != "open" or pull.get("merged_at"):
@@ -394,7 +523,7 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
             raise LaneError(f"{row['pull_request']} head differs from the pending close's reviewed head")
         if final_members.get(str(row["name"])) != row.get("reviewed_head"):
             raise LaneError(f"FINAL.md member head for {row['name']} differs from its pending close")
-        if active_change_requests(read["reviews"]):
+        if change_requests(read):
             if selected is not None:
                 raise LaneError("change requests on two member PRs; answer one PR per round")
             selected, forge = row, read
@@ -403,26 +532,24 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
         # No change request: an approval or comment review may still carry unanswered inline remarks.
         for row in candidates:
             read = read_forge(str(row["pull_request"]), api)
-            remarks = approval_comments(read["reviews"], read["comments"], str(row.get("reviewed_head")))
-            if remarks[1]:
+            if approval_items(read, str(row.get("reviewed_head")))[1]:
                 if selected is not None:
                     raise LaneError("unanswered review comments on two member PRs; answer one PR per round")
                 selected, forge, approval = row, read, True
     if selected is None or forge is None:
         raise LaneError("no active change request on the pending member pull requests")
     if approval:
-        requests, comments = approval_comments(forge["reviews"], forge["comments"], str(selected["reviewed_head"]))
-        items = review_items(requests, comments)
+        requests, items = approval_items(forge, str(selected["reviewed_head"]))
     else:
-        requests = active_change_requests(forge["reviews"])
-        items = review_items(requests, forge["comments"])
+        requests = change_requests(forge)
+        items = request_items(forge, requests)
     if not items:
         raise LaneError("the change request has no item text to answer")
     snapshot_value = {
         "pull_request": selected["pull_request"], "member": selected["name"],
         "head": (forge["pull"].get("head") or {}).get("sha"),
         "body": forge["pull"].get("body") or "",
-        "reviews": [{"id": int(item["id"]), "user": (item.get("user") or {}).get("login"),
+        "reviews": [{"id": _review_id(item["id"]), "user": (item.get("user") or {}).get("login"),
                      "state": item.get("state"), "submitted_at": item.get("submitted_at"),
                      "commit_id": item.get("commit_id"), "body": item.get("body") or ""}
                     for item in requests],
@@ -458,7 +585,7 @@ def snapshot(repo: Path, api: Callable[..., object] = _default_api, allow_more_r
         "schema": SCHEMA, "round": rounds, "archive": state.archive.rstrip("/"), "archive_name": archive_name,
         "branch": state.branch, "head": head, "members": final_members,
         "pull_request": selected["pull_request"], "member": selected["name"],
-        "review_ids": sorted(int(item["id"]) for item in requests),
+        "review_ids": sorted(_review_id(item["id"]) for item in requests),
         "snapshot_digest": _json_digest(snapshot_value), "capsule_files": files,
         "contracts": {name: _digest(archive / relative) for name, relative in
                       (("INTENT.md", "intent/INTENT.md"), ("PLAN.md", "plan/PLAN.md"))
@@ -1216,7 +1343,7 @@ def parse_delta(text: str, criteria: Sequence[str], gaps: Sequence[int], item_id
     criterion_rows: Dict[str, dict] = {}
     gap_rows: Dict[int, dict] = {}
     for heading, block in _blocks(section):
-        item = re.fullmatch(r"Item ([RC]\d+): (closed|not-closed)", heading)
+        item = re.fullmatch(r"Item ([RCT]\d+): (closed|not-closed)", heading)
         criterion = re.fullmatch(r"(SC[1-9]\d*) — (affected|unaffected)", heading)
         gap = re.fullmatch(r"Gap ([1-9]\d*) — (affected|unaffected)", heading)
         if item:
@@ -1869,15 +1996,18 @@ def _thread_of(threads: Sequence[dict], comment_id: int) -> Optional[dict]:
     return None
 
 
-def post_threads(plan: Mapping[str, object], api: Callable[..., object] = _default_api) -> dict:
+def post_threads(plan: Mapping[str, object], api: Optional[Callable[..., object]] = None) -> dict:
     """Answer every review item of a round in one COMMENT review, then resolve the fixed threads.
 
     `plan` holds pull_request, head (the published head the replies cite), round, language, and
-    items with id (R<review>|C<comment>), kind, class (fix|redesign|follow-up), note and optional
+    items with id (R<review>|C<comment>|T<Azure thread>), kind, class (fix|redesign|follow-up), note and optional
     link. Fixed items get a reply and a resolved thread; follow-up items get a reply and stay open;
     the review body lists every item, so body-only items are answered too. Markers make a rerun
     skip what was already posted, and a pending review a crash left behind is replaced.
     """
+    provider, api = _forge_api(str(plan["pull_request"]), api)
+    if provider == "azure":
+        return _post_azure_threads(plan, api)
     repository, number = pull_parts(str(plan["pull_request"]))
     head = str(plan["head"])
     text = REPLY_TEXT.get(str(plan.get("language") or "en"), REPLY_TEXT["en"])
@@ -1916,11 +2046,7 @@ def post_threads(plan: Mapping[str, object], api: Callable[..., object] = _defau
                           "input:{pullRequestReviewId:$review,pullRequestReviewThreadId:$thread,body:$body})"
                           "{comment{id}}}", review=review_id, thread=thread["id"], body=body)
             replied.append(item["id"])
-        lines = [text["summary"].format(round=plan["round"], head=head[:12]), ""]
-        for item in items:
-            status = text["later"] if item["class"] == "follow-up" else text["fixed"]
-            label = f"[{item['id']}]({item['link']})" if item.get("link") and item["link"] != "none" else item["id"]
-            lines.append(f"- {label}: {status} — {one_line(item['note'])}")
+        lines = _summary_lines(plan, text, head)
         _graphql(api, "mutation($review:ID!,$body:String!){submitPullRequestReview(input:"
                       "{pullRequestReviewId:$review,event:COMMENT,body:$body}){pullRequestReview{id}}}",
                  review=review_id, body="\n".join(lines) + f"\n\n{summary_marker}")
@@ -1933,6 +2059,70 @@ def post_threads(plan: Mapping[str, object], api: Callable[..., object] = _defau
         _graphql(api, "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}",
                  id=thread["id"])
         resolved.append(item["id"])
+    return {"schema": SCHEMA, "status": "complete", "summary": "present" if done else "posted",
+            "replied": replied, "skipped": skipped, "resolved": resolved, "missing_threads": missing}
+
+
+def _summary_lines(plan: Mapping[str, object], text: Mapping[str, str], head: str) -> List[str]:
+    lines = [text["summary"].format(round=plan["round"], head=head[:12]), ""]
+    for item in plan["items"]:
+        status = text["later"] if item["class"] == "follow-up" else text["fixed"]
+        label = f"[{item['id']}]({item['link']})" if item.get("link") and item["link"] != "none" else item["id"]
+        lines.append(f"- {label}: {status} — {one_line(item['note'])}")
+    return lines
+
+
+def _post_azure_threads(plan: Mapping[str, object], call: Callable[..., object]) -> dict:
+    """Azure: reply inside each item's thread, set the fixed ones to `fixed`, post one summary thread.
+
+    Azure has no review that batches replies, so each reply is its own comment and its marker
+    makes a rerun skip it. The summary is a general thread created `closed`, so the
+    comment-resolution policy never waits on it. A follow-up thread stays active.
+    """
+    azure = _sibling("azure_repos")
+    repository, number = azure.pull_request_parts(str(plan["pull_request"]))
+    head = str(plan["head"])
+    text = REPLY_TEXT.get(str(plan.get("language") or "en"), REPLY_TEXT["en"])
+    summary_marker = REPLY_MARKER.format(key=f"{plan['round']}/review/{head}")
+    replied, skipped, resolved, missing = [], [], [], []
+    try:
+        pull = azure.show(repository, number, call)
+        if (pull.get("head") or {}).get("sha") != head:
+            raise LaneError(f"the PR shows {str((pull.get('head') or {}).get('sha'))[:12]}, not the round's "
+                            f"published head {head[:12]}; publish it through close-members first")
+        index = {int(thread["id"]): thread for thread in azure.pull_request_threads(repository, number, call)}
+        done = any(summary_marker in str(comment.get("content") or "")
+                   for thread in index.values() for comment in thread["comments"] if isinstance(comment, dict))
+        items = list(plan["items"])
+        for item in items:
+            identifier = str(item["id"])
+            thread = index.get(int(identifier[1:])) if identifier.startswith("T") else None
+            if thread is None or thread.get("isDeleted"):
+                missing.append(identifier)
+                continue
+            marker = REPLY_MARKER.format(key=f"{plan['round']}/{identifier}/{head}")
+            comments = [comment for comment in thread["comments"] if isinstance(comment, dict)]
+            if any(marker in str(comment.get("content") or "") for comment in comments):
+                skipped.append(identifier)
+                continue
+            first = min((int(comment["id"]) for comment in comments if isinstance(comment.get("id"), int)), default=0)
+            kind = "follow-up" if item["class"] == "follow-up" else "fix"
+            body = text[kind].format(head=head[:12], note=one_line(item["note"])) + f"\n\n{marker}"
+            azure.reply_to_thread(repository, number, int(identifier[1:]), first, body, call)
+            replied.append(identifier)
+        if not done:
+            azure.create_thread(repository, number, "\n".join(_summary_lines(plan, text, head)) +
+                                f"\n\n{summary_marker}", "closed", call)
+        for item in items:
+            identifier = str(item["id"])
+            if item["class"] == "follow-up" or identifier in missing:
+                continue
+            thread = index[int(identifier[1:])]
+            if thread.get("status") in AZURE_OPEN_THREADS:
+                azure.set_thread_status(repository, number, int(identifier[1:]), "fixed", call)
+                resolved.append(identifier)
+    except azure.AzureError as error:
+        raise LaneError(str(error)) from error
     return {"schema": SCHEMA, "status": "complete", "summary": "present" if done else "posted",
             "replied": replied, "skipped": skipped, "resolved": resolved, "missing_threads": missing}
 
@@ -1991,7 +2181,7 @@ def round_plan(repo: Path) -> dict:
             "language": language, "items": items, "_record": record}
 
 
-def threads(repo: Path, api: Callable[..., object] = _default_api) -> dict:
+def threads(repo: Path, api: Optional[Callable[..., object]] = None) -> dict:
     """Answer and resolve the round's PR conversations after close-members published the new head."""
     repo = repo.resolve()
     plan = round_plan(repo)
@@ -2002,7 +2192,7 @@ def threads(repo: Path, api: Callable[..., object] = _default_api) -> dict:
     return result
 
 
-def ship_check(repo: Path, api: Callable[..., object] = _default_api, override: Optional[Path] = None) -> dict:
+def ship_check(repo: Path, api: Optional[Callable[..., object]] = None, override: Optional[Path] = None) -> dict:
     """Refuse shipment while a change request is still active on the lane's PR."""
     repo = repo.resolve()
     record = active_round(repo)
@@ -2012,12 +2202,12 @@ def ship_check(repo: Path, api: Callable[..., object] = _default_api, override: 
         raise LaneError(f"PR fix round {record['round']} captured items that were never ruled; record the "
                         "owner's ruling (`rule --ruling <file>` for a record-only round) and answer them first")
     read = read_forge(str(record["pull_request"]), api)
-    requests = active_change_requests(read["reviews"])
+    requests = change_requests(read)
     if not requests:
         _set_active(repo, record, status="closed")
         return {"schema": SCHEMA, "status": "clear"}
     head = (read["pull"].get("head") or {}).get("sha")
-    outstanding = sorted(int(item["id"]) for item in requests)
+    outstanding = sorted(_review_id(item["id"]) for item in requests)
     if override is not None:
         ruling = _read_json(override)
         if ruling.get("head") == head and sorted(ruling.get("reviews") or []) == outstanding and \

@@ -12,9 +12,9 @@ Snapshot: <sha256 of the forge snapshot>
 
 ## Items
 
-### Item <R<review id> | C<comment id>> — <short title from the ruling>
+### Item <R<review id> | C<comment id> | T<Azure thread id>> — <short title from the ruling>
 
-- **Kind**: <review | inline>
+- **Kind**: <review | inline | thread>
 - **Location**: <path:line | none>
 - **Link**: <URL>
 - **Class**: fix

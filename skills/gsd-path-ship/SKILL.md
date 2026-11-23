@@ -690,10 +690,12 @@ step; do not reconstruct them in shell calls.
 
 1. With STATE `ship/active`, a prepared archive and the member PR still open,
    run `python3 <absolute pr_fix_lane.py> snapshot --repo <root>`. A refusal
-   names why the lane does not apply (setting `pr_fix_lane` off, Azure or
-   single-repo integration, no active change request, a moved PR head, three
-   rounds already). For a GitHub member PR, then run the same command with
-   `--record-only`: it records the items without entering the lane, so the
+   names why the lane does not apply (setting `pr_fix_lane` off, a forge
+   other than GitHub or Azure DevOps, single-repo integration, no active
+   change request, a moved PR head, three rounds already). On Azure a change
+   request is a reviewer's current vote of -5 or -10, and each item is an open
+   PR thread (`T<thread id>`). For a GitHub or Azure member PR, then run the
+   same command with `--record-only`: it records the items without entering the lane, so the
    ordinary route can still answer the conversations. Then use the ordinary
    route: undo the uncommitted archive with `$gsd-path-undo` and rerun final
    review. A success writes the baseline capsule and returns the review
@@ -737,7 +739,9 @@ step; do not reconstruct them in shell calls.
    and in a record-only round. It posts one COMMENT review that lists every
    item with its disposition. Inside that review it replies to each inline
    item: a `fix` cites the new head and is resolved; a `follow-up` gives the
-   owner's reason and stays open. The next milestone's define imports each
+   owner's reason and stays open. On Azure it replies inside each item's
+   thread, sets a `fix` thread to `fixed`, and posts the list as one general
+   thread created `closed`. The next milestone's define imports each
    `follow-up` into `.project/PARKING.md` with `parking.py sync`, where it must
    be planned, scheduled, or dropped. A rerun posts nothing twice and replaces a
    pending review a crash left behind. Report the PR link and stop for the
@@ -748,6 +752,7 @@ step; do not reconstruct them in shell calls.
    and stop. A captured round whose items were never ruled also blocks: rule
    and answer them first. Only an explicit owner ruling overrides it, passed as
    `--override <file>` holding `{"head", "reviews", "verbatim"}` for the
-   published head and the exact outstanding review ids; record that ruling
+   published head and the exact outstanding review ids (on Azure, the
+   reviewer identity ids that `snapshot` recorded); record that ruling
    in the Log.
 

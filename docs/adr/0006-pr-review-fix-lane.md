@@ -63,7 +63,8 @@ The lane enters only when every condition holds:
 
 - the project enabled it in Path settings (it is off by default);
 - STATE is `ship/active` with a prepared archive;
-- every member with a pending close is a GitHub `pull-request` member;
+- every member with a pending close is a GitHub or Azure DevOps
+  `pull-request` member (Azure since the 2026-11-23 update below);
 - that close row is `pending`, its recorded PR is open and unmerged, and the
   PR head equals the row's reviewed head;
 - the PR has an active `CHANGES_REQUESTED` review;
@@ -71,9 +72,8 @@ The lane enters only when every condition holds:
   HEAD with every verdict `met` or `pass`;
 - fewer than three lane rounds were already recorded for this milestone.
 
-Anything else uses the ordinary route. An Azure member, a single-repo PR, or
+Anything else uses the ordinary route. Another forge, a single-repo PR, or
 `external-landing` integration gets an error that names the ordinary route.
-Azure joins after its fixtures and a live run pass.
 
 A round is identified by: PR identity, PR head, the ids of the reviews and
 comments it answers, and the digest of its snapshot. The helper writes this
@@ -362,3 +362,43 @@ ordinary route) without entering the lane. A record-only round never changes
 the plan, the build, or final review: the lane's gates read only lane rounds.
 At republication, both routes run `threads`. `threads --plan <file>`
 answers a round outside a recorded one, for a PR that predates this update.
+
+## Update 2026-11-23 (Azure DevOps member PRs)
+
+A consumer coordinator with an Azure DevOps member reached a change request
+(reviewer vote "waiting for the author", nine review threads) at ship, and the
+lane refused the PR because only GitHub was supported. The ordinary route
+would have discarded the prepared archive and run a second complete final
+review for nine local items. The owner ruled to add Azure and use that PR as
+the live run this ADR asked for before Azure joined.
+
+Azure has no review history, so the lane reads the PR in its own terms:
+
+- **Change request.** Each individual reviewer's current vote is its review.
+  `-5` (waiting for the author) and `-10` (rejected) are change requests; the
+  reviewer identity id is the review id (`review_ids`, the `ship-check`
+  override `reviews`). Group reviewers only mirror a member's vote
+  (`votedFor`) and are skipped.
+- **Items.** One item `T<thread id>` per open thread (`active` or `pending`)
+  in which a requesting reviewer wrote after the last lane reply. A file
+  thread is `inline` with `path:line`; a general thread is `thread` with
+  location `none`. The item link names the thread and its first waiting
+  comment, so a thread ruled `follow-up` in two rounds is parked twice.
+  System threads, resolved threads, and the PR author's own comments are not
+  items. So a follow-up the lane answered stays out of the
+  next round until the reviewer writes in it again, and a reviewer who reopens
+  a thread with a reply brings it back. Without a change request,
+  `--record-only` captures any reviewer's open thread the lane has not
+  answered.
+- **Replies.** `threads` replies inside each item's thread, sets each `fix`
+  thread to `fixed`, leaves a `follow-up` thread `active`, and posts the
+  summary as one general thread created `closed`, so a comment-resolution
+  policy never waits on it. Azure has no review that batches replies, so each
+  reply carries its own marker and a rerun skips what was posted.
+- **Ship check.** A negative vote that is still current blocks shipment, as an
+  active `CHANGES_REQUESTED` review does on GitHub.
+
+Reads and writes go through `az repos pr show` and `az devops invoke`
+(`pullRequestThreads`, `pullRequestThreadComments`, API 7.1). A paginated
+thread list is refused rather than read in part.
+

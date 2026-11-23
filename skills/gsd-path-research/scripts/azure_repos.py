@@ -8,9 +8,12 @@ provider metadata in the same shape as the existing GitHub PR integration.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import quote, unquote
 
@@ -72,9 +75,16 @@ def parse_remote(remote: str) -> Optional[Repository]:
 
 
 def valid_pull_request_url(value: str) -> bool:
-    match = re.fullmatch(r"(.+)/pullrequest/([1-9][0-9]*)", value)
-    return (value.startswith("https://dev.azure.com/") and match is not None
-            and parse_remote(match.group(1)) is not None)
+    return pull_request_parts(value) is not None
+
+
+def pull_request_parts(value: str) -> Optional[tuple[Repository, int]]:
+    """The repository and id of an Azure pull request web URL, or None."""
+    match = re.fullmatch(r"(.+)/pullrequest/([1-9][0-9]*)", value or "")
+    if not value or not value.startswith("https://dev.azure.com/") or match is None:
+        return None
+    repository = parse_remote(match.group(1))
+    return None if repository is None else (repository, int(match.group(2)))
 
 
 def _sha(value: object, label: str) -> str:
@@ -244,3 +254,73 @@ def _user_identity(actor: object) -> bool:
     return (isinstance(actor, dict) and isinstance(actor.get("id"), str) and bool(actor["id"])
             and not actor.get("isContainer")
             and isinstance(actor.get("uniqueName"), str) and "@" in actor["uniqueName"])
+
+
+# --- pull request threads (az devops invoke) ------------------------------------------
+# `az repos pr` has no thread commands; the REST resources pullRequestThreads and
+# pullRequestThreadComments are reached through `az devops invoke`.
+
+THREAD_STATUSES = {"active", "fixed", "wontFix", "closed", "byDesign", "pending", "unknown"}
+
+
+def _invoke(repository: Repository, number: int, resource: str, call: Callable[..., object],
+            method: str = "GET", thread: Optional[int] = None, body: Optional[dict] = None) -> object:
+    arguments = ["devops", "invoke", "--organization", repository.organization_url, "--detect", "false",
+                 "--area", "git", "--resource", resource, "--route-parameters",
+                 f"project={repository.project}", f"repositoryId={repository.name}",
+                 f"pullRequestId={number}"]
+    if thread is not None:
+        arguments.append(f"threadId={thread}")
+    arguments += ["--api-version", "7.1", "--http-method", method]
+    if body is None:
+        return call(*arguments)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "body.json"
+        path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        return call(*arguments, "--in-file", str(path), "--encoding", "utf-8")
+
+
+def pull_request_threads(repository: Repository, number: int, call: Callable[..., object]) -> list:
+    value = _invoke(repository, number, "pullRequestThreads", call)
+    if not isinstance(value, dict) or not isinstance(value.get("value"), list):
+        raise AzureError("Azure pull request threads response is invalid")
+    if value.get("continuation_token") or value.get("continuationToken"):
+        raise AzureError("Azure pull request threads response is paginated; this adapter reads one page")
+    threads = []
+    for thread in value["value"]:
+        if (not isinstance(thread, dict) or not isinstance(thread.get("id"), int)
+                or isinstance(thread.get("id"), bool) or not isinstance(thread.get("comments"), list)):
+            raise AzureError("Azure pull request thread is invalid")
+        threads.append(thread)
+    return threads
+
+
+def _thread_result(value: object, label: str) -> dict:
+    if not isinstance(value, dict) or not isinstance(value.get("id"), int):
+        raise AzureError(f"Azure {label} response is invalid")
+    return value
+
+
+def reply_to_thread(repository: Repository, number: int, thread: int, parent: int, content: str,
+                    call: Callable[..., object]) -> dict:
+    return _thread_result(_invoke(repository, number, "pullRequestThreadComments", call, "POST", thread,
+                                  {"content": content, "parentCommentId": parent, "commentType": 1}),
+                          "thread reply")
+
+
+def set_thread_status(repository: Repository, number: int, thread: int, status: str,
+                      call: Callable[..., object]) -> dict:
+    if status not in THREAD_STATUSES:
+        raise AzureError(f"unknown Azure thread status {status!r}")
+    return _thread_result(_invoke(repository, number, "pullRequestThreads", call, "PATCH", thread,
+                                  {"status": status}), "thread status")
+
+
+def create_thread(repository: Repository, number: int, content: str, status: str,
+                  call: Callable[..., object]) -> dict:
+    """A general (file-less) thread; `closed` keeps it out of the comment-resolution policy."""
+    if status not in THREAD_STATUSES:
+        raise AzureError(f"unknown Azure thread status {status!r}")
+    return _thread_result(_invoke(repository, number, "pullRequestThreads", call, "POST", None,
+                                  {"comments": [{"parentCommentId": 0, "content": content, "commentType": 1}],
+                                   "status": status}), "thread")

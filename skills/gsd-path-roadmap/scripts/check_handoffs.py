@@ -631,7 +631,7 @@ def _heading_block(text: str, heading: re.Match[str]) -> str:
 
 def _source_repair_fields(source: str, text: str, locator: str) -> Tuple[str, str]:
     if PurePosixPath(source).name.startswith("pr-review-"):
-        item = re.fullmatch(r"Item ([RC][1-9]\d*)", locator)
+        item = re.fullmatch(r"Item ([RCT][1-9]\d*)", locator)
         if not item:
             raise HandoffError(f"{source} locator must be `Item <id>`; copy it from an item heading")
         heading = re.search(rf"(?m)^### Item {re.escape(item.group(1))} — .+$", text)
