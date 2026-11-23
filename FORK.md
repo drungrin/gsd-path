@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.70**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.71**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,55 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.71 — 2026-11-23
+
+Upstream package base remains `1.7.1`. The fork revision continues from 70 to 71.
+
+Fork-only (the PR fix lane and the Azure DevOps adapter do not exist upstream):
+- [`86cab40c — answer Azure DevOps member PR change requests in the PR fix lane`](https://github.com/drungrin/gsd-path/commit/86cab40c)
+
+### The PR fix lane answers Azure DevOps member PRs
+
+- A consumer coordinator with an Azure DevOps member reached a change request at ship (vote
+  "waiting for the author", nine review threads). The lane refused it: ADR 0006 had left Azure out
+  until fixtures and a live run existed. The ordinary route would have discarded the prepared
+  archive and run a second complete final review for nine local items. The owner ruled to add
+  Azure and use that PR as the live run.
+- A reviewer's current vote of -5 or -10 is the change request; group reviewers that only mirror a
+  member's vote are skipped. Each open thread in which a requesting reviewer wrote after the last
+  lane reply is an item `T<thread id>` (`inline` with `path:line` for a file thread, `thread` for a
+  general one). `threads` replies inside each thread, sets each `fix` thread to `fixed`, leaves a
+  `follow-up` thread active, and posts the summary as one general thread created `closed`, so a
+  comment-resolution policy never waits on it. `ship-check` reads the votes; its override names
+  the reviewer identity ids.
+- The delta review and the patch hand-off accept `T` item ids. The item link carries the first
+  waiting comment, so a thread ruled `follow-up` in two rounds is parked twice.
+- Reads and writes use `az repos pr show` and `az devops invoke` (`pullRequestThreads`,
+  `pullRequestThreadComments`, API 7.1). A paginated thread list is refused rather than read in
+  part. Not a symptom fix of an earlier lane decision: it removes the scope limit ADR 0006 set.
+
+Validation:
+- New `tests/test_pr_fix_lane_azure.py` (16 tests): votes and groups, thread items (system,
+  resolved, answered, reopened, author comments), approval items, entry and start on an Azure
+  pending close, ship-check and its override, replies with a closed summary and an idempotent
+  rerun, a moved head, missing and deleted threads, `T` ids in the delta and hand-off parsers,
+  and two follow-up rounds on one thread parked twice.
+- `test_pr_fix_lane`, `test_pr_fix_lane_cycle`, `test_parking`, `test_handoffs`,
+  `test_azure_repos`, and `test_azure_integration` pass; `npm test` (118 pass, 1 skipped) and
+  `npm run test:sync` pass.
+- The read side ran offline on a saved read-only response of the real consumer PR: one change
+  request and ten items at the pending close's reviewed head.
+- An independent review found that a thread ruled `follow-up` in two rounds would be parked once;
+  fixed in the same commit with a test.
+- The full Python suite (eight shards), `npm run test:daemon`, and `npm run check:locks` pass.
+- On a copy of the consumer coordinator, the upgrade from 1.7.1.53 in ship/active (installer commit
+  after the reviewed HEAD) kept the status route at ship, and `snapshot` entered the lane against
+  the real PR with the ten items. On the consumer itself, this runtime's undo preview is unblocked.
+
+Known limits:
+- Replies, status changes, and the summary thread are tested only against a fake `az`; the first
+  write runs on the consumer PR, after the owner approves it.
 
 ## 1.7.1.70 — 2026-11-22
 
