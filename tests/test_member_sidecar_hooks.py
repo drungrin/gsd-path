@@ -18,6 +18,9 @@ MANAGED = {
     ".cursor/hooks.json": {"version": 1, "hooks": {"preToolUse": [
         {"command": 'python3 ".gsd-path/guard_hook.py"', "matcher": ".*", "failClosed": True}]}},
 }
+# Claude reads .claude/settings.local.json on top of the project's .claude/settings.json.
+SIDECAR = {".claude/settings.json": ".claude/settings.local.json", ".cursor/hooks.json": ".cursor/hooks.json"}
+LOCAL = ".claude/settings.local.json"
 
 
 class MemberSidecarHookTests(unittest.TestCase):
@@ -49,25 +52,38 @@ class MemberSidecarHookTests(unittest.TestCase):
         self.activate()
         guard = str(self.coordinator / ".gsd-path" / "guard_hook.py")
         for relative in MANAGED:
-            commands = self.guard_commands(relative)
+            commands = self.guard_commands(SIDECAR[relative])
             self.assertEqual(len(commands), 1)
             self.assertEqual(shlex.split(commands[0]), [sys.executable, guard])
         self.assertFalse((self.sidecar / ".codex" / "hooks.json").exists())
+        self.assertFalse((self.sidecar / ".claude" / "settings.json").exists())
         self.assertEqual(git(self.sidecar, "status", "--porcelain", "--untracked-files=all"), "")
         isolation.retire_member_task(self.coordinator, "web", "T001")
         self.assertFalse(self.sidecar.exists())
 
-    def test_member_that_tracks_a_host_config_refuses_activation(self) -> None:
+    def track_member_file(self, relative: str, content: str) -> None:
         isolation.retire_member_task(self.coordinator, "web", "T001")
         bound = Path(isolation.member_bound_checkout(self.coordinator, "web")["checkout"])
-        (bound / ".claude").mkdir()
-        (bound / ".claude" / "settings.json").write_bytes('{"team": true}'.encode("utf-8"))
-        git(bound, "add", "-A")
+        (bound / relative).parent.mkdir(parents=True, exist_ok=True)
+        (bound / relative).write_bytes(content.encode("utf-8"))
+        git(bound, "add", "-f", "-A")
         git(bound, "commit", "-q", "--no-verify", "-m", "team settings")
         self.sidecar = Path(isolation.isolate_member_task(self.coordinator, "web", "T001")["worktree"])
-        with self.assertRaisesRegex(isolation.IsolationError, ".claude/settings.json"):
+
+    def test_member_that_tracks_claude_settings_keeps_them_beside_the_guard(self) -> None:
+        team = '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "node team.mjs"}]}]}}'
+        self.track_member_file(".claude/settings.json", team)
+        self.activate()
+        self.assertEqual((self.sidecar / ".claude" / "settings.json").read_text(encoding="utf-8"), team)
+        self.assertEqual(shlex.split(self.guard_commands(LOCAL)[0]),
+                         [sys.executable, str(self.coordinator / ".gsd-path" / "guard_hook.py")])
+        self.assertEqual(git(self.sidecar, "status", "--porcelain", "--untracked-files=all"), "")
+
+    def test_member_that_tracks_claude_local_settings_refuses_activation(self) -> None:
+        self.track_member_file(LOCAL, '{"team": true}')
+        with self.assertRaisesRegex(isolation.IsolationError, LOCAL):
             self.activate()
-        self.assertEqual((self.sidecar / ".claude" / "settings.json").read_text(encoding="utf-8"), '{"team": true}')
+        self.assertEqual((self.sidecar / LOCAL).read_text(encoding="utf-8"), '{"team": true}')
         self.assertFalse((self.sidecar / ".gsd-path-coordinator").exists())
         self.assertEqual(git(self.member, "rev-parse", "--verify", "--quiet", AUTH, check=False), "")
 
@@ -84,10 +100,10 @@ class MemberSidecarHookTests(unittest.TestCase):
         self.assertEqual(git(self.member, "rev-parse", "--verify", "--quiet", AUTH, check=False), "")
 
     def test_plain_untracked_host_config_names_collision_before_cleanliness(self) -> None:
-        local = self.sidecar / ".claude" / "settings.json"
+        local = self.sidecar / LOCAL
         local.parent.mkdir()
         local.write_bytes('{"mine": true}'.encode("utf-8"))
-        with self.assertRaisesRegex(isolation.IsolationError, ".claude/settings.json"):
+        with self.assertRaisesRegex(isolation.IsolationError, LOCAL):
             self.activate()
         self.assertEqual(local.read_text(encoding="utf-8"), '{"mine": true}')
         self.assertFalse((self.sidecar / ".cursor" / "hooks.json").exists())
@@ -96,20 +112,20 @@ class MemberSidecarHookTests(unittest.TestCase):
 
     def test_reactivation_keeps_the_generated_hooks(self) -> None:
         self.activate()
-        before = (self.sidecar / ".claude" / "settings.json").read_bytes()
+        before = (self.sidecar / LOCAL).read_bytes()
         self.activate()
-        self.assertEqual((self.sidecar / ".claude" / "settings.json").read_bytes(), before)
+        self.assertEqual((self.sidecar / LOCAL).read_bytes(), before)
 
     def test_member_launch_restores_removed_hook_and_refuses_changed_hook(self) -> None:
         self.activate()
-        hook = self.sidecar / ".claude" / "settings.json"
+        hook = self.sidecar / LOCAL
         hook.unlink()
         state = {"task_id": "T001", "wave": 1, "mode": "member", "member": "web",
                  "worktree": str(self.sidecar)}
         round_ = dispatch_driver.Round(self.coordinator, argparse.Namespace(project_dir=".project", wave=1))
 
         def check_hook(*_args):
-            self.assertEqual(shlex.split(self.guard_commands(".claude/settings.json")[0]),
+            self.assertEqual(shlex.split(self.guard_commands(LOCAL)[0]),
                              [sys.executable, str(self.coordinator / ".gsd-path" / "guard_hook.py")])
             return state
 
@@ -117,7 +133,7 @@ class MemberSidecarHookTests(unittest.TestCase):
             round_.launch(state)
             self.assertEqual(launch.call_count, 1)
             hook.write_bytes('{"mine": true}'.encode("utf-8"))
-            with self.assertRaisesRegex(isolation.IsolationError, ".claude/settings.json"):
+            with self.assertRaisesRegex(isolation.IsolationError, LOCAL):
                 round_.launch(state)
             self.assertEqual(launch.call_count, 1)
 
@@ -126,7 +142,7 @@ class MemberSidecarHookTests(unittest.TestCase):
         installed = coordinator / ".claude" / "settings.json"
         installed.parent.mkdir(parents=True)
         installed.write_bytes(json.dumps(MANAGED[".claude/settings.json"]).encode("utf-8"))
-        config = json.loads(isolation._member_hook_configs(coordinator)[".claude/settings.json"])
+        config = json.loads(isolation._member_hook_configs(coordinator)[LOCAL])
         command = config["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         self.assertEqual(shlex.split(command),
                          [sys.executable, str(coordinator / ".gsd-path" / "guard_hook.py")])

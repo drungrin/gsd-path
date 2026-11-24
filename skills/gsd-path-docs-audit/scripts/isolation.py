@@ -1146,6 +1146,7 @@ MEMBER_LANDING_DIR = ("gsd-path", "member-landings")
 MEMBER_TASK_COPY_DIR = ".gsd-path-coordinator"
 MEMBER_IMMUTABLE_FIELDS = ("id", "title", "repo", "files", "deps", "wave")
 MEMBER_ACTIVATION_FIELDS = {"status", "agent", "base", "member_base", "worktree", "task_branch"}
+MEMBER_SIDECAR_HOOK_PATHS = {".claude/settings.json": ".claude/settings.local.json"}
 
 
 def _member_hook_configs(coordinator: Path) -> Dict[str, str]:
@@ -1181,7 +1182,10 @@ def _member_hook_configs(coordinator: Path) -> Dict[str, str]:
             configs[relative] = json.dumps(content, indent=2) + "\n"
         elif relative == ".claude/settings.json":
             configs[relative] = json.dumps({"attribution": {"commit": "", "pr": "", "sessionUrl": False}}, indent=2) + "\n"
-    return configs
+    # Claude merges .claude/settings.local.json into the project's .claude/settings.json, so the
+    # guard goes in the local file: a member that tracks its own settings keeps them, and its
+    # sidecar still runs the guard.
+    return {MEMBER_SIDECAR_HOOK_PATHS.get(relative, relative): content for relative, content in configs.items()}
 
 
 def _check_member_hook_collisions(configs: Dict[str, str], sidecar: Path) -> None:
