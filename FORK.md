@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.56**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.74**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,72 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.74 — 2026-11-24 (maintenance)
+
+A maintenance release on the branch `chore/runtime-1-7-1-56-maintenance`:
+1.7.1.56 plus the two build-completion fixes below, for a consumer pinned to
+1.7.1.56 in the middle of build. It excludes 1.7.1.57 through 1.7.1.73.
+Upstream package base remains `1.7.1`. The fork revision continues from 73
+to 74.
+
+Changes that apply upstream (both cherry-pick cleanly onto `upstream/main`
+`d5a30f5f`, and their tests pass there together with the upstream archive
+tests):
+- [`18a411bb — skip a cited withdrawn tombstone when build completion reads wave reviews`](https://github.com/drungrin/gsd-path/commit/18a411bbb69657a7aa8bd090a29d4eaad0cb038a)
+- [`ad42ba15 — read earlier wave review cycles by task id and order, not title`](https://github.com/drungrin/gsd-path/commit/ad42ba15b80b5457144a111f5c9935dcd91164da)
+
+### Build completion with a withdrawn task
+
+- In a consumer milestone, every wave passed review, and then
+  `dispatch_driver complete` refused: "wave-2.cycle3.md tasks and titles do
+  not match its wave task files in order". The owner had withdrawn one wave-2
+  task with a cited ruling (#483). The wave gate leaves such a tombstone out
+  of the reviewed tasks and the owned criteria. The completion and archive
+  validator (`review_cycle_counts`) still expected it. A review with the
+  tombstone fails the wave gate, a review without it fails completion, and
+  another cycle was past the cap. There was no legal path.
+- `review_cycle_counts` now applies the gate's rule. A cited withdrawn task
+  is neither an expected review section nor a source of owned criteria. An
+  uncited one still fails.
+- Recurrence: 1.6.2.36 listed this as a known upstream limit ("build
+  completion expects withdrawn tasks in the review inventory that the wave
+  gate excludes"). This is its first occurrence. It is a gap in the upstream
+  withdrawn-task feature, not a fork decision.
+
+### Earlier review cycles after a title fix
+
+- The same completion then refused an earlier cycle of another wave. A task
+  title held an unquoted ` #`, which the frontmatter parser reads as a
+  comment. The cycle-1 review used the full title, and the session quoted the
+  title so that review would pass the wave gate. It later restored the
+  unquoted line, because task recovery matches the landing record by the
+  parsed title, and the cycle-2 review used the parsed title. The completion
+  validator rechecked titles in every cycle, so the immutable cycle 1 could
+  no longer match.
+- Owner ruling (2026-11-24): earlier cycles, and a blocked last cycle, are
+  read by task id and plan order only. The wave gate checked each cycle's
+  exact titles when it was recorded. The last passing cycle must still match
+  the task files exactly.
+
+Validation:
+- New tests `test_withdrawn_review_counts` (cited tombstone skipped in both
+  sections and criteria; uncited tombstone and missing live task still
+  refuse) and `test_review_cycle_titles` (earlier blocked cycle keeps its
+  gated title; last cycle still needs the exact title). Each fails without
+  its change.
+- The blocked consumer's `.project` validates with the new code: review
+  cycles `[3, 3, 2, 0]`; before, it refused on wave 2 and then on wave 3.
+- The full Python suite ran in eight parallel shards: 3,883 tests, 41
+  skipped, no failures. The daemon suite passed (496 tests, 13 skipped),
+  Node tests passed (118, one skipped), resource synchronization checked 590
+  resources, and `check:locks` passed.
+
+Known limits:
+- A plan can still approve a task title with an unquoted ` #`, which the
+  parser truncates. Owner ruling: follow-up, not fixed here.
+- The other withdrawn-task limits listed in 1.6.2.36 remain.
+- No upstream submission has been made.
 
 ## 1.7.1.56 — 2026-11-16
 
