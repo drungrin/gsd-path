@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.71**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.72**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,47 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.72 — 2026-11-23
+
+Upstream package base remains `1.7.1`. The fork revision continues from 71 to 72.
+
+Applies upstream (the member sidecar hooks come from upstream `4f237c30`; on `upstream/main` the
+commit conflicts only in context, because the fork's attribution branch sits next to the changed
+line, and its tests pass there once resolved):
+- [`7c55db42 — keep a member's tracked Claude settings beside the sidecar guard`](https://github.com/drungrin/gsd-path/commit/7c55db42)
+
+Fork-only (the attribution-only sidecar config does not exist upstream):
+- [`4e9cb6a7 — read the member sidecar Claude config from settings.local.json`](https://github.com/drungrin/gsd-path/commit/4e9cb6a7)
+
+### A member that tracks its own Claude settings no longer blocks its tasks
+
+- In a consumer coordinator's build, one member repository had started tracking
+  `.claude/settings.json` with a team `SessionStart` hook. The member lock base already contained
+  it. `activate_member_task` refused every task of that member ("member sidecar already has its own
+  .claude/settings.json"), because the coordinator guard was written to that same file. There was
+  no legal path: replacing the team file is not allowed, and the lock base cannot move mid-build.
+- The sidecar's Claude guard (and the fork's attribution-only config) now goes to
+  `.claude/settings.local.json`. Claude merges that layer into the project's settings (lists
+  joined, objects merged), so the team hooks and the guard both run, and no tracked file changes.
+  The file is excluded through `info/exclude` like the other sidecar configs. A member that tracks
+  `.claude/settings.local.json`, or an untracked one that differs, still refuses activation.
+  Codex and Cursor configs are unchanged.
+- Not a recurrence: no earlier entry treats this scenario, and the refusal is upstream behavior.
+
+Validation:
+- `test_member_sidecar_hooks`: a member that tracks `.claude/settings.json` activates with the team
+  file intact, the guard in the local file, and a clean sidecar. Without the change, it refuses. A
+  member that tracks `.claude/settings.local.json` refuses. The other sidecar tests follow the new
+  path. The same module passes on `upstream/main` with the commit applied.
+- The full Python suite ran in eight parallel shards: 3,965 tests, 41 skipped, no failures.
+- The daemon suite passed (496 tests, 13 skipped), Node tests passed (118, one skipped), resource
+  synchronization checked 615 resources, and `check:locks` passed.
+
+Known limits:
+- A member that tracks `.claude/settings.json` with `disableAllHooks: true` would still turn the
+  guard off; no member does that today.
+- No upstream submission.
 
 ## 1.7.1.71 — 2026-11-23
 
