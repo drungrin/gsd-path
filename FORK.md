@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.72**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.73**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,38 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.73 — 2026-11-24
+
+Upstream package base remains `1.7.1`. The fork revision continues from 72 to 73.
+
+Fork-only (the CLI panel members do not exist upstream):
+- [`bb36cadd — stop pinning panel CLI versions`](https://github.com/drungrin/gsd-path/commit/bb36cadd)
+
+### Panel CLI versions are recorded, not pinned
+
+- Each CLI panel profile (`codex`, `muse`, `agy`) accepted only the versions qualified in a
+  sandbox, and any other version blocked the member with `cli-version`. Every CLI update then
+  needed a qualification run and a fork release before the panel could run again; 1.7.1.69
+  already had to add Muse Code 1.4.25 for that reason.
+- The owner dropped the check: "Se der erro resolvemos depois." The installed version is recorded
+  in the member's receipt and never checked; a `--version` without a version records `unknown`.
+  A version that changes the CLI's output or flags fails as any other member failure. The
+  `cli-version` code is gone.
+- Recurrence and decision change: this removes the ADR 0009 decision 7 (pinned versions) instead
+  of adding another qualified version. The ADR now records the change.
+
+Validation:
+- `test_panel_cli`: an unqualified Codex version runs and its receipt records it; the coded
+  failure tests no longer include `cli-version`. 26 tests pass.
+- The full Python suite ran in eight parallel shards: 3,966 tests, 41 skipped, no failures.
+- The daemon suite passed (496 tests, 13 skipped), Node tests passed (118, one skipped), resource
+  synchronization checked 615 resources, and `check:locks` passed.
+
+Known limits:
+- A CLI update that silently changes its output can now reach the report checks instead of
+  being refused up front; those checks (`empty-output`, `no-access-receipt`, `malformed-report`)
+  still block the member.
 
 ## 1.7.1.72 — 2026-11-23
 
