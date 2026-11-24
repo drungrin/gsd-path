@@ -4,7 +4,7 @@ This file tracks differences in [this fork](https://github.com/drungrin/gsd-path
 from [upstream GSD Path](https://github.com/open-gsd/gsd-path), including changes
 that can be proposed upstream independently.
 
-Current fork version: **1.7.1.75**. Upstream package base: **1.7.1**.
+Current fork version: **1.7.1.76**. Upstream package base: **1.7.1**.
 
 ## Version policy
 
@@ -21,6 +21,68 @@ checkout. The upstream npm release workflow, conventional-commit bump helper,
 and npm release notes remain specific to the upstream package. A Git push does
 not publish an npm package or create a release tag. Keep upstream release
 records in `CHANGELOG.md`; record fork changes here.
+
+## 1.7.1.76 — 2026-11-24
+
+Upstream package base remains `1.7.1`. The fork revision continues from 75 to 76.
+
+Fork-only (upstream has no external reviewer):
+- [`12b3649d — review the milestone through an external reviewer before its PR`](https://github.com/drungrin/gsd-path/commit/12b3649d)
+
+### Pre-PR review in ship
+
+- Milestone PRs were reviewed only after they opened, and a repository without
+  a PR reviewer got no review at all. The owner called this a show stopper.
+- Ship now runs a pre-PR review when the session has the external reviewer's
+  MCP tools ([ADR 0010](docs/adr/0010-pre-pr-external-review.md)). It runs
+  after `prepare-final` passes the project Verify and before any gap or final
+  reviewer, so final review runs once, over the fixed code.
+- `pre_pr.py` publishes each GitHub `pull-request` target to `pre-pr/...`:
+  the single repository, or each locked member. It uses the exact-commit push
+  authorization the guard already accepts, and passes the bound branch as
+  `branch_do_pr`, so the PR opened later adopts the answers. The guard does
+  not change. The branch is retired only after the review ended, and a
+  leftover never blocks integration.
+- Each finding ends as `corrijo`, `contesto` (with existing `path:line`
+  evidence), or `follow-up`, in one owner question per round. Every answer
+  goes back to the reviewer. Accepted findings take the ordinary patch route.
+  After the patch, ship starts again at step 1. The helper enforces at most
+  three rounds; a further round needs an owner ruling.
+- The final check and the archive transaction refuse an open sequence. The
+  patch gate accepts a report only when the journal proves `finish` wrote it
+  and every accepted finding is copied. Archive undo admits and restores the
+  report. The editorial step repeats the reviewed title, problem, and scope
+  (or records `objective_change`), and parking imports follow-ups.
+- Decision history: the owner first chose a delta wave without a planner and
+  publication under the bound name. The design panel found that the pre-push
+  hook refuses the bound name, and that the delta wave needed a second round
+  ownership system; the owner then chose `pre-pr/...` with `branch_do_pr` and
+  the ordinary patch route. The ADR went through two design panel rounds and
+  one code panel round (muse and gpt); the code panel's findings are fixed
+  and tested.
+
+Validation:
+- `test_pre_pr`: 28 tests. Publication passes the installed pre-push hook for
+  a single repository and for a member, and the hook refuses the bound name.
+  The tests cover the fix, confirmation, empty, and capped rounds; adversarial
+  reviewer text through the patch gate; two targets with the same `A1`;
+  binding and closing refusals; interrupted publish and close; undo admission;
+  journal recovery; objective and follow-up readers.
+- The full Python suite ran in eight parallel shards: 4,004 tests, 41 skipped,
+  no failures. The daemon suite passed (496 tests, 13 skipped), Node tests
+  passed (118, one skipped), resource synchronization checked 628 resources,
+  and `check:locks` passed.
+
+Known limits:
+- Requires the reviewer's `branch_do_pr` alias. Without it, `revisar_branch`
+  fails, and the owner rules on the failure.
+- Not yet run against the real reviewer or in a Paseo sandbox. MCP
+  configuration and its key belong to the operator.
+- The helper cannot prove that the captured findings are the reviewer's
+  complete answer. It binds them against `situacao`'s count at capture, and
+  no later step can drop one.
+- A contestation is checked only for one existing `path:line`; relevance is
+  the owner's call.
 
 ## 1.7.1.75 — 2026-11-24
 

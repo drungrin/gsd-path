@@ -1,6 +1,7 @@
 # Pre-PR review by an external reviewer, before final review
 
-Status: proposed (2026-11-24), draft 3. Fork-only. Upstream has no external
+Status: accepted (2026-11-24), implemented in fork 1.7.1.76 after a code review
+panel. Fork-only. Upstream has no external
 reviewer.
 
 Draft 1 went through a two-model review panel. Both members found that the
