@@ -771,10 +771,27 @@ def archived_wave_tasks(
     return tasks
 
 
+def withdrawn_task_ids(task_texts: dict) -> frozenset:
+    """Withdrawn tombstones: no live work, so no wave review section (#483).
+
+    Exclusion is earned as in the wave gate: an uncited tombstone is a
+    dropped obligation and fails like every other one.
+    """
+    withdrawn = set()
+    for task_id, text in task_texts.items():
+        if archive_milestone.frontmatter_value(text, "status") != "withdrawn":
+            continue
+        if not _common.withdrawn_citations(text):
+            raise ArchiveError(f"{task_id} is withdrawn without an owner citation")
+        withdrawn.add(task_id)
+    return frozenset(withdrawn)
+
+
 def plan_wave_criteria(
     archive: Path,
     plan_text: str,
     wave_tasks: dict[int, Sequence[tuple[str, str]]],
+    withdrawn: frozenset = frozenset(),
 ) -> dict[int, Sequence[tuple[str, str]]]:
     intent_path = archive / "intent" / "INTENT.md"
     if not intent_path.exists() and not intent_path.is_symlink():
@@ -811,7 +828,8 @@ def plan_wave_criteria(
         seen.add((sc_id, task_id, acceptance))
     result = {}
     for wave, tasks in wave_tasks.items():
-        task_ids = {task_id for task_id, _title in tasks}
+        # A withdrawn tombstone owns no criteria to review (#483).
+        task_ids = {task_id for task_id, _title in tasks if task_id not in withdrawn}
         owned_numbers = sorted(
             {
                 int(sc_id.removeprefix("SC"))
@@ -1046,7 +1064,8 @@ def review_cycle_counts(archive: Path) -> Sequence[int]:
         path.name.split("-", 1)[0]: path.read_text(encoding="utf-8")
         for path in archive_milestone.canonical_task_files(archive / "tasks")
     }
-    wave_criteria = plan_wave_criteria(archive, plan_text, wave_tasks)
+    withdrawn = withdrawn_task_ids(task_texts)
+    wave_criteria = plan_wave_criteria(archive, plan_text, wave_tasks, withdrawn)
 
     artifacts = {}
     panel_config = archive_milestone.plan_review_panel_config(plan_text)
@@ -1134,9 +1153,12 @@ def review_cycle_counts(archive: Path) -> Sequence[int]:
             expected_tasks = [
                 task
                 for task in wave_tasks[wave]
-                if task[0] not in repair_introductions
-                or repair_introductions[task[0]][0] != wave
-                or cycle > repair_introductions[task[0]][1]
+                if task[0] not in withdrawn
+                and (
+                    task[0] not in repair_introductions
+                    or repair_introductions[task[0]][0] != wave
+                    or cycle > repair_introductions[task[0]][1]
+                )
             ]
             for path, depth, lens in expected:
                 lines = path.read_text(encoding="utf-8").splitlines()
