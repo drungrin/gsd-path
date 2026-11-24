@@ -32,12 +32,11 @@ FAILURE_EXIT = 3
 FAMILIES_BY_PROFILE = {"codex": "gpt", "muse": "muse", "agy": "gemini"}
 CONFIG_FIELDS = ("profile", "model", "effort")
 
-# Each profile is pinned to the CLI versions qualified inside a sandbox. Qualifying a new version
-# means running the qualification again and adding it here.
+# The installed CLI version is recorded in the member's receipt, never checked: a version that
+# breaks the member fails as any other member failure (owner decision, 1.7.1.73).
 PROFILES: Dict[str, Dict[str, object]] = {
     "codex": {
         "binary": "codex",
-        "versions": ("0.166.0",),
         "state": (".codex",),
         "output": "file",
         "env": {},
@@ -45,7 +44,6 @@ PROFILES: Dict[str, Dict[str, object]] = {
     },
     "muse": {
         "binary": "muse",
-        "versions": ("1.4.24", "1.4.25"),
         "state": (".config/muse", ".local/share/muse"),
         "output": "stdout",
         "env": {"MUSE_NO_AUTO_UPDATE": "1"},
@@ -53,7 +51,6 @@ PROFILES: Dict[str, Dict[str, object]] = {
     },
     "agy": {
         "binary": "agy",
-        "versions": ("1.5.12", "1.5.14"),
         "state": (".gemini",),
         "output": "stdout",
         "env": {},
@@ -181,12 +178,8 @@ def cli_version(profile: str, manifest: Optional[Dict[str, object]] = None) -> s
     shim_unmounted(completed.returncode, completed.stderr, fix_hint(manifest))
     found = re.findall(r"\d+\.\d+\.\d+", completed.stdout + completed.stderr)
     if not found:
-        raise PanelCliError("cli-version", f"{spec['binary']} --version printed no version")
-    version = found[-1] if profile == "agy" else found[0]
-    if version not in spec["versions"]:
-        raise PanelCliError("cli-version", f"{spec['binary']} {version} is not a qualified version "
-                                           f"({', '.join(spec['versions'])})")  # type: ignore[arg-type]
-    return version
+        return "unknown"
+    return found[-1] if profile == "agy" else found[0]
 
 
 # --- the plugin's manifest ------------------------------------------------------

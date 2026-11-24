@@ -253,10 +253,16 @@ class MemberRunTests(unittest.TestCase):
         self.assertIn("panel-cli: cli-missing: codex is not enabled in this sandbox. Turn it on in the plugin.",
                       missing.stderr)
 
+    def test_any_cli_version_runs_and_is_recorded(self) -> None:
+        completed = self.run_member("ok", "0.199.0")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        receipt = json.loads((self.base / "attempt/panel-cli/receipt.json").read_text())
+        self.assertEqual(receipt["version"], "0.199.0")
+
     def test_blocks_with_a_coded_last_stderr_line(self) -> None:
         for mode, version, code in (("login", "0.166.0", "login"), ("wrong-nonce", "0.166.0", "no-access-receipt"),
                                     ("no-inspected", "0.166.0", "no-access-receipt"),
-                                    ("empty", "0.166.0", "empty-output"), ("ok", "0.199.0", "cli-version")):
+                                    ("empty", "0.166.0", "empty-output")):
             with self.subTest(mode=mode, version=version):
                 completed = self.run_member(mode, version)
                 self.assertEqual(completed.returncode, panel_cli.FAILURE_EXIT, completed.stderr)

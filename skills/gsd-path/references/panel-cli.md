@@ -84,14 +84,14 @@ python3 <absolute dispatch_driver.py> plan-panel --repo <absolute root> --track 
 ## Member failure
 
 A failed member's blocked `reason` reads `child exited 3: panel-cli: <code>: <detail>`. The codes
-are: `not-sandboxed`, `no-bwrap`, `manifest`, `cli-missing`, `cli-version`, `not-mounted` (the
+are: `not-sandboxed`, `no-bwrap`, `manifest`, `cli-missing`, `not-mounted` (the
 plugin's shim found the CLI's state unmounted), `login`, `credential-busy` (a renewal could not
 replace the bound credential file), `quota`, `exit-nonzero`, `tool-denied`, `empty-output`,
 `no-access-receipt`, `malformed-report`, plus `child timed out`. Stop and present **Outcome** (family, code, detail), **Review** (the member's
 `panel-cli/raw.md` and `stderr` in its dispatch attempt), and **Next** with two options:
 
 1. Wait: fix the cause and rerun the same command with `--retry-family <family>`. For `login`,
-   `cli-missing`, `cli-version`, `not-mounted`, and `credential-busy`, recommend this option: the
+   `cli-missing`, `not-mounted`, and `credential-busy`, recommend this option: the
    fix is one `doctor` command, a plugin setting, or one run of the CLI in the Sandbox terminal.
 2. Continue without it: rerun with `--accept-absent <family> --ruling '<the owner's words>'`. The
    merged panel lists the family as absent with the ruling.
@@ -109,5 +109,5 @@ owner's ruling, and never replace a failed CLI member with a native child.
 
 - The model that answered is the CLI's claim; Codex's event stream does not name it.
 - The sandbox network stays open; confinement covers files, not egress.
-- Each profile accepts only the CLI versions qualified in a sandbox; another version blocks with
-  `cli-version` until it is qualified.
+- Any installed CLI version runs; its receipt records the version. A version that changes the
+  CLI's output or flags fails as a member failure with the code that matches it.

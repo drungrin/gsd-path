@@ -55,7 +55,9 @@ model identity it passed wrong.
    either waits and reruns with `--retry-family`, or continues with `--accept-absent` and a
    verbatim `--ruling`, which the merged panel records. A failed CLI member is never replaced by
    a native child.
-7. **CLI versions are pinned.** Each profile accepts only the versions qualified in a sandbox.
+7. **CLI versions are recorded, not pinned.** Each member's receipt records the installed version.
+   Until 1.7.1.73 each profile accepted only the versions qualified in a sandbox; the owner
+   dropped that check, so a version that breaks a member fails as any other member failure.
 
 ## Evidence for the confinement
 
@@ -81,7 +83,7 @@ runtime directory:
 - Each consumer sandbox needs the three CLIs installed and logged in, one login per sandbox, in
   the VM's home. `panel_cli.py doctor` prints the missing `sbx exec` commands. A recreated
   sandbox loses them.
-- Upgrading a CLI requires qualifying the new version.
+- A CLI upgrade is not checked in advance; a break shows up as a member failure.
 - The model that answered remains the CLI's claim. Codex's event stream does not name it.
 - The sandbox network stays open; the confinement covers files, not egress.
 - The native panel path and `stage-review` remain for families without a profile.
