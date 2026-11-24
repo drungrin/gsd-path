@@ -85,7 +85,7 @@ class GitMetadataPolicyTests(unittest.TestCase):
             merged = json.loads(install._merged_claude_attribution_settings(destination, 'python3'))
             self.assertEqual(merged['env'], {'EXAMPLE_SETTING': 'kept'})
             self.assertEqual(merged['attribution'], settings['attribution'])
-            sidecar = json.loads(isolation._member_hook_configs(root)['.claude/settings.json'])
+            sidecar = json.loads(isolation._member_hook_configs(root)['.claude/settings.local.json'])
             self.assertNotIn('hooks', sidecar)
             self.assertEqual(sidecar['attribution'], settings['attribution'])
 
