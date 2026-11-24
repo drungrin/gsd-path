@@ -890,6 +890,9 @@ def validate_wave_review(
                 f"{path.name} tasks and titles do not match its wave task files in order"
             )
     else:
+        # An earlier cycle passed the wave gate's exact-title check when it was
+        # recorded; a later title fix must not invalidate that history, so only
+        # task ids and plan order are read here.
         known_ids = set(expected_by_id)
         for task_id in task_ids:
             if task_id not in known_ids:
@@ -902,12 +905,6 @@ def validate_wave_review(
             raise ArchiveError(
                 f"{path.name} tasks and titles do not match its wave task files in order"
             )
-        for _index, task_id, title, _verdict in headings:
-            expected_title = expected_by_id.get(task_id)
-            if expected_title is not None and " ".join(title.split()) != expected_title:
-                raise ArchiveError(
-                    f"{path.name} tasks and titles do not match its wave task files in order"
-                )
 
     verdicts = []
     for position, (heading_index, _task_id, _title, verdict) in enumerate(headings):
