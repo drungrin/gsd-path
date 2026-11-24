@@ -1123,6 +1123,18 @@ def copy_pending_audits(active_root: Path, archive: Path) -> int:
     return sum(count for _, count in pending)
 
 
+def require_pre_pr_closed(project: Path) -> None:
+    """ADR 0010: the archive transaction follows a closed pre-PR sequence."""
+    if __package__:
+        from . import pre_pr
+    else:
+        import pre_pr
+    try:
+        pre_pr.require_closed(project)
+    except pre_pr.PrePrError as error:
+        raise ArchiveError(str(error)) from error
+
+
 def prepare(repo: Path, slug: str) -> dict:
     project = repo.resolve()
     active_root = require_project_layout(project)
@@ -1143,6 +1155,7 @@ def prepare_locked(project: Path, active_root: Path, slug: str) -> dict:
     status = parsed_state.status
     if (phase, status) not in {("ship", "active"), ("shipped", "done")}:
         raise ArchiveError(f"archive transaction is not valid in state: {phase}/{status}")
+    require_pre_pr_closed(project)
     expected_slug = milestone_slug(parsed_state)
     if normalized_slug(slug) != expected_slug:
         raise ArchiveError(
@@ -2007,6 +2020,7 @@ def preflight(repo: Path) -> dict:
     status = state.status
     if (phase, status) not in {("ship", "active"), ("shipped", "done")}:
         raise ArchiveError("archive preflight requires ship/active or uncommitted shipped/done")
+    require_pre_pr_closed(project)
     require_stageable_carry_forward(project, archive)
     require_clean_older_archives(project, configured)
     settings_path = project / '.project/config.json'

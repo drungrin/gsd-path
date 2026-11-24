@@ -427,8 +427,10 @@ Never write an active-path artifact in this mode.
 
 Turn verified findings into one appended wave instead of replanning.
 Invoked by `$gsd-path-docs-audit` (remediation rulings) or `$gsd-path-ship final`
-(`not-met` criteria); the invoker names the exact ordered list of one or more
-findings source files and rows.
+(`not-met` criteria, or the `corrijo` findings of a pre-PR round, whose source is
+`.project/review/pre-pr-<n>.md`; ADR 0010); the invoker names the exact ordered
+list of one or more findings source files and rows. A pre-PR source takes the
+ordinary planner route below, like a final-review finding.
 
 **Preconditions.** An existing approved `.project/plan/PLAN.md`. For a
 final-review patch, require a valid `.project/review/PATCH-FINDINGS.md` and the

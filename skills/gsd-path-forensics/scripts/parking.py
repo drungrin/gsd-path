@@ -241,10 +241,13 @@ def sync(repo: Path) -> dict:
     items = load(repo)
     sources = {item["source"] for item in items}
     imported, settled, reopened = [], [], []
-    for follow_up in _round_follow_ups(repo):
+    rounds = [(row, "a PR change request") for row in _round_follow_ups(repo)]
+    # ADR 0010: follow-ups the owner ruled in a pre-PR review, from the archived reports.
+    rounds += [(row, "a pre-PR review") for row in _sibling("pre_pr").follow_ups(repo)]
+    for follow_up, origin in rounds:
         if follow_up["source"] in sources:
             continue
-        item = _new_item(items, follow_up, current, f"parked from a PR change request: \"{follow_up['ruling']}\"")
+        item = _new_item(items, follow_up, current, f"parked from {origin}: \"{follow_up['ruling']}\"")
         sources.add(item["source"])
         imported.append(item["id"])
     for item in items:

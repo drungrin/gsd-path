@@ -119,7 +119,8 @@ GAP_HEADING_PATTERN = re.compile(
 
 def _source_pattern(project_dir: str) -> "re.Pattern[str]":
     return re.compile(
-        rf"^{re.escape(project_dir)}/review/(?:FINAL\.md|final-gap-\d+\.md|pr-review-[1-9]\d*\.md)$"
+        rf"^{re.escape(project_dir)}/review/"
+        rf"(?:FINAL\.md|final-gap-\d+\.md|pr-review-[1-9]\d*\.md|pre-pr-[1-9]\d*\.md)$"
     )
 
 
@@ -148,6 +149,14 @@ def _pr_fix_lane():
     except ImportError:  # pragma: no cover - package import used by tests
         from scripts import pr_fix_lane
     return pr_fix_lane
+
+
+def _pre_pr():
+    try:
+        import pre_pr
+    except ImportError:  # pragma: no cover - package import used by tests
+        from scripts import pre_pr
+    return pre_pr
 
 
 def _parking():
@@ -630,7 +639,21 @@ def _heading_block(text: str, heading: re.Match[str]) -> str:
 
 
 def _source_repair_fields(source: str, text: str, locator: str) -> Tuple[str, str]:
-    if PurePosixPath(source).name.startswith("pr-review-"):
+    if PurePosixPath(source).name.startswith("pre-pr-"):
+        # ADR 0010: a pre-PR report; the locator names one finding the owner ruled `corrijo`.
+        item = re.fullmatch(r"Finding ([a-z][a-z0-9-]*) (A[1-9]\d*)", locator)
+        if not item:
+            raise HandoffError(f"{source} locator must be `Finding <target> A<n>`; copy it from a finding heading")
+        heading = re.search(
+            rf"(?m)^### Finding {re.escape(item.group(1))} {re.escape(item.group(2))} — .+$", text)
+        if not heading:
+            raise HandoffError(f"{source} has no finding heading for locator {locator}")
+        block = _heading_block(text, heading)
+        if _source_field(block, "Decision", source) != "corrijo":
+            raise HandoffError(f"{source} locator {locator} is not a corrijo finding")
+        evidence = _source_field(block, "Found", source)
+        fix_direction = _source_field(block, "Fix direction", source)
+    elif PurePosixPath(source).name.startswith("pr-review-"):
         item = re.fullmatch(r"Item ([RCT][1-9]\d*)", locator)
         if not item:
             raise HandoffError(f"{source} locator must be `Item <id>`; copy it from an item heading")
@@ -3093,6 +3116,10 @@ def validate_patch_findings(
                 _pr_fix_lane().require_source(root, source, source_text)
             except _pr_fix_lane().LaneError as error:
                 raise HandoffError(str(error)) from error
+        elif PurePosixPath(source).name.startswith("pre-pr-"):
+            problem = _pre_pr().patch_source_error(root, source, source_text)
+            if problem:
+                raise HandoffError(problem)
         elif source.endswith("FINAL.md"):
             if _line_value(source_text, "Overall verdict:") != "blocked":
                 raise HandoffError("FINAL.md is not a blocked finding source")
@@ -3105,7 +3132,7 @@ def validate_patch_findings(
             source, source_text, locator
         )
         if evidence != source_evidence:
-            evidence_field = "Finding" if source.endswith("FINAL.md") else "Found"  # pr-review uses Found
+            evidence_field = "Finding" if source.endswith("FINAL.md") else "Found"  # pr-review and pre-pr use Found
             raise HandoffError(
                 f"{source} locator {locator} Evidence must equal the source's "
                 f"{evidence_field} field; copy it verbatim: {source_evidence!r}"
@@ -3120,6 +3147,14 @@ def validate_patch_findings(
     expected_ids = [f"P{number:03d}" for number in range(1, len(ids) + 1)]
     if ids != expected_ids:
         raise HandoffError("patch finding ids must be contiguous and ordered")
+    # ADR 0010: a pre-PR round hands off every finding the owner ruled corrijo, each once.
+    for source in sorted({source for source in sources if PurePosixPath(source).name.startswith("pre-pr-")}):
+        expected = _pre_pr().corrijo_locators(_read(root, source))
+        copied = [_field(block, "Locator") for _heading, block in blocks
+                  if _field(block, "Source").strip("`") == source]
+        if sorted(copied) != sorted(expected):
+            raise HandoffError(f"PATCH-FINDINGS.md must copy every corrijo finding of {source} once: "
+                               f"expected {', '.join(expected) or 'none'}, found {', '.join(copied) or 'none'}")
     return {
         "phase": "ship",
         "reviewed_head": reviewed_head,
@@ -3269,6 +3304,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "plan": validate_plan,
                 "final": validate_final,
             }
+            if arguments.phase == "final" and arguments.project_dir == DEFAULT_PROJECT_DIR:
+                # ADR 0010: final review follows a closed pre-PR sequence. Not inside validate_final,
+                # which prepare-final also uses to judge reusable evidence before the pre-PR runs.
+                try:
+                    _pre_pr().require_closed(repo)
+                except _pre_pr().PrePrError as error:
+                    raise HandoffError(str(error)) from error
             result = validators[arguments.phase](repo, arguments.project_dir)
     except HandoffError as error:
         print(f"handoff validation failed: {error}", file=sys.stderr)

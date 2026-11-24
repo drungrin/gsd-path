@@ -143,19 +143,53 @@ def require_body_format(body, selected_language):
 
 def require_self_contained(repo, value):
     """Authoring rules; committed publications keep loading as recorded."""
-    scope = TITLE.fullmatch(value['title']).group(2)
+    require_no_pipeline_identifiers(repo, value['title'], value['sections'].values())
+
+
+def require_no_pipeline_identifiers(repo, title, sections):
+    """The title names no milestone, and the copy cites no pipeline identifier.
+
+    Shared with the pre-PR objective (ADR 0010), which is checked before any archive exists.
+    """
+    scope = TITLE.fullmatch(title).group(2)
     if scope and re.fullmatch(r'\((?:m|milestone-?)?\d+\)', scope):
         raise EditorialError('PR title scope names the milestone; name the affected area instead')
     defined = set()
     for path in (repo / '.project').rglob('*.md'):
         if path.is_file() and not path.is_symlink():
             defined.update(IDENTIFIER.findall(path.read_text(encoding='utf-8', errors='replace')))
-    copy = '\n'.join((value['title'], *value['sections'].values()))
+    copy = '\n'.join((title, *sections))
     cited = sorted({token for token in IDENTIFIER.findall(copy)
                     if token in defined or re.fullmatch(r'M\d+', token)})
     if cited:
         raise EditorialError('PR copy cites pipeline identifiers its readers cannot resolve: '
                              + ', '.join(cited) + '; describe what each one means instead')
+
+
+def pre_pr_objective(repo, archive, member):
+    """The title, problem, and scope the pre-PR review checked for this target (ADR 0010)."""
+    if __package__:
+        from . import pre_pr
+    else:
+        import pre_pr
+    return pre_pr.objective_for(repo, archive, member)
+
+
+def require_objective(value, objective):
+    """The copy repeats the reviewed objective, or discloses why it does not."""
+    if objective is None:
+        return
+    same = (value['title'] == objective.get('title')
+            and value['sections'].get('problem', '').strip() == str(objective.get('problem', '')).strip()
+            and value['sections'].get('scope', '').strip() == str(objective.get('scope', '')).strip()
+            and value['language'] == objective.get('language'))
+    change = value.get('objective_change')
+    if same:
+        value.pop('objective_change', None)
+    elif not isinstance(change, str) or not change.strip():
+        raise EditorialError('the title, problem, and scope differ from the objective the pre-PR review '
+                             'checked (a translation too); repeat them, or give objective_change with the reason')
+    value['pre_pr_objective'] = dict(objective)
 
 
 def discover_work_items(content):
@@ -171,6 +205,7 @@ def prepare(repo, archive, member, reviewed_head, authored, call=None):
                  reviewed_head=reviewed_head, language=language(repo), sources=sources(repo, archive))
     validate_document(value)
     require_self_contained(repo, value)
+    require_objective(value, pre_pr_objective(repo, archive, member))
     checkout = repo
     if member != 'coordinator':
         if __package__:
@@ -318,6 +353,7 @@ def main(argv=None):
                       'sources': sources(repo, args.archive),
                       'candidate_work_items': discover_work_items((repo / args.archive / 'intent/INTENT.md').read_text(encoding='utf-8')),
                       'output': str(publication_path(repo, args.archive, args.member)),
+                      'pre_pr_objective': pre_pr_objective(repo, args.archive, args.member),
                       'required_sections': list(SECTIONS), 'title_format': 'Conventional Commit'}
         elif args.action == 'prepare':
             if args.input is None or args.reviewed_head is None:

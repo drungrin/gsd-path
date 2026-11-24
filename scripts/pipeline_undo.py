@@ -553,6 +553,46 @@ def _ship_lessons(repo: Path, archive: str) -> Optional[list[str]]:
     return [line.rstrip("\n") for line in lines]
 
 
+def _admitted_pre_pr_reports(repo: Path, archive: str) -> dict[str, str]:
+    """Untracked archived review/pre-pr-<n>.md files the pre-PR journal recorded, by name."""
+    review = repo / _normalize_archive(archive) / "review"
+    found: dict[str, str] = {}
+    if review.is_symlink() or not review.is_dir():
+        return found
+    pre_pr = _pre_pr()
+    for path in sorted(review.glob("pre-pr-*.md")):
+        relative = path.relative_to(repo).as_posix()
+        if path.is_symlink() or not path.is_file() or _archive_in_head(repo, relative):
+            continue
+        data = path.read_bytes()
+        if pre_pr.admitted_report(repo, path.name, data):
+            try:
+                found[path.name] = data.decode("utf-8")
+            except UnicodeDecodeError:
+                continue  # never admitted: undo refuses it as an unknown file
+    return found
+
+
+def _restore_pre_pr_reports(repo: Path, reports: object) -> None:
+    """Return the admitted pre-PR reports to the active review/ after the archive tree is gone."""
+    if not isinstance(reports, dict):
+        return
+    review = repo / ".project" / "review"
+    if review.is_symlink() or (review.exists() and not review.is_dir()):
+        raise UndoError("pre-PR report restore destination is unsafe")
+    review.mkdir(parents=True, exist_ok=True)
+    for name, content in sorted(reports.items()):
+        if not re.fullmatch(r"pre-pr-[1-9]\d*\.md", str(name)) or not isinstance(content, str):
+            raise UndoError("undo transaction has an invalid pre-PR report")
+        target = review / name
+        if target.is_file() and not target.is_symlink() and target.read_text(encoding="utf-8") == content:
+            continue
+        with tempfile.NamedTemporaryFile(dir=review, delete=False) as handle:
+            handle.write(content.encode("utf-8"))
+            temporary_name = handle.name
+        os.replace(temporary_name, target)
+
+
 def _publication_directory(archive: str) -> str:
     """Untracked editorial copy `pr_editorial.py prepare` wrote for this archive."""
     return f".project/publications/{PurePosixPath(_normalize_archive(archive)).name}"
@@ -655,6 +695,11 @@ def _archive_metadata_error(
                     for path in directory.rglob("*")
                     if path.is_file()
                 )
+        # ADR 0010: an uncommitted pre-PR report belongs to the archive only when its bytes
+        # are the exact report the milestone's pre-PR journal recorded.
+        expected_inventory.update(
+            f"review/{name}" for name in _admitted_pre_pr_reports(repo, archive)
+        )
         actual_directories = sorted(
             path.relative_to(archive_path).as_posix()
             for path in archive_path.rglob("*")
@@ -769,6 +814,7 @@ def _prepare_transaction(
     archive: Optional[str],
     discussion: Optional[dict[str, bytes]],
     member_fields: Optional[dict[str, str]] = None,
+    pre_pr_reports: Optional[dict[str, str]] = None,
 ) -> dict[str, object]:
     transaction = {
         "schema": UNDO_TRANSACTION_SCHEMA,
@@ -786,6 +832,8 @@ def _prepare_transaction(
         ),
         "discussion": _encode_discussion(discussion),
     }
+    if pre_pr_reports:
+        transaction["pre_pr_reports"] = dict(pre_pr_reports)
     if member_fields is not None:
         transaction.update(member_fields)
     _write_json(_git_path(repo, UNDO_TRANSACTION_NAME), transaction)
@@ -859,6 +907,14 @@ def _post_reset_recovery_error(
                 or path.read_text(encoding="utf-8") != content
             ):
                 return f"undo recovery discussion drifted: {relative}"
+    reports = transaction.get("pre_pr_reports")
+    if isinstance(reports, dict):
+        for name, content in reports.items():
+            relative = f".project/review/{name}"
+            path = repo / relative
+            if relative in dirty and path.is_file() and not path.is_symlink() \
+                    and path.read_text(encoding="utf-8") == content:
+                allowed.add(relative)
     archive = transaction.get("archive")
     if isinstance(archive, str):
         archive_path = repo / _normalize_archive(archive)
@@ -974,6 +1030,7 @@ def _finish_transaction_locked(repo: Path, transaction: dict[str, object]) -> No
     archive = transaction.get("archive")
     if isinstance(archive, str) and not _archive_in_head(repo, archive):
         _remove_untracked_tree(repo, archive)
+    _restore_pre_pr_reports(repo, transaction.get("pre_pr_reports"))
     if isinstance(archive, str):
         lessons = repo / ".project" / "LESSONS.md"
         if (lessons.is_file() and not lessons.is_symlink()
@@ -986,6 +1043,12 @@ def _finish_transaction_locked(repo: Path, transaction: dict[str, object]) -> No
     path = _git_path(repo, UNDO_TRANSACTION_NAME)
     path.unlink()
     pipeline_state._common.fsync_directory(path.parent)
+
+
+def _pre_pr():
+    import importlib
+
+    return importlib.import_module(f"{__package__}.pre_pr" if __package__ else "pre_pr")
 
 
 def _pr_fix_lane():
@@ -1360,6 +1423,7 @@ def apply_undo(repo: Path, kind: str, expected_head: str) -> dict[str, object]:
             str(target["branch"]),
             archive,
             discussion,
+            pre_pr_reports=_admitted_pre_pr_reports(resolved, archive),
         )
         _finish_transaction(resolved, transaction)
     else:

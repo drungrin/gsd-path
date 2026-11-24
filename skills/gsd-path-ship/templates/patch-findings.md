@@ -11,6 +11,6 @@ State: ship/blocked
 ### P001 — <short finding title>
 
 - **Source**: `.project/review/FINAL.md`
-- **Locator**: <copy the full `Risk: ...` line from a gap review, or the `SC<n>` id from `FINAL.md`>
+- **Locator**: <copy the full `Risk: ...` line from a gap review, the `SC<n>` id from `FINAL.md`, or `Finding <target> A<n>` from a pre-PR report (pre_pr.py writes these)>
 - **Evidence**: <copy the gap review's `Found` or `FINAL.md`'s `Finding` field verbatim>
 - **Fix direction**: <copy the source's `Fix direction` field verbatim>

@@ -64,7 +64,8 @@ so the position is unchanged. Then:
    orchestrator, `.project/intent/INTENT.md`,
    `.project/plan/PLAN.md`, all task files, all passing wave reviews, the bound
    build branch, and no product or unrelated changes. On retry, existing
-   uncommitted assigned final-review outputs may remain. Resolve and record the
+   uncommitted assigned final-review outputs may remain, and so may the
+   `review/pre-pr-<n>.md` reports of step 3a. Resolve and record the
    exact full reviewed `HEAD` before dispatch, then prove every task landed
    through the runtime in step 3. Its landing check must return one
    `proven-landed` or `attested` entry per task. For rebase recovery, see
@@ -162,6 +163,81 @@ so the position is unchanged. Then:
    as a view of that proof. Multiple waves, deep/verify-only reviews, missing
    evidence, or changed inputs require fresh final review. Existing valid final
    evidence at the current HEAD is also reused on retry.
+
+3a. **Pre-PR review** ([ADR 0010](https://github.com/drungrin/gsd-path/blob/main/docs/adr/0010-pre-pr-external-review.md)).
+   After step 3 passes the project Verify, and before any reviewer dispatch,
+   run `python3 <absolute pre_pr.py> status --repo <root>` from this skill's
+   bundled scripts. Add `--no-tools` when the session lacks the
+   `mcp__revisor__revisar_branch` tool. The helper owns the journal,
+   publication, branch retirement, the cap, and the hand-off; never
+   reconstruct them in shell calls. Its result:
+   - `closed`: continue with step 4, and report the returned reason once in
+     the outcome.
+   - `cap-reached`: ask the owner whether to close and continue to final review
+     (recommended), with `close --reason <text> --owner-ruling <file>`, or to
+     run one more round, with `publish --owner-ruling <file>`.
+   - `pending`: resume at the stage it names, below. Without the MCP tools,
+     stop and tell the owner. Never close a round whose captured findings lack
+     a ruling and answers, unless the owner rules it.
+   - `due`: run one round.
+     1. **Objective (first round only).** For each target, write the PR title
+        (a Conventional Commit), problem, and scope in the editorial language,
+        from INTENT.md. Ground a member's scope in its own diff, and follow the
+        identifier rules of archive step 4. Save
+        `{"targets": {<target>: {"title", "problem", "scope"}}}` outside
+        `.project/` and pass it to `publish --objective <file>`. Later rounds
+        reuse it.
+     2. **Request.** `publish` returns one request per target. For each,
+        call `mcp__revisor__revisar_branch` with `repo`, `branch`, `base`,
+        `objetivo`, and `branch_do_pr` exactly as returned. Then run `record
+        --target <t> --execution <execucao_id> --head <head_sha>`. When a call's
+        result is lost, request again and record the new id: a new request
+        cancels the unfinished one.
+     3. **Wait.** Use the host's own wait mechanism (a background timer or
+        monitor, minutes apart), never a busy loop, and call `situacao` until
+        `terminou` is true. Save the result and run `ended --target <t>
+        --status-file <file>`; it retires the published branch. On a failure
+        (`falhou`, `cancelada`, quota, or a tool error), ask the owner whether
+        to close and continue (recommended) or to retry with `publish`. To
+        drop an attempt that never got an execution, run `retire --target <t>
+        --abandon`.
+     4. **Capture.** For `concluida`, save the `achados` result and run
+        `capture --target <t> --findings <file>`.
+     5. **Ruling.** A finding is not an order. Read each captured finding
+        against the code at the target's reviewed commit, and propose one
+        decision with a reason grounded in the intent:
+        - `corrijo`, with a group and a fix direction;
+        - `contesto`, with a reason that cites `path:line` evidence existing
+          at that commit;
+        - `follow-up`, with a `risk` class: `security`, `data-loss`,
+          `correctness`, `operations`, `docs`, or `other`.
+
+        Ask the owner one question per round with the table, and recommend
+        your proposal. A round without findings asks nothing. Write
+        `{"verbatim": "<owner answer>", "findings": [{"target", "id",
+        "decision", "reason", "fix_direction"?, "risk"?}]}` outside
+        `.project/` and run `rule --ruling <file>`. It refuses a missing
+        decision, a contestation without existing evidence, and a hand-off
+        that the patch gate would refuse.
+     6. **Answers.** Send every decision through `mcp__revisor__responder`, one
+        call per execution, with the reason as `motivo`. Save `{"<target>":
+        <responder result>}` and run `finish --responses <file>`. It writes
+        `.project/review/pre-pr-<n>.md`.
+        - With a `corrijo`, it also writes PATCH-FINDINGS.md, removes the
+          uncommitted FINAL.md and gap reports that step 3 wrote at this HEAD,
+          and sets `ship/blocked`. Present the blocked outcome, link the
+          report, and return to the router, which opens plan patch mode (the
+          ordinary patch route).
+        - Without one, it closes the sequence. Continue with step 4.
+
+   After the patch wave is built, ship starts again at step 1, and
+   `prepare-final` proves the landing, member mergeability, and project Verify
+   at the new HEAD. Then `status` decides whether a confirmation round is due.
+   A patch that comes from final review never reopens the pre-PR. The `final`
+   check of step 5 and the archive transaction refuse while the sequence is
+   open. A leftover `pre-pr/...` branch never blocks integration. Delete one
+   that no journal records only with `retire --adopt <sha> --owner-ruling
+   <file>`.
 
 4. For each numbered risk other than project Verify without a reusable output,
    dispatch one reviewer through the shared capacity-aware contract at the
@@ -338,6 +414,11 @@ The persisted `STATE.archive` field is the transaction identity.
    milestone scope and any such identifier the pipeline record defines.
    Local or temporary evidence paths cannot be published. Reuse recorded
    evidence instead of executing commands again to write copy.
+   When `context` returns a `pre_pr_objective`, repeat its title, problem, and
+   scope verbatim: the PR review checks the promise that the pre-PR review
+   checked. A difference, including a translation after an `editorial_language`
+   change, needs `"objective_change": "<reason>"` in the authored JSON, and
+   `prepare` records it.
 
    For Azure, inspect actual work items referenced by approved intent and
    select only the items delivered by this repository. Each `work_items`
